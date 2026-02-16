@@ -81,14 +81,35 @@ pub async fn resolve_version(version_spec: &str) -> Result<VersionEntry> {
     }
 }
 
+/// Returns whether the current platform downloads a tarball (Linux) vs a bare binary (macOS)
+pub fn is_tarball_download() -> Result<bool> {
+    let (os, _) = detect_platform()?;
+    Ok(os == "linux")
+}
+
 /// Builds the download URL for a specific version from GitHub releases
-/// URL format: https://github.com/ClickHouse/ClickHouse/releases/download/v{version}-{channel}/clickhouse-{os}-{arch}
+/// macOS: .../clickhouse-macos-{arch}
+/// Linux: .../clickhouse-common-static-{version}-{arch}.tgz
 pub fn build_download_url(version: &str, channel: &str) -> Result<String> {
     let (os, arch) = detect_platform()?;
-    Ok(format!(
-        "https://github.com/ClickHouse/ClickHouse/releases/download/v{}-{}/clickhouse-{}-{}",
-        version, channel, os, arch
-    ))
+    let base = format!(
+        "https://github.com/ClickHouse/ClickHouse/releases/download/v{}-{}",
+        version, channel
+    );
+    match os {
+        "linux" => {
+            let linux_arch = match arch {
+                "x86_64" => "amd64",
+                "aarch64" => "arm64",
+                _ => arch,
+            };
+            Ok(format!(
+                "{}/clickhouse-common-static-{}-{}.tgz",
+                base, version, linux_arch
+            ))
+        }
+        _ => Ok(format!("{}/clickhouse-{}-{}", base, os, arch)),
+    }
 }
 
 #[cfg(test)]
@@ -116,5 +137,36 @@ mod tests {
         let url = build_download_url("25.8.16.34", "lts").unwrap();
         assert!(url.starts_with("https://github.com/ClickHouse/ClickHouse/releases/download/"));
         assert!(url.contains("v25.8.16.34-lts"));
+    }
+
+    #[test]
+    fn test_build_download_url_platform_specific() {
+        let url = build_download_url("25.12.5.44", "stable").unwrap();
+        let (os, arch) = detect_platform().unwrap();
+        match os {
+            "macos" => {
+                assert!(url.contains(&format!("clickhouse-macos-{}", arch)));
+                assert!(!url.ends_with(".tgz"));
+            }
+            "linux" => {
+                let expected_arch = match arch {
+                    "x86_64" => "amd64",
+                    "aarch64" => "arm64",
+                    _ => arch,
+                };
+                assert!(url.contains(&format!(
+                    "clickhouse-common-static-25.12.5.44-{}.tgz",
+                    expected_arch
+                )));
+            }
+            _ => panic!("unexpected os: {}", os),
+        }
+    }
+
+    #[test]
+    fn test_is_tarball_download() {
+        let is_tarball = is_tarball_download().unwrap();
+        let (os, _) = detect_platform().unwrap();
+        assert_eq!(is_tarball, os == "linux");
     }
 }
