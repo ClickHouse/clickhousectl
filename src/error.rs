@@ -40,6 +40,9 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
+    #[error("Extraction failed: {0}")]
+    Extract(String),
+
     #[error("Cloud API error: {0}")]
     Cloud(String),
 }
