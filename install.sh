@@ -50,6 +50,10 @@ chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
 echo "Installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"
 
+# Create chctl alias (symlink)
+ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/chctl"
+echo "Created alias: chctl -> ${BINARY_NAME}"
+
 # Check if install dir is in PATH
 case ":$PATH:" in
   *":${INSTALL_DIR}:"*) ;;

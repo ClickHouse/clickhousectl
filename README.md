@@ -20,7 +20,7 @@ With `clickhousectl` you can:
 curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/install.sh | sh
 ```
 
-The install scripts will download the correct version for your OS and install to `~/.local/bin/clickhousectl`.
+The install script will download the correct version for your OS and install to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
 
 ### From source
 
