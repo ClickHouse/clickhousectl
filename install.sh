@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-REPO="sdairs/chv"
+REPO="ClickHouse/clickhousectl"
 INSTALL_DIR="$HOME/.local/bin"
-BINARY_NAME="chv"
+BINARY_NAME="clickhousectl"
 
 # Detect OS
 OS="$(uname -s)"
@@ -41,7 +41,7 @@ fi
 echo "Latest release: $LATEST"
 
 # Download binary
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/chv-${TARGET}"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/clickhousectl-${TARGET}"
 echo "Downloading ${DOWNLOAD_URL}..."
 
 mkdir -p "$INSTALL_DIR"

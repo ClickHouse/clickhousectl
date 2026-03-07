@@ -34,7 +34,7 @@ impl CloudClient {
             .or_else(|| file_creds.as_ref().map(|c| c.api_key.clone()))
             .or_else(|| env::var("CLICKHOUSE_CLOUD_API_KEY").ok())
             .ok_or_else(|| CloudError {
-                message: "API key required. Run `chv cloud auth`, set CLICKHOUSE_CLOUD_API_KEY, or use --api-key".into(),
+                message: "API key required. Run `clickhousectl cloud auth`, set CLICKHOUSE_CLOUD_API_KEY, or use --api-key".into(),
             })?;
 
         let secret = api_secret
@@ -42,7 +42,7 @@ impl CloudClient {
             .or_else(|| file_creds.as_ref().map(|c| c.api_secret.clone()))
             .or_else(|| env::var("CLICKHOUSE_CLOUD_API_SECRET").ok())
             .ok_or_else(|| CloudError {
-                message: "API secret required. Run `chv cloud auth`, set CLICKHOUSE_CLOUD_API_SECRET, or use --api-secret"
+                message: "API secret required. Run `clickhousectl cloud auth`, set CLICKHOUSE_CLOUD_API_SECRET, or use --api-secret"
                     .into(),
             })?;
 
@@ -51,7 +51,7 @@ impl CloudClient {
         let auth_header = format!("Basic {}", encoded);
 
         let client = Client::builder()
-            .user_agent("chv-cli")
+            .user_agent("clickhousectl-cli")
             .build()
             .map_err(|e| CloudError {
                 message: format!("Failed to create HTTP client: {}", e),

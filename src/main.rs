@@ -64,7 +64,7 @@ fn list_installed() -> Result<()> {
 
     if versions.is_empty() {
         println!("No versions installed");
-        println!("Run: chv install stable");
+        println!("Run: clickhousectl install stable");
         return Ok(());
     }
 
@@ -197,10 +197,10 @@ fn run_clickhouse(args: RunArgs) -> Result<()> {
             Err(Error::Exec(err.to_string()))
         }
         None => {
-            eprintln!("Usage: chv run --sql <QUERY>");
-            eprintln!("       chv run server [ARGS...]");
-            eprintln!("       chv run client [ARGS...]");
-            eprintln!("       chv run local [ARGS...]");
+            eprintln!("Usage: clickhousectl run --sql <QUERY>");
+            eprintln!("       clickhousectl run server [ARGS...]");
+            eprintln!("       clickhousectl run client [ARGS...]");
+            eprintln!("       clickhousectl run local [ARGS...]");
             std::process::exit(1);
         }
     }

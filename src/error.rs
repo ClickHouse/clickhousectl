@@ -19,7 +19,7 @@ pub enum Error {
     #[error("No versions installed")]
     NoVersionsInstalled,
 
-    #[error("No default version set. Run: chv use <version>")]
+    #[error("No default version set. Run: clickhousectl use <version>")]
     NoDefaultVersion,
 
     #[error("Version {0} is already installed")]
