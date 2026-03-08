@@ -63,7 +63,7 @@ clickhousectl init
 
 This creates two directories:
 
-1. **`.clickhouse/`** — Runtime data directory (git-ignored). Data is scoped by version so switching versions with `clickhousectl use` won't cause compatibility issues. `clickhousectl run server` automatically creates this if needed.
+1. **`.clickhouse/`** — Runtime data directory (git-ignored). Server data is stored per-server in `.clickhouse/servers/<name>/data/`. `clickhousectl server start` automatically creates this if needed.
 
 2. **`clickhouse/`** — Project scaffold for organizing your SQL files (meant to be committed):
 
@@ -79,7 +79,7 @@ clickhouse/
     └── .gitkeep
 ```
 
-The `clickhouse/` scaffold is only created by `clickhousectl init`, not by `clickhousectl run server`.
+The `clickhouse/` scaffold is only created by `clickhousectl init`, not by `clickhousectl server start`.
 
 ### Running ClickHouse
 
@@ -95,11 +95,35 @@ clickhousectl run local -- --help
 # Run clickhouse client
 clickhousectl run client
 clickhousectl run client -- --host localhost --query "SHOW DATABASES"
-
-# Run clickhouse server (auto-initializes .clickhouse/ in CWD)
-clickhousectl run server
-clickhousectl run server -- --config-file=/path/to/config.xml
 ```
+
+### Server Management
+
+Start and manage named ClickHouse server instances. Each server gets its own data directory at `.clickhouse/servers/<name>/data/`.
+
+```bash
+# Start a server (runs in background by default)
+clickhousectl server start                          # Named "default"
+clickhousectl server start --name dev               # Named "dev"
+clickhousectl server start --name test               # Auto-assigns free ports if defaults are taken
+clickhousectl server start --http-port 8124 --tcp-port 9001  # Explicit ports
+clickhousectl server start --foreground             # Run in foreground (-F / --fg)
+clickhousectl server start -- --config-file=/path/to/config.xml
+
+# List all servers (running and stopped)
+clickhousectl server list
+
+# Stop servers
+clickhousectl server stop default                   # Stop by name
+clickhousectl server stop-all                       # Stop all running servers
+
+# Remove a stopped server and its data
+clickhousectl server remove test
+```
+
+**Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
+
+**Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned. Use `--http-port` and `--tcp-port` to set explicit ports.
 
 ### ClickHouse Cloud
 
