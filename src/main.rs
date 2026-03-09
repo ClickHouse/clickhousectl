@@ -168,29 +168,31 @@ fn which() -> Result<()> {
 
 fn run_client(
     name: Option<String>,
-    host: String,
+    host: Option<String>,
     port: Option<u16>,
     query: Option<String>,
     queries_file: Option<String>,
     args: Vec<String>,
 ) -> Result<()> {
-    // Resolve port and version: explicit --port bypasses server lookup and uses
-    // the default version; otherwise look up the named server for both.
-    let (tcp_port, version) = match port {
-        Some(p) => (p, version_manager::get_default_version()?),
-        None => {
-            let server_name = name.as_deref().unwrap_or("default");
-            let entries = server::list_all_servers();
-            let entry = entries
-                .iter()
-                .find(|e| e.name == server_name)
-                .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
-            let info = entry
-                .info
-                .as_ref()
-                .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
-            (info.tcp_port, info.version.clone())
-        }
+    // If --host or --port is set, connect directly (bypass local server lookup).
+    // Otherwise, look up the named server for port and version.
+    let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
+        let h = host.unwrap_or_else(|| "localhost".to_string());
+        let p = port.unwrap_or(9000);
+        let v = version_manager::get_default_version()?;
+        (h, p, v)
+    } else {
+        let server_name = name.as_deref().unwrap_or("default");
+        let entries = server::list_all_servers();
+        let entry = entries
+            .iter()
+            .find(|e| e.name == server_name)
+            .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+        let info = entry
+            .info
+            .as_ref()
+            .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
+        ("localhost".to_string(), info.tcp_port, info.version.clone())
     };
 
     let binary = paths::binary_path(&version)?;
@@ -202,7 +204,7 @@ fn run_client(
     let mut cmd = Command::new(&binary);
     cmd.arg("client")
         .arg("--host")
-        .arg(&host)
+        .arg(&resolved_host)
         .arg("--port")
         .arg(tcp_port.to_string());
 

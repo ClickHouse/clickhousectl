@@ -136,11 +136,11 @@ CONTEXT FOR AGENTS:
         #[arg(long, short)]
         name: Option<String>,
 
-        /// Host to connect to
-        #[arg(long, default_value = "localhost")]
-        host: String,
+        /// Host to connect to (bypasses local server lookup)
+        #[arg(long)]
+        host: Option<String>,
 
-        /// TCP port to connect to (auto-detected from --name if not set)
+        /// TCP port to connect to (bypasses local server lookup if set)
         #[arg(long, short)]
         port: Option<u16>,
 
