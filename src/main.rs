@@ -52,7 +52,7 @@ async fn run_local(cmd: LocalCommands) -> Result<()> {
             init::init()?;
             Ok(())
         }
-        LocalCommands::Client { args } => run_client(args),
+        LocalCommands::Client { name, args } => run_client(name, args),
         LocalCommands::Server { command } => run_server_commands(command),
     }
 }
@@ -159,7 +159,15 @@ fn which() -> Result<()> {
     Ok(())
 }
 
-fn run_client(args: Vec<String>) -> Result<()> {
+fn run_client(name: Option<String>, args: Vec<String>) -> Result<()> {
+    let name = name.as_deref().unwrap_or("default");
+
+    let servers = server::list_running_servers();
+    let info = servers
+        .iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| Error::ServerNotFound(name.to_string()))?;
+
     let version = version_manager::get_default_version()?;
     let binary = paths::binary_path(&version)?;
 
@@ -168,7 +176,10 @@ fn run_client(args: Vec<String>) -> Result<()> {
     }
 
     let mut cmd = Command::new(&binary);
-    cmd.arg("client").args(&args);
+    cmd.arg("client")
+        .arg("--port")
+        .arg(info.tcp_port.to_string());
+    cmd.args(&args);
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
 }

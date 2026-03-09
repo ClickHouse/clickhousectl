@@ -90,8 +90,9 @@ clickhouse/
 
 ```bash
 # Connect to a running server with clickhouse-client
-clickhousectl local client
-clickhousectl local client -- --host localhost --query "SHOW DATABASES"
+clickhousectl local client                           # Connects to "default" server
+clickhousectl local client --name dev                # Connects to "dev" server
+clickhousectl local client -- --query "SHOW DATABASES"
 ```
 
 ### Creating and managing ClickHouse servers
