@@ -52,7 +52,13 @@ async fn run_local(cmd: LocalCommands) -> Result<()> {
             init::init()?;
             Ok(())
         }
-        LocalCommands::Client { name, args } => run_client(name, args),
+        LocalCommands::Client {
+            name,
+            host,
+            port,
+            query,
+            args,
+        } => run_client(name, host, port, query, args),
         LocalCommands::Server { command } => run_server_commands(command),
     }
 }
@@ -159,14 +165,26 @@ fn which() -> Result<()> {
     Ok(())
 }
 
-fn run_client(name: Option<String>, args: Vec<String>) -> Result<()> {
-    let name = name.as_deref().unwrap_or("default");
-
-    let servers = server::list_running_servers();
-    let info = servers
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| Error::ServerNotFound(name.to_string()))?;
+fn run_client(
+    name: Option<String>,
+    host: String,
+    port: Option<u16>,
+    query: Option<String>,
+    args: Vec<String>,
+) -> Result<()> {
+    // Resolve port: explicit --port wins, otherwise look up from named server
+    let tcp_port = match port {
+        Some(p) => p,
+        None => {
+            let server_name = name.as_deref().unwrap_or("default");
+            let servers = server::list_running_servers();
+            let info = servers
+                .iter()
+                .find(|s| s.name == server_name)
+                .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+            info.tcp_port
+        }
+    };
 
     let version = version_manager::get_default_version()?;
     let binary = paths::binary_path(&version)?;
@@ -177,8 +195,15 @@ fn run_client(name: Option<String>, args: Vec<String>) -> Result<()> {
 
     let mut cmd = Command::new(&binary);
     cmd.arg("client")
+        .arg("--host")
+        .arg(&host)
         .arg("--port")
-        .arg(info.tcp_port.to_string());
+        .arg(tcp_port.to_string());
+
+    if let Some(q) = &query {
+        cmd.arg("--query").arg(q);
+    }
+
     cmd.args(&args);
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))

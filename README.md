@@ -92,7 +92,8 @@ clickhouse/
 # Connect to a running server with clickhouse-client
 clickhousectl local client                           # Connects to "default" server
 clickhousectl local client --name dev                # Connects to "dev" server
-clickhousectl local client -- --query "SHOW DATABASES"
+clickhousectl local client --query "SHOW DATABASES"  # Run a query
+clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
 ```
 
 ### Creating and managing ClickHouse servers
