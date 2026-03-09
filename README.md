@@ -36,24 +36,24 @@ cargo install --path .
 
 ```bash
 # Install a version
-clickhousectl install stable          # Latest stable release
-clickhousectl install lts             # Latest LTS release
-clickhousectl install 25.12           # Latest 25.12.x.x
-clickhousectl install 25.12.5.44      # Exact version
+clickhousectl local install stable          # Latest stable release
+clickhousectl local install lts             # Latest LTS release
+clickhousectl local install 25.12           # Latest 25.12.x.x
+clickhousectl local install 25.12.5.44      # Exact version
 
 # List versions
-clickhousectl list                    # Installed versions
-clickhousectl list --remote           # Available for download
+clickhousectl local list                    # Installed versions
+clickhousectl local list --remote           # Available for download
 
 # Manage default version
-clickhousectl use stable              # Latest stable (installs if needed)
-clickhousectl use lts                 # Latest LTS (installs if needed)
-clickhousectl use 25.12               # Latest 25.12.x.x (installs if needed)
-clickhousectl use 25.12.5.44          # Exact version
-clickhousectl which                   # Show current default
+clickhousectl local use stable              # Latest stable (installs if needed)
+clickhousectl local use lts                 # Latest LTS (installs if needed)
+clickhousectl local use 25.12               # Latest 25.12.x.x (installs if needed)
+clickhousectl local use 25.12.5.44          # Exact version
+clickhousectl local which                   # Show current default
 
 # Remove a version
-clickhousectl remove 25.12.5.44
+clickhousectl local remove 25.12.5.44
 ```
 
 #### ClickHouse binary storage
@@ -71,7 +71,7 @@ ClickHouse binaries are stored in a global repository, so they can be used by mu
 ### Initializing a project
 
 ```bash
-clickhousectl init
+clickhousectl local init
 ```
 
 `init` bootstraps your current working directory with a standard folder structure for your ClickHouse project files. It is optional; you are welcome to use your own folder structure if preferred. 
@@ -89,17 +89,9 @@ clickhouse/
 ### Running queries
 
 ```bash
-# Quick SQL query (uses clickhouse-local)
-clickhousectl run --sql "SELECT 1"
-clickhousectl run -s "SELECT * FROM system.functions LIMIT 5"
-
-# Run clickhouse-local with full options
-clickhousectl run local --query "SELECT 1"
-clickhousectl run local -- --help
-
 # Connect to a running server with clickhouse-client
-clickhousectl run client
-clickhousectl run client -- --host localhost --query "SHOW DATABASES"
+clickhousectl local client
+clickhousectl local client -- --host localhost --query "SHOW DATABASES"
 ```
 
 ### Creating and managing ClickHouse servers
@@ -108,21 +100,21 @@ Start and manage ClickHouse server instances. Each server gets its own isolated 
 
 ```bash
 # Start a server (runs in background by default)
-clickhousectl server start                          # Named "default"
-clickhousectl server start --name dev               # Named "dev"
-clickhousectl server start --foreground             # Run in foreground (-F / --fg)
-clickhousectl server start --http-port 8124 --tcp-port 9001  # Explicit ports
-clickhousectl server start -- --config-file=/path/to/config.xml
+clickhousectl local server start                          # Named "default"
+clickhousectl local server start --name dev               # Named "dev"
+clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
+clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
+clickhousectl local server start -- --config-file=/path/to/config.xml
 
 # List all servers (running and stopped)
-clickhousectl server list
+clickhousectl local server list
 
 # Stop servers
-clickhousectl server stop default                   # Stop by name
-clickhousectl server stop-all                       # Stop all running servers
+clickhousectl local server stop default                   # Stop by name
+clickhousectl local server stop-all                       # Stop all running servers
 
 # Remove a stopped server and its data
-clickhousectl server remove test
+clickhousectl local server remove test
 ```
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
@@ -144,7 +136,7 @@ All server data lives inside `.clickhouse/` in your project directory:
         └── data/           # ClickHouse data files for "dev" server
 ```
 
-Each named server has its own data directory, so servers are fully isolated from each other. Data persists between restarts — stop and start a server by name to pick up where you left off. Use `clickhousectl server remove <name>` to permanently delete a server's data.
+Each named server has its own data directory, so servers are fully isolated from each other. Data persists between restarts — stop and start a server by name to pick up where you left off. Use `clickhousectl local server remove <name>` to permanently delete a server's data.
 
 ## Cloud
 

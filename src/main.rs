@@ -8,7 +8,7 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    BackupCommands, CloudArgs, CloudCommands, Cli, Commands, OrgCommands, RunArgs, RunCommands,
+    BackupCommands, CloudArgs, CloudCommands, Cli, Commands, LocalCommands, OrgCommands,
     ServerCommands, ServiceCommands,
 };
 use cloud::CloudClient;
@@ -30,24 +30,30 @@ async fn main() {
 
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
-        Commands::Install { version } => install(&version).await,
-        Commands::List { remote } => {
+        Commands::Local { command } => run_local(command).await,
+        Commands::Cloud(args) => run_cloud(args).await,
+    }
+}
+
+async fn run_local(cmd: LocalCommands) -> Result<()> {
+    match cmd {
+        LocalCommands::Install { version } => install(&version).await,
+        LocalCommands::List { remote } => {
             if remote {
                 list_available().await
             } else {
                 list_installed()
             }
         }
-        Commands::Use { version } => use_version(&version).await,
-        Commands::Remove { version } => remove(&version),
-        Commands::Which => which(),
-        Commands::Init => {
+        LocalCommands::Use { version } => use_version(&version).await,
+        LocalCommands::Remove { version } => remove(&version),
+        LocalCommands::Which => which(),
+        LocalCommands::Init => {
             init::init()?;
             Ok(())
         }
-        Commands::Run(args) => run_clickhouse(args),
-        Commands::Server { command } => run_server_commands(command),
-        Commands::Cloud(args) => run_cloud(args).await,
+        LocalCommands::Client { args } => run_client(args),
+        LocalCommands::Server { command } => run_server_commands(command),
     }
 }
 
@@ -66,7 +72,7 @@ fn list_installed() -> Result<()> {
 
     if versions.is_empty() {
         println!("No versions installed");
-        println!("Run: clickhousectl install stable");
+        println!("Run: clickhousectl local install stable");
         return Ok(());
     }
 
@@ -153,7 +159,7 @@ fn which() -> Result<()> {
     Ok(())
 }
 
-fn run_clickhouse(args: RunArgs) -> Result<()> {
+fn run_client(args: Vec<String>) -> Result<()> {
     let version = version_manager::get_default_version()?;
     let binary = paths::binary_path(&version)?;
 
@@ -161,34 +167,10 @@ fn run_clickhouse(args: RunArgs) -> Result<()> {
         return Err(Error::VersionNotFound(version));
     }
 
-    // If --sql is provided, run clickhouse local with the query
-    if let Some(sql) = args.sql {
-        let mut cmd = Command::new(&binary);
-        cmd.arg("local").arg("--query").arg(&sql);
-        let err = cmd.exec();
-        return Err(Error::Exec(err.to_string()));
-    }
-
-    match args.command {
-        Some(RunCommands::Client { args }) => {
-            let mut cmd = Command::new(&binary);
-            cmd.arg("client").args(&args);
-            let err = cmd.exec();
-            Err(Error::Exec(err.to_string()))
-        }
-        Some(RunCommands::Local { args }) => {
-            let mut cmd = Command::new(&binary);
-            cmd.arg("local").args(&args);
-            let err = cmd.exec();
-            Err(Error::Exec(err.to_string()))
-        }
-        None => {
-            eprintln!("Usage: clickhousectl run --sql <QUERY>");
-            eprintln!("       clickhousectl run client [ARGS...]");
-            eprintln!("       clickhousectl run local [ARGS...]");
-            std::process::exit(1);
-        }
-    }
+    let mut cmd = Command::new(&binary);
+    cmd.arg("client").args(&args);
+    let err = cmd.exec();
+    Err(Error::Exec(err.to_string()))
 }
 
 fn start_server(
@@ -217,7 +199,7 @@ fn start_server(
     let running = server::running_server_count();
     if running > 0 {
         eprintln!(
-            "Note: {} server{} already running (use `chv server list` to see them)",
+            "Note: {} server{} already running (use `clickhousectl local server list` to see them)",
             running,
             if running == 1 { "" } else { "s" }
         );

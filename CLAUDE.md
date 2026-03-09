@@ -18,20 +18,18 @@ Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release
 
 ## Architecture
 
-`clickhousectl` is the official ClickHouse CLI — a version manager + cloud CLI. Three concerns, three module groups:
+`clickhousectl` is the official ClickHouse CLI — a version manager + cloud CLI. Two top-level subcommands: `local` and `cloud`.
 
-1. **Version management** (top-level commands: `install`, `list`, `use`, `remove`, `which`) — handled by `src/version_manager/`. Binaries live in `~/.clickhouse/versions/{version}/clickhouse`, default tracked in `~/.clickhouse/default`.
+1. **Local** (`local install|list|use|remove|which|init|run|server`) — version management in `src/version_manager/`, server management in `src/server.rs`, run/init in `main.rs`. Binaries live in `~/.clickhouse/versions/{version}/clickhouse`, default tracked in `~/.clickhouse/default`. Project data lives in `.clickhouse/`.
 
-2. **Local server** (`run server`, `run client`, `run local`, `run --sql`) — handled in `run_clickhouse()` in `main.rs`. Uses `std::os::unix::process::CommandExt::exec()` to replace the process with ClickHouse. Project data lives in `.clickhouse/{version}/` (version-scoped to prevent compatibility issues).
-
-3. **Cloud API** (`cloud org|service|backup`) — handled by `src/cloud/`. `CloudClient` wraps reqwest with Basic auth. Commands go through `cloud/commands.rs`, types in `cloud/types.rs`. All cloud commands support `--json` output.
+2. **Cloud** (`cloud org|service|backup|auth`) — handled by `src/cloud/`. `CloudClient` wraps reqwest with Basic auth. Commands go through `cloud/commands.rs`, types in `cloud/types.rs`. All cloud commands support `--json` output.
 
 ## Adding commands
 
-### New top-level or run subcommand
+### New local subcommand
 
-1. Define in `src/cli.rs` using clap derive macros
-2. Add match arm in `src/main.rs`
+1. Add variant to `LocalCommands` in `src/cli.rs` using clap derive macros
+2. Add match arm in `run_local()` in `src/main.rs`
 3. Implement handler (in `main.rs` for simple commands, or a dedicated module)
 
 ### New cloud subcommand
@@ -80,7 +78,7 @@ cargo add rpassword                  # add latest version
 ## Testing locally
 
 ```bash
-cargo run -- install stable
-cargo run -- run server              # starts server in .clickhouse/{version}/
-cargo run -- run client --query "SELECT 1"
+cargo run -- local install stable
+cargo run -- local server start      # starts server in .clickhouse/servers/default/
+cargo run -- local run client -- --query "SELECT 1"
 ```
