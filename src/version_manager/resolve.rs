@@ -68,8 +68,8 @@ pub async fn resolve_version(version_spec: &str) -> Result<VersionEntry> {
     // For all specifiers, fetch available versions to get accurate channel info
     let available = list_available_versions().await?;
 
-    // If it looks like an exact version (4 parts), find its channel from the list
-    if version_spec.split('.').count() == 4 {
+    // If it looks like an exact version (e.g. 25.12.5.44), find its channel from the list
+    if version_spec.matches('.').count() == 3 {
         let channel = available
             .iter()
             .find(|e| e.version == version_spec)
