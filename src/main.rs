@@ -8,8 +8,8 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    BackupCommands, CloudArgs, CloudCommands, Cli, Commands, OrgCommands, RunArgs, RunCommands,
-    ServerCommands, ServiceCommands,
+    BackupCommands, CloudArgs, CloudCommands, Cli, Commands, LocalCommands, OrgCommands, RunArgs,
+    RunCommands, ServerCommands, ServiceCommands,
 };
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -30,24 +30,30 @@ async fn main() {
 
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
-        Commands::Install { version } => install(&version).await,
-        Commands::List { remote } => {
+        Commands::Local { command } => run_local(command).await,
+        Commands::Cloud(args) => run_cloud(args).await,
+    }
+}
+
+async fn run_local(cmd: LocalCommands) -> Result<()> {
+    match cmd {
+        LocalCommands::Install { version } => install(&version).await,
+        LocalCommands::List { remote } => {
             if remote {
                 list_available().await
             } else {
                 list_installed()
             }
         }
-        Commands::Use { version } => use_version(&version).await,
-        Commands::Remove { version } => remove(&version),
-        Commands::Which => which(),
-        Commands::Init => {
+        LocalCommands::Use { version } => use_version(&version).await,
+        LocalCommands::Remove { version } => remove(&version),
+        LocalCommands::Which => which(),
+        LocalCommands::Init => {
             init::init()?;
             Ok(())
         }
-        Commands::Run(args) => run_clickhouse(args),
-        Commands::Server { command } => run_server_commands(command),
-        Commands::Cloud(args) => run_cloud(args).await,
+        LocalCommands::Run(args) => run_clickhouse(args),
+        LocalCommands::Server { command } => run_server_commands(command),
     }
 }
 
@@ -66,7 +72,7 @@ fn list_installed() -> Result<()> {
 
     if versions.is_empty() {
         println!("No versions installed");
-        println!("Run: clickhousectl install stable");
+        println!("Run: clickhousectl local install stable");
         return Ok(());
     }
 
@@ -183,9 +189,9 @@ fn run_clickhouse(args: RunArgs) -> Result<()> {
             Err(Error::Exec(err.to_string()))
         }
         None => {
-            eprintln!("Usage: clickhousectl run --sql <QUERY>");
-            eprintln!("       clickhousectl run client [ARGS...]");
-            eprintln!("       clickhousectl run local [ARGS...]");
+            eprintln!("Usage: clickhousectl local run --sql <QUERY>");
+            eprintln!("       clickhousectl local run client [ARGS...]");
+            eprintln!("       clickhousectl local run local [ARGS...]");
             std::process::exit(1);
         }
     }
@@ -217,7 +223,7 @@ fn start_server(
     let running = server::running_server_count();
     if running > 0 {
         eprintln!(
-            "Note: {} server{} already running (use `chv server list` to see them)",
+            "Note: {} server{} already running (use `clickhousectl local server list` to see them)",
             running,
             if running == 1 { "" } else { "s" }
         );

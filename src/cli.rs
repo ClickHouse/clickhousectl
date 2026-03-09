@@ -16,7 +16,7 @@ CONTEXT FOR AGENTS:
 
   `npx skills add clickhouse/agent-skills`
 
-  Typical local workflow: `clickhousectl install stable && clickhousectl use stable && clickhousectl server start`.
+  Typical local workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
 
   Use `clickhousectl <command> --help` to get more context for specific commands.")]
 pub struct Cli {
@@ -26,93 +26,15 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Install a ClickHouse version
+    /// Work with local ClickHouse installations
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
-  Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
-  Optionally set as default with `clickhousectl use <version>`.
-  `clickhousectl use <version>` will auto-install if the version is missing and set as default.
-  Related: `clickhousectl list --remote` to see downloadable versions.")]
-    Install {
-        /// Version to install (e.g., 25.1.2.3, 25.1, stable, lts)
-        version: String,
-    },
-
-    /// List installed versions
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Without flags: shows locally installed versions (exact version strings).
-  With --remote: shows versions available for download from GitHub releases.
-  Use the exact version strings from this output with `clickhousectl remove` or `clickhousectl use`.
-  Related: `clickhousectl install <version>` to install, `clickhousectl which` to see current default.")]
-    List {
-        /// List versions available for download
-        #[arg(long)]
-        remote: bool,
-    },
-
-    /// Set the default version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Sets the default ClickHouse version used by `clickhousectl run` commands.
-  Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
-  Auto-installs the version if not already present.
-  Related: `clickhousectl which` to verify, `clickhousectl server start` to start a server.")]
-    Use {
-        /// Version to use as default
-        version: String,
-    },
-
-    /// Remove an installed version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Removes an installed ClickHouse version from ~/.clickhouse/versions/.
-  Takes an exact version string as shown by `clickhousectl list` (e.g., \"25.12.5.44\").
-  Does NOT accept keywords like \"stable\" — use the exact version number.
-  Related: `clickhousectl list` to see installed versions.")]
-    Remove {
-        /// Version to remove
-        version: String,
-    },
-
-    /// Show the current default version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Shows the current default version and binary path. No arguments needed.
-  Use this to verify which version is active before running commands.
-  Related: `clickhousectl use <version>` to change the default.")]
-    Which,
-
-    /// Initialize a project-local ClickHouse configuration
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Creates a .clickhouse/ directory (runtime data, git-ignored) and a clickhouse/ project
-  scaffold with subdirs: tables/, materialized_views/, queries/, seed/ (each with .gitkeep).
-  The clickhouse/ directory is meant to be committed — organize your SQL files there.
-  Related: `clickhousectl server start` to start a server with project-local data.")]
-    Init,
-
-    /// Run ClickHouse client or local commands
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Run clickhouse-client or clickhouse-local. Requires a default version set via `clickhousectl use`.
-  Shortcut: `clickhousectl run --sql 'SELECT 1'` runs a query via clickhouse-local.
-  For servers, use `clickhousectl server start` instead.
-  Related: `clickhousectl use <version>` to set default, `clickhousectl server start` to start a server.")]
-    Run(RunArgs),
-
-    /// Manage local ClickHouse server instances
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Manage named ClickHouse server instances. Each server has its own data directory.
-  Subcommands: start, list, stop, stop-all, remove.
-  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Typical: `clickhousectl server start` (starts \"default\"), `clickhousectl server start --name test --port 1`.
-  Related: `clickhousectl run client` to connect to a running server.")]
-    Server {
+  Manage local ClickHouse installations: install versions, run queries, manage servers.
+  Typical workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
+  Use `clickhousectl local <command> --help` for details on each subcommand.")]
+    Local {
         #[command(subcommand)]
-        command: ServerCommands,
+        command: LocalCommands,
     },
 
     /// ClickHouse Cloud API commands
@@ -127,6 +49,98 @@ CONTEXT FOR AGENTS:
   Typical workflow: `cloud org list` → get org ID → `cloud service list` → manage services.
   Related: `clickhousectl cloud org list` to start.")]
     Cloud(CloudArgs),
+}
+
+#[derive(Subcommand)]
+pub enum LocalCommands {
+    /// Install a ClickHouse version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
+  Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
+  Optionally set as default with `clickhousectl local use <version>`.
+  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
+  Related: `clickhousectl local list --remote` to see downloadable versions.")]
+    Install {
+        /// Version to install (e.g., 25.1.2.3, 25.1, stable, lts)
+        version: String,
+    },
+
+    /// List installed versions
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Without flags: shows locally installed versions (exact version strings).
+  With --remote: shows versions available for download from GitHub releases.
+  Use the exact version strings from this output with `clickhousectl local remove` or `clickhousectl local use`.
+  Related: `clickhousectl local install <version>` to install, `clickhousectl local which` to see current default.")]
+    List {
+        /// List versions available for download
+        #[arg(long)]
+        remote: bool,
+    },
+
+    /// Set the default version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Sets the default ClickHouse version used by `clickhousectl local run` commands.
+  Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
+  Auto-installs the version if not already present.
+  Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
+    Use {
+        /// Version to use as default
+        version: String,
+    },
+
+    /// Remove an installed version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Removes an installed ClickHouse version from ~/.clickhouse/versions/.
+  Takes an exact version string as shown by `clickhousectl local list` (e.g., \"25.12.5.44\").
+  Does NOT accept keywords like \"stable\" — use the exact version number.
+  Related: `clickhousectl local list` to see installed versions.")]
+    Remove {
+        /// Version to remove
+        version: String,
+    },
+
+    /// Show the current default version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Shows the current default version and binary path. No arguments needed.
+  Use this to verify which version is active before running commands.
+  Related: `clickhousectl local use <version>` to change the default.")]
+    Which,
+
+    /// Initialize a project-local ClickHouse configuration
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Creates a .clickhouse/ directory (runtime data, git-ignored) and a clickhouse/ project
+  scaffold with subdirs: tables/, materialized_views/, queries/, seed/ (each with .gitkeep).
+  The clickhouse/ directory is meant to be committed — organize your SQL files there.
+  Related: `clickhousectl local server start` to start a server with project-local data.")]
+    Init,
+
+    /// Run ClickHouse client or local commands
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Run clickhouse-client or clickhouse-local. Requires a default version set via `clickhousectl local use`.
+  Shortcut: `clickhousectl local run --sql 'SELECT 1'` runs a query via clickhouse-local.
+  For servers, use `clickhousectl local server start` instead.
+  Related: `clickhousectl local use <version>` to set default, `clickhousectl local server start` to start a server.")]
+    Run(RunArgs),
+
+    /// Manage local ClickHouse server instances
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Manage named ClickHouse server instances. Each server has its own data directory.
+  Subcommands: start, list, stop, stop-all, remove.
+  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
+  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
+  Related: `clickhousectl local run client` to connect to a running server.")]
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
 }
 
 #[derive(Args)]
@@ -144,10 +158,10 @@ pub enum RunCommands {
     /// Run clickhouse-client
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Connects to a running clickhouse-server. Server must already be running via `clickhousectl server start`.
-  Pass clickhouse-client args after -- (e.g., `clickhousectl run client -- --query 'SELECT 1'`).
+  Connects to a running clickhouse-server. Server must already be running via `clickhousectl local server start`.
+  Pass clickhouse-client args after -- (e.g., `clickhousectl local run client -- --query 'SELECT 1'`).
   Common args: --host, --port, --query, --multiquery, --format.
-  Related: `clickhousectl server start` to start a server first.")]
+  Related: `clickhousectl local server start` to start a server first.")]
     Client {
         /// Arguments to pass to clickhouse-client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -158,10 +172,10 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Runs clickhouse-local for file/query processing without a server.
-  Pass clickhouse-local args after -- (e.g., `clickhousectl run local -- --query 'SELECT 1'`).
-  Shortcut: `clickhousectl run --sql 'SELECT 1'` does the same without the local subcommand.
+  Pass clickhouse-local args after -- (e.g., `clickhousectl local run local -- --query 'SELECT 1'`).
+  Shortcut: `clickhousectl local run --sql 'SELECT 1'` does the same without the local subcommand.
   Useful for processing files, running queries against local data, or testing SQL.
-  Related: `clickhousectl run --sql` for quick one-off queries.")]
+  Related: `clickhousectl local run --sql` for quick one-off queries.")]
     Local {
         /// Arguments to pass to clickhouse-local
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -445,7 +459,7 @@ CONTEXT FOR AGENTS:
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
   If --name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
-  Related: `clickhousectl server list` to see servers, `clickhousectl server stop <name>` to stop one.")]
+  Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop <name>` to stop one.")]
     Start {
         /// Server name (default: \"default\", or random if default is already running)
         #[arg(long)]
@@ -474,16 +488,16 @@ CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
   Automatically cleans up stale entries for processes that are no longer running.
   Shows name, status (running/stopped), PID, version, and ports.
-  Related: `clickhousectl server start` to start a server, `clickhousectl server stop <name>` to stop one.")]
+  Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop <name>` to stop one.")]
     List,
 
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a named ClickHouse server. Use the name from `clickhousectl server list`.
+  Stops a named ClickHouse server. Use the name from `clickhousectl local server list`.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
-  The server's data directory is preserved — restart with `clickhousectl server start --name <name>`.
-  Related: `clickhousectl server list` to see servers.")]
+  The server's data directory is preserved — restart with `clickhousectl local server start --name <name>`.
+  Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop
         name: String,
@@ -495,7 +509,7 @@ CONTEXT FOR AGENTS:
   Stops all running ClickHouse server instances.
   Sends SIGTERM first, then SIGKILL if processes don't exit.
   Data directories are preserved.
-  Related: `clickhousectl server list` to see servers.")]
+  Related: `clickhousectl local server list` to see servers.")]
     StopAll,
 
     /// Remove a stopped server and its data
@@ -503,7 +517,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  Related: `clickhousectl server stop <name>` to stop first, `clickhousectl server list` to see servers.")]
+  Related: `clickhousectl local server stop <name>` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove
         name: String,
