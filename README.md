@@ -28,9 +28,11 @@ The install script will download the correct version for your OS and install to 
 cargo install --path .
 ```
 
-## Usage
+## Local
 
-### Version Management
+### Installing and managing ClickHouse versions
+
+`clickhousectl` downloads ClickHouse binaries from [GitHub releases](https://github.com/ClickHouse/ClickHouse/releases).
 
 ```bash
 # Install a version
@@ -44,70 +46,72 @@ clickhousectl list                    # Installed versions
 clickhousectl list --remote           # Available for download
 
 # Manage default version
-clickhousectl use 25.12.5.44          # Exact version
 clickhousectl use stable              # Latest stable (installs if needed)
 clickhousectl use lts                 # Latest LTS (installs if needed)
 clickhousectl use 25.12               # Latest 25.12.x.x (installs if needed)
+clickhousectl use 25.12.5.44          # Exact version
 clickhousectl which                   # Show current default
 
 # Remove a version
 clickhousectl remove 25.12.5.44
 ```
 
-### Project Initialization
+#### ClickHouse binary storage
+
+ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhouse/`:
+
+```
+~/.clickhouse/
+├── versions/
+│   └── 25.12.5.44/
+│       └── clickhouse
+└── default              # tracks the active version
+```
+
+### Initializing a project
 
 ```bash
-# Initialize a project-local ClickHouse data directory and project scaffold
 clickhousectl init
 ```
 
-This creates two directories:
+`init` bootstraps your current working directory with a standard folder structure for your ClickHouse project files. It is optional; you are welcome to use your own folder structure if preferred. 
 
-1. **`.clickhouse/`** — Runtime data directory (git-ignored). Server data is stored per-server in `.clickhouse/servers/<name>/data/`. `clickhousectl server start` automatically creates this if needed.
-
-2. **`clickhouse/`** — Project scaffold for organizing your SQL files (meant to be committed):
+It creates the following structure:
 
 ```
 clickhouse/
-├── tables/         # Table definitions (CREATE TABLE ...)
-│   └── .gitkeep
-├── materialized_views/  # Materialized view definitions
-│   └── .gitkeep
-├── queries/        # Saved queries
-│   └── .gitkeep
-└── seed/           # Seed data / INSERT statements
-    └── .gitkeep
+├── tables/                 # Table definitions (CREATE TABLE ...)
+├── materialized_views/     # Materialized view definitions
+├── queries/                # Saved queries
+└── seed/                   # Seed data / INSERT statements
 ```
 
-The `clickhouse/` scaffold is only created by `clickhousectl init`, not by `clickhousectl server start`.
-
-### Running ClickHouse
+### Running queries
 
 ```bash
-# Quick SQL query (uses clickhouse local)
+# Quick SQL query (uses clickhouse-local)
 clickhousectl run --sql "SELECT 1"
 clickhousectl run -s "SELECT * FROM system.functions LIMIT 5"
 
-# Run clickhouse local with full options
+# Run clickhouse-local with full options
 clickhousectl run local --query "SELECT 1"
 clickhousectl run local -- --help
 
-# Run clickhouse client
+# Connect to a running server with clickhouse-client
 clickhousectl run client
 clickhousectl run client -- --host localhost --query "SHOW DATABASES"
 ```
 
-### Server Management
+### Creating and managing ClickHouse servers
 
-Start and manage named ClickHouse server instances. Each server gets its own data directory at `.clickhouse/servers/<name>/data/`.
+Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhouse/servers/<name>/data/`.
 
 ```bash
 # Start a server (runs in background by default)
 clickhousectl server start                          # Named "default"
 clickhousectl server start --name dev               # Named "dev"
-clickhousectl server start --name test               # Auto-assigns free ports if defaults are taken
-clickhousectl server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl server start --foreground             # Run in foreground (-F / --fg)
+clickhousectl server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl server start -- --config-file=/path/to/config.xml
 
 # List all servers (running and stopped)
@@ -123,13 +127,30 @@ clickhousectl server remove test
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
-**Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned. Use `--http-port` and `--tcp-port` to set explicit ports.
+**Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 
-### ClickHouse Cloud
+#### Project-local data directory
+
+All server data lives inside `.clickhouse/` in your project directory:
+
+```
+.clickhouse/
+├── .gitignore              # auto-created, ignores everything
+├── credentials.json        # cloud API credentials (if configured)
+└── servers/
+    ├── default/
+    │   └── data/           # ClickHouse data files for "default" server
+    └── dev/
+        └── data/           # ClickHouse data files for "dev" server
+```
+
+Each named server has its own data directory, so servers are fully isolated from each other. Data persists between restarts — stop and start a server by name to pick up where you left off. Use `clickhousectl server remove <name>` to permanently delete a server's data.
+
+## Cloud
 
 Manage ClickHouse Cloud services via the API.
 
-#### Authentication
+### Authentication
 
 The easiest way to authenticate is interactively:
 ```bash
@@ -151,14 +172,14 @@ clickhousectl cloud --api-key KEY --api-secret SECRET ...
 
 Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables.
 
-#### Organizations
+### Organizations
 
 ```bash
 clickhousectl cloud org list              # List organizations
 clickhousectl cloud org get <org-id>      # Get organization details
 ```
 
-#### Services
+### Services
 
 ```bash
 # List services
@@ -220,14 +241,14 @@ clickhousectl cloud service delete <service-id>
 | `--compliance-type` | Compliance: hipaa, pci |
 | `--profile` | Instance profile (enterprise) |
 
-#### Backups
+### Backups
 
 ```bash
 clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
 ```
 
-#### JSON Output
+### JSON Output
 
 Add `--json` for machine-readable output (useful for AI agents):
 
@@ -236,20 +257,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-## Storage
-
-Versions of the ClickHouse binary are are stored in `~/.clickhouse/`:
-
-```
-~/.clickhouse/
-├── versions/
-│   └── 25.12.5.44/
-│       └── clickhouse
-└── default
-```
-
 ## Requirements
 
 - macOS (aarch64, x86_64) or Linux (aarch64, x86_64)
-- Binaries are downloaded from [ClickHouse GitHub releases](https://github.com/ClickHouse/ClickHouse/releases)
 - Cloud commands require a [ClickHouse Cloud API key](https://clickhouse.com/docs/en/cloud/manage/api)
