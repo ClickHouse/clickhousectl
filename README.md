@@ -89,17 +89,9 @@ clickhouse/
 ### Running queries
 
 ```bash
-# Quick SQL query (uses clickhouse-local)
-clickhousectl local run --sql "SELECT 1"
-clickhousectl local run -s "SELECT * FROM system.functions LIMIT 5"
-
-# Run clickhouse-local with full options
-clickhousectl local run local --query "SELECT 1"
-clickhousectl local run local -- --help
-
 # Connect to a running server with clickhouse-client
-clickhousectl local run client
-clickhousectl local run client -- --host localhost --query "SHOW DATABASES"
+clickhousectl local client
+clickhousectl local client -- --host localhost --query "SHOW DATABASES"
 ```
 
 ### Creating and managing ClickHouse servers

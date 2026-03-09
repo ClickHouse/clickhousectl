@@ -82,7 +82,7 @@ CONTEXT FOR AGENTS:
     /// Set the default version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Sets the default ClickHouse version used by `clickhousectl local run` commands.
+  Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
   Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
   Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
@@ -120,46 +120,11 @@ CONTEXT FOR AGENTS:
   Related: `clickhousectl local server start` to start a server with project-local data.")]
     Init,
 
-    /// Run ClickHouse client or local commands
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Run clickhouse-client or clickhouse-local. Requires a default version set via `clickhousectl local use`.
-  Shortcut: `clickhousectl local run --sql 'SELECT 1'` runs a query via clickhouse-local.
-  For servers, use `clickhousectl local server start` instead.
-  Related: `clickhousectl local use <version>` to set default, `clickhousectl local server start` to start a server.")]
-    Run(RunArgs),
-
-    /// Manage local ClickHouse server instances
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Manage named ClickHouse server instances. Each server has its own data directory.
-  Subcommands: start, list, stop, stop-all, remove.
-  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
-  Related: `clickhousectl local run client` to connect to a running server.")]
-    Server {
-        #[command(subcommand)]
-        command: ServerCommands,
-    },
-}
-
-#[derive(Args)]
-pub struct RunArgs {
-    /// Execute SQL query using clickhouse local
-    #[arg(long, short)]
-    pub sql: Option<String>,
-
-    #[command(subcommand)]
-    pub command: Option<RunCommands>,
-}
-
-#[derive(Subcommand)]
-pub enum RunCommands {
-    /// Run clickhouse-client
+    /// Connect to a running ClickHouse server with clickhouse-client
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Connects to a running clickhouse-server. Server must already be running via `clickhousectl local server start`.
-  Pass clickhouse-client args after -- (e.g., `clickhousectl local run client -- --query 'SELECT 1'`).
+  Pass clickhouse-client args after -- (e.g., `clickhousectl local client -- --query 'SELECT 1'`).
   Common args: --host, --port, --query, --multiquery, --format.
   Related: `clickhousectl local server start` to start a server first.")]
     Client {
@@ -168,18 +133,17 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// Run clickhouse-local
+    /// Manage local ClickHouse server instances
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Runs clickhouse-local for file/query processing without a server.
-  Pass clickhouse-local args after -- (e.g., `clickhousectl local run local -- --query 'SELECT 1'`).
-  Shortcut: `clickhousectl local run --sql 'SELECT 1'` does the same without the local subcommand.
-  Useful for processing files, running queries against local data, or testing SQL.
-  Related: `clickhousectl local run --sql` for quick one-off queries.")]
-    Local {
-        /// Arguments to pass to clickhouse-local
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+  Manage named ClickHouse server instances. Each server has its own data directory.
+  Subcommands: start, list, stop, stop-all, remove.
+  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
+  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
+  Related: `clickhousectl local client` to connect to a running server.")]
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
     },
 }
 
