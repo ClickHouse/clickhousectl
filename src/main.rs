@@ -174,9 +174,10 @@ fn run_client(
     queries_file: Option<String>,
     args: Vec<String>,
 ) -> Result<()> {
-    // Resolve port: explicit --port wins, otherwise look up from named server
-    let tcp_port = match port {
-        Some(p) => p,
+    // Resolve port and version: explicit --port bypasses server lookup and uses
+    // the default version; otherwise look up the named server for both.
+    let (tcp_port, version) = match port {
+        Some(p) => (p, version_manager::get_default_version()?),
         None => {
             let server_name = name.as_deref().unwrap_or("default");
             let servers = server::list_running_servers();
@@ -184,11 +185,10 @@ fn run_client(
                 .iter()
                 .find(|s| s.name == server_name)
                 .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
-            info.tcp_port
+            (info.tcp_port, info.version.clone())
         }
     };
 
-    let version = version_manager::get_default_version()?;
     let binary = paths::binary_path(&version)?;
 
     if !binary.exists() {
