@@ -1,16 +1,26 @@
-# chv
+# clickhousectl
 
-A fast ClickHouse version manager and cloud CLI.
+`clickhousectl` is the CLI for ClickHouse: local and cloud.
+
+With `clickhousectl` you can:
+- Install and manage local ClickHouse versions
+- Launch and manage local ClickHouse servers
+- Execute queries against ClickHouse servers, or using clickhouse-local
+- Setup ClickHouse Cloud and create cloud-managed ClickHouse clusters
+- Manage ClickHouse Cloud resources
+- Push your local ClickHouse development to cloud
+
+`clickhousectl` helps humans and AI-agents to develop with ClickHouse.
 
 ## Installation
 
 ### Quick install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sdairs/chv/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/install.sh | sh
 ```
 
-This detects your OS and architecture, downloads the latest binary to `~/.local/bin/chv`, and makes it executable.
+The install script will download the correct version for your OS and install to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
 
 ### From source
 
@@ -24,36 +34,36 @@ cargo install --path .
 
 ```bash
 # Install a version
-chv install stable          # Latest stable release
-chv install lts             # Latest LTS release
-chv install 25.12           # Latest 25.12.x.x
-chv install 25.12.5.44      # Exact version
+clickhousectl install stable          # Latest stable release
+clickhousectl install lts             # Latest LTS release
+clickhousectl install 25.12           # Latest 25.12.x.x
+clickhousectl install 25.12.5.44      # Exact version
 
 # List versions
-chv list                    # Installed versions
-chv list --remote           # Available for download
+clickhousectl list                    # Installed versions
+clickhousectl list --remote           # Available for download
 
 # Manage default version
-chv use 25.12.5.44          # Exact version
-chv use stable              # Latest stable (installs if needed)
-chv use lts                 # Latest LTS (installs if needed)
-chv use 25.12               # Latest 25.12.x.x (installs if needed)
-chv which                   # Show current default
+clickhousectl use 25.12.5.44          # Exact version
+clickhousectl use stable              # Latest stable (installs if needed)
+clickhousectl use lts                 # Latest LTS (installs if needed)
+clickhousectl use 25.12               # Latest 25.12.x.x (installs if needed)
+clickhousectl which                   # Show current default
 
 # Remove a version
-chv remove 25.12.5.44
+clickhousectl remove 25.12.5.44
 ```
 
 ### Project Initialization
 
 ```bash
 # Initialize a project-local ClickHouse data directory and project scaffold
-chv init
+clickhousectl init
 ```
 
 This creates two directories:
 
-1. **`.clickhouse/`** — Runtime data directory (git-ignored). Data is scoped by version so switching versions with `chv use` won't cause compatibility issues. `chv run server` automatically creates this if needed.
+1. **`.clickhouse/`** — Runtime data directory (git-ignored). Data is scoped by version so switching versions with `clickhousectl use` won't cause compatibility issues. `clickhousectl run server` automatically creates this if needed.
 
 2. **`clickhouse/`** — Project scaffold for organizing your SQL files (meant to be committed):
 
@@ -69,26 +79,26 @@ clickhouse/
     └── .gitkeep
 ```
 
-The `clickhouse/` scaffold is only created by `chv init`, not by `chv run server`.
+The `clickhouse/` scaffold is only created by `clickhousectl init`, not by `clickhousectl run server`.
 
 ### Running ClickHouse
 
 ```bash
 # Quick SQL query (uses clickhouse local)
-chv run --sql "SELECT 1"
-chv run -s "SELECT * FROM system.functions LIMIT 5"
+clickhousectl run --sql "SELECT 1"
+clickhousectl run -s "SELECT * FROM system.functions LIMIT 5"
 
 # Run clickhouse local with full options
-chv run local --query "SELECT 1"
-chv run local -- --help
+clickhousectl run local --query "SELECT 1"
+clickhousectl run local -- --help
 
 # Run clickhouse client
-chv run client
-chv run client -- --host localhost --query "SHOW DATABASES"
+clickhousectl run client
+clickhousectl run client -- --host localhost --query "SHOW DATABASES"
 
 # Run clickhouse server (auto-initializes .clickhouse/ in CWD)
-chv run server
-chv run server -- --config-file=/path/to/config.xml
+clickhousectl run server
+clickhousectl run server -- --config-file=/path/to/config.xml
 ```
 
 ### ClickHouse Cloud
@@ -99,7 +109,7 @@ Manage ClickHouse Cloud services via the API.
 
 The easiest way to authenticate is interactively:
 ```bash
-chv cloud auth
+clickhousectl cloud auth
 ```
 
 This prompts for your API key and secret, and saves them to `.clickhouse/credentials.json` (project-local, git-ignored).
@@ -112,7 +122,7 @@ export CLICKHOUSE_CLOUD_API_SECRET=your-secret
 
 Or pass credentials directly via flags:
 ```bash
-chv cloud --api-key KEY --api-secret SECRET ...
+clickhousectl cloud --api-key KEY --api-secret SECRET ...
 ```
 
 Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables.
@@ -120,24 +130,24 @@ Credential resolution order: CLI flags > `.clickhouse/credentials.json` > enviro
 #### Organizations
 
 ```bash
-chv cloud org list              # List organizations
-chv cloud org get <org-id>      # Get organization details
+clickhousectl cloud org list              # List organizations
+clickhousectl cloud org get <org-id>      # Get organization details
 ```
 
 #### Services
 
 ```bash
 # List services
-chv cloud service list
+clickhousectl cloud service list
 
 # Get service details
-chv cloud service get <service-id>
+clickhousectl cloud service get <service-id>
 
 # Create a service (minimal)
-chv cloud service create --name my-service
+clickhousectl cloud service create --name my-service
 
 # Create with scaling options
-chv cloud service create --name my-service \
+clickhousectl cloud service create --name my-service \
   --provider aws \
   --region us-east-1 \
   --min-replica-memory-gb 8 \
@@ -145,22 +155,22 @@ chv cloud service create --name my-service \
   --num-replicas 2
 
 # Create with specific IP allowlist
-chv cloud service create --name my-service \
+clickhousectl cloud service create --name my-service \
   --ip-allow 10.0.0.0/8 \
   --ip-allow 192.168.1.0/24
 
 # Create from backup
-chv cloud service create --name restored-service --backup-id <backup-uuid>
+clickhousectl cloud service create --name restored-service --backup-id <backup-uuid>
 
 # Create with release channel
-chv cloud service create --name my-service --release-channel fast
+clickhousectl cloud service create --name my-service --release-channel fast
 
 # Start/stop a service
-chv cloud service start <service-id>
-chv cloud service stop <service-id>
+clickhousectl cloud service start <service-id>
+clickhousectl cloud service stop <service-id>
 
 # Delete a service
-chv cloud service delete <service-id>
+clickhousectl cloud service delete <service-id>
 ```
 
 **Service Create Options:**
@@ -189,8 +199,8 @@ chv cloud service delete <service-id>
 #### Backups
 
 ```bash
-chv cloud backup list <service-id>
-chv cloud backup get <service-id> <backup-id>
+clickhousectl cloud backup list <service-id>
+clickhousectl cloud backup get <service-id> <backup-id>
 ```
 
 #### JSON Output
@@ -198,13 +208,13 @@ chv cloud backup get <service-id> <backup-id>
 Add `--json` for machine-readable output (useful for AI agents):
 
 ```bash
-chv cloud --json service list
-chv cloud --json service get <service-id>
+clickhousectl cloud --json service list
+clickhousectl cloud --json service get <service-id>
 ```
 
 ## Storage
 
-Versions are stored in `~/.clickhouse/`:
+Versions of the ClickHouse binary are are stored in `~/.clickhouse/`:
 
 ```
 ~/.clickhouse/

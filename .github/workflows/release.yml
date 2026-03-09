@@ -50,13 +50,13 @@ jobs:
           fi
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/chv chv-${{ matrix.target }}
+        run: cp target/${{ matrix.target }}/release/clickhousectl clickhousectl-${{ matrix.target }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chv-${{ matrix.target }}
-          path: chv-${{ matrix.target }}
+          name: clickhousectl-${{ matrix.target }}
+          path: clickhousectl-${{ matrix.target }}
 
   release:
     name: Create Release
@@ -73,7 +73,7 @@ jobs:
       - name: Collect binaries
         run: |
           mkdir release
-          for dir in artifacts/chv-*/; do
+          for dir in artifacts/clickhousectl-*/; do
             cp "$dir"/* release/
           done
 

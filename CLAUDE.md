@@ -18,7 +18,7 @@ Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release
 
 ## Architecture
 
-`chv` is a ClickHouse version manager + cloud CLI. Three concerns, three module groups:
+`clickhousectl` is the official ClickHouse CLI — a version manager + cloud CLI. Three concerns, three module groups:
 
 1. **Version management** (top-level commands: `install`, `list`, `use`, `remove`, `which`) — handled by `src/version_manager/`. Binaries live in `~/.clickhouse/versions/{version}/clickhouse`, default tracked in `~/.clickhouse/default`.
 

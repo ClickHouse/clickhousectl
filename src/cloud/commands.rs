@@ -160,7 +160,7 @@ pub async fn service_create(
         // Default to allow all if not specified
         Some(vec![IpAccessEntry {
             source: "0.0.0.0/0".to_string(),
-            description: Some("Allow all (created by chv)".to_string()),
+            description: Some("Allow all (created by clickhousectl)".to_string()),
         }])
     } else {
         Some(

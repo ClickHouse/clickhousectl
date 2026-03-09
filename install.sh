@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-REPO="sdairs/chv"
+REPO="ClickHouse/clickhousectl"
 INSTALL_DIR="$HOME/.local/bin"
-BINARY_NAME="chv"
+BINARY_NAME="clickhousectl"
 
 # Detect OS
 OS="$(uname -s)"
@@ -41,7 +41,7 @@ fi
 echo "Latest release: $LATEST"
 
 # Download binary
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/chv-${TARGET}"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/clickhousectl-${TARGET}"
 echo "Downloading ${DOWNLOAD_URL}..."
 
 mkdir -p "$INSTALL_DIR"
@@ -49,6 +49,10 @@ curl -fsSL "$DOWNLOAD_URL" -o "${INSTALL_DIR}/${BINARY_NAME}"
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
 echo "Installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"
+
+# Create chctl alias (symlink)
+ln -sf "${INSTALL_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/chctl"
+echo "Created alias: chctl -> ${BINARY_NAME}"
 
 # Check if install dir is in PATH
 case ":$PATH:" in
