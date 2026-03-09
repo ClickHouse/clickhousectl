@@ -123,11 +123,14 @@ CONTEXT FOR AGENTS:
     /// Connect to a running ClickHouse server with clickhouse-client
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Connects to a running clickhouse-server. Server must already be running via `clickhousectl local server start`.
-  Use --name <name> to connect to a specific named server (default: \"default\").
-  --host, --port, --query, and --queries-file are promoted as first-class flags.
+  Two connection modes:
+  1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
+     locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
+  2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
+     ClickHouse server directly, bypassing local server lookup.
+  --query and --queries-file execute SQL inline or from a file.
   Additional clickhouse-client args can be passed after --.
-  Related: `clickhousectl local server start` to start a server first, `clickhousectl local server list` to see servers.")]
+  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers.")]
     Client {
         /// Server name to connect to (default: "default")
         #[arg(long, short)]
