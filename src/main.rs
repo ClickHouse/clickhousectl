@@ -56,7 +56,7 @@ async fn install(version_spec: &str) -> Result<()> {
     let entry = version_manager::resolve_version(version_spec).await?;
     println!("Resolved to version {} ({})", entry.version, entry.channel);
 
-    version_manager::install_version(&entry.version, &entry.channel).await?;
+    version_manager::install_version(&entry.version, entry.channel).await?;
     Ok(())
 }
 
@@ -118,7 +118,7 @@ async fn use_version(version_spec: &str) -> Result<()> {
     let installed = version_manager::list_installed_versions()?;
     if !installed.contains(version) {
         println!("Version {} not installed, installing...", version);
-        version_manager::install_version(version, &entry.channel).await?;
+        version_manager::install_version(version, entry.channel).await?;
     }
 
     version_manager::set_default_version(version)?;
@@ -227,6 +227,9 @@ fn start_server(
     if auto_assigned {
         eprintln!("Note: default ports in use, auto-assigned HTTP:{} TCP:{}", http_port, tcp_port);
     }
+    // Check if the user passed their own config in the trailing args (after --).
+    // If not, we inject our managed data directory and --path flag.
+    // If they did, we leave ClickHouse to use their config as-is.
     let has_config = args
         .iter()
         .any(|a| a.starts_with("--config-file") || a.starts_with("-C"));

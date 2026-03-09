@@ -63,11 +63,12 @@ impl CloudClient {
         })
     }
 
-    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = format!("{}{}", BASE_URL, path);
-        let response = self
-            .client
-            .get(&url)
+    /// Send a request and parse the JSON response body.
+    async fn request<T: serde::de::DeserializeOwned>(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<T> {
+        let response = req
             .header("Authorization", &self.auth_header)
             .send()
             .await
@@ -81,7 +82,6 @@ impl CloudClient {
         })?;
 
         if !status.is_success() {
-            // Try to parse error response
             if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body) {
                 if let Some(err) = api_resp.error {
                     return Err(CloudError {
@@ -104,103 +104,9 @@ impl CloudClient {
         })
     }
 
-    async fn post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        let url = format!("{}{}", BASE_URL, path);
-        let response = self
-            .client
-            .post(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| CloudError {
-                message: format!("Request failed: {}", e),
-            })?;
-
-        let status = response.status();
-        let body_text = response.text().await.map_err(|e| CloudError {
-            message: format!("Failed to read response: {}", e),
-        })?;
-
-        if !status.is_success() {
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body_text) {
-                if let Some(err) = api_resp.error {
-                    return Err(CloudError {
-                        message: err.message,
-                    });
-                }
-            }
-            return Err(CloudError {
-                message: format!("API error ({}): {}", status, body_text),
-            });
-        }
-
-        let api_response: ApiResponse<T> =
-            serde_json::from_str(&body_text).map_err(|e| CloudError {
-                message: format!("Failed to parse response: {} - Body: {}", e, body_text),
-            })?;
-
-        api_response.result.ok_or_else(|| CloudError {
-            message: "Empty response from API".into(),
-        })
-    }
-
-    async fn patch<T: serde::de::DeserializeOwned, B: serde::Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        let url = format!("{}{}", BASE_URL, path);
-        let response = self
-            .client
-            .patch(&url)
-            .header("Authorization", &self.auth_header)
-            .header("Content-Type", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| CloudError {
-                message: format!("Request failed: {}", e),
-            })?;
-
-        let status = response.status();
-        let body_text = response.text().await.map_err(|e| CloudError {
-            message: format!("Failed to read response: {}", e),
-        })?;
-
-        if !status.is_success() {
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body_text) {
-                if let Some(err) = api_resp.error {
-                    return Err(CloudError {
-                        message: err.message,
-                    });
-                }
-            }
-            return Err(CloudError {
-                message: format!("API error ({}): {}", status, body_text),
-            });
-        }
-
-        let api_response: ApiResponse<T> =
-            serde_json::from_str(&body_text).map_err(|e| CloudError {
-                message: format!("Failed to parse response: {} - Body: {}", e, body_text),
-            })?;
-
-        api_response.result.ok_or_else(|| CloudError {
-            message: "Empty response from API".into(),
-        })
-    }
-
-    async fn delete(&self, path: &str) -> Result<()> {
-        let url = format!("{}{}", BASE_URL, path);
-        let response = self
-            .client
-            .delete(&url)
+    /// Send a request expecting no response body.
+    async fn request_no_body(&self, req: reqwest::RequestBuilder) -> Result<()> {
+        let response = req
             .header("Authorization", &self.auth_header)
             .send()
             .await
@@ -224,6 +130,37 @@ impl CloudClient {
         }
 
         Ok(())
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", BASE_URL, path)
+    }
+
+    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        self.request(self.client.get(&self.url(path))).await
+    }
+
+    async fn post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        self.request(self.client.post(&self.url(path)).json(body))
+            .await
+    }
+
+    async fn patch<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        self.request(self.client.patch(&self.url(path)).json(body))
+            .await
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        self.request_no_body(self.client.delete(&self.url(path)))
+            .await
     }
 
     // Organization endpoints

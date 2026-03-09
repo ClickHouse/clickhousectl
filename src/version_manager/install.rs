@@ -1,11 +1,12 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use crate::version_manager::download::download_version;
+use crate::version_manager::list::Channel;
 use crate::version_manager::resolve::is_tarball_download;
 use std::os::unix::fs::PermissionsExt;
 
 /// Installs a ClickHouse version
-pub async fn install_version(version: &str, channel: &str) -> Result<()> {
+pub async fn install_version(version: &str, channel: Channel) -> Result<()> {
     paths::ensure_dirs()?;
 
     let version_dir = paths::version_dir(version)?;
