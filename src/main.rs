@@ -3,12 +3,13 @@ mod cloud;
 mod error;
 mod init;
 mod paths;
+mod server;
 mod version_manager;
 
 use clap::Parser;
 use cli::{
     BackupCommands, CloudArgs, CloudCommands, Cli, Commands, OrgCommands, RunArgs, RunCommands,
-    ServiceCommands,
+    ServerCommands, ServiceCommands,
 };
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -45,6 +46,7 @@ async fn run(cmd: Commands) -> Result<()> {
             Ok(())
         }
         Commands::Run(args) => run_clickhouse(args),
+        Commands::Server { command } => run_server_commands(command),
         Commands::Cloud(args) => run_cloud(args).await,
     }
 }
@@ -167,23 +169,7 @@ fn run_clickhouse(args: RunArgs) -> Result<()> {
         return Err(Error::Exec(err.to_string()));
     }
 
-    // Otherwise, handle subcommands
     match args.command {
-        Some(RunCommands::Server { args }) => {
-            let has_config = args
-                .iter()
-                .any(|a| a.starts_with("--config-file") || a.starts_with("-C"));
-            let mut cmd = Command::new(&binary);
-            cmd.arg("server");
-            cmd.args(&args);
-            if !has_config {
-                init::ensure_initialized(&version)?;
-                cmd.current_dir(init::version_data_dir(&version));
-                cmd.args(init::server_flags());
-            }
-            let err = cmd.exec();
-            Err(Error::Exec(err.to_string()))
-        }
         Some(RunCommands::Client { args }) => {
             let mut cmd = Command::new(&binary);
             cmd.arg("client").args(&args);
@@ -198,10 +184,202 @@ fn run_clickhouse(args: RunArgs) -> Result<()> {
         }
         None => {
             eprintln!("Usage: clickhousectl run --sql <QUERY>");
-            eprintln!("       clickhousectl run server [ARGS...]");
             eprintln!("       clickhousectl run client [ARGS...]");
             eprintln!("       clickhousectl run local [ARGS...]");
             std::process::exit(1);
+        }
+    }
+}
+
+fn start_server(
+    name: Option<String>,
+    http_port: Option<u16>,
+    tcp_port: Option<u16>,
+    foreground: bool,
+    args: Vec<String>,
+) -> Result<()> {
+    let version = version_manager::get_default_version()?;
+    let binary = paths::binary_path(&version)?;
+
+    if !binary.exists() {
+        return Err(Error::VersionNotFound(version));
+    }
+
+    // Resolve server name
+    let server_name = server::resolve_name(name.as_deref());
+
+    // If an explicit name was given and it's already running, error
+    if name.is_some() && server::is_server_running(&server_name) {
+        return Err(Error::ServerAlreadyRunning(server_name));
+    }
+
+    // Show running server count
+    let running = server::running_server_count();
+    if running > 0 {
+        eprintln!(
+            "Note: {} server{} already running (use `chv server list` to see them)",
+            running,
+            if running == 1 { "" } else { "s" }
+        );
+    }
+
+    let (http_port, tcp_port, auto_assigned) = server::resolve_ports(http_port, tcp_port)?;
+    if auto_assigned {
+        eprintln!("Note: default ports in use, auto-assigned HTTP:{} TCP:{}", http_port, tcp_port);
+    }
+    let has_config = args
+        .iter()
+        .any(|a| a.starts_with("--config-file") || a.starts_with("-C"));
+
+    let mut cmd = Command::new(&binary);
+    cmd.arg("server");
+
+    if !has_config {
+        server::ensure_server_data_dir(&server_name)?;
+        cmd.current_dir(server::server_data_dir(&server_name));
+        cmd.args(init::server_flags());
+    }
+
+    cmd.args(server::port_flags(http_port, tcp_port));
+    cmd.args(&args);
+
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    if !foreground {
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        let child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
+        let pid = child.id();
+
+        let info = server::ServerInfo {
+            name: server_name.clone(),
+            pid,
+            version: version.clone(),
+            http_port,
+            tcp_port,
+            started_at: server::now_timestamp(),
+            cwd,
+        };
+        server::save_server_info(&info)?;
+
+        // Check that it actually started
+        server::check_spawn_health(pid, &server_name)?;
+
+        println!(
+            "Server '{}' started in background (PID: {})",
+            server_name, pid
+        );
+        println!("  HTTP port: {}", http_port);
+        println!("  TCP port:  {}", tcp_port);
+        println!("  Version:   {}", version);
+        Ok(())
+    } else {
+        let mut child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
+        let pid = child.id();
+
+        let info = server::ServerInfo {
+            name: server_name.clone(),
+            pid,
+            version: version.clone(),
+            http_port,
+            tcp_port,
+            started_at: server::now_timestamp(),
+            cwd,
+        };
+        server::save_server_info(&info)?;
+
+        eprintln!(
+            "Server '{}' running (PID: {}, HTTP: {}, TCP: {})",
+            server_name, pid, http_port, tcp_port
+        );
+
+        let status = child.wait().map_err(|e| Error::Exec(e.to_string()))?;
+        server::remove_server_info(&server_name);
+
+        if !status.success()
+            && let Some(code) = status.code()
+        {
+            std::process::exit(code);
+        }
+        Ok(())
+    }
+}
+
+fn run_server_commands(command: ServerCommands) -> Result<()> {
+    match command {
+        ServerCommands::Start {
+            name,
+            http_port,
+            tcp_port,
+            foreground,
+            args,
+        } => start_server(name, http_port, tcp_port, foreground, args),
+        ServerCommands::List => {
+            let entries = server::list_all_servers();
+            if entries.is_empty() {
+                println!("No servers");
+                return Ok(());
+            }
+            println!("Servers:");
+            let mut running_count = 0;
+            for e in &entries {
+                if e.running {
+                    running_count += 1;
+                    let info = e.info.as_ref().unwrap();
+                    println!(
+                        "  {} [running] PID {} v{} HTTP:{} TCP:{}",
+                        e.name, info.pid, info.version, info.http_port, info.tcp_port
+                    );
+                } else {
+                    println!("  {} [stopped]", e.name);
+                }
+            }
+            println!(
+                "\n{} server{}, {} running",
+                entries.len(),
+                if entries.len() == 1 { "" } else { "s" },
+                running_count
+            );
+            Ok(())
+        }
+        ServerCommands::Stop { name } => {
+            println!("Stopping server '{}'...", name);
+            server::kill_server(&name)?;
+            println!("Server '{}' stopped", name);
+            Ok(())
+        }
+        ServerCommands::StopAll => {
+            let servers = server::list_running_servers();
+            if servers.is_empty() {
+                println!("No running servers");
+                return Ok(());
+            }
+            for s in &servers {
+                print!("Stopping '{}'...", s.name);
+                match server::kill_server(&s.name) {
+                    Ok(()) => println!(" stopped"),
+                    Err(e) => println!(" error: {}", e),
+                }
+            }
+            println!("Done");
+            Ok(())
+        }
+        ServerCommands::Remove { name } => {
+            if server::is_server_running(&name) {
+                return Err(Error::ServerAlreadyRunning(name));
+            }
+            let data_dir = server::server_data_dir(&name);
+            if !data_dir.exists() {
+                return Err(Error::ServerNotFound(name));
+            }
+            // Remove the whole server directory (parent of data/)
+            let server_dir = data_dir.parent().unwrap();
+            std::fs::remove_dir_all(server_dir)?;
+            server::remove_server_info(&name);
+            println!("Server '{}' removed", name);
+            Ok(())
         }
     }
 }

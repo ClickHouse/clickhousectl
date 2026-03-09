@@ -43,6 +43,15 @@ pub enum Error {
     #[error("Extraction failed: {0}")]
     Extract(String),
 
+    #[error("Server '{0}' is not running")]
+    ServerNotRunning(String),
+
+    #[error("Server '{0}' not found")]
+    ServerNotFound(String),
+
+    #[error("Server '{0}' is already running")]
+    ServerAlreadyRunning(String),
+
     #[error("Cloud API error: {0}")]
     Cloud(String),
 }

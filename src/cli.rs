@@ -16,7 +16,7 @@ CONTEXT FOR AGENTS:
 
   `npx skills add clickhouse/agent-skills`
 
-  Typical local workflow: `clickhousectl install stable && clickhousectl use stable && clickhousectl run server`.
+  Typical local workflow: `clickhousectl install stable && clickhousectl use stable && clickhousectl server start`.
 
   Use `clickhousectl <command> --help` to get more context for specific commands.")]
 pub struct Cli {
@@ -58,7 +58,7 @@ CONTEXT FOR AGENTS:
   Sets the default ClickHouse version used by `clickhousectl run` commands.
   Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
-  Related: `clickhousectl which` to verify, `clickhousectl run server` to start.")]
+  Related: `clickhousectl which` to verify, `clickhousectl server start` to start a server.")]
     Use {
         /// Version to use as default
         version: String,
@@ -90,18 +90,30 @@ CONTEXT FOR AGENTS:
   Creates a .clickhouse/ directory (runtime data, git-ignored) and a clickhouse/ project
   scaffold with subdirs: tables/, materialized_views/, queries/, seed/ (each with .gitkeep).
   The clickhouse/ directory is meant to be committed — organize your SQL files there.
-  Related: `clickhousectl run server` to start a server with project-local data.")]
+  Related: `clickhousectl server start` to start a server with project-local data.")]
     Init,
 
-    /// Run ClickHouse commands
+    /// Run ClickHouse client or local commands
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Used for interacting with ClickHouse (local and Cloud).
-  Gateway to server/client/local subcommands. Requires a default version set via `clickhousectl use`.
-  Shortcut: `clickhousectl run --sql 'SELECT 1'` runs a query via clickhouse-local without subcommands to test things that don't need persistence.
-  Pass extra ClickHouse args after -- (e.g., `clickhousectl run server -- --http_port=9000`).
-  Related: `clickhousectl use <version>` to set default, `clickhousectl which` to check current version.")]
+  Run clickhouse-client or clickhouse-local. Requires a default version set via `clickhousectl use`.
+  Shortcut: `clickhousectl run --sql 'SELECT 1'` runs a query via clickhouse-local.
+  For servers, use `clickhousectl server start` instead.
+  Related: `clickhousectl use <version>` to set default, `clickhousectl server start` to start a server.")]
     Run(RunArgs),
+
+    /// Manage local ClickHouse server instances
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Manage named ClickHouse server instances. Each server has its own data directory.
+  Subcommands: start, list, stop, stop-all, remove.
+  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
+  Typical: `clickhousectl server start` (starts \"default\"), `clickhousectl server start --name test --port 1`.
+  Related: `clickhousectl run client` to connect to a running server.")]
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
 
     /// ClickHouse Cloud API commands
     #[command(after_help = "\
@@ -129,27 +141,13 @@ pub struct RunArgs {
 
 #[derive(Subcommand)]
 pub enum RunCommands {
-    /// Run clickhouse-server
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Starts clickhouse-server with project-local data in .clickhouse/{version}/.
-  Auto-initializes the data directory on first run. Replaces the current process (exec).
-  Pass extra clickhouse-server args after -- (e.g., `clickhousectl run server -- --http_port=9000`).
-  Data persists in .clickhouse/{version}/ between runs.
-  Related: `clickhousectl run client` to connect, `clickhousectl use <version>` to change version.")]
-    Server {
-        /// Arguments to pass to clickhouse-server
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
     /// Run clickhouse-client
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Connects to a running clickhouse-server. Server must already be running via `clickhousectl run server`.
+  Connects to a running clickhouse-server. Server must already be running via `clickhousectl server start`.
   Pass clickhouse-client args after -- (e.g., `clickhousectl run client -- --query 'SELECT 1'`).
   Common args: --host, --port, --query, --multiquery, --format.
-  Related: `clickhousectl run server` to start a server first.")]
+  Related: `clickhousectl server start` to start a server first.")]
     Client {
         /// Arguments to pass to clickhouse-client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -429,6 +427,86 @@ CONTEXT FOR AGENTS:
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServerCommands {
+    /// Start a ClickHouse server instance
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Starts a named clickhouse-server instance with its own data directory.
+  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
+  Without --name, the first server is called \"default\"; if \"default\" is already running,
+  a random name is generated (e.g., \"bold-crane\").
+  Use --name to give a server a stable identity (e.g., --name dev, --name test).
+  Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
+  Use --http-port and --tcp-port to set explicit ports.
+  Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
+  If --name is given and that server is already running, the command will error.
+  Shows count of already-running servers before starting.
+  Related: `clickhousectl server list` to see servers, `clickhousectl server stop <name>` to stop one.")]
+    Start {
+        /// Server name (default: \"default\", or random if default is already running)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// HTTP port (default: 8123, auto-assigns a free port if in use)
+        #[arg(long)]
+        http_port: Option<u16>,
+
+        /// TCP port (default: 9000, auto-assigns a free port if in use)
+        #[arg(long)]
+        tcp_port: Option<u16>,
+
+        /// Run server in foreground (default: background)
+        #[arg(long, alias = "fg", short = 'F')]
+        foreground: bool,
+
+        /// Arguments to pass to clickhouse-server
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// List all server instances (running and stopped)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Shows all named ClickHouse server instances and their status.
+  Automatically cleans up stale entries for processes that are no longer running.
+  Shows name, status (running/stopped), PID, version, and ports.
+  Related: `clickhousectl server start` to start a server, `clickhousectl server stop <name>` to stop one.")]
+    List,
+
+    /// Stop a running server by name
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Stops a named ClickHouse server. Use the name from `clickhousectl server list`.
+  Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
+  The server's data directory is preserved — restart with `clickhousectl server start --name <name>`.
+  Related: `clickhousectl server list` to see servers.")]
+    Stop {
+        /// Name of the server to stop
+        name: String,
+    },
+
+    /// Stop all running server instances
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Stops all running ClickHouse server instances.
+  Sends SIGTERM first, then SIGKILL if processes don't exit.
+  Data directories are preserved.
+  Related: `clickhousectl server list` to see servers.")]
+    StopAll,
+
+    /// Remove a stopped server and its data
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Permanently deletes a server's data directory. The server must be stopped first.
+  This is irreversible — all data for this server instance will be lost.
+  Related: `clickhousectl server stop <name>` to stop first, `clickhousectl server list` to see servers.")]
+    Remove {
+        /// Name of the server to remove
+        name: String,
     },
 }
 

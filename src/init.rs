@@ -57,22 +57,7 @@ fn create_project_scaffold() -> Result<()> {
     Ok(())
 }
 
-pub fn version_data_dir(version: &str) -> PathBuf {
-    local_dir().join(version)
-}
-
-pub fn ensure_initialized(version: &str) -> Result<()> {
-    let dir = local_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(".gitignore"), "*\n")?;
-    }
-    let vdir = version_data_dir(version);
-    std::fs::create_dir_all(&vdir)?;
-    Ok(())
-}
-
-/// Returns CLI flags that point ClickHouse data into `.clickhouse/`.
+/// Returns CLI flags that point ClickHouse data into the current directory.
 pub fn server_flags() -> Vec<String> {
     vec!["--".into(), "--path=./".into()]
 }
