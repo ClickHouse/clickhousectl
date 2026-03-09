@@ -5,7 +5,7 @@
 With `clickhousectl` you can:
 - Install and manage local ClickHouse versions
 - Launch and manage local ClickHouse servers
-- Execute queries against ClickHouse servers, or using clickhouse-local
+- Execute queries against ClickHouse servers
 - Setup ClickHouse Cloud and create cloud-managed ClickHouse clusters
 - Manage ClickHouse Cloud resources
 - Push your local ClickHouse development to cloud
