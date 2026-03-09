@@ -80,5 +80,5 @@ cargo add rpassword                  # add latest version
 ```bash
 cargo run -- local install stable
 cargo run -- local server start      # starts server in .clickhouse/servers/default/
-cargo run -- local client -- --query "SELECT 1"
+cargo run -- local client --query "SELECT 1"
 ```
