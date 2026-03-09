@@ -227,6 +227,9 @@ fn start_server(
     if auto_assigned {
         eprintln!("Note: default ports in use, auto-assigned HTTP:{} TCP:{}", http_port, tcp_port);
     }
+    // Check if the user passed their own config in the trailing args (after --).
+    // If not, we inject our managed data directory and --path flag.
+    // If they did, we leave ClickHouse to use their config as-is.
     let has_config = args
         .iter()
         .any(|a| a.starts_with("--config-file") || a.starts_with("-C"));
