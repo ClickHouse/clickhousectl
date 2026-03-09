@@ -180,11 +180,15 @@ fn run_client(
         Some(p) => (p, version_manager::get_default_version()?),
         None => {
             let server_name = name.as_deref().unwrap_or("default");
-            let servers = server::list_running_servers();
-            let info = servers
+            let entries = server::list_all_servers();
+            let entry = entries
                 .iter()
-                .find(|s| s.name == server_name)
+                .find(|e| e.name == server_name)
                 .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+            let info = entry
+                .info
+                .as_ref()
+                .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
             (info.tcp_port, info.version.clone())
         }
     };
