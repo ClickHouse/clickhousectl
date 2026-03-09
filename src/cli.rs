@@ -125,7 +125,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Connects to a running clickhouse-server. Server must already be running via `clickhousectl local server start`.
   Use --name <name> to connect to a specific named server (default: \"default\").
-  --host, --port, and --query are promoted as first-class flags.
+  --host, --port, --query, and --queries-file are promoted as first-class flags.
   Additional clickhouse-client args can be passed after --.
   Related: `clickhousectl local server start` to start a server first, `clickhousectl local server list` to see servers.")]
     Client {
@@ -144,6 +144,10 @@ CONTEXT FOR AGENTS:
         /// Execute a SQL query
         #[arg(long, short)]
         query: Option<String>,
+
+        /// Execute queries from a SQL file
+        #[arg(long)]
+        queries_file: Option<String>,
 
         /// Additional arguments to pass to clickhouse-client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

@@ -57,8 +57,9 @@ async fn run_local(cmd: LocalCommands) -> Result<()> {
             host,
             port,
             query,
+            queries_file,
             args,
-        } => run_client(name, host, port, query, args),
+        } => run_client(name, host, port, query, queries_file, args),
         LocalCommands::Server { command } => run_server_commands(command),
     }
 }
@@ -170,6 +171,7 @@ fn run_client(
     host: String,
     port: Option<u16>,
     query: Option<String>,
+    queries_file: Option<String>,
     args: Vec<String>,
 ) -> Result<()> {
     // Resolve port: explicit --port wins, otherwise look up from named server
@@ -202,6 +204,10 @@ fn run_client(
 
     if let Some(q) = &query {
         cmd.arg("--query").arg(q);
+    }
+
+    if let Some(f) = &queries_file {
+        cmd.arg("--queries-file").arg(f);
     }
 
     cmd.args(&args);
