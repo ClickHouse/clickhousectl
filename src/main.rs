@@ -56,7 +56,7 @@ async fn install(version_spec: &str) -> Result<()> {
     let entry = version_manager::resolve_version(version_spec).await?;
     println!("Resolved to version {} ({})", entry.version, entry.channel);
 
-    version_manager::install_version(&entry.version, &entry.channel).await?;
+    version_manager::install_version(&entry.version, entry.channel).await?;
     Ok(())
 }
 
@@ -118,7 +118,7 @@ async fn use_version(version_spec: &str) -> Result<()> {
     let installed = version_manager::list_installed_versions()?;
     if !installed.contains(version) {
         println!("Version {} not installed, installing...", version);
-        version_manager::install_version(version, &entry.channel).await?;
+        version_manager::install_version(version, entry.channel).await?;
     }
 
     version_manager::set_default_version(version)?;

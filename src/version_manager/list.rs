@@ -1,6 +1,33 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use serde::Deserialize;
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Stable,
+    Lts,
+}
+
+impl fmt::Display for Channel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Channel::Stable => write!(f, "stable"),
+            Channel::Lts => write!(f, "lts"),
+        }
+    }
+}
+
+impl Channel {
+    /// Parse a channel from a release tag suffix (e.g. "stable", "lts")
+    pub fn from_tag_suffix(s: &str) -> Option<Self> {
+        match s {
+            "stable" => Some(Channel::Stable),
+            "lts" => Some(Channel::Lts),
+            _ => None,
+        }
+    }
+}
 
 /// Lists all installed ClickHouse versions
 pub fn list_installed_versions() -> Result<Vec<String>> {
@@ -34,11 +61,11 @@ struct GitHubRelease {
     tag_name: String,
 }
 
-/// A version with its release channel (stable or lts)
+/// A version with its release channel
 #[derive(Clone)]
 pub struct VersionEntry {
     pub version: String,
-    pub channel: String,
+    pub channel: Channel,
 }
 
 /// Fetches available versions from GitHub releases
@@ -58,10 +85,12 @@ pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
         // Tag format: v25.12.5.44-stable or v24.8.10.6-lts
         let tag = &release.tag_name;
         if let Some(version) = tag.strip_prefix('v') {
-            if let Some(v) = version.strip_suffix("-stable") {
-                versions.push(VersionEntry { version: v.to_string(), channel: "stable".to_string() });
-            } else if let Some(v) = version.strip_suffix("-lts") {
-                versions.push(VersionEntry { version: v.to_string(), channel: "lts".to_string() });
+            if let Some(dash_pos) = version.rfind('-') {
+                let v = &version[..dash_pos];
+                let suffix = &version[dash_pos + 1..];
+                if let Some(channel) = Channel::from_tag_suffix(suffix) {
+                    versions.push(VersionEntry { version: v.to_string(), channel });
+                }
             }
         }
     }

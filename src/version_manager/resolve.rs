@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::version_manager::list::{list_available_versions, VersionEntry};
+use crate::version_manager::list::{list_available_versions, Channel, VersionEntry};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +73,8 @@ pub async fn resolve_version(version_spec: &str) -> Result<VersionEntry> {
         let channel = available
             .iter()
             .find(|e| e.version == version_spec)
-            .map(|e| e.channel.clone())
-            .unwrap_or_else(|| "stable".to_string());
+            .map(|e| e.channel)
+            .unwrap_or(Channel::Stable);
         return Ok(VersionEntry {
             version: version_spec.to_string(),
             channel,
@@ -85,14 +85,14 @@ pub async fn resolve_version(version_spec: &str) -> Result<VersionEntry> {
         "stable" => {
             available
                 .iter()
-                .find(|e| e.channel == "stable")
+                .find(|e| e.channel == Channel::Stable)
                 .cloned()
                 .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string()))
         }
         "lts" => {
             available
                 .iter()
-                .find(|e| e.channel == "lts")
+                .find(|e| e.channel == Channel::Lts)
                 .cloned()
                 .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string()))
         }
@@ -117,7 +117,7 @@ pub fn is_tarball_download() -> Result<bool> {
 /// Builds the download URL for a specific version from GitHub releases
 /// macOS: .../clickhouse-macos-{arch}
 /// Linux: .../clickhouse-common-static-{version}-{arch}.tgz
-pub fn build_download_url(version: &str, channel: &str) -> Result<String> {
+pub fn build_download_url(version: &str, channel: Channel) -> Result<String> {
     let (os, arch) = detect_platform()?;
     let base = format!(
         "https://github.com/ClickHouse/ClickHouse/releases/download/v{}-{}",
@@ -153,21 +153,21 @@ mod tests {
 
     #[test]
     fn test_build_download_url_stable() {
-        let url = build_download_url("25.12.5.44", "stable").unwrap();
+        let url = build_download_url("25.12.5.44", Channel::Stable).unwrap();
         assert!(url.starts_with("https://github.com/ClickHouse/ClickHouse/releases/download/"));
         assert!(url.contains("v25.12.5.44-stable"));
     }
 
     #[test]
     fn test_build_download_url_lts() {
-        let url = build_download_url("25.8.16.34", "lts").unwrap();
+        let url = build_download_url("25.8.16.34", Channel::Lts).unwrap();
         assert!(url.starts_with("https://github.com/ClickHouse/ClickHouse/releases/download/"));
         assert!(url.contains("v25.8.16.34-lts"));
     }
 
     #[test]
     fn test_build_download_url_platform_specific() {
-        let url = build_download_url("25.12.5.44", "stable").unwrap();
+        let url = build_download_url("25.12.5.44", Channel::Stable).unwrap();
         let (os, arch) = detect_platform().unwrap();
         match os {
             Os::MacOS => {
