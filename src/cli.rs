@@ -123,12 +123,36 @@ CONTEXT FOR AGENTS:
     /// Connect to a running ClickHouse server with clickhouse-client
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Connects to a running clickhouse-server. Server must already be running via `clickhousectl local server start`.
-  Pass clickhouse-client args after -- (e.g., `clickhousectl local client -- --query 'SELECT 1'`).
-  Common args: --host, --port, --query, --multiquery, --format.
-  Related: `clickhousectl local server start` to start a server first.")]
+  Two connection modes:
+  1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
+     locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
+  2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
+     ClickHouse server directly, bypassing local server lookup.
+  --query and --queries-file execute SQL inline or from a file.
+  Additional clickhouse-client args can be passed after --.
+  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers.")]
     Client {
-        /// Arguments to pass to clickhouse-client
+        /// Server name to connect to (default: "default")
+        #[arg(long, short)]
+        name: Option<String>,
+
+        /// Host to connect to (bypasses local server lookup)
+        #[arg(long)]
+        host: Option<String>,
+
+        /// TCP port to connect to (bypasses local server lookup if set)
+        #[arg(long, short)]
+        port: Option<u16>,
+
+        /// Execute a SQL query
+        #[arg(long, short)]
+        query: Option<String>,
+
+        /// Execute queries from a SQL file
+        #[arg(long)]
+        queries_file: Option<String>,
+
+        /// Additional arguments to pass to clickhouse-client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },

@@ -52,7 +52,14 @@ async fn run_local(cmd: LocalCommands) -> Result<()> {
             init::init()?;
             Ok(())
         }
-        LocalCommands::Client { args } => run_client(args),
+        LocalCommands::Client {
+            name,
+            host,
+            port,
+            query,
+            queries_file,
+            args,
+        } => run_client(name, host, port, query, queries_file, args),
         LocalCommands::Server { command } => run_server_commands(command),
     }
 }
@@ -159,8 +166,35 @@ fn which() -> Result<()> {
     Ok(())
 }
 
-fn run_client(args: Vec<String>) -> Result<()> {
-    let version = version_manager::get_default_version()?;
+fn run_client(
+    name: Option<String>,
+    host: Option<String>,
+    port: Option<u16>,
+    query: Option<String>,
+    queries_file: Option<String>,
+    args: Vec<String>,
+) -> Result<()> {
+    // If --host or --port is set, connect directly (bypass local server lookup).
+    // Otherwise, look up the named server for port and version.
+    let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
+        let h = host.unwrap_or_else(|| "localhost".to_string());
+        let p = port.unwrap_or(9000);
+        let v = version_manager::get_default_version()?;
+        (h, p, v)
+    } else {
+        let server_name = name.as_deref().unwrap_or("default");
+        let entries = server::list_all_servers();
+        let entry = entries
+            .iter()
+            .find(|e| e.name == server_name)
+            .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+        let info = entry
+            .info
+            .as_ref()
+            .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
+        ("localhost".to_string(), info.tcp_port, info.version.clone())
+    };
+
     let binary = paths::binary_path(&version)?;
 
     if !binary.exists() {
@@ -168,7 +202,21 @@ fn run_client(args: Vec<String>) -> Result<()> {
     }
 
     let mut cmd = Command::new(&binary);
-    cmd.arg("client").args(&args);
+    cmd.arg("client")
+        .arg("--host")
+        .arg(&resolved_host)
+        .arg("--port")
+        .arg(tcp_port.to_string());
+
+    if let Some(q) = &query {
+        cmd.arg("--query").arg(q);
+    }
+
+    if let Some(f) = &queries_file {
+        cmd.arg("--queries-file").arg(f);
+    }
+
+    cmd.args(&args);
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
 }

@@ -5,7 +5,7 @@
 With `clickhousectl` you can:
 - Install and manage local ClickHouse versions
 - Launch and manage local ClickHouse servers
-- Execute queries against ClickHouse servers, or using clickhouse-local
+- Execute queries against ClickHouse servers
 - Setup ClickHouse Cloud and create cloud-managed ClickHouse clusters
 - Manage ClickHouse Cloud resources
 - Push your local ClickHouse development to cloud
@@ -90,8 +90,11 @@ clickhouse/
 
 ```bash
 # Connect to a running server with clickhouse-client
-clickhousectl local client
-clickhousectl local client -- --host localhost --query "SHOW DATABASES"
+clickhousectl local client                           # Connects to "default" server
+clickhousectl local client --name dev                # Connects to "dev" server
+clickhousectl local client --query "SHOW DATABASES"  # Run a query
+clickhousectl local client --queries-file schema.sql # Run queries from a file
+clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
 ```
 
 ### Creating and managing ClickHouse servers
