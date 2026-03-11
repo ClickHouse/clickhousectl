@@ -2,6 +2,7 @@ use crate::cloud::types::*;
 use base64::Engine;
 use reqwest::Client;
 use std::env;
+use urlencoding;
 
 const BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
@@ -27,6 +28,7 @@ pub type Result<T> = std::result::Result<T, CloudError>;
 pub struct CloudClient {
     client: Client,
     auth_header: String,
+    base_url: String,
 }
 
 impl CloudClient {
@@ -64,7 +66,27 @@ impl CloudClient {
         Ok(Self {
             client,
             auth_header,
+            base_url: BASE_URL.to_string(),
         })
+    }
+
+    /// Create a test client with a custom base URL (bypasses credential loading).
+    #[cfg(test)]
+    pub fn test_client(base_url: &str) -> Self {
+        let credentials = "test_key:test_secret";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
+        let auth_header = format!("Basic {}", encoded);
+
+        let client = Client::builder()
+            .user_agent(user_agent())
+            .build()
+            .expect("Failed to create HTTP client");
+
+        Self {
+            client,
+            auth_header,
+            base_url: base_url.to_string(),
+        }
     }
 
     /// Send a request and parse the JSON response body.
@@ -137,7 +159,7 @@ impl CloudClient {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", BASE_URL, path)
+        format!("{}{}", self.base_url, path)
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -180,6 +202,24 @@ impl CloudClient {
     pub async fn list_services(&self, org_id: &str) -> Result<Vec<Service>> {
         self.get(&format!("/organizations/{}/services", org_id))
             .await
+    }
+
+    pub async fn list_services_filtered(
+        &self,
+        org_id: &str,
+        filters: &[String],
+    ) -> Result<Vec<Service>> {
+        let base = format!("/organizations/{}/services", org_id);
+        let query: Vec<String> = filters
+            .iter()
+            .map(|f| format!("filter={}", urlencoding::encode(f)))
+            .collect();
+        let url_with_query = if query.is_empty() {
+            self.url(&base)
+        } else {
+            format!("{}?{}", self.url(&base), query.join("&"))
+        };
+        self.request(self.client.get(url_with_query)).await
     }
 
     pub async fn get_service(&self, org_id: &str, service_id: &str) -> Result<Service> {
@@ -242,6 +282,411 @@ impl CloudClient {
             "/organizations/{}/services/{}/backups/{}",
             org_id, service_id, backup_id
         ))
+        .await
+    }
+
+    // Update service
+    pub async fn update_service(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &UpdateServiceRequest,
+    ) -> Result<Service> {
+        self.patch(
+            &format!("/organizations/{}/services/{}", org_id, service_id),
+            request,
+        )
+        .await
+    }
+
+    // Replica scaling
+    pub async fn update_replica_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ReplicaScalingRequest,
+    ) -> Result<Service> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/replicaScaling",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    // Reset password
+    pub async fn reset_password(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<PasswordResetResponse> {
+        // The API expects an empty JSON object
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/password",
+                org_id, service_id
+            ),
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    // Query endpoint
+    pub async fn get_query_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<ServiceQueryEndpoint> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/serviceQueryEndpoint",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn create_query_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &CreateQueryEndpointRequest,
+    ) -> Result<ServiceQueryEndpoint> {
+        self.post(
+            &format!(
+                "/organizations/{}/services/{}/serviceQueryEndpoint",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_query_endpoint(&self, org_id: &str, service_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/services/{}/serviceQueryEndpoint",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    // Private endpoint
+    pub async fn create_private_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &CreatePrivateEndpointRequest,
+    ) -> Result<PrivateEndpoint> {
+        self.post(
+            &format!(
+                "/organizations/{}/services/{}/privateEndpoint",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    // Phase 3 - Org endpoints
+    pub async fn update_organization(
+        &self,
+        org_id: &str,
+        request: &UpdateOrgRequest,
+    ) -> Result<Organization> {
+        self.patch(&format!("/organizations/{}", org_id), request)
+            .await
+    }
+
+    pub async fn get_org_prometheus(&self, org_id: &str) -> Result<OrgPrometheus> {
+        self.get(&format!("/organizations/{}/prometheus", org_id))
+            .await
+    }
+
+    pub async fn get_org_usage(&self, org_id: &str) -> Result<UsageCost> {
+        self.get(&format!("/organizations/{}/usageCost", org_id))
+            .await
+    }
+
+    // Phase 4 - Member endpoints
+    pub async fn list_members(&self, org_id: &str) -> Result<Vec<Member>> {
+        self.get(&format!("/organizations/{}/members", org_id))
+            .await
+    }
+
+    pub async fn get_member(&self, org_id: &str, user_id: &str) -> Result<Member> {
+        self.get(&format!(
+            "/organizations/{}/members/{}",
+            org_id, user_id
+        ))
+        .await
+    }
+
+    pub async fn update_member(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        request: &UpdateMemberRequest,
+    ) -> Result<Member> {
+        self.patch(
+            &format!("/organizations/{}/members/{}", org_id, user_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/members/{}",
+            org_id, user_id
+        ))
+        .await
+    }
+
+    // Phase 4 - Invitation endpoints
+    pub async fn list_invitations(&self, org_id: &str) -> Result<Vec<Invitation>> {
+        self.get(&format!("/organizations/{}/invitations", org_id))
+            .await
+    }
+
+    pub async fn create_invitation(
+        &self,
+        org_id: &str,
+        request: &CreateInvitationRequest,
+    ) -> Result<Invitation> {
+        self.post(
+            &format!("/organizations/{}/invitations", org_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn get_invitation(
+        &self,
+        org_id: &str,
+        invitation_id: &str,
+    ) -> Result<Invitation> {
+        self.get(&format!(
+            "/organizations/{}/invitations/{}",
+            org_id, invitation_id
+        ))
+        .await
+    }
+
+    pub async fn delete_invitation(&self, org_id: &str, invitation_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/invitations/{}",
+            org_id, invitation_id
+        ))
+        .await
+    }
+
+    // Phase 5 - API Key endpoints
+    pub async fn list_api_keys(&self, org_id: &str) -> Result<Vec<ApiKey>> {
+        self.get(&format!("/organizations/{}/keys", org_id)).await
+    }
+
+    pub async fn create_api_key(
+        &self,
+        org_id: &str,
+        request: &CreateApiKeyRequest,
+    ) -> Result<CreateApiKeyResponse> {
+        self.post(&format!("/organizations/{}/keys", org_id), request)
+            .await
+    }
+
+    pub async fn get_api_key(&self, org_id: &str, key_id: &str) -> Result<ApiKey> {
+        self.get(&format!(
+            "/organizations/{}/keys/{}",
+            org_id, key_id
+        ))
+        .await
+    }
+
+    pub async fn update_api_key(
+        &self,
+        org_id: &str,
+        key_id: &str,
+        request: &UpdateApiKeyRequest,
+    ) -> Result<ApiKey> {
+        self.patch(
+            &format!("/organizations/{}/keys/{}", org_id, key_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/keys/{}",
+            org_id, key_id
+        ))
+        .await
+    }
+
+    // Phase 6 - Activity endpoints
+    pub async fn list_activities(&self, org_id: &str) -> Result<Vec<Activity>> {
+        self.get(&format!("/organizations/{}/activities", org_id))
+            .await
+    }
+
+    pub async fn get_activity(&self, org_id: &str, activity_id: &str) -> Result<Activity> {
+        self.get(&format!(
+            "/organizations/{}/activities/{}",
+            org_id, activity_id
+        ))
+        .await
+    }
+
+    // Phase 6 - BYOC endpoints
+    pub async fn create_byoc(
+        &self,
+        org_id: &str,
+        request: &CreateByocRequest,
+    ) -> Result<ByocInfrastructure> {
+        self.post(
+            &format!("/organizations/{}/byocInfrastructure", org_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn update_byoc(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+        request: &UpdateByocRequest,
+    ) -> Result<ByocInfrastructure> {
+        self.patch(
+            &format!(
+                "/organizations/{}/byocInfrastructure/{}",
+                org_id, byoc_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_byoc(&self, org_id: &str, byoc_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/byocInfrastructure/{}",
+            org_id, byoc_id
+        ))
+        .await
+    }
+
+    // Phase 6 - Backup Bucket endpoints
+    pub async fn list_backup_buckets(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<BackupBucket>> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/backupBucket",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn create_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &CreateBackupBucketRequest,
+    ) -> Result<BackupBucket> {
+        self.post(
+            &format!(
+                "/organizations/{}/services/{}/backupBucket",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    pub async fn update_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        bucket_id: &str,
+        request: &UpdateBackupBucketRequest,
+    ) -> Result<BackupBucket> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/backupBucket/{}",
+                org_id, service_id, bucket_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        bucket_id: &str,
+    ) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/services/{}/backupBucket/{}",
+            org_id, service_id, bucket_id
+        ))
+        .await
+    }
+
+    // Phase 6 - Backup Config endpoints
+    pub async fn get_backup_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<BackupConfiguration> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/backupConfiguration",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn update_backup_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &UpdateBackupConfigRequest,
+    ) -> Result<BackupConfiguration> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/backupConfiguration",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    // Phase 6 - Service Prometheus endpoints
+    pub async fn get_service_prometheus(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<PrometheusConfig> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/prometheus",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn setup_service_prometheus(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<PrometheusConfig> {
+        self.post(
+            &format!(
+                "/organizations/{}/services/{}/prometheus",
+                org_id, service_id
+            ),
+            &SetupPrometheusRequest {},
+        )
         .await
     }
 

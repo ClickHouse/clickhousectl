@@ -236,6 +236,36 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: BackupCommands,
     },
+
+    /// Manage organization members
+    Member {
+        #[command(subcommand)]
+        command: MemberCommands,
+    },
+
+    /// Manage organization invitations
+    Invitation {
+        #[command(subcommand)]
+        command: InvitationCommands,
+    },
+
+    /// Manage API keys
+    Key {
+        #[command(subcommand)]
+        command: KeyCommands,
+    },
+
+    /// View activity log
+    Activity {
+        #[command(subcommand)]
+        command: ActivityCommands,
+    },
+
+    /// Manage BYOC infrastructure
+    Byoc {
+        #[command(subcommand)]
+        command: ByocCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -260,6 +290,28 @@ CONTEXT FOR AGENTS:
         /// Organization ID
         org_id: String,
     },
+
+    /// Update organization settings
+    Update {
+        /// Organization ID
+        org_id: String,
+
+        /// New organization name
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Get organization Prometheus configuration
+    Prometheus {
+        /// Organization ID
+        org_id: String,
+    },
+
+    /// Get organization usage/billing information
+    Usage {
+        /// Organization ID
+        org_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -275,6 +327,10 @@ CONTEXT FOR AGENTS:
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
+
+        /// Filter by resource tags (e.g., "tag:env=production")
+        #[arg(long)]
+        filter: Vec<String>,
     },
 
     /// Get service details
@@ -430,6 +486,168 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         org_id: Option<String>,
     },
+
+    /// Update service settings
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// New service name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// IP addresses to allow (CIDR format). Replaces the entire access list
+        #[arg(long = "ip-allow")]
+        ip_allow: Vec<String>,
+
+        /// Allow scale to zero when idle
+        #[arg(long)]
+        idle_scaling: Option<bool>,
+
+        /// Minimum idle timeout in minutes (>= 5)
+        #[arg(long)]
+        idle_timeout_minutes: Option<u32>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update replica scaling settings
+    Scale {
+        /// Service ID
+        service_id: String,
+
+        /// Minimum memory per replica in GB (8-356, multiple of 4)
+        #[arg(long)]
+        min_replica_memory_gb: Option<u32>,
+
+        /// Maximum memory per replica in GB (8-356, multiple of 4)
+        #[arg(long)]
+        max_replica_memory_gb: Option<u32>,
+
+        /// Number of replicas (1-20)
+        #[arg(long)]
+        num_replicas: Option<u32>,
+
+        /// Allow scale to zero when idle
+        #[arg(long)]
+        idle_scaling: Option<bool>,
+
+        /// Minimum idle timeout in minutes (>= 5)
+        #[arg(long)]
+        idle_timeout_minutes: Option<u32>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Reset a service's default user password
+    ResetPassword {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Manage query endpoints
+    #[command(name = "query-endpoint")]
+    QueryEndpoint {
+        #[command(subcommand)]
+        command: QueryEndpointCommands,
+    },
+
+    /// Create a private endpoint for a service
+    #[command(name = "private-endpoint")]
+    PrivateEndpoint {
+        #[command(subcommand)]
+        command: PrivateEndpointCommands,
+    },
+
+    /// Manage backup buckets for a service
+    #[command(name = "backup-bucket")]
+    BackupBucket {
+        #[command(subcommand)]
+        command: BackupBucketCommands,
+    },
+
+    /// Manage backup configuration for a service
+    #[command(name = "backup-config")]
+    BackupConfig {
+        #[command(subcommand)]
+        command: BackupConfigCommands,
+    },
+
+    /// Manage Prometheus metrics for a service
+    Prometheus {
+        #[command(subcommand)]
+        command: ServicePrometheusCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum QueryEndpointCommands {
+    /// Get query endpoint configuration
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create/enable query endpoint
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Roles to grant access (can be specified multiple times)
+        #[arg(long)]
+        role: Vec<String>,
+
+        /// Enable OpenAPI endpoint
+        #[arg(long)]
+        open_api: Option<bool>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete/disable query endpoint
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PrivateEndpointCommands {
+    /// Create a private endpoint connection
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Private endpoint ID (VPC endpoint ID)
+        #[arg(long)]
+        endpoint_id: String,
+
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -543,6 +761,355 @@ CONTEXT FOR AGENTS:
 
         /// Backup ID
         backup_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MemberCommands {
+    /// List organization members
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get member details
+    Get {
+        /// User ID
+        user_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update member role
+    Update {
+        /// User ID
+        user_id: String,
+
+        /// Role to assign
+        #[arg(long)]
+        role: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Remove a member from the organization
+    Remove {
+        /// User ID
+        user_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum InvitationCommands {
+    /// List pending invitations
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create an invitation
+    Create {
+        /// Email address to invite
+        #[arg(long)]
+        email: String,
+
+        /// Role to assign
+        #[arg(long)]
+        role: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get invitation details
+    Get {
+        /// Invitation ID
+        invitation_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete an invitation
+    Delete {
+        /// Invitation ID
+        invitation_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KeyCommands {
+    /// List API keys
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create an API key
+    Create {
+        /// Key name
+        #[arg(long)]
+        name: String,
+
+        /// Roles to assign (can be specified multiple times)
+        #[arg(long)]
+        role: Vec<String>,
+
+        /// Expiration date (ISO 8601 format)
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get API key details
+    Get {
+        /// API key ID
+        key_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update an API key
+    Update {
+        /// API key ID
+        key_id: String,
+
+        /// New key name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Roles to assign (can be specified multiple times)
+        #[arg(long)]
+        role: Vec<String>,
+
+        /// Key state (e.g., enabled, disabled)
+        #[arg(long)]
+        state: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete an API key
+    Delete {
+        /// API key ID
+        key_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ActivityCommands {
+    /// List activity log entries
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get activity log entry details
+    Get {
+        /// Activity ID
+        activity_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ByocCommands {
+    /// Create a BYOC configuration
+    Create {
+        /// Cloud provider (e.g., aws, gcp, azure)
+        #[arg(long)]
+        provider: String,
+
+        /// Region (e.g., us-east-1)
+        #[arg(long)]
+        region: String,
+
+        /// VPC ID
+        #[arg(long)]
+        vpc_id: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update a BYOC configuration
+    Update {
+        /// BYOC ID
+        byoc_id: String,
+
+        /// State
+        #[arg(long)]
+        state: Option<String>,
+
+        /// VPC ID
+        #[arg(long)]
+        vpc_id: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a BYOC configuration
+    Delete {
+        /// BYOC ID
+        byoc_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupBucketCommands {
+    /// List backup buckets for a service
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a backup bucket
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Bucket name
+        #[arg(long)]
+        bucket_name: String,
+
+        /// Bucket path
+        #[arg(long)]
+        bucket_path: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update a backup bucket
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// Bucket ID
+        bucket_id: String,
+
+        /// Bucket path
+        #[arg(long)]
+        bucket_path: Option<String>,
+
+        /// Bucket state
+        #[arg(long)]
+        state: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a backup bucket
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Bucket ID
+        bucket_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupConfigCommands {
+    /// Get backup configuration for a service
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update backup configuration for a service
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// Backup schedule (cron expression)
+        #[arg(long)]
+        schedule: Option<String>,
+
+        /// Retention period in days
+        #[arg(long)]
+        retention_period_days: Option<u32>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServicePrometheusCommands {
+    /// Get Prometheus metrics configuration for a service
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Setup Prometheus metrics for a service
+    Setup {
+        /// Service ID
+        service_id: String,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
