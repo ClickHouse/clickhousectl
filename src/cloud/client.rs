@@ -28,7 +28,6 @@ pub type Result<T> = std::result::Result<T, CloudError>;
 pub struct CloudClient {
     client: Client,
     auth_header: String,
-    base_url: String,
 }
 
 impl CloudClient {
@@ -66,28 +65,9 @@ impl CloudClient {
         Ok(Self {
             client,
             auth_header,
-            base_url: BASE_URL.to_string(),
         })
     }
 
-    /// Create a test client with a custom base URL (bypasses credential loading).
-    #[cfg(test)]
-    pub fn test_client(base_url: &str) -> Self {
-        let credentials = "test_key:test_secret";
-        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
-        let auth_header = format!("Basic {}", encoded);
-
-        let client = Client::builder()
-            .user_agent(user_agent())
-            .build()
-            .expect("Failed to create HTTP client");
-
-        Self {
-            client,
-            auth_header,
-            base_url: base_url.to_string(),
-        }
-    }
 
     /// Send a request and parse the JSON response body.
     async fn request<T: serde::de::DeserializeOwned>(
@@ -159,7 +139,7 @@ impl CloudClient {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
+        format!("{}{}", BASE_URL, path)
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -209,17 +189,17 @@ impl CloudClient {
         org_id: &str,
         filters: &[String],
     ) -> Result<Vec<Service>> {
-        let base = format!("/organizations/{}/services", org_id);
+        let path = format!("/organizations/{}/services", org_id);
         let query: Vec<String> = filters
             .iter()
             .map(|f| format!("filter={}", urlencoding::encode(f)))
             .collect();
-        let url_with_query = if query.is_empty() {
-            self.url(&base)
+        let full_url = if query.is_empty() {
+            self.url(&path)
         } else {
-            format!("{}?{}", self.url(&base), query.join("&"))
+            format!("{}?{}", self.url(&path), query.join("&"))
         };
-        self.request(self.client.get(url_with_query)).await
+        self.request(self.client.get(full_url)).await
     }
 
     pub async fn get_service(&self, org_id: &str, service_id: &str) -> Result<Service> {
