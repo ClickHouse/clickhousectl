@@ -51,7 +51,7 @@ impl CloudClient {
         let auth_header = format!("Basic {}", encoded);
 
         let client = Client::builder()
-            .user_agent("clickhousectl-cli")
+            .user_agent(format!("clickhousectl/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| CloudError {
                 message: format!("Failed to create HTTP client: {}", e),
