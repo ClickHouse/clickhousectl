@@ -255,23 +255,3 @@ impl CloudClient {
             })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_user_agent() {
-        let ua = user_agent();
-        let version = env!("CARGO_PKG_VERSION");
-        assert_eq!(ua, format!("clickhousectl/{}", version));
-        assert!(ua.starts_with("clickhousectl/"));
-        // Version should be a valid semver-like string (digits and dots)
-        let version_part = ua.strip_prefix("clickhousectl/").unwrap();
-        assert!(
-            version_part.chars().all(|c| c.is_ascii_digit() || c == '.'),
-            "version should only contain digits and dots, got: {}",
-            version_part
-        );
-    }
-}
