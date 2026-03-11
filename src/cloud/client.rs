@@ -5,6 +5,10 @@ use std::env;
 
 const BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
+pub fn user_agent() -> String {
+    format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Debug)]
 pub struct CloudError {
     pub message: String,
@@ -51,7 +55,7 @@ impl CloudClient {
         let auth_header = format!("Basic {}", encoded);
 
         let client = Client::builder()
-            .user_agent("clickhousectl-cli")
+            .user_agent(user_agent())
             .build()
             .map_err(|e| CloudError {
                 message: format!("Failed to create HTTP client: {}", e),
