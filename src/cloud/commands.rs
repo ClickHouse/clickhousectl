@@ -95,10 +95,7 @@ pub async fn service_get(
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match org_id {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client.get_service(&org_id, service_id).await?;
 
@@ -163,10 +160,7 @@ pub async fn service_create(
     opts: CreateServiceOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match opts.org_id.as_deref() {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     // Build IP access list
     let ip_access_list = if opts.ip_allow.is_empty() {
@@ -250,10 +244,7 @@ pub async fn service_delete(
     service_id: &str,
     org_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match org_id {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, org_id).await?;
 
     client.delete_service(&org_id, service_id).await?;
     println!("Service {} deletion initiated", service_id);
@@ -266,10 +257,7 @@ pub async fn service_start(
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match org_id {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
         .change_service_state(&org_id, service_id, "start")
@@ -289,10 +277,7 @@ pub async fn service_stop(
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match org_id {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
         .change_service_state(&org_id, service_id, "stop")
@@ -312,10 +297,7 @@ pub async fn backup_list(
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match org_id {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, org_id).await?;
 
     let backups = client.list_backups(&org_id, service_id).await?;
 
@@ -346,10 +328,7 @@ pub async fn backup_get(
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = match org_id {
-        Some(id) => id.to_string(),
-        None => client.get_default_org_id().await?,
-    };
+    let org_id = resolve_org_id(client, org_id).await?;
 
     let backup = client.get_backup(&org_id, service_id, backup_id).await?;
 
