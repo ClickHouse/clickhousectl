@@ -5,6 +5,10 @@ use std::env;
 
 const BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
+pub fn user_agent() -> String {
+    format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"))
+}
+
 #[derive(Debug)]
 pub struct CloudError {
     pub message: String,
@@ -51,7 +55,7 @@ impl CloudClient {
         let auth_header = format!("Basic {}", encoded);
 
         let client = Client::builder()
-            .user_agent(format!("clickhousectl/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(user_agent())
             .build()
             .map_err(|e| CloudError {
                 message: format!("Failed to create HTTP client: {}", e),
@@ -249,5 +253,25 @@ impl CloudClient {
             .ok_or_else(|| CloudError {
                 message: "No organization found for this API key".into(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_agent() {
+        let ua = user_agent();
+        let version = env!("CARGO_PKG_VERSION");
+        assert_eq!(ua, format!("clickhousectl/{}", version));
+        assert!(ua.starts_with("clickhousectl/"));
+        // Version should be a valid semver-like string (digits and dots)
+        let version_part = ua.strip_prefix("clickhousectl/").unwrap();
+        assert!(
+            version_part.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "version should only contain digits and dots, got: {}",
+            version_part
+        );
     }
 }
