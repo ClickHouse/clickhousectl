@@ -468,6 +468,21 @@ fn test_create_service_request_full() {
 }
 
 #[test]
+fn test_create_service_request_excludes_deprecated_fields() {
+    let req = CreateServiceRequest {
+        name: "my-svc".to_string(),
+        provider: CloudProvider::Aws,
+        region: CloudRegion::UsEast1,
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert!(json.get("tier").is_none());
+    assert!(json.get("minTotalMemoryGb").is_none());
+    assert!(json.get("maxTotalMemoryGb").is_none());
+    assert!(json.get("privateEndpointIds").is_none());
+}
+
+#[test]
 fn test_state_change_request_serialize() {
     let req = StateChangeRequest {
         command: ServiceStateCommand::Start,
@@ -739,6 +754,20 @@ fn test_organization_private_endpoints_patch_empty() {
     assert!(json.get("remove").is_none());
 }
 
+#[test]
+fn test_organization_private_endpoints_patch_excludes_deprecated_add() {
+    let patch = OrganizationPrivateEndpointsPatch {
+        remove: Some(vec![OrganizationPatchPrivateEndpoint {
+            id: Some("vpce-2".to_string()),
+            description: None,
+            cloud_provider: None,
+            region: None,
+        }]),
+    };
+    let json = serde_json::to_value(&patch).unwrap();
+    assert!(json.get("add").is_none());
+}
+
 // ── UsageCostRecord tests ───────────────────────────────────────────
 
 #[test]
@@ -879,6 +908,7 @@ fn test_update_member_request_with_assigned_roles() {
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["assignedRoleIds"], serde_json::json!(["role-uuid-1", "role-uuid-2"]));
+    assert!(json.get("role").is_none());
 }
 
 #[test]
@@ -922,6 +952,7 @@ fn test_create_invitation_request_with_assigned_roles() {
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["email"], "dave@example.com");
     assert_eq!(json["assignedRoleIds"], serde_json::json!(["role-uuid-1"]));
+    assert!(json.get("role").is_none());
 }
 
 // ── API Key type tests ──────────────────────────────────────────────
@@ -1027,6 +1058,7 @@ fn test_create_api_key_request_with_hash_data() {
     assert_eq!(json["hashData"]["keyIdHash"], "hash-of-id");
     assert_eq!(json["hashData"]["keyIdSuffix"], "abcd");
     assert_eq!(json["hashData"]["keySecretHash"], "hash-of-secret");
+    assert!(json.get("roles").is_none());
 }
 
 #[test]
@@ -1081,6 +1113,7 @@ fn test_update_api_key_request_serialize() {
     assert_eq!(json["expireAt"], "2025-12-31T00:00:00Z");
     assert_eq!(json["state"], "disabled");
     assert_eq!(json["ipAccessList"][0]["source"], "0.0.0.0/0");
+    assert!(json.get("roles").is_none());
 }
 
 // ── Activity, Backup Config ─────────────────────────────────────────
