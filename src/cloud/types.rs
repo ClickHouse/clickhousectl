@@ -151,6 +151,10 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_total_memory_gb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_total_memory_gb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<u32>,

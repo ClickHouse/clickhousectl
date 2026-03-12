@@ -64,6 +64,8 @@ fn test_service_deserialize_full() {
         "region": "us-east-1",
         "state": "running",
         "tier": "production",
+        "minTotalMemoryGb": 72,
+        "maxTotalMemoryGb": 144,
         "idleScaling": true,
         "idleTimeoutMinutes": 10,
         "ipAccessList": [{"source": "0.0.0.0/0", "description": "Allow all"}],
@@ -92,6 +94,8 @@ fn test_service_deserialize_full() {
     let svc: Service = serde_json::from_value(json).unwrap();
     assert_eq!(svc.id, "svc-1");
     assert_eq!(svc.tier.as_deref(), Some("production"));
+    assert_eq!(svc.min_total_memory_gb, Some(72));
+    assert_eq!(svc.max_total_memory_gb, Some(144));
     assert_eq!(svc.idle_scaling, Some(true));
     assert_eq!(svc.idle_timeout_minutes, Some(10));
     assert_eq!(svc.ip_access_list.as_ref().unwrap().len(), 1);
@@ -123,6 +127,8 @@ fn test_service_deserialize_minimal() {
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(svc.id, "svc-1");
     assert!(svc.tier.is_none());
+    assert!(svc.min_total_memory_gb.is_none());
+    assert!(svc.max_total_memory_gb.is_none());
     assert!(svc.endpoints.is_none());
     assert!(svc.clickhouse_version.is_none());
     assert!(svc.tags.is_none());
