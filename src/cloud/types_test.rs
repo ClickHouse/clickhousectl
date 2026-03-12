@@ -275,12 +275,27 @@ fn test_backup_bucket_azure_roundtrip() {
 fn test_resource_tag_roundtrip() {
     let tag = ResourceTag {
         key: "env".to_string(),
-        value: "production".to_string(),
+        value: Some("production".to_string()),
     };
     let json = serde_json::to_string(&tag).unwrap();
     let tag2: ResourceTag = serde_json::from_str(&json).unwrap();
     assert_eq!(tag.key, tag2.key);
     assert_eq!(tag.value, tag2.value);
+}
+
+#[test]
+fn test_resource_tag_null_value() {
+    let json = serde_json::json!({
+        "key": "team",
+        "value": null
+    });
+    let tag: ResourceTag = serde_json::from_value(json).unwrap();
+    assert_eq!(tag.key, "team");
+    assert!(tag.value.is_none());
+
+    let serialized = serde_json::to_value(&tag).unwrap();
+    assert_eq!(serialized["key"], "team");
+    assert!(serialized.get("value").is_none());
 }
 
 // ── New helper type tests ───────────────────────────────────────────
@@ -326,11 +341,11 @@ fn test_instance_tags_patch_serialize() {
     let patch = InstanceTagsPatch {
         add: Some(vec![ResourceTag {
             key: "env".to_string(),
-            value: "prod".to_string(),
+            value: Some("prod".to_string()),
         }]),
         remove: Some(vec![ResourceTag {
             key: "old".to_string(),
-            value: "tag".to_string(),
+            value: Some("tag".to_string()),
         }]),
     };
     let json = serde_json::to_value(&patch).unwrap();
@@ -412,7 +427,7 @@ fn test_create_service_request_full() {
         release_channel: Some(ReleaseChannel::Default),
         tags: Some(vec![ResourceTag {
             key: "env".to_string(),
-            value: "prod".to_string(),
+            value: Some("prod".to_string()),
         }]),
         data_warehouse_id: Some("dw-1".to_string()),
         is_readonly: Some(true),
@@ -539,7 +554,7 @@ fn test_update_service_request_full() {
         tags: Some(vec![InstanceTagsPatch {
             add: Some(vec![ResourceTag {
                 key: "env".to_string(),
-                value: "staging".to_string(),
+                value: Some("staging".to_string()),
             }]),
             remove: None,
         }]),

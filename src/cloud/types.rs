@@ -326,7 +326,8 @@ impl Default for CloudRegion {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceTag {
     pub key: String,
-    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
