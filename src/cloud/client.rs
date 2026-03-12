@@ -441,9 +441,25 @@ impl CloudClient {
             .await
     }
 
-    pub async fn get_org_usage(&self, org_id: &str) -> Result<UsageCost> {
-        self.get(&format!("/organizations/{}/usageCost", org_id))
-            .await
+    pub async fn get_org_usage(
+        &self,
+        org_id: &str,
+        from_date: &str,
+        to_date: &str,
+        filters: &[String],
+    ) -> Result<UsageCost> {
+        let path = format!("/organizations/{}/usageCost", org_id);
+        let mut params = vec![
+            format!("from_date={}", urlencoding::encode(from_date)),
+            format!("to_date={}", urlencoding::encode(to_date)),
+        ];
+        params.extend(
+            filters
+                .iter()
+                .map(|f| format!("filter={}", urlencoding::encode(f))),
+        );
+        let full_url = format!("{}?{}", self.url(&path), params.join("&"));
+        self.request(self.client.get(full_url)).await
     }
 
     // Phase 4 - Member endpoints

@@ -659,9 +659,14 @@ pub async fn service_prometheus(
 pub async fn org_usage(
     client: &CloudClient,
     org_id: &str,
+    from_date: &str,
+    to_date: &str,
+    filters: &[String],
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let usage = client.get_org_usage(org_id).await?;
+    let usage = client
+        .get_org_usage(org_id, from_date, to_date, filters)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&usage)?);

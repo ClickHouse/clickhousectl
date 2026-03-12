@@ -306,6 +306,18 @@ CONTEXT FOR AGENTS:
     Usage {
         /// Organization ID
         org_id: String,
+
+        /// Start date filter (ISO 8601, e.g. 2024-01-01T00:00:00Z)
+        #[arg(long)]
+        from_date: String,
+
+        /// End date filter (ISO 8601, e.g. 2024-01-31T23:59:59Z)
+        #[arg(long)]
+        to_date: String,
+
+        /// Filter by entity attributes
+        #[arg(long)]
+        filter: Vec<String>,
     },
 }
 
