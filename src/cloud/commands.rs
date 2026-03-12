@@ -620,6 +620,7 @@ pub async fn org_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let request = UpdateOrgRequest {
         name: name.map(String::from),
+        ..Default::default()
     };
 
     let org = client.update_organization(org_id, &request).await?;
@@ -651,8 +652,29 @@ pub async fn org_usage(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let usage = client.get_org_usage(org_id).await?;
 
-    // TODO: Properly handle UsageCostRecord in follow-up
-    println!("{}", serde_json::to_string_pretty(&usage)?);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&usage)?);
+    } else {
+        if let Some(total) = usage.grand_total_chc {
+            println!("Grand Total: {:.2} CHC", total);
+        }
+        if let Some(costs) = &usage.costs {
+            if costs.is_empty() {
+                println!("No usage cost records found");
+            } else {
+                println!("Usage costs:");
+                for c in costs {
+                    let entity = c.entity_name.as_deref().unwrap_or("-");
+                    let date = c.date.as_deref().unwrap_or("-");
+                    let total = c
+                        .total_chc
+                        .map(|v| format!("{:.2}", v))
+                        .unwrap_or_else(|| "-".to_string());
+                    println!("  {} - {} ({} CHC)", entity, date, total);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -889,6 +911,7 @@ pub async fn key_create(
         state: None,
         assigned_role_ids: None,
         ip_access_list: None,
+        hash_data: None,
     };
 
     let resp = client.create_api_key(&org_id, &request).await?;

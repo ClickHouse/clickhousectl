@@ -366,6 +366,30 @@ impl CloudClient {
         .await
     }
 
+    // Private endpoint config
+    pub async fn get_org_private_endpoint_config(
+        &self,
+        org_id: &str,
+    ) -> Result<PrivateEndpointConfig> {
+        self.get(&format!(
+            "/organizations/{}/privateEndpointConfig",
+            org_id
+        ))
+        .await
+    }
+
+    pub async fn get_service_private_endpoint_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<PrivateEndpointConfig> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/privateEndpointConfig",
+            org_id, service_id
+        ))
+        .await
+    }
+
     // Phase 3 - Org endpoints
     pub async fn update_organization(
         &self,
@@ -381,7 +405,7 @@ impl CloudClient {
             .await
     }
 
-    pub async fn get_org_usage(&self, org_id: &str) -> Result<serde_json::Value> {
+    pub async fn get_org_usage(&self, org_id: &str) -> Result<UsageCost> {
         self.get(&format!("/organizations/{}/usageCost", org_id))
             .await
     }

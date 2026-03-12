@@ -103,12 +103,40 @@ pub struct Organization {
     pub enable_core_dumps: Option<bool>,
 }
 
+/// Private endpoint patch for organization update
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizationPatchPrivateEndpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+}
+
+/// Patch-style add/remove for organization private endpoints
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OrganizationPrivateEndpointsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<OrganizationPatchPrivateEndpoint>>,
+}
+
 /// Update organization request
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateOrgRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_endpoints: Option<OrganizationPrivateEndpointsPatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
 }
 
 // =============================================================================
@@ -297,7 +325,7 @@ pub struct UpdateServiceRequest {
     pub transparent_data_encryption_key_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<InstanceTagsPatch>,
+    pub tags: Option<Vec<InstanceTagsPatch>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
@@ -328,6 +356,16 @@ pub struct ReplicaScalingRequest {
 #[serde(rename_all = "camelCase")]
 pub struct PasswordResetResponse {
     pub password: String,
+}
+
+/// Password patch request (PATCH .../services/{serviceId}/password)
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicePasswordPatchRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_password_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_double_sha1_hash: Option<String>,
 }
 
 /// Service query endpoint (ServiceQueryAPIEndpoint in OpenAPI spec)
@@ -372,6 +410,14 @@ pub struct PrivateEndpoint {
     pub region: Option<String>,
 }
 
+/// Private endpoint configuration (returned by GET .../privateEndpointConfig)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateEndpointConfig {
+    pub endpoint_service_id: String,
+    pub private_dns_hostname: String,
+}
+
 /// Create private endpoint request
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -385,6 +431,17 @@ pub struct CreatePrivateEndpointRequest {
 // =============================================================================
 // Usage cost
 // =============================================================================
+
+/// Usage cost wrapper (returned by GET .../usageCost)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCost {
+    #[serde(rename = "grandTotalCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grand_total_chc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs: Option<Vec<UsageCostRecord>>,
+}
 
 /// Usage cost record (per-entity, per-day)
 #[derive(Debug, Deserialize, Serialize)]
@@ -491,6 +548,15 @@ pub struct ApiKey {
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
 }
 
+/// Hash data for pre-hashed API key creation
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyHashData {
+    pub key_id_hash: String,
+    pub key_id_suffix: String,
+    pub key_secret_hash: String,
+}
+
 /// Create API key request
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -511,6 +577,9 @@ pub struct CreateApiKeyRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_data: Option<ApiKeyHashData>,
 }
 
 /// Create API key response (includes the secret, shown only once)
@@ -692,6 +761,8 @@ pub struct CreateBackupBucketRequest {
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBackupBucketRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -485,13 +485,13 @@ fn test_update_service_request_full() {
             enabled: true,
         }]),
         transparent_data_encryption_key_id: Some("tde-key-1".to_string()),
-        tags: Some(InstanceTagsPatch {
+        tags: Some(vec![InstanceTagsPatch {
             add: Some(vec![ResourceTag {
                 key: "env".to_string(),
                 value: "staging".to_string(),
             }]),
             remove: None,
-        }),
+        }]),
         enable_core_dumps: Some(false),
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -501,7 +501,7 @@ fn test_update_service_request_full() {
     assert_eq!(json["releaseChannel"], "fast");
     assert_eq!(json["endpoints"][0]["protocol"], "mysql");
     assert_eq!(json["transparentDataEncryptionKeyId"], "tde-key-1");
-    assert_eq!(json["tags"]["add"][0]["key"], "env");
+    assert_eq!(json["tags"][0]["add"][0]["key"], "env");
     assert_eq!(json["enableCoreDumps"], false);
 }
 
@@ -612,13 +612,67 @@ fn test_create_private_endpoint_request_no_desc() {
 fn test_update_org_request_serialize() {
     let req = UpdateOrgRequest {
         name: Some("New Org Name".to_string()),
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "New Org Name");
+    assert!(json.get("privateEndpoints").is_none());
+    assert!(json.get("enableCoreDumps").is_none());
 
-    let req_empty = UpdateOrgRequest { name: None };
+    let req_empty = UpdateOrgRequest::default();
     let json_empty = serde_json::to_value(&req_empty).unwrap();
     assert!(json_empty.get("name").is_none());
+}
+
+#[test]
+fn test_update_org_request_full() {
+    let req = UpdateOrgRequest {
+        name: Some("Updated Org".to_string()),
+        private_endpoints: Some(OrganizationPrivateEndpointsPatch {
+            add: Some(vec![OrganizationPatchPrivateEndpoint {
+                id: Some("vpce-123".to_string()),
+                description: Some("My endpoint".to_string()),
+                cloud_provider: Some("aws".to_string()),
+                region: Some("us-east-1".to_string()),
+            }]),
+            remove: None,
+        }),
+        enable_core_dumps: Some(true),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["name"], "Updated Org");
+    assert_eq!(json["privateEndpoints"]["add"][0]["id"], "vpce-123");
+    assert_eq!(json["privateEndpoints"]["add"][0]["cloudProvider"], "aws");
+    assert_eq!(json["enableCoreDumps"], true);
+}
+
+#[test]
+fn test_organization_private_endpoints_patch_serialize() {
+    let patch = OrganizationPrivateEndpointsPatch {
+        add: Some(vec![OrganizationPatchPrivateEndpoint {
+            id: Some("vpce-1".to_string()),
+            description: None,
+            cloud_provider: None,
+            region: None,
+        }]),
+        remove: Some(vec![OrganizationPatchPrivateEndpoint {
+            id: Some("vpce-2".to_string()),
+            description: None,
+            cloud_provider: None,
+            region: None,
+        }]),
+    };
+    let json = serde_json::to_value(&patch).unwrap();
+    assert_eq!(json["add"][0]["id"], "vpce-1");
+    assert_eq!(json["remove"][0]["id"], "vpce-2");
+}
+
+#[test]
+fn test_organization_private_endpoints_patch_empty() {
+    let patch = OrganizationPrivateEndpointsPatch::default();
+    let json = serde_json::to_value(&patch).unwrap();
+    assert!(json.get("add").is_none());
+    assert!(json.get("remove").is_none());
 }
 
 // ── UsageCostRecord tests ───────────────────────────────────────────
@@ -834,6 +888,7 @@ fn test_create_api_key_request_serialize() {
         roles: None,
         assigned_role_ids: None,
         ip_access_list: None,
+        hash_data: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "ci-key");
@@ -842,6 +897,7 @@ fn test_create_api_key_request_serialize() {
     assert!(json.get("state").is_none());
     assert!(json.get("assignedRoleIds").is_none());
     assert!(json.get("ipAccessList").is_none());
+    assert!(json.get("hashData").is_none());
 }
 
 #[test]
@@ -856,6 +912,7 @@ fn test_create_api_key_request_full() {
             source: "10.0.0.0/8".to_string(),
             description: None,
         }]),
+        hash_data: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "full-key");
@@ -864,6 +921,28 @@ fn test_create_api_key_request_full() {
     assert_eq!(json["roles"], serde_json::json!(["admin"]));
     assert_eq!(json["assignedRoleIds"], serde_json::json!(["role-uuid-1"]));
     assert_eq!(json["ipAccessList"][0]["source"], "10.0.0.0/8");
+}
+
+#[test]
+fn test_create_api_key_request_with_hash_data() {
+    let req = CreateApiKeyRequest {
+        name: "prehashed-key".to_string(),
+        expire_at: None,
+        state: None,
+        roles: None,
+        assigned_role_ids: None,
+        ip_access_list: None,
+        hash_data: Some(ApiKeyHashData {
+            key_id_hash: "hash-of-id".to_string(),
+            key_id_suffix: "abcd".to_string(),
+            key_secret_hash: "hash-of-secret".to_string(),
+        }),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["name"], "prehashed-key");
+    assert_eq!(json["hashData"]["keyIdHash"], "hash-of-id");
+    assert_eq!(json["hashData"]["keyIdSuffix"], "abcd");
+    assert_eq!(json["hashData"]["keySecretHash"], "hash-of-secret");
 }
 
 #[test]
@@ -1062,6 +1141,7 @@ fn test_create_backup_bucket_request_serialize() {
 #[test]
 fn test_update_backup_bucket_request_serialize() {
     let req = UpdateBackupBucketRequest {
+        bucket_provider: Some("AWS".to_string()),
         bucket_path: Some("/new/path".to_string()),
         iam_role_arn: Some("arn:aws:iam::123456789012:role/new-role".to_string()),
         iam_role_session_name: None,
@@ -1071,6 +1151,7 @@ fn test_update_backup_bucket_request_serialize() {
         connection_string: None,
     };
     let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["bucketProvider"], "AWS");
     assert_eq!(json["bucketPath"], "/new/path");
     assert_eq!(json["iamRoleArn"], "arn:aws:iam::123456789012:role/new-role");
 }
@@ -1168,4 +1249,109 @@ fn test_backup_type_values() {
         let backup: Backup = serde_json::from_value(json).unwrap();
         assert_eq!(backup.backup_type.as_deref(), Some(*backup_type));
     }
+}
+
+// ── UsageCost wrapper tests ─────────────────────────────────────────
+
+#[test]
+fn test_usage_cost_deserialize() {
+    let json = serde_json::json!({
+        "grandTotalCHC": 123.45,
+        "costs": [
+            {
+                "serviceId": "svc-1",
+                "date": "2024-01-15",
+                "totalCHC": 52.5
+            }
+        ]
+    });
+    let cost: UsageCost = serde_json::from_value(json).unwrap();
+    assert_eq!(cost.grand_total_chc, Some(123.45));
+    assert_eq!(cost.costs.as_ref().unwrap().len(), 1);
+    assert_eq!(cost.costs.as_ref().unwrap()[0].total_chc, Some(52.5));
+}
+
+#[test]
+fn test_usage_cost_serialize_grand_total() {
+    let cost = UsageCost {
+        grand_total_chc: Some(99.99),
+        costs: None,
+    };
+    let json = serde_json::to_value(&cost).unwrap();
+    assert_eq!(json["grandTotalCHC"], 99.99);
+    assert!(json.get("grandTotalChc").is_none());
+}
+
+#[test]
+fn test_usage_cost_minimal() {
+    let json = serde_json::json!({});
+    let cost: UsageCost = serde_json::from_value(json).unwrap();
+    assert!(cost.grand_total_chc.is_none());
+    assert!(cost.costs.is_none());
+}
+
+// ── PrivateEndpointConfig tests ─────────────────────────────────────
+
+#[test]
+fn test_private_endpoint_config_deserialize() {
+    let json = serde_json::json!({
+        "endpointServiceId": "com.amazonaws.vpce.us-east-1.vpce-svc-123",
+        "privateDnsHostname": "abc.clickhouse.cloud"
+    });
+    let config: PrivateEndpointConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(config.endpoint_service_id, "com.amazonaws.vpce.us-east-1.vpce-svc-123");
+    assert_eq!(config.private_dns_hostname, "abc.clickhouse.cloud");
+}
+
+#[test]
+fn test_private_endpoint_config_roundtrip() {
+    let config = PrivateEndpointConfig {
+        endpoint_service_id: "vpce-svc-456".to_string(),
+        private_dns_hostname: "xyz.clickhouse.cloud".to_string(),
+    };
+    let json = serde_json::to_value(&config).unwrap();
+    assert_eq!(json["endpointServiceId"], "vpce-svc-456");
+    assert_eq!(json["privateDnsHostname"], "xyz.clickhouse.cloud");
+    let config2: PrivateEndpointConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(config.endpoint_service_id, config2.endpoint_service_id);
+}
+
+// ── ServicePasswordPatchRequest tests ───────────────────────────────
+
+#[test]
+fn test_service_password_patch_request_empty() {
+    let req = ServicePasswordPatchRequest::default();
+    let json = serde_json::to_value(&req).unwrap();
+    assert!(json.get("newPasswordHash").is_none());
+    assert!(json.get("newDoubleSha1Hash").is_none());
+}
+
+#[test]
+fn test_service_password_patch_request_with_hashes() {
+    let req = ServicePasswordPatchRequest {
+        new_password_hash: Some("sha256hash".to_string()),
+        new_double_sha1_hash: Some("doublesha1hash".to_string()),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["newPasswordHash"], "sha256hash");
+    assert_eq!(json["newDoubleSha1Hash"], "doublesha1hash");
+}
+
+// ── ApiKeyHashData tests ────────────────────────────────────────────
+
+#[test]
+fn test_api_key_hash_data_roundtrip() {
+    let data = ApiKeyHashData {
+        key_id_hash: "idhash".to_string(),
+        key_id_suffix: "suf1".to_string(),
+        key_secret_hash: "secrethash".to_string(),
+    };
+    let json = serde_json::to_value(&data).unwrap();
+    assert_eq!(json["keyIdHash"], "idhash");
+    assert_eq!(json["keyIdSuffix"], "suf1");
+    assert_eq!(json["keySecretHash"], "secrethash");
+    let data2: ApiKeyHashData = serde_json::from_value(json).unwrap();
+    assert_eq!(data.key_id_hash, data2.key_id_hash);
+    assert_eq!(data.key_id_suffix, data2.key_id_suffix);
+    assert_eq!(data.key_secret_hash, data2.key_secret_hash);
 }
