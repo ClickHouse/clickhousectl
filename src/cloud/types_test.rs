@@ -208,7 +208,18 @@ fn test_backup_deserialize() {
     assert_eq!(backup.duration_in_seconds, Some(300.5));
     assert_eq!(backup.backup_type.as_deref(), Some("full"));
     assert_eq!(backup.backup_name.as_deref(), Some("backup_20240101"));
-    assert!(backup.bucket.is_some());
+    match backup.bucket.as_ref() {
+        Some(BackupBucket::AWS {
+            bucket_path,
+            iam_role_arn,
+            iam_role_session_name,
+        }) => {
+            assert_eq!(bucket_path.as_deref(), Some("/backups"));
+            assert!(iam_role_arn.is_none());
+            assert!(iam_role_session_name.is_none());
+        }
+        other => panic!("expected AWS backup bucket, got {other:?}"),
+    }
 }
 
 #[test]
@@ -222,6 +233,44 @@ fn test_backup_deserialize_minimal() {
     assert!(backup.backup_type.is_none());
     assert!(backup.backup_name.is_none());
     assert!(backup.bucket.is_none());
+}
+
+#[test]
+fn test_backup_bucket_gcp_deserialize() {
+    let json = serde_json::json!({
+        "bucketProvider": "GCP",
+        "bucketPath": "gs://backup-bucket/path",
+        "accessKeyId": "gcp-hmac-id"
+    });
+    let bucket: BackupBucket = serde_json::from_value(json).unwrap();
+    match bucket {
+        BackupBucket::GCP {
+            bucket_path,
+            access_key_id,
+        } => {
+            assert_eq!(bucket_path.as_deref(), Some("gs://backup-bucket/path"));
+            assert_eq!(access_key_id.as_deref(), Some("gcp-hmac-id"));
+        }
+        other => panic!("expected GCP backup bucket, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_backup_bucket_azure_roundtrip() {
+    let bucket = BackupBucket::AZURE {
+        container_name: Some("backups".to_string()),
+    };
+    let json = serde_json::to_value(&bucket).unwrap();
+    assert_eq!(json["bucketProvider"], "AZURE");
+    assert_eq!(json["containerName"], "backups");
+
+    let roundtrip: BackupBucket = serde_json::from_value(json).unwrap();
+    match roundtrip {
+        BackupBucket::AZURE { container_name } => {
+            assert_eq!(container_name.as_deref(), Some("backups"));
+        }
+        other => panic!("expected AZURE backup bucket, got {other:?}"),
+    }
 }
 
 #[test]

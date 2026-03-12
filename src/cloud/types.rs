@@ -678,6 +678,39 @@ pub struct Activity {
 
 /// Backup
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "bucketProvider")]
+pub enum BackupBucket {
+    #[serde(rename = "AWS")]
+    AWS {
+        #[serde(rename = "bucketPath")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bucket_path: Option<String>,
+        #[serde(rename = "iamRoleArn")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        iam_role_arn: Option<String>,
+        #[serde(rename = "iamRoleSessionName")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        iam_role_session_name: Option<String>,
+    },
+    #[serde(rename = "GCP")]
+    GCP {
+        #[serde(rename = "bucketPath")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bucket_path: Option<String>,
+        #[serde(rename = "accessKeyId")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        access_key_id: Option<String>,
+    },
+    #[serde(rename = "AZURE")]
+    AZURE {
+        #[serde(rename = "containerName")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        container_name: Option<String>,
+    },
+}
+
+/// Backup
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Backup {
     pub id: String,
@@ -698,7 +731,7 @@ pub struct Backup {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket: Option<serde_json::Value>,
+    pub bucket: Option<BackupBucket>,
 }
 
 /// BYOC (Bring Your Own Cloud) infrastructure (ByocConfig in OpenAPI spec)
