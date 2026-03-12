@@ -402,17 +402,6 @@ impl CloudClient {
     }
 
     // Private endpoint config
-    pub async fn get_org_private_endpoint_config(
-        &self,
-        org_id: &str,
-    ) -> Result<PrivateEndpointConfig> {
-        self.get(&format!(
-            "/organizations/{}/privateEndpointConfig",
-            org_id
-        ))
-        .await
-    }
-
     pub async fn get_service_private_endpoint_config(
         &self,
         org_id: &str,
