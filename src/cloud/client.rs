@@ -673,10 +673,16 @@ impl CloudClient {
     // Helper to get the default organization
     pub async fn get_default_org_id(&self) -> Result<String> {
         let orgs = self.list_organizations().await?;
-        orgs.first()
-            .map(|o| o.id.clone())
-            .ok_or_else(|| CloudError {
+        match orgs.len() {
+            0 => Err(CloudError {
                 message: "No organization found for this API key".into(),
-            })
+            }),
+            1 => Ok(orgs[0].id.clone()),
+            _ => Err(CloudError {
+                message: "Multiple organizations found. Specify --org-id to choose one. \
+                          Use `clickhousectl cloud org list` to see your organizations."
+                    .into(),
+            }),
+        }
     }
 }
