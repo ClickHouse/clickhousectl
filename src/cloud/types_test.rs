@@ -951,6 +951,19 @@ fn test_member_deserialize_minimal() {
 }
 
 #[test]
+fn test_member_role_values() {
+    for role in &["admin", "developer"] {
+        let json = serde_json::json!({
+            "userId": "user-1",
+            "email": "role@example.com",
+            "role": role
+        });
+        let member: Member = serde_json::from_value(json).unwrap();
+        assert_eq!(member.role, *role);
+    }
+}
+
+#[test]
 fn test_update_member_request_serialize_empty() {
     let req = UpdateMemberRequest::default();
     let json = serde_json::to_value(&req).unwrap();
@@ -986,6 +999,19 @@ fn test_invitation_deserialize() {
     assert_eq!(inv.created_at.as_deref(), Some("2024-06-01T00:00:00Z"));
     assert_eq!(inv.expire_at.as_deref(), Some("2024-06-08T00:00:00Z"));
     assert_eq!(inv.assigned_roles.as_ref().unwrap().len(), 1);
+}
+
+#[test]
+fn test_invitation_role_values() {
+    for role in &["admin", "developer"] {
+        let json = serde_json::json!({
+            "id": "inv-1",
+            "email": "role@example.com",
+            "role": role
+        });
+        let invitation: Invitation = serde_json::from_value(json).unwrap();
+        assert_eq!(invitation.role, *role);
+    }
 }
 
 #[test]
