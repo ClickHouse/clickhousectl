@@ -172,6 +172,81 @@ impl CloudClient {
         format!("{}{}", BASE_URL, path)
     }
 
+    fn list_services_url(&self, org_id: &str, filters: &[String]) -> String {
+        let path = format!("/organizations/{}/services", org_id);
+        let query: Vec<String> = filters
+            .iter()
+            .map(|f| format!("filter={}", urlencoding::encode(f)))
+            .collect();
+        if query.is_empty() {
+            self.url(&path)
+        } else {
+            format!("{}?{}", self.url(&path), query.join("&"))
+        }
+    }
+
+    fn org_prometheus_url(&self, org_id: &str, filtered_metrics: Option<bool>) -> String {
+        let path = format!("/organizations/{}/prometheus", org_id);
+        match filtered_metrics {
+            Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
+            None => self.url(&path),
+        }
+    }
+
+    fn service_prometheus_url(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        filtered_metrics: Option<bool>,
+    ) -> String {
+        let path = format!("/organizations/{}/services/{}/prometheus", org_id, service_id);
+        match filtered_metrics {
+            Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
+            None => self.url(&path),
+        }
+    }
+
+    fn org_usage_url(
+        &self,
+        org_id: &str,
+        from_date: &str,
+        to_date: &str,
+        filters: &[String],
+    ) -> String {
+        let path = format!("/organizations/{}/usageCost", org_id);
+        let mut params = vec![
+            format!("from_date={}", urlencoding::encode(from_date)),
+            format!("to_date={}", urlencoding::encode(to_date)),
+        ];
+        params.extend(
+            filters
+                .iter()
+                .map(|f| format!("filter={}", urlencoding::encode(f))),
+        );
+        format!("{}?{}", self.url(&path), params.join("&"))
+    }
+
+    fn activities_url(
+        &self,
+        org_id: &str,
+        from_date: Option<&str>,
+        to_date: Option<&str>,
+    ) -> String {
+        let path = format!("/organizations/{}/activities", org_id);
+        let mut params = Vec::new();
+        if let Some(from) = from_date {
+            params.push(format!("from_date={}", urlencoding::encode(from)));
+        }
+        if let Some(to) = to_date {
+            params.push(format!("to_date={}", urlencoding::encode(to)));
+        }
+        if params.is_empty() {
+            self.url(&path)
+        } else {
+            format!("{}?{}", self.url(&path), params.join("&"))
+        }
+    }
+
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request(self.client.get(&self.url(path))).await
     }
@@ -223,17 +298,8 @@ impl CloudClient {
         org_id: &str,
         filters: &[String],
     ) -> Result<Vec<Service>> {
-        let path = format!("/organizations/{}/services", org_id);
-        let query: Vec<String> = filters
-            .iter()
-            .map(|f| format!("filter={}", urlencoding::encode(f)))
-            .collect();
-        let full_url = if query.is_empty() {
-            self.url(&path)
-        } else {
-            format!("{}?{}", self.url(&path), query.join("&"))
-        };
-        self.request(self.client.get(full_url)).await
+        self.request(self.client.get(self.list_services_url(org_id, filters)))
+            .await
     }
 
     pub async fn get_service(&self, org_id: &str, service_id: &str) -> Result<Service> {
@@ -418,11 +484,12 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
+        filtered_metrics: Option<bool>,
     ) -> Result<String> {
-        self.get_text(&format!(
-            "/organizations/{}/services/{}/prometheus",
-            org_id, service_id
-        ))
+        self.request_text(
+            self.client
+                .get(self.service_prometheus_url(org_id, service_id, filtered_metrics)),
+        )
         .await
     }
 
@@ -436,9 +503,16 @@ impl CloudClient {
             .await
     }
 
-    pub async fn get_org_prometheus(&self, org_id: &str) -> Result<String> {
-        self.get_text(&format!("/organizations/{}/prometheus", org_id))
-            .await
+    pub async fn get_org_prometheus(
+        &self,
+        org_id: &str,
+        filtered_metrics: Option<bool>,
+    ) -> Result<String> {
+        self.request_text(
+            self.client
+                .get(self.org_prometheus_url(org_id, filtered_metrics)),
+        )
+        .await
     }
 
     pub async fn get_org_usage(
@@ -448,18 +522,11 @@ impl CloudClient {
         to_date: &str,
         filters: &[String],
     ) -> Result<UsageCost> {
-        let path = format!("/organizations/{}/usageCost", org_id);
-        let mut params = vec![
-            format!("from_date={}", urlencoding::encode(from_date)),
-            format!("to_date={}", urlencoding::encode(to_date)),
-        ];
-        params.extend(
-            filters
-                .iter()
-                .map(|f| format!("filter={}", urlencoding::encode(f))),
-        );
-        let full_url = format!("{}?{}", self.url(&path), params.join("&"));
-        self.request(self.client.get(full_url)).await
+        self.request(
+            self.client
+                .get(self.org_usage_url(org_id, from_date, to_date, filters)),
+        )
+        .await
     }
 
     // Phase 4 - Member endpoints
@@ -585,20 +652,8 @@ impl CloudClient {
         from_date: Option<&str>,
         to_date: Option<&str>,
     ) -> Result<Vec<Activity>> {
-        let path = format!("/organizations/{}/activities", org_id);
-        let mut params = Vec::new();
-        if let Some(from) = from_date {
-            params.push(format!("from_date={}", urlencoding::encode(from)));
-        }
-        if let Some(to) = to_date {
-            params.push(format!("to_date={}", urlencoding::encode(to)));
-        }
-        let full_url = if params.is_empty() {
-            self.url(&path)
-        } else {
-            format!("{}?{}", self.url(&path), params.join("&"))
-        };
-        self.request(self.client.get(full_url)).await
+        self.request(self.client.get(self.activities_url(org_id, from_date, to_date)))
+            .await
     }
 
     pub async fn get_activity(&self, org_id: &str, activity_id: &str) -> Result<Activity> {
@@ -652,5 +707,82 @@ impl CloudClient {
                     .into(),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client() -> CloudClient {
+        CloudClient {
+            client: Client::builder().build().unwrap(),
+            auth_header: "Basic test".to_string(),
+        }
+    }
+
+    #[test]
+    fn list_services_url_includes_repeated_filters() {
+        let client = test_client();
+        let url = client.list_services_url(
+            "org-1",
+            &[
+                "tag:env=prod".to_string(),
+                "state=running".to_string(),
+            ],
+        );
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services?filter=tag%3Aenv%3Dprod&filter=state%3Drunning"
+        );
+    }
+
+    #[test]
+    fn activities_url_includes_optional_date_filters() {
+        let client = test_client();
+        let url = client.activities_url(
+            "org-1",
+            Some("2024-01-01T00:00:00Z"),
+            Some("2024-01-31T23:59:59Z"),
+        );
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z"
+        );
+    }
+
+    #[test]
+    fn org_usage_url_requires_dates_and_supports_filters() {
+        let client = test_client();
+        let url = client.org_usage_url(
+            "org-1",
+            "2024-01-01T00:00:00Z",
+            "2024-01-31T23:59:59Z",
+            &["entityType=service".to_string(), "entityName=my svc".to_string()],
+        );
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/usageCost?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z&filter=entityType%3Dservice&filter=entityName%3Dmy%20svc"
+        );
+    }
+
+    #[test]
+    fn org_prometheus_url_supports_filtered_metrics_query() {
+        let client = test_client();
+        let url = client.org_prometheus_url("org-1", Some(true));
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/prometheus?filtered_metrics=true"
+        );
+    }
+
+    #[test]
+    fn service_prometheus_url_supports_filtered_metrics_query() {
+        let client = test_client();
+        let url = client.service_prometheus_url("org-1", "svc-1", Some(false));
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus?filtered_metrics=false"
+        );
     }
 }

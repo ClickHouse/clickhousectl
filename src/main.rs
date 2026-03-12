@@ -436,8 +436,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             OrgCommands::Update { org_id, name } => {
                 cloud::commands::org_update(&client, &org_id, name.as_deref(), json).await
             }
-            OrgCommands::Prometheus { org_id } => {
-                cloud::commands::org_prometheus(&client, &org_id, json).await
+            OrgCommands::Prometheus {
+                org_id,
+                filtered_metrics,
+            } => {
+                cloud::commands::org_prometheus(&client, &org_id, filtered_metrics, json).await
             }
             OrgCommands::Usage {
                 org_id,
@@ -630,8 +633,18 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     cloud::commands::backup_config_update(&client, &service_id, schedule.as_deref(), retention_period_days, org_id.as_deref(), json).await
                 }
             },
-            ServiceCommands::Prometheus { service_id, org_id } => {
-                cloud::commands::service_prometheus(&client, &service_id, org_id.as_deref()).await
+            ServiceCommands::Prometheus {
+                service_id,
+                org_id,
+                filtered_metrics,
+            } => {
+                cloud::commands::service_prometheus(
+                    &client,
+                    &service_id,
+                    org_id.as_deref(),
+                    filtered_metrics,
+                )
+                .await
             }
         },
         CloudCommands::Member { command } => match command {

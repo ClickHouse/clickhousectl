@@ -300,6 +300,10 @@ CONTEXT FOR AGENTS:
     Prometheus {
         /// Organization ID
         org_id: String,
+
+        /// Whether to request filtered metrics
+        #[arg(long)]
+        filtered_metrics: Option<bool>,
     },
 
     /// Get organization usage/billing information
@@ -589,6 +593,10 @@ CONTEXT FOR AGENTS:
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
+
+        /// Whether to request filtered metrics
+        #[arg(long)]
+        filtered_metrics: Option<bool>,
     },
 }
 
