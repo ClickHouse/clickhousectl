@@ -678,10 +678,79 @@ pub struct ReplicaScalingRequest {
     pub idle_timeout_minutes: Option<f64>,
 }
 
-/// Password reset response
+/// Replica scaling response (ServiceScalingPatchResponse in OpenAPI spec)
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PasswordResetResponse {
+pub struct ServiceScalingPatchResponse {
+    pub id: String,
+    pub name: String,
+    pub provider: CloudProvider,
+    pub region: CloudRegion,
+    pub state: ServiceState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ServiceTier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_total_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_total_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<Endpoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_replicas: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_assumed_role_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<ReleaseChannel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ServiceProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transparent_data_encryption_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compliance_type: Option<ComplianceType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<ResourceTag>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
+}
+
+/// Password patch response (ServicePasswordPatchResponse in OpenAPI spec)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicePasswordPatchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
 }
@@ -728,6 +797,20 @@ pub struct CreateQueryEndpointRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivateEndpoint {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<CloudProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<CloudRegion>,
+}
+
+/// Private endpoint response (InstancePrivateEndpoint in OpenAPI spec)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstancePrivateEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

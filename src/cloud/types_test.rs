@@ -625,16 +625,51 @@ fn test_replica_scaling_request_serialize() {
 }
 
 #[test]
-fn test_password_reset_response_deserialize() {
+fn test_service_scaling_patch_response_deserialize() {
+    let json = serde_json::json!({
+        "id": "svc-1",
+        "name": "scaled-svc",
+        "provider": "aws",
+        "region": "us-east-1",
+        "state": "running",
+        "minReplicaMemoryGb": 24,
+        "maxReplicaMemoryGb": 48,
+        "numReplicas": 3,
+        "idleScaling": true,
+        "idleTimeoutMinutes": 10,
+        "releaseChannel": "default",
+        "profile": "v1-default",
+        "complianceType": "pci",
+        "enableCoreDumps": false
+    });
+    let resp: ServiceScalingPatchResponse = serde_json::from_value(json).unwrap();
+    assert_eq!(resp.id, "svc-1");
+    assert_eq!(resp.name, "scaled-svc");
+    assert_eq!(resp.provider, CloudProvider::Aws);
+    assert_eq!(resp.region, CloudRegion::UsEast1);
+    assert_eq!(resp.state, ServiceState::Running);
+    assert_eq!(resp.min_replica_memory_gb, Some(24.0));
+    assert_eq!(resp.max_replica_memory_gb, Some(48.0));
+    assert_eq!(resp.num_replicas, Some(3.0));
+    assert_eq!(resp.idle_scaling, Some(true));
+    assert_eq!(resp.idle_timeout_minutes, Some(10.0));
+    assert_eq!(resp.release_channel, Some(ReleaseChannel::Default));
+    assert_eq!(resp.profile, Some(ServiceProfile::V1Default));
+    assert_eq!(resp.compliance_type, Some(ComplianceType::Pci));
+    assert_eq!(resp.enable_core_dumps, Some(false));
+}
+
+#[test]
+fn test_service_password_patch_response_deserialize() {
     let json = r#"{"password":"new-secret-123"}"#;
-    let resp: PasswordResetResponse = serde_json::from_str(json).unwrap();
+    let resp: ServicePasswordPatchResponse = serde_json::from_str(json).unwrap();
     assert_eq!(resp.password.as_deref(), Some("new-secret-123"));
 }
 
 #[test]
-fn test_password_reset_response_without_password() {
+fn test_service_password_patch_response_without_password() {
     let json = r#"{}"#;
-    let resp: PasswordResetResponse = serde_json::from_str(json).unwrap();
+    let resp: ServicePasswordPatchResponse = serde_json::from_str(json).unwrap();
     assert!(resp.password.is_none());
 }
 
@@ -680,14 +715,14 @@ fn test_create_query_endpoint_request_empty() {
 }
 
 #[test]
-fn test_private_endpoint_deserialize() {
+fn test_instance_private_endpoint_deserialize() {
     let json = serde_json::json!({
         "id": "vpce-123",
         "description": "My endpoint",
         "cloudProvider": "aws",
         "region": "us-east-1"
     });
-    let ep: PrivateEndpoint = serde_json::from_value(json).unwrap();
+    let ep: InstancePrivateEndpoint = serde_json::from_value(json).unwrap();
     assert_eq!(ep.id.as_deref(), Some("vpce-123"));
     assert_eq!(ep.cloud_provider.as_deref(), Some("aws"));
     assert_eq!(ep.region.as_deref(), Some("us-east-1"));

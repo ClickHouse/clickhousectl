@@ -383,7 +383,7 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         request: &ReplicaScalingRequest,
-    ) -> Result<Service> {
+    ) -> Result<ServiceScalingPatchResponse> {
         self.patch(
             &format!(
                 "/organizations/{}/services/{}/replicaScaling",
@@ -399,7 +399,7 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-    ) -> Result<PasswordResetResponse> {
+    ) -> Result<ServicePasswordPatchResponse> {
         // The API expects an empty JSON object
         self.patch(
             &format!(
@@ -454,7 +454,7 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         request: &CreatePrivateEndpointRequest,
-    ) -> Result<PrivateEndpoint> {
+    ) -> Result<InstancePrivateEndpoint> {
         self.post(
             &format!(
                 "/organizations/{}/services/{}/privateEndpoint",
