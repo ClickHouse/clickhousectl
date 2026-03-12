@@ -736,6 +736,16 @@ mod tests {
     }
 
     #[test]
+    fn list_services_url_omits_query_without_filters() {
+        let client = test_client();
+        let url = client.list_services_url("org-1", &[]);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services"
+        );
+    }
+
+    #[test]
     fn activities_url_includes_optional_date_filters() {
         let client = test_client();
         let url = client.activities_url(
@@ -746,6 +756,16 @@ mod tests {
         assert_eq!(
             url,
             "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z"
+        );
+    }
+
+    #[test]
+    fn activities_url_omits_query_without_dates() {
+        let client = test_client();
+        let url = client.activities_url("org-1", None, None);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/activities"
         );
     }
 
@@ -765,6 +785,16 @@ mod tests {
     }
 
     #[test]
+    fn org_usage_url_includes_only_required_dates_without_filters() {
+        let client = test_client();
+        let url = client.org_usage_url("org-1", "2024-01-01", "2024-01-31", &[]);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/usageCost?from_date=2024-01-01&to_date=2024-01-31"
+        );
+    }
+
+    #[test]
     fn org_prometheus_url_supports_filtered_metrics_query() {
         let client = test_client();
         let url = client.org_prometheus_url("org-1", Some(true));
@@ -775,12 +805,32 @@ mod tests {
     }
 
     #[test]
+    fn org_prometheus_url_omits_filtered_metrics_when_not_set() {
+        let client = test_client();
+        let url = client.org_prometheus_url("org-1", None);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/prometheus"
+        );
+    }
+
+    #[test]
     fn service_prometheus_url_supports_filtered_metrics_query() {
         let client = test_client();
         let url = client.service_prometheus_url("org-1", "svc-1", Some(false));
         assert_eq!(
             url,
             "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus?filtered_metrics=false"
+        );
+    }
+
+    #[test]
+    fn service_prometheus_url_omits_filtered_metrics_when_not_set() {
+        let client = test_client();
+        let url = client.service_prometheus_url("org-1", "svc-1", None);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus"
         );
     }
 }
