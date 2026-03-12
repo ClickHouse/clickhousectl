@@ -557,43 +557,6 @@ impl CloudClient {
         .await
     }
 
-    // Phase 6 - BYOC endpoints
-    pub async fn create_byoc(
-        &self,
-        org_id: &str,
-        request: &CreateByocRequest,
-    ) -> Result<ByocInfrastructure> {
-        self.post(
-            &format!("/organizations/{}/byocInfrastructure", org_id),
-            request,
-        )
-        .await
-    }
-
-    pub async fn update_byoc(
-        &self,
-        org_id: &str,
-        byoc_id: &str,
-        request: &UpdateByocRequest,
-    ) -> Result<ByocInfrastructure> {
-        self.patch(
-            &format!(
-                "/organizations/{}/byocInfrastructure/{}",
-                org_id, byoc_id
-            ),
-            request,
-        )
-        .await
-    }
-
-    pub async fn delete_byoc(&self, org_id: &str, byoc_id: &str) -> Result<()> {
-        self.delete(&format!(
-            "/organizations/{}/byocInfrastructure/{}",
-            org_id, byoc_id
-        ))
-        .await
-    }
-
     // Phase 6 - Backup Config endpoints
     pub async fn get_backup_config(
         &self,

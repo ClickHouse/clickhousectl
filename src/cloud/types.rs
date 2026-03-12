@@ -98,8 +98,6 @@ pub struct Organization {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_endpoints: Option<Vec<PrivateEndpoint>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub byoc_config: Option<Vec<ByocInfrastructure>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
 }
 
@@ -189,8 +187,6 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub byoc_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub has_transparent_data_encryption: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
@@ -265,9 +261,6 @@ pub struct CreateServiceRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_transparent_data_encryption: Option<bool>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub byoc_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compliance_type: Option<String>,
@@ -644,7 +637,7 @@ pub struct UpdateApiKeyRequest {
 }
 
 // =============================================================================
-// Activity, BYOC, Backup, Backup Config
+// Activity, Backup, Backup Config
 // =============================================================================
 
 /// Activity log entry
@@ -732,49 +725,6 @@ pub struct Backup {
     pub backup_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket: Option<BackupBucket>,
-}
-
-/// BYOC (Bring Your Own Cloud) infrastructure (ByocConfig in OpenAPI spec)
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ByocInfrastructure {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub region_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloud_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-}
-
-/// Create BYOC infrastructure request
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateByocRequest {
-    pub region_id: String,
-    pub account_id: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub availability_zone_suffixes: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vpc_cidr_range: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-}
-
-/// Update BYOC infrastructure request
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateByocRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
 }
 
 /// Backup configuration

@@ -18,7 +18,6 @@ fn test_organization_deserialize_minimal() {
     assert_eq!(org.id, "org-1");
     assert!(org.created_at.is_none());
     assert!(org.private_endpoints.is_none());
-    assert!(org.byoc_config.is_none());
     assert!(org.enable_core_dumps.is_none());
 }
 
@@ -29,7 +28,6 @@ fn test_organization_with_new_fields() {
         "name": "My Org",
         "createdAt": "2024-01-01T00:00:00Z",
         "privateEndpoints": [{"id": "pe-1", "description": "VPC endpoint", "cloudProvider": "aws", "region": "us-east-1"}],
-        "byocConfig": [{"id": "byoc-1", "state": "infra-ready", "cloudProvider": "aws", "regionId": "us-east-1"}],
         "enableCoreDumps": true
     });
     let org: Organization = serde_json::from_value(json).unwrap();
@@ -38,9 +36,6 @@ fn test_organization_with_new_fields() {
     assert_eq!(pe.description.as_deref(), Some("VPC endpoint"));
     assert_eq!(pe.cloud_provider.as_deref(), Some("aws"));
     assert_eq!(pe.region.as_deref(), Some("us-east-1"));
-    let byoc = &org.byoc_config.as_ref().unwrap()[0];
-    assert_eq!(byoc.id.as_deref(), Some("byoc-1"));
-    assert_eq!(byoc.state.as_deref(), Some("infra-ready"));
     assert_eq!(org.enable_core_dumps, Some(true));
 }
 
@@ -51,7 +46,6 @@ fn test_organization_roundtrip() {
         name: "My Org".to_string(),
         created_at: Some("2024-01-01T00:00:00Z".to_string()),
         private_endpoints: None,
-        byoc_config: None,
         enable_core_dumps: None,
     };
     let json = serde_json::to_string(&org).unwrap();
@@ -87,7 +81,6 @@ fn test_service_deserialize_full() {
         "dataWarehouseId": "dw-1",
         "isPrimary": true,
         "isReadonly": false,
-        "byocId": "byoc-1",
         "hasTransparentDataEncryption": false,
         "profile": "v1-default",
         "transparentDataEncryptionKeyId": "tde-1",
@@ -115,7 +108,6 @@ fn test_service_deserialize_full() {
     assert_eq!(svc.data_warehouse_id.as_deref(), Some("dw-1"));
     assert_eq!(svc.is_primary, Some(true));
     assert_eq!(svc.is_readonly, Some(false));
-    assert_eq!(svc.byoc_id.as_deref(), Some("byoc-1"));
     assert_eq!(svc.has_transparent_data_encryption, Some(false));
     assert_eq!(svc.profile.as_deref(), Some("v1-default"));
     assert_eq!(svc.transparent_data_encryption_key_id.as_deref(), Some("tde-1"));
@@ -421,7 +413,6 @@ fn test_create_service_request_full() {
         encryption_key: Some("key-1".to_string()),
         encryption_assumed_role_identifier: Some("role-1".to_string()),
         has_transparent_data_encryption: Some(true),
-        byoc_id: Some("byoc-1".to_string()),
         compliance_type: Some("hipaa".to_string()),
         profile: Some("v1-default".to_string()),
         private_preview_terms_checked: Some(true),
@@ -447,7 +438,6 @@ fn test_create_service_request_full() {
     assert_eq!(json["encryptionKey"], "key-1");
     assert_eq!(json["encryptionAssumedRoleIdentifier"], "role-1");
     assert_eq!(json["hasTransparentDataEncryption"], true);
-    assert_eq!(json["byocId"], "byoc-1");
     assert_eq!(json["complianceType"], "hipaa");
     assert_eq!(json["profile"], "v1-default");
     assert_eq!(json["privatePreviewTermsChecked"], true);
@@ -1072,7 +1062,7 @@ fn test_update_api_key_request_serialize() {
     assert_eq!(json["ipAccessList"][0]["source"], "0.0.0.0/0");
 }
 
-// ── Activity, BYOC, Backup Config ───────────────────────────────────
+// ── Activity, Backup Config ─────────────────────────────────────────
 
 #[test]
 fn test_activity_deserialize() {
@@ -1128,51 +1118,6 @@ fn test_activity_minimal() {
     assert!(act.actor_type.is_none());
     assert!(act.actor_details.is_none());
     assert!(act.service_id.is_none());
-}
-
-#[test]
-fn test_byoc_infrastructure_deserialize() {
-    let json = serde_json::json!({
-        "id": "byoc-1",
-        "cloudProvider": "aws",
-        "regionId": "eu-west-1",
-        "state": "infra-ready",
-        "accountName": "my-account",
-        "displayName": "Production BYOC"
-    });
-    let byoc: ByocInfrastructure = serde_json::from_value(json).unwrap();
-    assert_eq!(byoc.id.as_deref(), Some("byoc-1"));
-    assert_eq!(byoc.cloud_provider.as_deref(), Some("aws"));
-    assert_eq!(byoc.region_id.as_deref(), Some("eu-west-1"));
-    assert_eq!(byoc.state.as_deref(), Some("infra-ready"));
-    assert_eq!(byoc.account_name.as_deref(), Some("my-account"));
-    assert_eq!(byoc.display_name.as_deref(), Some("Production BYOC"));
-}
-
-#[test]
-fn test_create_byoc_request_serialize() {
-    let req = CreateByocRequest {
-        region_id: "us-central1".to_string(),
-        account_id: "acct-123".to_string(),
-        availability_zone_suffixes: Some(vec!["a".to_string(), "b".to_string()]),
-        vpc_cidr_range: Some("10.0.0.0/16".to_string()),
-        display_name: Some("My BYOC".to_string()),
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["regionId"], "us-central1");
-    assert_eq!(json["accountId"], "acct-123");
-    assert_eq!(json["availabilityZoneSuffixes"], serde_json::json!(["a", "b"]));
-    assert_eq!(json["vpcCidrRange"], "10.0.0.0/16");
-    assert_eq!(json["displayName"], "My BYOC");
-}
-
-#[test]
-fn test_update_byoc_request_serialize() {
-    let req = UpdateByocRequest {
-        display_name: Some("Renamed BYOC".to_string()),
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["displayName"], "Renamed BYOC");
 }
 
 #[test]
@@ -1496,15 +1441,6 @@ fn test_service_profile_values() {
         });
         let svc: Service = serde_json::from_value(json).unwrap();
         assert_eq!(svc.profile.as_deref(), Some(*profile));
-    }
-}
-
-#[test]
-fn test_byoc_infrastructure_state_values() {
-    for state in &["infra-ready", "infra-provisioning", "infra-failed"] {
-        let json = serde_json::json!({"id": "byoc-1", "state": state});
-        let byoc: ByocInfrastructure = serde_json::from_value(json).unwrap();
-        assert_eq!(byoc.state.as_deref(), Some(*state));
     }
 }
 

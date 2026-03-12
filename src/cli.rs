@@ -261,11 +261,6 @@ CONTEXT FOR AGENTS:
         command: ActivityCommands,
     },
 
-    /// Manage BYOC infrastructure
-    Byoc {
-        #[command(subcommand)]
-        command: ByocCommands,
-    },
 }
 
 #[derive(Subcommand)]
@@ -421,10 +416,6 @@ CONTEXT FOR AGENTS:
         /// Enable Transparent Data Encryption (enterprise only)
         #[arg(long)]
         enable_tde: bool,
-
-        /// BYOC region ID
-        #[arg(long)]
-        byoc_id: Option<String>,
 
         /// Compliance type: hipaa, pci
         #[arg(long)]
@@ -948,52 +939,6 @@ pub enum ActivityCommands {
 }
 
 #[derive(Subcommand)]
-pub enum ByocCommands {
-    /// Create a BYOC configuration
-    Create {
-        /// Region ID (e.g., us-east-1, us-central1)
-        #[arg(long)]
-        region_id: String,
-
-        /// Cloud account ID
-        #[arg(long)]
-        account_id: String,
-
-        /// Display name for the infrastructure
-        #[arg(long)]
-        display_name: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Update a BYOC configuration
-    Update {
-        /// BYOC ID
-        byoc_id: String,
-
-        /// Display name for the infrastructure
-        #[arg(long)]
-        display_name: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Delete a BYOC configuration
-    Delete {
-        /// BYOC ID
-        byoc_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum BackupConfigCommands {
     /// Get backup configuration for a service
     Get {
@@ -1023,4 +968,3 @@ pub enum BackupConfigCommands {
         org_id: Option<String>,
     },
 }
-

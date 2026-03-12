@@ -8,7 +8,7 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    ActivityCommands, BackupCommands, BackupConfigCommands, ByocCommands,
+    ActivityCommands, BackupCommands, BackupConfigCommands,
     CloudArgs, CloudCommands, Cli, Commands, InvitationCommands, KeyCommands, LocalCommands,
     MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
     ServiceCommands,
@@ -467,7 +467,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 encryption_key,
                 encryption_role,
                 enable_tde,
-                byoc_id,
                 compliance_type,
                 profile,
                 org_id,
@@ -489,7 +488,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     encryption_key,
                     encryption_role,
                     enable_tde,
-                    byoc_id,
                     compliance_type,
                     profile,
                     org_id,
@@ -671,17 +669,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             }
             ActivityCommands::Get { activity_id, org_id } => {
                 cloud::commands::activity_get(&client, &activity_id, org_id.as_deref(), json).await
-            }
-        },
-        CloudCommands::Byoc { command } => match command {
-            ByocCommands::Create { region_id, account_id, display_name, org_id } => {
-                cloud::commands::byoc_create(&client, &region_id, &account_id, display_name.as_deref(), org_id.as_deref(), json).await
-            }
-            ByocCommands::Update { byoc_id, display_name, org_id } => {
-                cloud::commands::byoc_update(&client, &byoc_id, display_name.as_deref(), org_id.as_deref(), json).await
-            }
-            ByocCommands::Delete { byoc_id, org_id } => {
-                cloud::commands::byoc_delete(&client, &byoc_id, org_id.as_deref()).await
             }
         },
         CloudCommands::Auth => unreachable!("handled above"),

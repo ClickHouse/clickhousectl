@@ -149,7 +149,6 @@ pub struct CreateServiceOptions {
     pub encryption_key: Option<String>,
     pub encryption_role: Option<String>,
     pub enable_tde: bool,
-    pub byoc_id: Option<String>,
     pub compliance_type: Option<String>,
     pub profile: Option<String>,
     pub org_id: Option<String>,
@@ -198,7 +197,6 @@ pub async fn service_create(
         encryption_key: opts.encryption_key,
         encryption_assumed_role_identifier: opts.encryption_role,
         has_transparent_data_encryption: if opts.enable_tde { Some(true) } else { None },
-        byoc_id: opts.byoc_id,
         compliance_type: opts.compliance_type,
         profile: opts.profile,
         ..Default::default()
@@ -1074,82 +1072,6 @@ pub async fn activity_get(
             println!("  Created: {}", created);
         }
     }
-    Ok(())
-}
-
-// =============================================================================
-// Phase 6 — BYOC command handlers
-// =============================================================================
-
-pub async fn byoc_create(
-    client: &CloudClient,
-    region_id: &str,
-    account_id: &str,
-    display_name: Option<&str>,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = CreateByocRequest {
-        region_id: region_id.to_string(),
-        account_id: account_id.to_string(),
-        availability_zone_suffixes: None,
-        vpc_cidr_range: None,
-        display_name: display_name.map(String::from),
-    };
-
-    let byoc = client.create_byoc(&org_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&byoc)?);
-    } else {
-        let id = byoc.id.as_deref().unwrap_or("-");
-        let state = byoc.state.as_deref().unwrap_or("-");
-        println!("BYOC infrastructure created: {} [{}]", id, state);
-        if let Some(provider) = &byoc.cloud_provider {
-            println!("  Provider: {}", provider);
-        }
-        if let Some(region) = &byoc.region_id {
-            println!("  Region: {}", region);
-        }
-    }
-    Ok(())
-}
-
-pub async fn byoc_update(
-    client: &CloudClient,
-    byoc_id: &str,
-    display_name: Option<&str>,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = UpdateByocRequest {
-        display_name: display_name.map(String::from),
-    };
-
-    let byoc = client.update_byoc(&org_id, byoc_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&byoc)?);
-    } else {
-        let s = byoc.state.as_deref().unwrap_or("-");
-        println!("BYOC {} updated [{}]", byoc_id, s);
-    }
-    Ok(())
-}
-
-pub async fn byoc_delete(
-    client: &CloudClient,
-    byoc_id: &str,
-    org_id: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    client.delete_byoc(&org_id, byoc_id).await?;
-    println!("BYOC {} deleted", byoc_id);
     Ok(())
 }
 
