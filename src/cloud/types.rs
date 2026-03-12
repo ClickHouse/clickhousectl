@@ -309,6 +309,14 @@ string_enum! {
     }
 }
 
+string_enum! {
+    pub enum ByocConfigState {
+        InfraReady => "infra-ready",
+        InfraProvisioning => "infra-provisioning",
+        InfraTerminated => "infra-terminated",
+    }
+}
+
 impl Default for CloudProvider {
     fn default() -> Self {
         Self::Aws
@@ -387,6 +395,23 @@ pub struct AssignedRole {
     pub role_type: Option<AssignedRoleType>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ByocConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ByocConfigState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<CloudRegion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<CloudProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
 // =============================================================================
 // Organization
 // =============================================================================
@@ -400,6 +425,8 @@ pub struct Organization {
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_endpoints: Option<Vec<PrivateEndpoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byoc_config: Option<Vec<ByocConfig>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
 }
@@ -493,6 +520,8 @@ pub struct Service {
     pub is_readonly: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<ReleaseChannel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_transparent_data_encryption: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -18,6 +18,7 @@ fn test_organization_deserialize_minimal() {
     assert_eq!(org.id, "org-1");
     assert!(org.created_at.is_none());
     assert!(org.private_endpoints.is_none());
+    assert!(org.byoc_config.is_none());
     assert!(org.enable_core_dumps.is_none());
 }
 
@@ -28,6 +29,14 @@ fn test_organization_with_new_fields() {
         "name": "My Org",
         "createdAt": "2024-01-01T00:00:00Z",
         "privateEndpoints": [{"id": "pe-1", "description": "VPC endpoint", "cloudProvider": "aws", "region": "us-east-1"}],
+        "byocConfig": [{
+            "id": "byoc-1",
+            "state": "infra-ready",
+            "accountName": "prod-account",
+            "regionId": "us-east-1",
+            "cloudProvider": "aws",
+            "displayName": "Production BYOC"
+        }],
         "enableCoreDumps": true
     });
     let org: Organization = serde_json::from_value(json).unwrap();
@@ -36,6 +45,13 @@ fn test_organization_with_new_fields() {
     assert_eq!(pe.description.as_deref(), Some("VPC endpoint"));
     assert_eq!(pe.cloud_provider.as_deref(), Some("aws"));
     assert_eq!(pe.region.as_deref(), Some("us-east-1"));
+    let byoc = &org.byoc_config.as_ref().unwrap()[0];
+    assert_eq!(byoc.id.as_deref(), Some("byoc-1"));
+    assert_eq!(byoc.state.as_deref(), Some("infra-ready"));
+    assert_eq!(byoc.account_name.as_deref(), Some("prod-account"));
+    assert_eq!(byoc.region_id.as_deref(), Some("us-east-1"));
+    assert_eq!(byoc.cloud_provider.as_deref(), Some("aws"));
+    assert_eq!(byoc.display_name.as_deref(), Some("Production BYOC"));
     assert_eq!(org.enable_core_dumps, Some(true));
 }
 
@@ -46,6 +62,7 @@ fn test_organization_roundtrip() {
         name: "My Org".to_string(),
         created_at: Some("2024-01-01T00:00:00Z".to_string()),
         private_endpoints: None,
+        byoc_config: None,
         enable_core_dumps: None,
     };
     let json = serde_json::to_string(&org).unwrap();
@@ -84,6 +101,7 @@ fn test_service_deserialize_full() {
         "isPrimary": true,
         "isReadonly": false,
         "hasTransparentDataEncryption": false,
+        "byocId": "byoc-1",
         "profile": "v1-default",
         "transparentDataEncryptionKeyId": "tde-1",
         "encryptionRoleId": "role-1",
@@ -112,6 +130,7 @@ fn test_service_deserialize_full() {
     assert_eq!(svc.data_warehouse_id.as_deref(), Some("dw-1"));
     assert_eq!(svc.is_primary, Some(true));
     assert_eq!(svc.is_readonly, Some(false));
+    assert_eq!(svc.byoc_id.as_deref(), Some("byoc-1"));
     assert_eq!(svc.has_transparent_data_encryption, Some(false));
     assert_eq!(svc.profile.as_deref(), Some("v1-default"));
     assert_eq!(svc.transparent_data_encryption_key_id.as_deref(), Some("tde-1"));
@@ -131,6 +150,7 @@ fn test_service_deserialize_minimal() {
     assert!(svc.max_total_memory_gb.is_none());
     assert!(svc.endpoints.is_none());
     assert!(svc.clickhouse_version.is_none());
+    assert!(svc.byoc_id.is_none());
     assert!(svc.tags.is_none());
 }
 
