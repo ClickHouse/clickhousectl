@@ -1,4 +1,62 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::ops::Deref;
+use std::str::FromStr;
+
+macro_rules! string_enum {
+    ($(#[$meta:meta])* pub enum $name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+        pub enum $name {
+            $(
+                #[serde(rename = $value)]
+                $variant,
+            )+
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let value = match self {
+                    $(Self::$variant => $value,)+
+                };
+                f.write_str(value)
+            }
+        }
+
+        impl Deref for $name {
+            type Target = str;
+
+            fn deref(&self) -> &Self::Target {
+                match self {
+                    $(Self::$variant => $value,)+
+                }
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($value => Ok(Self::$variant),)+
+                    _ => Err(format!("invalid {}: {}", stringify!($name), s)),
+                }
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.deref() == *other
+            }
+        }
+
+        impl PartialEq<$name> for &str {
+            fn eq(&self, other: &$name) -> bool {
+                *self == other.deref()
+            }
+        }
+    };
+}
 
 /// Standard API response wrapper
 #[derive(Debug, Deserialize)]
@@ -18,6 +76,250 @@ pub struct ApiError {
 // =============================================================================
 // Shared helper types
 // =============================================================================
+
+string_enum! {
+    pub enum CloudProvider {
+        Aws => "aws",
+        Gcp => "gcp",
+        Azure => "azure",
+    }
+}
+
+string_enum! {
+    pub enum CloudRegion {
+        ApNortheast1 => "ap-northeast-1",
+        ApNortheast2 => "ap-northeast-2",
+        ApSouth1 => "ap-south-1",
+        ApSoutheast1 => "ap-southeast-1",
+        ApSoutheast2 => "ap-southeast-2",
+        EuCentral1 => "eu-central-1",
+        EuWest1 => "eu-west-1",
+        EuWest2 => "eu-west-2",
+        IlCentral1 => "il-central-1",
+        UsEast1 => "us-east-1",
+        UsEast2 => "us-east-2",
+        UsWest2 => "us-west-2",
+        UsEast1Gcp => "us-east1",
+        UsCentral1 => "us-central1",
+        EuropeWest4 => "europe-west4",
+        AsiaSoutheast1 => "asia-southeast1",
+        AsiaNortheast1 => "asia-northeast1",
+        EastUs => "eastus",
+        EastUs2 => "eastus2",
+        WestUs3 => "westus3",
+        GermanyWestCentral => "germanywestcentral",
+        CentralUs => "centralus",
+    }
+}
+
+string_enum! {
+    pub enum ServiceEndpointProtocol {
+        Https => "https",
+        NativeSecure => "nativesecure",
+        Mysql => "mysql",
+    }
+}
+
+string_enum! {
+    pub enum ServiceToggleableEndpointProtocol {
+        Mysql => "mysql",
+    }
+}
+
+string_enum! {
+    pub enum AssignedRoleType {
+        System => "system",
+        Custom => "custom",
+    }
+}
+
+string_enum! {
+    pub enum OrganizationRole {
+        Admin => "admin",
+        Developer => "developer",
+    }
+}
+
+string_enum! {
+    pub enum ServiceTier {
+        Development => "development",
+        Production => "production",
+        DedicatedHighMem => "dedicated_high_mem",
+        DedicatedHighCpu => "dedicated_high_cpu",
+        DedicatedStandard => "dedicated_standard",
+        DedicatedStandardN2dStandard4 => "dedicated_standard_n2d_standard_4",
+        DedicatedStandardN2dStandard8 => "dedicated_standard_n2d_standard_8",
+        DedicatedStandardN2dStandard32 => "dedicated_standard_n2d_standard_32",
+        DedicatedStandardN2dStandard128 => "dedicated_standard_n2d_standard_128",
+        DedicatedStandardN2dStandard3216Ssd => "dedicated_standard_n2d_standard_32_16SSD",
+        DedicatedStandardN2dStandard6424Ssd => "dedicated_standard_n2d_standard_64_24SSD",
+    }
+}
+
+string_enum! {
+    pub enum ServiceState {
+        Starting => "starting",
+        Stopping => "stopping",
+        Terminating => "terminating",
+        SoftDeleting => "softdeleting",
+        Awaking => "awaking",
+        PartiallyRunning => "partially_running",
+        Provisioning => "provisioning",
+        Running => "running",
+        Stopped => "stopped",
+        Terminated => "terminated",
+        SoftDeleted => "softdeleted",
+        Degraded => "degraded",
+        Failed => "failed",
+        Idle => "idle",
+    }
+}
+
+string_enum! {
+    pub enum ReleaseChannel {
+        Slow => "slow",
+        Default => "default",
+        Fast => "fast",
+    }
+}
+
+string_enum! {
+    pub enum ServiceProfile {
+        V1Default => "v1-default",
+        V1HighmemXs => "v1-highmem-xs",
+        V1HighmemS => "v1-highmem-s",
+        V1HighmemM => "v1-highmem-m",
+        V1HighmemL => "v1-highmem-l",
+        V1HighmemXl => "v1-highmem-xl",
+    }
+}
+
+string_enum! {
+    pub enum ComplianceType {
+        Hipaa => "hipaa",
+        Pci => "pci",
+    }
+}
+
+string_enum! {
+    pub enum ServiceStateCommand {
+        Start => "start",
+        Stop => "stop",
+    }
+}
+
+string_enum! {
+    pub enum ApiKeyState {
+        Enabled => "enabled",
+        Disabled => "disabled",
+    }
+}
+
+string_enum! {
+    pub enum ActivityType {
+        CreateOrganization => "create_organization",
+        OrganizationUpdateName => "organization_update_name",
+        TransferServiceIn => "transfer_service_in",
+        TransferServiceOut => "transfer_service_out",
+        SavePaymentMethod => "save_payment_method",
+        MarketplaceSubscription => "marketplace_subscription",
+        MigrateMarketplaceBillingDetailsIn => "migrate_marketplace_billing_details_in",
+        MigrateMarketplaceBillingDetailsOut => "migrate_marketplace_billing_details_out",
+        OrganizationUpdateTier => "organization_update_tier",
+        OrganizationInviteCreate => "organization_invite_create",
+        OrganizationInviteDelete => "organization_invite_delete",
+        OrganizationMemberJoin => "organization_member_join",
+        OrganizationMemberAdd => "organization_member_add",
+        OrganizationMemberLeave => "organization_member_leave",
+        OrganizationMemberDelete => "organization_member_delete",
+        OrganizationMemberUpdateRole => "organization_member_update_role",
+        OrganizationMemberUpdateMfaMethod => "organization_member_update_mfa_method",
+        UserLogin => "user_login",
+        UserLoginFailed => "user_login_failed",
+        UserLogout => "user_logout",
+        KeyCreate => "key_create",
+        KeyDelete => "key_delete",
+        OpenApiKeyUpdate => "openapi_key_update",
+        ServiceCreate => "service_create",
+        ServiceStart => "service_start",
+        ServiceStop => "service_stop",
+        ServiceAwaken => "service_awaken",
+        ServiceIdle => "service_idle",
+        ServiceRunning => "service_running",
+        ServicePartiallyRunning => "service_partially_running",
+        ServiceDelete => "service_delete",
+        ServiceUpdateName => "service_update_name",
+        ServiceUpdateIpAccessList => "service_update_ip_access_list",
+        ServiceUpdateAutoscalingMemory => "service_update_autoscaling_memory",
+        ServiceUpdateAutoscalingIdling => "service_update_autoscaling_idling",
+        ServiceUpdatePassword => "service_update_password",
+        ServiceUpdateAutoscalingReplicas => "service_update_autoscaling_replicas",
+        ServiceUpdateMaxAllowableReplicas => "service_update_max_allowable_replicas",
+        ServiceUpdateBackupConfiguration => "service_update_backup_configuration",
+        ServiceRestoreBackup => "service_restore_backup",
+        ServiceUpdateReleaseChannel => "service_update_release_channel",
+        ServiceUpdateGptUsageConsent => "service_update_gpt_usage_consent",
+        ServiceUpdatePrivateEndpoints => "service_update_private_endpoints",
+        ServiceImportToOrganization => "service_import_to_organization",
+        ServiceExportFromOrganization => "service_export_from_organization",
+        ServiceMaintenanceStart => "service_maintenance_start",
+        ServiceMaintenanceEnd => "service_maintenance_end",
+        ServiceUpdateCoreDump => "service_update_core_dump",
+        BackupDelete => "backup_delete",
+    }
+}
+
+string_enum! {
+    pub enum ActivityActorType {
+        User => "user",
+        Support => "support",
+        System => "system",
+        Api => "api",
+    }
+}
+
+string_enum! {
+    pub enum ActivityKeyUpdateType {
+        Created => "created",
+        Deleted => "deleted",
+        NameChanged => "name-changed",
+        RoleChanged => "role-changed",
+        StateChanged => "state-changed",
+        DateChanged => "date-changed",
+        IpAccessListChanged => "ip-access-list-changed",
+        OrgRoleChanged => "org-role-changed",
+        DefaultServiceRoleChanged => "default-service-role-changed",
+        ServiceRoleChanged => "service-role-changed",
+        RolesV2Changed => "roles-v2-changed",
+    }
+}
+
+string_enum! {
+    pub enum BackupStatus {
+        Done => "done",
+        Error => "error",
+        InProgress => "in_progress",
+    }
+}
+
+string_enum! {
+    pub enum BackupType {
+        Full => "full",
+        Incremental => "incremental",
+    }
+}
+
+impl Default for CloudProvider {
+    fn default() -> Self {
+        Self::Aws
+    }
+}
+
+impl Default for CloudRegion {
+    fn default() -> Self {
+        Self::UsEast1
+    }
+}
 
 /// Resource tag
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -69,7 +371,7 @@ pub struct InstanceTagsPatch {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceEndpointChange {
-    pub protocol: String,
+    pub protocol: ServiceToggleableEndpointProtocol,
     pub enabled: bool,
 }
 
@@ -81,7 +383,7 @@ pub struct AssignedRole {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_type: Option<String>,
+    pub role_type: Option<AssignedRoleType>,
 }
 
 // =============================================================================
@@ -110,9 +412,9 @@ pub struct OrganizationPatchPrivateEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloud_provider: Option<String>,
+    pub cloud_provider: Option<CloudProvider>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
+    pub region: Option<CloudRegion>,
 }
 
 /// Patch-style add/remove for organization private endpoints
@@ -145,11 +447,11 @@ pub struct UpdateOrgRequest {
 pub struct Service {
     pub id: String,
     pub name: String,
-    pub provider: String,
-    pub region: String,
-    pub state: String,
+    pub provider: CloudProvider,
+    pub region: CloudRegion,
+    pub state: ServiceState,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tier: Option<String>,
+    pub tier: Option<ServiceTier>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,17 +491,17 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_readonly: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub release_channel: Option<String>,
+    pub release_channel: Option<ReleaseChannel>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_transparent_data_encryption: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
+    pub profile: Option<ServiceProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transparent_data_encryption_key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption_role_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub compliance_type: Option<String>,
+    pub compliance_type: Option<ComplianceType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<ResourceTag>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -209,7 +511,7 @@ pub struct Service {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
-    pub protocol: String,
+    pub protocol: ServiceEndpointProtocol,
     pub host: String,
     pub port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,8 +523,8 @@ pub struct Endpoint {
 #[serde(rename_all = "camelCase")]
 pub struct CreateServiceRequest {
     pub name: String,
-    pub provider: String,
-    pub region: String,
+    pub provider: CloudProvider,
+    pub region: CloudRegion,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
@@ -246,7 +548,7 @@ pub struct CreateServiceRequest {
     pub backup_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub release_channel: Option<String>,
+    pub release_channel: Option<ReleaseChannel>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<ResourceTag>>,
@@ -267,10 +569,10 @@ pub struct CreateServiceRequest {
     pub has_transparent_data_encryption: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub compliance_type: Option<String>,
+    pub compliance_type: Option<ComplianceType>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
+    pub profile: Option<ServiceProfile>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_preview_terms_checked: Option<bool>,
@@ -294,7 +596,7 @@ pub struct CreateServiceResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateChangeRequest {
-    pub command: String,
+    pub command: ServiceStateCommand,
 }
 
 /// Update service request (PATCH /organizations/{orgId}/services/{serviceId})
@@ -311,7 +613,7 @@ pub struct UpdateServiceRequest {
     pub private_endpoint_ids: Option<InstancePrivateEndpointsPatch>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub release_channel: Option<String>,
+    pub release_channel: Option<ReleaseChannel>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<ServiceEndpointChange>>,
@@ -401,9 +703,9 @@ pub struct PrivateEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cloud_provider: Option<String>,
+    pub cloud_provider: Option<CloudProvider>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
+    pub region: Option<CloudRegion>,
 }
 
 /// Private endpoint configuration (returned by GET .../privateEndpointConfig)
@@ -510,7 +812,7 @@ pub struct UsageCostRecord {
 pub struct Member {
     pub user_id: String,
     pub email: String,
-    pub role: String,
+    pub role: OrganizationRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -533,7 +835,7 @@ pub struct UpdateMemberRequest {
 pub struct Invitation {
     pub id: String,
     pub email: String,
-    pub role: String,
+    pub role: OrganizationRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,7 +863,7 @@ pub struct CreateInvitationRequest {
 pub struct ApiKey {
     pub id: String,
     pub name: String,
-    pub state: String,
+    pub state: ApiKeyState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -597,7 +899,7 @@ pub struct CreateApiKeyRequest {
     pub expire_at: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
+    pub state: Option<ApiKeyState>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
@@ -634,7 +936,7 @@ pub struct UpdateApiKeyRequest {
     pub expire_at: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
+    pub state: Option<ApiKeyState>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
@@ -650,9 +952,9 @@ pub struct UpdateApiKeyRequest {
 pub struct Activity {
     pub id: String,
     #[serde(rename = "type")]
-    pub activity_type: String,
+    pub activity_type: ActivityType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_type: Option<String>,
+    pub actor_type: Option<ActivityActorType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -670,7 +972,7 @@ pub struct Activity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_update_type: Option<String>,
+    pub key_update_type: Option<ActivityKeyUpdateType>,
 }
 
 /// Backup
@@ -713,7 +1015,7 @@ pub struct Backup {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
-    pub status: String,
+    pub status: BackupStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -724,7 +1026,7 @@ pub struct Backup {
     pub duration_in_seconds: Option<f64>,
     #[serde(rename = "type")]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_type: Option<String>,
+    pub backup_type: Option<BackupType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -331,11 +331,9 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        command: &str,
+        command: ServiceStateCommand,
     ) -> Result<Service> {
-        let request = StateChangeRequest {
-            command: command.to_string(),
-        };
+        let request = StateChangeRequest { command };
         self.patch(
             &format!("/organizations/{}/services/{}/state", org_id, service_id),
             &request,

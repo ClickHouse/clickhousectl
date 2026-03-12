@@ -341,7 +341,7 @@ fn test_instance_tags_patch_serialize() {
 #[test]
 fn test_service_endpoint_change_serialize() {
     let change = ServiceEndpointChange {
-        protocol: "mysql".to_string(),
+        protocol: ServiceToggleableEndpointProtocol::Mysql,
         enabled: true,
     };
     let json = serde_json::to_value(&change).unwrap();
@@ -377,8 +377,8 @@ fn test_assigned_role_minimal() {
 fn test_create_service_request_minimal() {
     let req = CreateServiceRequest {
         name: "my-svc".to_string(),
-        provider: "aws".to_string(),
-        region: "us-east-1".to_string(),
+        provider: CloudProvider::Aws,
+        region: CloudRegion::UsEast1,
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -397,8 +397,8 @@ fn test_create_service_request_minimal() {
 fn test_create_service_request_full() {
     let req = CreateServiceRequest {
         name: "my-svc".to_string(),
-        provider: "aws".to_string(),
-        region: "us-east-1".to_string(),
+        provider: CloudProvider::Aws,
+        region: CloudRegion::UsEast1,
         ip_access_list: Some(vec![IpAccessEntry {
             source: "0.0.0.0/0".to_string(),
             description: Some("All".to_string()),
@@ -409,7 +409,7 @@ fn test_create_service_request_full() {
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(10),
         backup_id: Some("backup-1".to_string()),
-        release_channel: Some("default".to_string()),
+        release_channel: Some(ReleaseChannel::Default),
         tags: Some(vec![ResourceTag {
             key: "env".to_string(),
             value: "prod".to_string(),
@@ -419,11 +419,11 @@ fn test_create_service_request_full() {
         encryption_key: Some("key-1".to_string()),
         encryption_assumed_role_identifier: Some("role-1".to_string()),
         has_transparent_data_encryption: Some(true),
-        compliance_type: Some("hipaa".to_string()),
-        profile: Some("v1-default".to_string()),
+        compliance_type: Some(ComplianceType::Hipaa),
+        profile: Some(ServiceProfile::V1Default),
         private_preview_terms_checked: Some(true),
         endpoints: Some(vec![ServiceEndpointChange {
-            protocol: "mysql".to_string(),
+            protocol: ServiceToggleableEndpointProtocol::Mysql,
             enabled: true,
         }]),
         enable_core_dumps: Some(true),
@@ -455,7 +455,7 @@ fn test_create_service_request_full() {
 #[test]
 fn test_state_change_request_serialize() {
     let req = StateChangeRequest {
-        command: "start".to_string(),
+        command: ServiceStateCommand::Start,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["command"], "start");
@@ -530,9 +530,9 @@ fn test_update_service_request_full() {
             add: Some(vec!["pe-1".to_string()]),
             remove: None,
         }),
-        release_channel: Some("fast".to_string()),
+        release_channel: Some(ReleaseChannel::Fast),
         endpoints: Some(vec![ServiceEndpointChange {
-            protocol: "mysql".to_string(),
+            protocol: ServiceToggleableEndpointProtocol::Mysql,
             enabled: true,
         }]),
         transparent_data_encryption_key_id: Some("tde-key-1".to_string()),
@@ -690,8 +690,8 @@ fn test_update_org_request_full() {
             remove: Some(vec![OrganizationPatchPrivateEndpoint {
                 id: Some("vpce-123".to_string()),
                 description: Some("My endpoint".to_string()),
-                cloud_provider: Some("aws".to_string()),
-                region: Some("us-east-1".to_string()),
+                cloud_provider: Some(CloudProvider::Aws),
+                region: Some(CloudRegion::UsEast1),
             }]),
         }),
         enable_core_dumps: Some(true),
@@ -977,7 +977,7 @@ fn test_create_api_key_request_full() {
     let req = CreateApiKeyRequest {
         name: "full-key".to_string(),
         expire_at: Some("2025-12-31T23:59:59Z".to_string()),
-        state: Some("enabled".to_string()),
+        state: Some(ApiKeyState::Enabled),
         assigned_role_ids: Some(vec!["role-uuid-1".to_string()]),
         ip_access_list: Some(vec![IpAccessEntry {
             source: "10.0.0.0/8".to_string(),
@@ -1054,7 +1054,7 @@ fn test_update_api_key_request_serialize() {
         name: Some("renamed-key".to_string()),
         assigned_role_ids: Some(vec!["role-uuid-1".to_string()]),
         expire_at: Some("2025-12-31T00:00:00Z".to_string()),
-        state: Some("disabled".to_string()),
+        state: Some(ApiKeyState::Disabled),
         ip_access_list: Some(vec![IpAccessEntry {
             source: "0.0.0.0/0".to_string(),
             description: None,

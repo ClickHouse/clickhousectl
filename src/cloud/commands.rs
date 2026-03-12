@@ -2,6 +2,7 @@ use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
 use std::io::Write;
+use std::str::FromStr;
 
 /// Resolve org ID from explicit arg or auto-detect
 async fn resolve_org_id(
@@ -12,6 +13,13 @@ async fn resolve_org_id(
         Some(id) => Ok(id.to_string()),
         None => Ok(client.get_default_org_id().await?),
     }
+}
+
+fn parse_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Error>>
+where
+    T: FromStr<Err = String>,
+{
+    T::from_str(value).map_err(|err| format!("invalid {} '{}': {}", field, value, err).into())
 }
 
 pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -182,8 +190,8 @@ pub async fn service_create(
 
     let request = CreateServiceRequest {
         name: opts.name,
-        provider: opts.provider,
-        region: opts.region,
+        provider: parse_enum(&opts.provider, "provider")?,
+        region: parse_enum(&opts.region, "region")?,
         ip_access_list,
         min_replica_memory_gb: opts.min_replica_memory_gb,
         max_replica_memory_gb: opts.max_replica_memory_gb,
@@ -191,14 +199,26 @@ pub async fn service_create(
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes,
         backup_id: opts.backup_id,
-        release_channel: opts.release_channel,
+        release_channel: opts
+            .release_channel
+            .as_deref()
+            .map(|value| parse_enum(value, "release_channel"))
+            .transpose()?,
         data_warehouse_id: opts.data_warehouse_id,
         is_readonly: if opts.is_readonly { Some(true) } else { None },
         encryption_key: opts.encryption_key,
         encryption_assumed_role_identifier: opts.encryption_role,
         has_transparent_data_encryption: if opts.enable_tde { Some(true) } else { None },
-        compliance_type: opts.compliance_type,
-        profile: opts.profile,
+        compliance_type: opts
+            .compliance_type
+            .as_deref()
+            .map(|value| parse_enum(value, "compliance_type"))
+            .transpose()?,
+        profile: opts
+            .profile
+            .as_deref()
+            .map(|value| parse_enum(value, "profile"))
+            .transpose()?,
         ..Default::default()
     };
 
@@ -258,7 +278,7 @@ pub async fn service_start(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
-        .change_service_state(&org_id, service_id, "start")
+        .change_service_state(&org_id, service_id, ServiceStateCommand::Start)
         .await?;
 
     if json {
@@ -278,7 +298,7 @@ pub async fn service_stop(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
-        .change_service_state(&org_id, service_id, "stop")
+        .change_service_state(&org_id, service_id, ServiceStateCommand::Stop)
         .await?;
 
     if json {
@@ -1005,7 +1025,9 @@ pub async fn key_update(
         } else {
             Some(role_ids.to_vec())
         },
-        state: state.map(String::from),
+        state: state
+            .map(|value| parse_enum(value, "state"))
+            .transpose()?,
         expire_at: None,
         ip_access_list: None,
     };
