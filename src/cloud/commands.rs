@@ -193,11 +193,11 @@ pub async fn service_create(
         provider: parse_enum(&opts.provider, "provider")?,
         region: parse_enum(&opts.region, "region")?,
         ip_access_list,
-        min_replica_memory_gb: opts.min_replica_memory_gb,
-        max_replica_memory_gb: opts.max_replica_memory_gb,
-        num_replicas: opts.num_replicas,
+        min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
+        max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
+        num_replicas: opts.num_replicas.map(f64::from),
         idle_scaling: opts.idle_scaling,
-        idle_timeout_minutes: opts.idle_timeout_minutes,
+        idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
         backup_id: opts.backup_id,
         release_channel: opts
             .release_channel
@@ -465,11 +465,11 @@ pub async fn service_scale(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let request = ReplicaScalingRequest {
-        min_replica_memory_gb,
-        max_replica_memory_gb,
-        num_replicas,
+        min_replica_memory_gb: min_replica_memory_gb.map(f64::from),
+        max_replica_memory_gb: max_replica_memory_gb.map(f64::from),
+        num_replicas: num_replicas.map(f64::from),
         idle_scaling,
-        idle_timeout_minutes,
+        idle_timeout_minutes: idle_timeout_minutes.map(f64::from),
     };
 
     let svc = client
@@ -1159,7 +1159,7 @@ pub async fn backup_config_update(
     // TODO: CLI args need updating in follow-up to match new field names
     let request = UpdateBackupConfigRequest {
         backup_period_in_hours: None,
-        backup_retention_period_in_hours: retention_period_days.map(|d| d * 24),
+        backup_retention_period_in_hours: retention_period_days.map(|d| f64::from(d * 24)),
         backup_start_time: schedule.map(String::from),
     };
 
@@ -1182,17 +1182,17 @@ pub async fn backup_config_update(
     Ok(())
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
+fn format_bytes(bytes: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
 
     if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+        format!("{:.2} GB", bytes / GB)
     } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
+        format!("{:.2} MB", bytes / MB)
     } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
+        format!("{:.2} KB", bytes / KB)
     } else {
         format!("{} B", bytes)
     }

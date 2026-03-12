@@ -94,16 +94,16 @@ fn test_service_deserialize_full() {
     let svc: Service = serde_json::from_value(json).unwrap();
     assert_eq!(svc.id, "svc-1");
     assert_eq!(svc.tier.as_deref(), Some("production"));
-    assert_eq!(svc.min_total_memory_gb, Some(72));
-    assert_eq!(svc.max_total_memory_gb, Some(144));
+    assert_eq!(svc.min_total_memory_gb, Some(72.0));
+    assert_eq!(svc.max_total_memory_gb, Some(144.0));
     assert_eq!(svc.idle_scaling, Some(true));
-    assert_eq!(svc.idle_timeout_minutes, Some(10));
+    assert_eq!(svc.idle_timeout_minutes, Some(10.0));
     assert_eq!(svc.ip_access_list.as_ref().unwrap().len(), 1);
     assert_eq!(svc.ip_access_list.as_ref().unwrap()[0].source, "0.0.0.0/0");
-    assert_eq!(svc.endpoints.as_ref().unwrap()[0].port, 8443);
-    assert_eq!(svc.min_replica_memory_gb, Some(24));
-    assert_eq!(svc.max_replica_memory_gb, Some(48));
-    assert_eq!(svc.num_replicas, Some(3));
+    assert_eq!(svc.endpoints.as_ref().unwrap()[0].port, 8443.0);
+    assert_eq!(svc.min_replica_memory_gb, Some(24.0));
+    assert_eq!(svc.max_replica_memory_gb, Some(48.0));
+    assert_eq!(svc.num_replicas, Some(3.0));
     assert_eq!(svc.clickhouse_version.as_deref(), Some("24.3.1"));
     assert_eq!(svc.release_channel.as_deref(), Some("default"));
     assert_eq!(svc.encryption_key.as_deref(), Some("key-1"));
@@ -140,7 +140,7 @@ fn test_endpoint_deserialize() {
     let ep: Endpoint = serde_json::from_str(json).unwrap();
     assert_eq!(ep.protocol, "https");
     assert_eq!(ep.host, "abc.clickhouse.cloud");
-    assert_eq!(ep.port, 8443);
+    assert_eq!(ep.port, 8443.0);
     assert!(ep.username.is_none());
 }
 
@@ -200,7 +200,7 @@ fn test_backup_deserialize() {
     assert_eq!(backup.id, "backup-1");
     assert_eq!(backup.service_id.as_deref(), Some("svc-1"));
     assert_eq!(backup.status, "done");
-    assert_eq!(backup.size_in_bytes, Some(1048576));
+    assert_eq!(backup.size_in_bytes, Some(1048576.0));
     assert_eq!(backup.started_at.as_deref(), Some("2024-01-01T00:00:00Z"));
     assert_eq!(backup.finished_at.as_deref(), Some("2024-01-01T00:05:00Z"));
     assert_eq!(backup.duration_in_seconds, Some(300.5));
@@ -403,11 +403,11 @@ fn test_create_service_request_full() {
             source: "0.0.0.0/0".to_string(),
             description: Some("All".to_string()),
         }]),
-        min_replica_memory_gb: Some(24),
-        max_replica_memory_gb: Some(48),
-        num_replicas: Some(3),
+        min_replica_memory_gb: Some(24.0),
+        max_replica_memory_gb: Some(48.0),
+        num_replicas: Some(3.0),
         idle_scaling: Some(true),
-        idle_timeout_minutes: Some(10),
+        idle_timeout_minutes: Some(10.0),
         backup_id: Some("backup-1".to_string()),
         release_channel: Some(ReleaseChannel::Default),
         tags: Some(vec![ResourceTag {
@@ -431,11 +431,11 @@ fn test_create_service_request_full() {
     let json = serde_json::to_value(&req).unwrap();
 
     assert_eq!(json["ipAccessList"][0]["source"], "0.0.0.0/0");
-    assert_eq!(json["minReplicaMemoryGb"], 24);
-    assert_eq!(json["maxReplicaMemoryGb"], 48);
-    assert_eq!(json["numReplicas"], 3);
+    assert_eq!(json["minReplicaMemoryGb"], 24.0);
+    assert_eq!(json["maxReplicaMemoryGb"], 48.0);
+    assert_eq!(json["numReplicas"], 3.0);
     assert_eq!(json["idleScaling"], true);
-    assert_eq!(json["idleTimeoutMinutes"], 10);
+    assert_eq!(json["idleTimeoutMinutes"], 10.0);
     assert_eq!(json["backupId"], "backup-1");
     assert_eq!(json["releaseChannel"], "default");
     assert_eq!(json["tags"][0]["key"], "env");
@@ -559,16 +559,16 @@ fn test_update_service_request_full() {
 #[test]
 fn test_replica_scaling_request_serialize() {
     let req = ReplicaScalingRequest {
-        min_replica_memory_gb: Some(24),
-        max_replica_memory_gb: Some(48),
-        num_replicas: Some(3),
+        min_replica_memory_gb: Some(24.0),
+        max_replica_memory_gb: Some(48.0),
+        num_replicas: Some(3.0),
         idle_scaling: None,
         idle_timeout_minutes: None,
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["minReplicaMemoryGb"], 24);
-    assert_eq!(json["maxReplicaMemoryGb"], 48);
-    assert_eq!(json["numReplicas"], 3);
+    assert_eq!(json["minReplicaMemoryGb"], 24.0);
+    assert_eq!(json["maxReplicaMemoryGb"], 48.0);
+    assert_eq!(json["numReplicas"], 3.0);
     assert!(json.get("idleScaling").is_none());
     assert!(json.get("idleTimeoutMinutes").is_none());
 }
@@ -1134,21 +1134,21 @@ fn test_backup_configuration_deserialize() {
         "backupStartTime": "02:00"
     });
     let config: BackupConfiguration = serde_json::from_value(json).unwrap();
-    assert_eq!(config.backup_period_in_hours, Some(24));
-    assert_eq!(config.backup_retention_period_in_hours, Some(720));
+    assert_eq!(config.backup_period_in_hours, Some(24.0));
+    assert_eq!(config.backup_retention_period_in_hours, Some(720.0));
     assert_eq!(config.backup_start_time.as_deref(), Some("02:00"));
 }
 
 #[test]
 fn test_update_backup_config_request_serialize() {
     let req = UpdateBackupConfigRequest {
-        backup_period_in_hours: Some(12),
-        backup_retention_period_in_hours: Some(336),
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: Some(336.0),
         backup_start_time: Some("03:00".to_string()),
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["backupPeriodInHours"], 12);
-    assert_eq!(json["backupRetentionPeriodInHours"], 336);
+    assert_eq!(json["backupPeriodInHours"], 12.0);
+    assert_eq!(json["backupRetentionPeriodInHours"], 336.0);
     assert_eq!(json["backupStartTime"], "03:00");
 }
 

@@ -453,13 +453,13 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<ServiceTier>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_total_memory_gb: Option<u32>,
+    pub min_total_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_total_memory_gb: Option<u32>,
+    pub max_total_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_minutes: Option<u32>,
+    pub idle_timeout_minutes: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -467,11 +467,11 @@ pub struct Service {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<Endpoint>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_replica_memory_gb: Option<u32>,
+    pub min_replica_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_replica_memory_gb: Option<u32>,
+    pub max_replica_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<u32>,
+    pub num_replicas: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -513,7 +513,7 @@ pub struct Service {
 pub struct Endpoint {
     pub protocol: ServiceEndpointProtocol,
     pub host: String,
-    pub port: u16,
+    pub port: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
@@ -530,19 +530,19 @@ pub struct CreateServiceRequest {
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_replica_memory_gb: Option<u32>,
+    pub min_replica_memory_gb: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_replica_memory_gb: Option<u32>,
+    pub max_replica_memory_gb: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<u32>,
+    pub num_replicas: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_minutes: Option<u32>,
+    pub idle_timeout_minutes: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_id: Option<String>,
@@ -633,19 +633,19 @@ pub struct UpdateServiceRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ReplicaScalingRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_replica_memory_gb: Option<u32>,
+    pub min_replica_memory_gb: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_replica_memory_gb: Option<u32>,
+    pub max_replica_memory_gb: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<u32>,
+    pub num_replicas: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_minutes: Option<u32>,
+    pub idle_timeout_minutes: Option<f64>,
 }
 
 /// Password reset response
@@ -1021,7 +1021,7 @@ pub struct Backup {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub size_in_bytes: Option<u64>,
+    pub size_in_bytes: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_in_seconds: Option<f64>,
     #[serde(rename = "type")]
@@ -1038,9 +1038,9 @@ pub struct Backup {
 #[serde(rename_all = "camelCase")]
 pub struct BackupConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_period_in_hours: Option<u32>,
+    pub backup_period_in_hours: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_retention_period_in_hours: Option<u32>,
+    pub backup_retention_period_in_hours: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_start_time: Option<String>,
 }
@@ -1050,10 +1050,10 @@ pub struct BackupConfiguration {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBackupConfigRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_period_in_hours: Option<u32>,
+    pub backup_period_in_hours: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_retention_period_in_hours: Option<u32>,
+    pub backup_retention_period_in_hours: Option<f64>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_start_time: Option<String>,
