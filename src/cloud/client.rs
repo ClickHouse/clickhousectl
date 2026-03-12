@@ -2,7 +2,6 @@ use crate::cloud::types::*;
 use base64::Engine;
 use reqwest::Client;
 use std::env;
-use urlencoding;
 
 const BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
