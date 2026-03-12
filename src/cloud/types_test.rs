@@ -538,7 +538,7 @@ fn test_api_key_deserialize() {
     let json = serde_json::json!({
         "id": "key-1",
         "name": "my-key",
-        "state": "active",
+        "state": "enabled",
         "roles": ["admin", "reader"],
         "createdAt": "2024-01-15T10:00:00Z",
         "expiresAt": "2025-01-15T10:00:00Z"
@@ -546,7 +546,7 @@ fn test_api_key_deserialize() {
     let key: ApiKey = serde_json::from_value(json).unwrap();
     assert_eq!(key.id, "key-1");
     assert_eq!(key.name, "my-key");
-    assert_eq!(key.state, "active");
+    assert_eq!(key.state, "enabled");
     assert_eq!(key.roles.as_ref().unwrap(), &["admin", "reader"]);
     assert_eq!(key.created_at.as_deref(), Some("2024-01-15T10:00:00Z"));
     assert_eq!(key.expires_at.as_deref(), Some("2025-01-15T10:00:00Z"));
@@ -572,7 +572,7 @@ fn test_create_api_key_response_deserialize() {
         "apiKey": {
             "id": "key-2",
             "name": "new-key",
-            "state": "active"
+            "state": "enabled"
         },
         "keyId": "kid-abc",
         "keySecret": "secret-xyz"
@@ -580,7 +580,7 @@ fn test_create_api_key_response_deserialize() {
     let resp: CreateApiKeyResponse = serde_json::from_value(json).unwrap();
     assert_eq!(resp.api_key.id, "key-2");
     assert_eq!(resp.api_key.name, "new-key");
-    assert_eq!(resp.api_key.state, "active");
+    assert_eq!(resp.api_key.state, "enabled");
     assert_eq!(resp.key_id, "kid-abc");
     assert_eq!(resp.key_secret, "secret-xyz");
 }
