@@ -704,7 +704,8 @@ fn test_usage_cost_record_deserialize() {
     assert_eq!(record.entity_type.as_deref(), Some("service"));
     assert_eq!(record.entity_id.as_deref(), Some("svc-1"));
     assert_eq!(record.entity_name.as_deref(), Some("my-service"));
-    assert!(record.metrics.is_some());
+    assert_eq!(record.metrics.as_ref().unwrap().compute_chc, Some(42.5));
+    assert_eq!(record.metrics.as_ref().unwrap().storage_chc, Some(10.0));
     assert_eq!(record.total_chc, Some(52.5));
     assert_eq!(record.locked, Some(true));
 }
@@ -735,6 +736,37 @@ fn test_usage_cost_record_serialize_total_chc() {
     // Verify camelCase rename for totalCHC
     assert_eq!(json["totalCHC"], 99.99);
     assert!(json.get("totalChc").is_none());
+}
+
+#[test]
+fn test_usage_cost_metrics_roundtrip() {
+    let metrics = UsageCostMetrics {
+        storage_chc: Some(1.25),
+        backup_chc: Some(2.5),
+        compute_chc: Some(3.75),
+        data_transfer_chc: Some(4.0),
+        initial_load_chc: Some(5.0),
+        public_data_transfer_chc: Some(6.0),
+        inter_region_tier1_data_transfer_chc: Some(7.0),
+        inter_region_tier2_data_transfer_chc: Some(8.0),
+        inter_region_tier3_data_transfer_chc: Some(9.0),
+        inter_region_tier4_data_transfer_chc: Some(10.0),
+    };
+    let json = serde_json::to_value(&metrics).unwrap();
+    assert_eq!(json["storageCHC"], 1.25);
+    assert_eq!(json["backupCHC"], 2.5);
+    assert_eq!(json["computeCHC"], 3.75);
+    assert_eq!(json["dataTransferCHC"], 4.0);
+    assert_eq!(json["initialLoadCHC"], 5.0);
+    assert_eq!(json["publicDataTransferCHC"], 6.0);
+    assert_eq!(json["interRegionTier1DataTransferCHC"], 7.0);
+    assert_eq!(json["interRegionTier2DataTransferCHC"], 8.0);
+    assert_eq!(json["interRegionTier3DataTransferCHC"], 9.0);
+    assert_eq!(json["interRegionTier4DataTransferCHC"], 10.0);
+
+    let roundtrip: UsageCostMetrics = serde_json::from_value(json).unwrap();
+    assert_eq!(roundtrip.storage_chc, Some(1.25));
+    assert_eq!(roundtrip.inter_region_tier4_data_transfer_chc, Some(10.0));
 }
 
 // ── Member type tests ───────────────────────────────────────────────
@@ -1175,18 +1207,15 @@ fn test_backup_type_values() {
 fn test_usage_cost_deserialize() {
     let json = serde_json::json!({
         "grandTotalCHC": 123.45,
-        "costs": [
-            {
-                "serviceId": "svc-1",
-                "date": "2024-01-15",
-                "totalCHC": 52.5
-            }
-        ]
+        "costs": {
+            "serviceId": "svc-1",
+            "date": "2024-01-15",
+            "totalCHC": 52.5
+        }
     });
     let cost: UsageCost = serde_json::from_value(json).unwrap();
     assert_eq!(cost.grand_total_chc, Some(123.45));
-    assert_eq!(cost.costs.as_ref().unwrap().len(), 1);
-    assert_eq!(cost.costs.as_ref().unwrap()[0].total_chc, Some(52.5));
+    assert_eq!(cost.costs.as_ref().unwrap().total_chc, Some(52.5));
 }
 
 #[test]

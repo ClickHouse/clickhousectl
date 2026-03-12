@@ -439,7 +439,43 @@ pub struct UsageCost {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grand_total_chc: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub costs: Option<Vec<UsageCostRecord>>,
+    pub costs: Option<UsageCostRecord>,
+}
+
+/// Usage cost metrics
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageCostMetrics {
+    #[serde(rename = "storageCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_chc: Option<f64>,
+    #[serde(rename = "backupCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_chc: Option<f64>,
+    #[serde(rename = "computeCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_chc: Option<f64>,
+    #[serde(rename = "dataTransferCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_transfer_chc: Option<f64>,
+    #[serde(rename = "initialLoadCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_load_chc: Option<f64>,
+    #[serde(rename = "publicDataTransferCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_data_transfer_chc: Option<f64>,
+    #[serde(rename = "interRegionTier1DataTransferCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inter_region_tier1_data_transfer_chc: Option<f64>,
+    #[serde(rename = "interRegionTier2DataTransferCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inter_region_tier2_data_transfer_chc: Option<f64>,
+    #[serde(rename = "interRegionTier3DataTransferCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inter_region_tier3_data_transfer_chc: Option<f64>,
+    #[serde(rename = "interRegionTier4DataTransferCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inter_region_tier4_data_transfer_chc: Option<f64>,
 }
 
 /// Usage cost record (per-entity, per-day)
@@ -459,7 +495,7 @@ pub struct UsageCostRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub metrics: Option<serde_json::Value>,
+    pub metrics: Option<UsageCostMetrics>,
     #[serde(rename = "totalCHC")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_chc: Option<f64>,
