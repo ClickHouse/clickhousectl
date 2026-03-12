@@ -736,15 +736,18 @@ pub async fn member_get(
 pub async fn member_update(
     client: &CloudClient,
     user_id: &str,
-    role: &str,
+    role_ids: &[String],
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     let request = UpdateMemberRequest {
-        role: role.to_string(),
-        assigned_role_ids: None,
+        assigned_role_ids: if role_ids.is_empty() {
+            None
+        } else {
+            Some(role_ids.to_vec())
+        },
     };
 
     let member = client.update_member(&org_id, user_id, &request).await?;
@@ -752,7 +755,7 @@ pub async fn member_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&member)?);
     } else {
-        println!("Member {} updated to role {}", member.email, member.role);
+        println!("Member {} updated", member.email);
     }
     Ok(())
 }
@@ -801,7 +804,7 @@ pub async fn invitation_list(
 pub async fn invitation_create(
     client: &CloudClient,
     email: &str,
-    role: &str,
+    role_ids: &[String],
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -809,8 +812,11 @@ pub async fn invitation_create(
 
     let request = CreateInvitationRequest {
         email: email.to_string(),
-        role: role.to_string(),
-        assigned_role_ids: None,
+        assigned_role_ids: if role_ids.is_empty() {
+            None
+        } else {
+            Some(role_ids.to_vec())
+        },
     };
 
     let inv = client.create_invitation(&org_id, &request).await?;
@@ -818,7 +824,7 @@ pub async fn invitation_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation sent to {} as {} ({})", inv.email, inv.role, inv.id);
+        println!("Invitation sent to {} ({})", inv.email, inv.id);
     }
     Ok(())
 }
@@ -893,7 +899,7 @@ pub async fn key_list(
 pub async fn key_create(
     client: &CloudClient,
     name: &str,
-    roles: &[String],
+    role_ids: &[String],
     expires_at: Option<&str>,
     org_id: Option<&str>,
     json: bool,
@@ -902,14 +908,13 @@ pub async fn key_create(
 
     let request = CreateApiKeyRequest {
         name: name.to_string(),
-        roles: if roles.is_empty() {
-            None
-        } else {
-            Some(roles.to_vec())
-        },
         expire_at: expires_at.map(String::from),
         state: None,
-        assigned_role_ids: None,
+        assigned_role_ids: if role_ids.is_empty() {
+            None
+        } else {
+            Some(role_ids.to_vec())
+        },
         ip_access_list: None,
         hash_data: None,
     };
@@ -962,7 +967,7 @@ pub async fn key_update(
     client: &CloudClient,
     key_id: &str,
     name: Option<&str>,
-    roles: &[String],
+    role_ids: &[String],
     state: Option<&str>,
     org_id: Option<&str>,
     json: bool,
@@ -971,13 +976,12 @@ pub async fn key_update(
 
     let request = UpdateApiKeyRequest {
         name: name.map(String::from),
-        roles: if roles.is_empty() {
+        assigned_role_ids: if role_ids.is_empty() {
             None
         } else {
-            Some(roles.to_vec())
+            Some(role_ids.to_vec())
         },
         state: state.map(String::from),
-        assigned_role_ids: None,
         expire_at: None,
         ip_access_list: None,
     };
@@ -1142,107 +1146,6 @@ pub async fn byoc_delete(
 }
 
 // =============================================================================
-// Phase 6 — Backup Bucket command handlers
-// =============================================================================
-
-pub async fn backup_bucket_list(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let buckets = client.list_backup_buckets(&org_id, service_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&buckets)?);
-    } else {
-        if buckets.is_empty() {
-            println!("No backup buckets found");
-            return Ok(());
-        }
-        println!("Backup Buckets:");
-        for b in buckets {
-            let id = b.id.as_deref().unwrap_or("-");
-            let path = b.bucket_path.as_deref().unwrap_or("-");
-            println!("  {} - {} [{}]", id, b.bucket_provider, path);
-        }
-    }
-    Ok(())
-}
-
-pub async fn backup_bucket_create(
-    client: &CloudClient,
-    service_id: &str,
-    bucket_provider: &str,
-    bucket_path: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = CreateBackupBucketRequest {
-        bucket_provider: bucket_provider.to_string(),
-        bucket_path: bucket_path.to_string(),
-        iam_role_arn: None,
-        iam_role_session_name: None,
-        access_key_id: None,
-        secret_access_key: None,
-        container_name: None,
-        connection_string: None,
-    };
-
-    let bucket = client.create_backup_bucket(&org_id, service_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&bucket)?);
-    } else {
-        let id = bucket.id.as_deref().unwrap_or("-");
-        println!("Backup bucket created: {} ({})", bucket.bucket_provider, id);
-    }
-    Ok(())
-}
-
-pub async fn backup_bucket_update(
-    client: &CloudClient,
-    service_id: &str,
-    bucket_id: &str,
-    bucket_path: Option<&str>,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = UpdateBackupBucketRequest {
-        bucket_path: bucket_path.map(String::from),
-        ..Default::default()
-    };
-
-    let bucket = client.update_backup_bucket(&org_id, service_id, bucket_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&bucket)?);
-    } else {
-        println!("Backup bucket {} updated", bucket_id);
-    }
-    Ok(())
-}
-
-pub async fn backup_bucket_delete(
-    client: &CloudClient,
-    service_id: &str,
-    bucket_id: &str,
-    org_id: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    client.delete_backup_bucket(&org_id, service_id, bucket_id).await?;
-    println!("Backup bucket {} deleted", bucket_id);
-    Ok(())
-}
-
-// =============================================================================
 // Phase 6 — Backup Config command handlers
 // =============================================================================
 
@@ -1304,64 +1207,6 @@ pub async fn backup_config_update(
         }
         if let Some(time) = &config.backup_start_time {
             println!("  Start time: {}", time);
-        }
-    }
-    Ok(())
-}
-
-// =============================================================================
-// Phase 6 — Service Prometheus command handlers
-// =============================================================================
-
-pub async fn service_prometheus_get(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let prom = client.get_service_prometheus(&org_id, service_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&prom)?);
-    } else {
-        println!("Prometheus for service {}", service_id);
-        if let Some(host) = &prom.host {
-            println!("  Host: {}", host);
-        }
-        if let Some(port) = prom.port {
-            println!("  Port: {}", port);
-        }
-        if let Some(protocol) = &prom.protocol {
-            println!("  Protocol: {}", protocol);
-        }
-    }
-    Ok(())
-}
-
-pub async fn service_prometheus_setup(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let prom = client.setup_service_prometheus(&org_id, service_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&prom)?);
-    } else {
-        println!("Prometheus set up for service {}", service_id);
-        if let Some(host) = &prom.host {
-            println!("  Host: {}", host);
-        }
-        if let Some(port) = prom.port {
-            println!("  Port: {}", port);
-        }
-        if let Some(protocol) = &prom.protocol {
-            println!("  Protocol: {}", protocol);
         }
     }
     Ok(())

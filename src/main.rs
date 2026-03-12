@@ -8,10 +8,10 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    ActivityCommands, BackupBucketCommands, BackupCommands, BackupConfigCommands, ByocCommands,
+    ActivityCommands, BackupCommands, BackupConfigCommands, ByocCommands,
     CloudArgs, CloudCommands, Cli, Commands, InvitationCommands, KeyCommands, LocalCommands,
     MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
-    ServiceCommands, ServicePrometheusCommands,
+    ServiceCommands,
 };
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -611,34 +611,12 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .await
                 }
             },
-            ServiceCommands::BackupBucket { command } => match command {
-                BackupBucketCommands::List { service_id, org_id } => {
-                    cloud::commands::backup_bucket_list(&client, &service_id, org_id.as_deref(), json).await
-                }
-                BackupBucketCommands::Create { service_id, bucket_provider, bucket_path, org_id } => {
-                    cloud::commands::backup_bucket_create(&client, &service_id, &bucket_provider, &bucket_path, org_id.as_deref(), json).await
-                }
-                BackupBucketCommands::Update { service_id, bucket_id, bucket_path, org_id } => {
-                    cloud::commands::backup_bucket_update(&client, &service_id, &bucket_id, bucket_path.as_deref(), org_id.as_deref(), json).await
-                }
-                BackupBucketCommands::Delete { service_id, bucket_id, org_id } => {
-                    cloud::commands::backup_bucket_delete(&client, &service_id, &bucket_id, org_id.as_deref()).await
-                }
-            },
             ServiceCommands::BackupConfig { command } => match command {
                 BackupConfigCommands::Get { service_id, org_id } => {
                     cloud::commands::backup_config_get(&client, &service_id, org_id.as_deref(), json).await
                 }
                 BackupConfigCommands::Update { service_id, schedule, retention_period_days, org_id } => {
                     cloud::commands::backup_config_update(&client, &service_id, schedule.as_deref(), retention_period_days, org_id.as_deref(), json).await
-                }
-            },
-            ServiceCommands::Prometheus { command } => match command {
-                ServicePrometheusCommands::Get { service_id, org_id } => {
-                    cloud::commands::service_prometheus_get(&client, &service_id, org_id.as_deref(), json).await
-                }
-                ServicePrometheusCommands::Setup { service_id, org_id } => {
-                    cloud::commands::service_prometheus_setup(&client, &service_id, org_id.as_deref(), json).await
                 }
             },
         },
@@ -649,8 +627,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             MemberCommands::Get { user_id, org_id } => {
                 cloud::commands::member_get(&client, &user_id, org_id.as_deref(), json).await
             }
-            MemberCommands::Update { user_id, role, org_id } => {
-                cloud::commands::member_update(&client, &user_id, &role, org_id.as_deref(), json).await
+            MemberCommands::Update { user_id, role_id, org_id } => {
+                cloud::commands::member_update(&client, &user_id, &role_id, org_id.as_deref(), json).await
             }
             MemberCommands::Remove { user_id, org_id } => {
                 cloud::commands::member_remove(&client, &user_id, org_id.as_deref()).await
@@ -660,8 +638,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             InvitationCommands::List { org_id } => {
                 cloud::commands::invitation_list(&client, org_id.as_deref(), json).await
             }
-            InvitationCommands::Create { email, role, org_id } => {
-                cloud::commands::invitation_create(&client, &email, &role, org_id.as_deref(), json).await
+            InvitationCommands::Create { email, role_id, org_id } => {
+                cloud::commands::invitation_create(&client, &email, &role_id, org_id.as_deref(), json).await
             }
             InvitationCommands::Get { invitation_id, org_id } => {
                 cloud::commands::invitation_get(&client, &invitation_id, org_id.as_deref(), json).await
@@ -674,14 +652,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             KeyCommands::List { org_id } => {
                 cloud::commands::key_list(&client, org_id.as_deref(), json).await
             }
-            KeyCommands::Create { name, role, expires_at, org_id } => {
-                cloud::commands::key_create(&client, &name, &role, expires_at.as_deref(), org_id.as_deref(), json).await
+            KeyCommands::Create { name, role_id, expires_at, org_id } => {
+                cloud::commands::key_create(&client, &name, &role_id, expires_at.as_deref(), org_id.as_deref(), json).await
             }
             KeyCommands::Get { key_id, org_id } => {
                 cloud::commands::key_get(&client, &key_id, org_id.as_deref(), json).await
             }
-            KeyCommands::Update { key_id, name, role, state, org_id } => {
-                cloud::commands::key_update(&client, &key_id, name.as_deref(), &role, state.as_deref(), org_id.as_deref(), json).await
+            KeyCommands::Update { key_id, name, role_id, state, org_id } => {
+                cloud::commands::key_update(&client, &key_id, name.as_deref(), &role_id, state.as_deref(), org_id.as_deref(), json).await
             }
             KeyCommands::Delete { key_id, org_id } => {
                 cloud::commands::key_delete(&client, &key_id, org_id.as_deref()).await

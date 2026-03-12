@@ -571,24 +571,11 @@ CONTEXT FOR AGENTS:
         command: PrivateEndpointCommands,
     },
 
-    /// Manage backup buckets for a service
-    #[command(name = "backup-bucket")]
-    BackupBucket {
-        #[command(subcommand)]
-        command: BackupBucketCommands,
-    },
-
     /// Manage backup configuration for a service
     #[command(name = "backup-config")]
     BackupConfig {
         #[command(subcommand)]
         command: BackupConfigCommands,
-    },
-
-    /// Manage Prometheus metrics for a service
-    Prometheus {
-        #[command(subcommand)]
-        command: ServicePrometheusCommands,
     },
 }
 
@@ -791,14 +778,14 @@ pub enum MemberCommands {
         org_id: Option<String>,
     },
 
-    /// Update member role
+    /// Update member roles
     Update {
         /// User ID
         user_id: String,
 
-        /// Role to assign
+        /// Role IDs to assign (can be specified multiple times)
         #[arg(long)]
-        role: String,
+        role_id: Vec<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -831,9 +818,9 @@ pub enum InvitationCommands {
         #[arg(long)]
         email: String,
 
-        /// Role to assign
+        /// Role IDs to assign (can be specified multiple times)
         #[arg(long)]
-        role: String,
+        role_id: Vec<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -876,9 +863,9 @@ pub enum KeyCommands {
         #[arg(long)]
         name: String,
 
-        /// Roles to assign (can be specified multiple times)
+        /// Role IDs to assign (can be specified multiple times)
         #[arg(long)]
-        role: Vec<String>,
+        role_id: Vec<String>,
 
         /// Expiration date (ISO 8601 format)
         #[arg(long)]
@@ -908,9 +895,9 @@ pub enum KeyCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Roles to assign (can be specified multiple times)
+        /// Role IDs to assign (can be specified multiple times)
         #[arg(long)]
-        role: Vec<String>,
+        role_id: Vec<String>,
 
         /// Key state (e.g., enabled, disabled)
         #[arg(long)]
@@ -1007,67 +994,6 @@ pub enum ByocCommands {
 }
 
 #[derive(Subcommand)]
-pub enum BackupBucketCommands {
-    /// List backup buckets for a service
-    List {
-        /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Create a backup bucket
-    Create {
-        /// Service ID
-        service_id: String,
-
-        /// Bucket provider (AWS, GCP, AZURE)
-        #[arg(long)]
-        bucket_provider: String,
-
-        /// Bucket path
-        #[arg(long)]
-        bucket_path: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Update a backup bucket
-    Update {
-        /// Service ID
-        service_id: String,
-
-        /// Bucket ID
-        bucket_id: String,
-
-        /// Bucket path
-        #[arg(long)]
-        bucket_path: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Delete a backup bucket
-    Delete {
-        /// Service ID
-        service_id: String,
-
-        /// Bucket ID
-        bucket_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
 pub enum BackupConfigCommands {
     /// Get backup configuration for a service
     Get {
@@ -1098,25 +1024,3 @@ pub enum BackupConfigCommands {
     },
 }
 
-#[derive(Subcommand)]
-pub enum ServicePrometheusCommands {
-    /// Get Prometheus metrics configuration for a service
-    Get {
-        /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Setup Prometheus metrics for a service
-    Setup {
-        /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}

@@ -594,65 +594,6 @@ impl CloudClient {
         .await
     }
 
-    // Phase 6 - Backup Bucket endpoints
-    pub async fn list_backup_buckets(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<Vec<BackupBucket>> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/backupBucket",
-            org_id, service_id
-        ))
-        .await
-    }
-
-    pub async fn create_backup_bucket(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &CreateBackupBucketRequest,
-    ) -> Result<BackupBucket> {
-        self.post(
-            &format!(
-                "/organizations/{}/services/{}/backupBucket",
-                org_id, service_id
-            ),
-            request,
-        )
-        .await
-    }
-
-    pub async fn update_backup_bucket(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        bucket_id: &str,
-        request: &UpdateBackupBucketRequest,
-    ) -> Result<BackupBucket> {
-        self.patch(
-            &format!(
-                "/organizations/{}/services/{}/backupBucket/{}",
-                org_id, service_id, bucket_id
-            ),
-            request,
-        )
-        .await
-    }
-
-    pub async fn delete_backup_bucket(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        bucket_id: &str,
-    ) -> Result<()> {
-        self.delete(&format!(
-            "/organizations/{}/services/{}/backupBucket/{}",
-            org_id, service_id, bucket_id
-        ))
-        .await
-    }
-
     // Phase 6 - Backup Config endpoints
     pub async fn get_backup_config(
         &self,
@@ -678,34 +619,6 @@ impl CloudClient {
                 org_id, service_id
             ),
             request,
-        )
-        .await
-    }
-
-    // Phase 6 - Service Prometheus endpoints
-    pub async fn get_service_prometheus(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<PrometheusConfig> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/prometheus",
-            org_id, service_id
-        ))
-        .await
-    }
-
-    pub async fn setup_service_prometheus(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<PrometheusConfig> {
-        self.post(
-            &format!(
-                "/organizations/{}/services/{}/prometheus",
-                org_id, service_id
-            ),
-            &SetupPrometheusRequest {},
         )
         .await
     }

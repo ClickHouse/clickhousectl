@@ -96,9 +96,9 @@ pub struct Organization {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub private_endpoints: Option<Vec<serde_json::Value>>,
+    pub private_endpoints: Option<Vec<PrivateEndpoint>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub byoc_config: Option<Vec<serde_json::Value>>,
+    pub byoc_config: Option<Vec<ByocInfrastructure>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
 }
@@ -487,11 +487,10 @@ pub struct Member {
     pub assigned_roles: Option<Vec<AssignedRole>>,
 }
 
-/// Update member request (change role)
+/// Update member request
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateMemberRequest {
-    pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
 }
@@ -516,7 +515,6 @@ pub struct Invitation {
 #[serde(rename_all = "camelCase")]
 pub struct CreateInvitationRequest {
     pub email: String,
-    pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
 }
@@ -570,9 +568,6 @@ pub struct CreateApiKeyRequest {
     pub state: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub roles: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -599,9 +594,6 @@ pub struct UpdateApiKeyRequest {
     pub name: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub roles: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -615,7 +607,7 @@ pub struct UpdateApiKeyRequest {
 }
 
 // =============================================================================
-// Activity, BYOC, Backup, Backup Bucket, Backup Config, Prometheus
+// Activity, BYOC, Backup, Backup Config
 // =============================================================================
 
 /// Activity log entry
@@ -715,70 +707,6 @@ pub struct UpdateByocRequest {
     pub display_name: Option<String>,
 }
 
-/// Backup bucket configuration (oneOf: AWS, GCP, Azure variants in OpenAPI spec)
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BackupBucket {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub bucket_provider: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket_path: Option<String>,
-    // AWS-specific
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iam_role_arn: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iam_role_session_name: Option<String>,
-    // GCP-specific
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_key_id: Option<String>,
-    // Azure-specific
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_name: Option<String>,
-}
-
-/// Create backup bucket request
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateBackupBucketRequest {
-    pub bucket_provider: String,
-    pub bucket_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iam_role_arn: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iam_role_session_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_key_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret_access_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connection_string: Option<String>,
-}
-
-/// Update backup bucket request
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateBackupBucketRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iam_role_arn: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iam_role_session_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub access_key_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret_access_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connection_string: Option<String>,
-}
-
 /// Backup configuration
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -805,19 +733,3 @@ pub struct UpdateBackupConfigRequest {
     pub backup_start_time: Option<String>,
 }
 
-/// Service-level Prometheus configuration
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PrometheusConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
-}
-
-/// Setup Prometheus for a service
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupPrometheusRequest {}
