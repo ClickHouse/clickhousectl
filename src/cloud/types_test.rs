@@ -488,7 +488,7 @@ fn test_create_service_request_full() {
 }
 
 #[test]
-fn test_create_service_request_excludes_deprecated_fields() {
+fn test_create_service_request_excludes_deprecated_and_byoc_fields() {
     let req = CreateServiceRequest {
         name: "my-svc".to_string(),
         provider: CloudProvider::Aws,
@@ -500,6 +500,7 @@ fn test_create_service_request_excludes_deprecated_fields() {
     assert!(json.get("minTotalMemoryGb").is_none());
     assert!(json.get("maxTotalMemoryGb").is_none());
     assert!(json.get("privateEndpointIds").is_none());
+    assert!(json.get("byocId").is_none());
 }
 
 #[test]
