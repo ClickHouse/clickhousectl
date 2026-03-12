@@ -1503,6 +1503,28 @@ fn test_service_provider_values() {
 }
 
 #[test]
+fn test_service_region_values() {
+    let regions = [
+        "ap-northeast-1", "ap-northeast-2", "ap-south-1", "ap-southeast-1",
+        "ap-southeast-2", "eu-central-1", "eu-west-1", "eu-west-2",
+        "il-central-1", "us-east-1", "us-east-2", "us-west-2", "us-east1",
+        "us-central1", "europe-west4", "asia-southeast1", "asia-northeast1",
+        "eastus", "eastus2", "westus3", "germanywestcentral", "centralus",
+    ];
+    for region in &regions {
+        let json = serde_json::json!({
+            "id": "svc-1",
+            "name": "svc",
+            "provider": "aws",
+            "region": region,
+            "state": "running"
+        });
+        let svc: Service = serde_json::from_value(json).unwrap();
+        assert_eq!(svc.region, *region);
+    }
+}
+
+#[test]
 fn test_service_release_channel_values() {
     for channel in &["slow", "default", "fast"] {
         let json = serde_json::json!({
