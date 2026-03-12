@@ -568,6 +568,16 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: BackupConfigCommands,
     },
+
+    /// Get service Prometheus metrics
+    Prometheus {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

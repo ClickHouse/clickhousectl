@@ -137,6 +137,37 @@ impl CloudClient {
         Ok(())
     }
 
+    /// Send a request and return a plaintext response body.
+    async fn request_text(&self, req: reqwest::RequestBuilder) -> Result<String> {
+        let response = req
+            .header("Authorization", &self.auth_header)
+            .send()
+            .await
+            .map_err(|e| CloudError {
+                message: format!("Request failed: {}", e),
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| CloudError {
+            message: format!("Failed to read response: {}", e),
+        })?;
+
+        if !status.is_success() {
+            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body) {
+                if let Some(err) = api_resp.error {
+                    return Err(CloudError {
+                        message: err.message,
+                    });
+                }
+            }
+            return Err(CloudError {
+                message: format!("API error ({}): {}", status, body),
+            });
+        }
+
+        Ok(body)
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", BASE_URL, path)
     }
@@ -166,6 +197,10 @@ impl CloudClient {
     async fn delete(&self, path: &str) -> Result<()> {
         self.request_no_body(self.client.delete(&self.url(path)))
             .await
+    }
+
+    async fn get_text(&self, path: &str) -> Result<String> {
+        self.request_text(self.client.get(&self.url(path))).await
     }
 
     // Organization endpoints
@@ -385,6 +420,18 @@ impl CloudClient {
     ) -> Result<PrivateEndpointConfig> {
         self.get(&format!(
             "/organizations/{}/services/{}/privateEndpointConfig",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn get_service_prometheus(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<String> {
+        self.get_text(&format!(
+            "/organizations/{}/services/{}/prometheus",
             org_id, service_id
         ))
         .await

@@ -617,6 +617,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     cloud::commands::backup_config_update(&client, &service_id, schedule.as_deref(), retention_period_days, org_id.as_deref(), json).await
                 }
             },
+            ServiceCommands::Prometheus { service_id, org_id } => {
+                cloud::commands::service_prometheus(&client, &service_id, org_id.as_deref()).await
+            }
         },
         CloudCommands::Member { command } => match command {
             MemberCommands::List { org_id } => {
