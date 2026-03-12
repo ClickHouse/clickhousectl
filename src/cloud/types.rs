@@ -925,7 +925,8 @@ pub struct UsageCostRecord {
 pub struct Member {
     pub user_id: String,
     pub email: String,
-    pub role: OrganizationRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<OrganizationRole>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -948,7 +949,8 @@ pub struct UpdateMemberRequest {
 pub struct Invitation {
     pub id: String,
     pub email: String,
-    pub role: OrganizationRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<OrganizationRole>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -737,7 +737,8 @@ pub async fn member_list(
         println!("Members:");
         for m in members {
             let name = m.name.as_deref().unwrap_or("");
-            println!("  {} ({}) - {} [{}]", m.email, m.user_id, m.role, name);
+            let role = m.role.as_deref().unwrap_or("-");
+            println!("  {} ({}) - {} [{}]", m.email, m.user_id, role, name);
         }
     }
     Ok(())
@@ -758,7 +759,7 @@ pub async fn member_get(
     } else {
         println!("Member: {}", member.email);
         println!("  User ID: {}", member.user_id);
-        println!("  Role: {}", member.role);
+        println!("  Role: {}", member.role.as_deref().unwrap_or("-"));
         if let Some(name) = &member.name {
             println!("  Name: {}", name);
         }
@@ -831,7 +832,8 @@ pub async fn invitation_list(
         println!("Invitations:");
         for inv in invitations {
             let expires = inv.expire_at.as_deref().unwrap_or("-");
-            println!("  {} ({}) - {} [expires: {}]", inv.email, inv.id, inv.role, expires);
+            let role = inv.role.as_deref().unwrap_or("-");
+            println!("  {} ({}) - {} [expires: {}]", inv.email, inv.id, role, expires);
         }
     }
     Ok(())
@@ -880,7 +882,7 @@ pub async fn invitation_get(
     } else {
         println!("Invitation: {}", inv.id);
         println!("  Email: {}", inv.email);
-        println!("  Role: {}", inv.role);
+        println!("  Role: {}", inv.role.as_deref().unwrap_or("-"));
         if let Some(created) = &inv.created_at {
             println!("  Created: {}", created);
         }

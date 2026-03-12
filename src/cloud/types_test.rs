@@ -978,7 +978,7 @@ fn test_member_deserialize() {
     let member: Member = serde_json::from_value(json).unwrap();
     assert_eq!(member.user_id, "user-1");
     assert_eq!(member.email, "alice@example.com");
-    assert_eq!(member.role, "admin");
+    assert_eq!(member.role.as_deref(), Some("admin"));
     assert_eq!(member.name.as_deref(), Some("Alice"));
     assert_eq!(member.joined_at.as_deref(), Some("2024-03-01T12:00:00Z"));
     assert_eq!(member.assigned_roles.as_ref().unwrap().len(), 1);
@@ -987,11 +987,11 @@ fn test_member_deserialize() {
 
 #[test]
 fn test_member_deserialize_minimal() {
-    let json = r#"{"userId":"user-2","email":"bob@example.com","role":"developer"}"#;
+    let json = r#"{"userId":"user-2","email":"bob@example.com"}"#;
     let member: Member = serde_json::from_str(json).unwrap();
     assert_eq!(member.user_id, "user-2");
     assert_eq!(member.email, "bob@example.com");
-    assert_eq!(member.role, "developer");
+    assert!(member.role.is_none());
     assert!(member.name.is_none());
     assert!(member.joined_at.is_none());
     assert!(member.assigned_roles.is_none());
@@ -1006,7 +1006,7 @@ fn test_member_role_values() {
             "role": role
         });
         let member: Member = serde_json::from_value(json).unwrap();
-        assert_eq!(member.role, *role);
+        assert_eq!(member.role.as_deref(), Some(*role));
     }
 }
 
@@ -1042,10 +1042,22 @@ fn test_invitation_deserialize() {
     let inv: Invitation = serde_json::from_value(json).unwrap();
     assert_eq!(inv.id, "inv-1");
     assert_eq!(inv.email, "carol@example.com");
-    assert_eq!(inv.role, "developer");
+    assert_eq!(inv.role.as_deref(), Some("developer"));
     assert_eq!(inv.created_at.as_deref(), Some("2024-06-01T00:00:00Z"));
     assert_eq!(inv.expire_at.as_deref(), Some("2024-06-08T00:00:00Z"));
     assert_eq!(inv.assigned_roles.as_ref().unwrap().len(), 1);
+}
+
+#[test]
+fn test_invitation_deserialize_minimal() {
+    let json = r#"{"id":"inv-2","email":"minimal@example.com"}"#;
+    let invitation: Invitation = serde_json::from_str(json).unwrap();
+    assert_eq!(invitation.id, "inv-2");
+    assert_eq!(invitation.email, "minimal@example.com");
+    assert!(invitation.role.is_none());
+    assert!(invitation.created_at.is_none());
+    assert!(invitation.expire_at.is_none());
+    assert!(invitation.assigned_roles.is_none());
 }
 
 #[test]
@@ -1057,7 +1069,7 @@ fn test_invitation_role_values() {
             "role": role
         });
         let invitation: Invitation = serde_json::from_value(json).unwrap();
-        assert_eq!(invitation.role, *role);
+        assert_eq!(invitation.role.as_deref(), Some(*role));
     }
 }
 
