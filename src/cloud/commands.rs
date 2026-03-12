@@ -314,7 +314,7 @@ pub async fn backup_list(
                 .size_in_bytes
                 .map(|s| format_bytes(s))
                 .unwrap_or_else(|| "-".to_string());
-            let created = backup.created_at.as_deref().unwrap_or("-");
+            let created = backup.started_at.as_deref().unwrap_or("-");
             println!("  {} - {} ({}) {}", backup.id, backup.status, size, created);
         }
     }
@@ -337,7 +337,7 @@ pub async fn backup_get(
     } else {
         println!("Backup: {}", backup.id);
         println!("  Status: {}", backup.status);
-        if let Some(created) = &backup.created_at {
+        if let Some(created) = &backup.started_at {
             println!("  Created: {}", created);
         }
         if let Some(finished) = &backup.finished_at {
@@ -1023,7 +1023,7 @@ pub async fn activity_list(
         println!("Activities:");
         for a in activities {
             let created = a.created_at.as_deref().unwrap_or("-");
-            println!("  {} - {} [{}] {}", a.id, a.activity_type, a.status, created);
+            println!("  {} - {} {}", a.id, a.activity_type, created);
         }
     }
     Ok(())
@@ -1044,7 +1044,6 @@ pub async fn activity_get(
     } else {
         println!("Activity: {}", activity.id);
         println!("  Type: {}", activity.activity_type);
-        println!("  Status: {}", activity.status);
         if let Some(actor_type) = &activity.actor_type {
             println!("  Actor Type: {}", actor_type);
         }
@@ -1064,18 +1063,20 @@ pub async fn activity_get(
 
 pub async fn byoc_create(
     client: &CloudClient,
-    provider: &str,
-    region: &str,
-    vpc_id: Option<&str>,
+    region_id: &str,
+    account_id: &str,
+    display_name: Option<&str>,
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     let request = CreateByocRequest {
-        provider: provider.to_string(),
-        region: region.to_string(),
-        vpc_id: vpc_id.map(String::from),
+        region_id: region_id.to_string(),
+        account_id: account_id.to_string(),
+        availability_zone_suffixes: None,
+        vpc_cidr_range: None,
+        display_name: display_name.map(String::from),
     };
 
     let byoc = client.create_byoc(&org_id, &request).await?;
@@ -1086,8 +1087,12 @@ pub async fn byoc_create(
         let id = byoc.id.as_deref().unwrap_or("-");
         let state = byoc.state.as_deref().unwrap_or("-");
         println!("BYOC infrastructure created: {} [{}]", id, state);
-        println!("  Provider: {}", byoc.provider);
-        println!("  Region: {}", byoc.region);
+        if let Some(provider) = &byoc.cloud_provider {
+            println!("  Provider: {}", provider);
+        }
+        if let Some(region) = &byoc.region_id {
+            println!("  Region: {}", region);
+        }
     }
     Ok(())
 }
@@ -1095,16 +1100,14 @@ pub async fn byoc_create(
 pub async fn byoc_update(
     client: &CloudClient,
     byoc_id: &str,
-    state: Option<&str>,
-    vpc_id: Option<&str>,
+    display_name: Option<&str>,
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     let request = UpdateByocRequest {
-        state: state.map(String::from),
-        vpc_id: vpc_id.map(String::from),
+        display_name: display_name.map(String::from),
     };
 
     let byoc = client.update_byoc(&org_id, byoc_id, &request).await?;
@@ -1154,8 +1157,8 @@ pub async fn backup_bucket_list(
         println!("Backup Buckets:");
         for b in buckets {
             let id = b.id.as_deref().unwrap_or("-");
-            let state = b.state.as_deref().unwrap_or("-");
-            println!("  {} - {} [{}]", id, b.bucket_name, state);
+            let path = b.bucket_path.as_deref().unwrap_or("-");
+            println!("  {} - {} [{}]", id, b.bucket_provider, path);
         }
     }
     Ok(())
@@ -1164,16 +1167,22 @@ pub async fn backup_bucket_list(
 pub async fn backup_bucket_create(
     client: &CloudClient,
     service_id: &str,
-    bucket_name: &str,
-    bucket_path: Option<&str>,
+    bucket_provider: &str,
+    bucket_path: &str,
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     let request = CreateBackupBucketRequest {
-        bucket_name: bucket_name.to_string(),
-        bucket_path: bucket_path.map(String::from),
+        bucket_provider: bucket_provider.to_string(),
+        bucket_path: bucket_path.to_string(),
+        iam_role_arn: None,
+        iam_role_session_name: None,
+        access_key_id: None,
+        secret_access_key: None,
+        container_name: None,
+        connection_string: None,
     };
 
     let bucket = client.create_backup_bucket(&org_id, service_id, &request).await?;
@@ -1182,7 +1191,7 @@ pub async fn backup_bucket_create(
         println!("{}", serde_json::to_string_pretty(&bucket)?);
     } else {
         let id = bucket.id.as_deref().unwrap_or("-");
-        println!("Backup bucket created: {} ({})", bucket.bucket_name, id);
+        println!("Backup bucket created: {} ({})", bucket.bucket_provider, id);
     }
     Ok(())
 }
@@ -1192,7 +1201,6 @@ pub async fn backup_bucket_update(
     service_id: &str,
     bucket_id: &str,
     bucket_path: Option<&str>,
-    state: Option<&str>,
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1200,7 +1208,7 @@ pub async fn backup_bucket_update(
 
     let request = UpdateBackupBucketRequest {
         bucket_path: bucket_path.map(String::from),
-        state: state.map(String::from),
+        ..Default::default()
     };
 
     let bucket = client.update_backup_bucket(&org_id, service_id, bucket_id, &request).await?;
@@ -1208,8 +1216,7 @@ pub async fn backup_bucket_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&bucket)?);
     } else {
-        let s = bucket.state.as_deref().unwrap_or("-");
-        println!("Backup bucket {} updated [{}]", bucket_id, s);
+        println!("Backup bucket {} updated", bucket_id);
     }
     Ok(())
 }

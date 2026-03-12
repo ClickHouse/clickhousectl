@@ -112,16 +112,18 @@ fn test_backup_deserialize() {
     let json = serde_json::json!({
         "id": "backup-1",
         "serviceId": "svc-1",
-        "status": "completed",
-        "createdAt": "2024-01-01T00:00:00Z",
+        "status": "done",
+        "startedAt": "2024-01-01T00:00:00Z",
         "finishedAt": "2024-01-01T00:05:00Z",
         "sizeInBytes": 1048576
     });
     let backup: Backup = serde_json::from_value(json).unwrap();
     assert_eq!(backup.id, "backup-1");
     assert_eq!(backup.service_id.as_deref(), Some("svc-1"));
-    assert_eq!(backup.status, "completed");
+    assert_eq!(backup.status, "done");
     assert_eq!(backup.size_in_bytes, Some(1048576));
+    assert_eq!(backup.started_at.as_deref(), Some("2024-01-01T00:00:00Z"));
+    assert_eq!(backup.finished_at.as_deref(), Some("2024-01-01T00:05:00Z"));
 }
 
 #[test]
@@ -539,7 +541,7 @@ fn test_api_key_deserialize() {
         "id": "key-1",
         "name": "my-key",
         "state": "enabled",
-        "roles": ["admin", "reader"],
+        "roles": ["admin", "developer"],
         "createdAt": "2024-01-15T10:00:00Z",
         "expiresAt": "2025-01-15T10:00:00Z"
     });
@@ -547,7 +549,7 @@ fn test_api_key_deserialize() {
     assert_eq!(key.id, "key-1");
     assert_eq!(key.name, "my-key");
     assert_eq!(key.state, "enabled");
-    assert_eq!(key.roles.as_ref().unwrap(), &["admin", "reader"]);
+    assert_eq!(key.roles.as_ref().unwrap(), &["admin", "developer"]);
     assert_eq!(key.created_at.as_deref(), Some("2024-01-15T10:00:00Z"));
     assert_eq!(key.expires_at.as_deref(), Some("2025-01-15T10:00:00Z"));
 }
@@ -589,12 +591,12 @@ fn test_create_api_key_response_deserialize() {
 fn test_update_api_key_request_serialize() {
     let req = UpdateApiKeyRequest {
         name: Some("renamed-key".to_string()),
-        roles: Some(vec!["writer".to_string()]),
+        roles: Some(vec!["query_endpoints".to_string()]),
         state: Some("disabled".to_string()),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "renamed-key");
-    assert_eq!(json["roles"], serde_json::json!(["writer"]));
+    assert_eq!(json["roles"], serde_json::json!(["query_endpoints"]));
     assert_eq!(json["state"], "disabled");
 }
 
@@ -604,16 +606,14 @@ fn test_update_api_key_request_serialize() {
 fn test_activity_deserialize() {
     let json = serde_json::json!({
         "id": "act-1",
-        "activityType": "service.create",
-        "status": "completed",
+        "type": "service_create",
         "actorType": "user",
         "actorId": "user-5",
         "createdAt": "2024-07-01T08:00:00Z"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
     assert_eq!(act.id, "act-1");
-    assert_eq!(act.activity_type, "service.create");
-    assert_eq!(act.status, "completed");
+    assert_eq!(act.activity_type, "service_create");
     assert_eq!(act.actor_type.as_deref(), Some("user"));
     assert_eq!(act.actor_id.as_deref(), Some("user-5"));
     assert_eq!(act.created_at.as_deref(), Some("2024-07-01T08:00:00Z"));
@@ -623,80 +623,110 @@ fn test_activity_deserialize() {
 fn test_byoc_infrastructure_deserialize() {
     let json = serde_json::json!({
         "id": "byoc-1",
-        "provider": "aws",
-        "region": "eu-west-1",
-        "state": "active"
+        "cloudProvider": "aws",
+        "regionId": "eu-west-1",
+        "state": "infra-ready",
+        "accountName": "my-account",
+        "displayName": "Production BYOC"
     });
     let byoc: ByocInfrastructure = serde_json::from_value(json).unwrap();
     assert_eq!(byoc.id.as_deref(), Some("byoc-1"));
-    assert_eq!(byoc.provider, "aws");
-    assert_eq!(byoc.region, "eu-west-1");
-    assert_eq!(byoc.state.as_deref(), Some("active"));
+    assert_eq!(byoc.cloud_provider.as_deref(), Some("aws"));
+    assert_eq!(byoc.region_id.as_deref(), Some("eu-west-1"));
+    assert_eq!(byoc.state.as_deref(), Some("infra-ready"));
+    assert_eq!(byoc.account_name.as_deref(), Some("my-account"));
+    assert_eq!(byoc.display_name.as_deref(), Some("Production BYOC"));
 }
 
 #[test]
 fn test_create_byoc_request_serialize() {
     let req = CreateByocRequest {
-        provider: "gcp".to_string(),
-        region: "us-central1".to_string(),
-        vpc_id: Some("vpc-123".to_string()),
+        region_id: "us-central1".to_string(),
+        account_id: "acct-123".to_string(),
+        availability_zone_suffixes: Some(vec!["a".to_string(), "b".to_string()]),
+        vpc_cidr_range: Some("10.0.0.0/16".to_string()),
+        display_name: Some("My BYOC".to_string()),
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["provider"], "gcp");
-    assert_eq!(json["region"], "us-central1");
-    assert_eq!(json["vpcId"], "vpc-123");
+    assert_eq!(json["regionId"], "us-central1");
+    assert_eq!(json["accountId"], "acct-123");
+    assert_eq!(json["availabilityZoneSuffixes"], serde_json::json!(["a", "b"]));
+    assert_eq!(json["vpcCidrRange"], "10.0.0.0/16");
+    assert_eq!(json["displayName"], "My BYOC");
 }
 
 #[test]
 fn test_update_byoc_request_serialize() {
     let req = UpdateByocRequest {
-        state: Some("deactivated".to_string()),
-        vpc_id: Some("vpc-456".to_string()),
+        display_name: Some("Renamed BYOC".to_string()),
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["state"], "deactivated");
-    assert_eq!(json["vpcId"], "vpc-456");
+    assert_eq!(json["displayName"], "Renamed BYOC");
 }
 
 #[test]
-fn test_backup_bucket_deserialize() {
+fn test_backup_bucket_deserialize_aws() {
     let json = serde_json::json!({
         "id": "bb-1",
-        "bucketName": "my-backups",
+        "bucketProvider": "AWS",
         "bucketPath": "/path/to/backups",
-        "provider": "aws",
-        "region": "us-east-1",
-        "state": "active"
+        "iamRoleArn": "arn:aws:iam::123456789012:role/backup-role",
+        "iamRoleSessionName": "clickhouse-backup"
     });
     let bucket: BackupBucket = serde_json::from_value(json).unwrap();
     assert_eq!(bucket.id.as_deref(), Some("bb-1"));
-    assert_eq!(bucket.bucket_name, "my-backups");
+    assert_eq!(bucket.bucket_provider, "AWS");
     assert_eq!(bucket.bucket_path.as_deref(), Some("/path/to/backups"));
-    assert_eq!(bucket.provider.as_deref(), Some("aws"));
-    assert_eq!(bucket.region.as_deref(), Some("us-east-1"));
-    assert_eq!(bucket.state.as_deref(), Some("active"));
+    assert_eq!(bucket.iam_role_arn.as_deref(), Some("arn:aws:iam::123456789012:role/backup-role"));
+}
+
+#[test]
+fn test_backup_bucket_deserialize_gcp() {
+    let json = serde_json::json!({
+        "id": "bb-2",
+        "bucketProvider": "GCP",
+        "bucketPath": "/gcp/backups",
+        "accessKeyId": "GOOG1234"
+    });
+    let bucket: BackupBucket = serde_json::from_value(json).unwrap();
+    assert_eq!(bucket.bucket_provider, "GCP");
+    assert_eq!(bucket.access_key_id.as_deref(), Some("GOOG1234"));
 }
 
 #[test]
 fn test_create_backup_bucket_request_serialize() {
     let req = CreateBackupBucketRequest {
-        bucket_name: "new-bucket".to_string(),
-        bucket_path: Some("/backups".to_string()),
+        bucket_provider: "AWS".to_string(),
+        bucket_path: "/backups".to_string(),
+        iam_role_arn: Some("arn:aws:iam::123456789012:role/backup".to_string()),
+        iam_role_session_name: Some("clickhouse".to_string()),
+        access_key_id: None,
+        secret_access_key: None,
+        container_name: None,
+        connection_string: None,
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["bucketName"], "new-bucket");
+    assert_eq!(json["bucketProvider"], "AWS");
     assert_eq!(json["bucketPath"], "/backups");
+    assert_eq!(json["iamRoleArn"], "arn:aws:iam::123456789012:role/backup");
+    assert!(json.get("accessKeyId").is_none());
+    assert!(json.get("containerName").is_none());
 }
 
 #[test]
 fn test_update_backup_bucket_request_serialize() {
     let req = UpdateBackupBucketRequest {
         bucket_path: Some("/new/path".to_string()),
-        state: Some("disabled".to_string()),
+        iam_role_arn: Some("arn:aws:iam::123456789012:role/new-role".to_string()),
+        iam_role_session_name: None,
+        access_key_id: None,
+        secret_access_key: None,
+        container_name: None,
+        connection_string: None,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["bucketPath"], "/new/path");
-    assert_eq!(json["state"], "disabled");
+    assert_eq!(json["iamRoleArn"], "arn:aws:iam::123456789012:role/new-role");
 }
 
 #[test]

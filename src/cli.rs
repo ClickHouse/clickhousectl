@@ -964,17 +964,17 @@ pub enum ActivityCommands {
 pub enum ByocCommands {
     /// Create a BYOC configuration
     Create {
-        /// Cloud provider (e.g., aws, gcp, azure)
+        /// Region ID (e.g., us-east-1, us-central1)
         #[arg(long)]
-        provider: String,
+        region_id: String,
 
-        /// Region (e.g., us-east-1)
+        /// Cloud account ID
         #[arg(long)]
-        region: String,
+        account_id: String,
 
-        /// VPC ID
+        /// Display name for the infrastructure
         #[arg(long)]
-        vpc_id: Option<String>,
+        display_name: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -986,13 +986,9 @@ pub enum ByocCommands {
         /// BYOC ID
         byoc_id: String,
 
-        /// State
+        /// Display name for the infrastructure
         #[arg(long)]
-        state: Option<String>,
-
-        /// VPC ID
-        #[arg(long)]
-        vpc_id: Option<String>,
+        display_name: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -1027,13 +1023,13 @@ pub enum BackupBucketCommands {
         /// Service ID
         service_id: String,
 
-        /// Bucket name
+        /// Bucket provider (AWS, GCP, AZURE)
         #[arg(long)]
-        bucket_name: String,
+        bucket_provider: String,
 
         /// Bucket path
         #[arg(long)]
-        bucket_path: Option<String>,
+        bucket_path: String,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -1051,10 +1047,6 @@ pub enum BackupBucketCommands {
         /// Bucket path
         #[arg(long)]
         bucket_path: Option<String>,
-
-        /// Bucket state
-        #[arg(long)]
-        state: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]

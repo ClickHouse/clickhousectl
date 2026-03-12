@@ -615,11 +615,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 BackupBucketCommands::List { service_id, org_id } => {
                     cloud::commands::backup_bucket_list(&client, &service_id, org_id.as_deref(), json).await
                 }
-                BackupBucketCommands::Create { service_id, bucket_name, bucket_path, org_id } => {
-                    cloud::commands::backup_bucket_create(&client, &service_id, &bucket_name, bucket_path.as_deref(), org_id.as_deref(), json).await
+                BackupBucketCommands::Create { service_id, bucket_provider, bucket_path, org_id } => {
+                    cloud::commands::backup_bucket_create(&client, &service_id, &bucket_provider, &bucket_path, org_id.as_deref(), json).await
                 }
-                BackupBucketCommands::Update { service_id, bucket_id, bucket_path, state, org_id } => {
-                    cloud::commands::backup_bucket_update(&client, &service_id, &bucket_id, bucket_path.as_deref(), state.as_deref(), org_id.as_deref(), json).await
+                BackupBucketCommands::Update { service_id, bucket_id, bucket_path, org_id } => {
+                    cloud::commands::backup_bucket_update(&client, &service_id, &bucket_id, bucket_path.as_deref(), org_id.as_deref(), json).await
                 }
                 BackupBucketCommands::Delete { service_id, bucket_id, org_id } => {
                     cloud::commands::backup_bucket_delete(&client, &service_id, &bucket_id, org_id.as_deref()).await
@@ -696,11 +696,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             }
         },
         CloudCommands::Byoc { command } => match command {
-            ByocCommands::Create { provider, region, vpc_id, org_id } => {
-                cloud::commands::byoc_create(&client, &provider, &region, vpc_id.as_deref(), org_id.as_deref(), json).await
+            ByocCommands::Create { region_id, account_id, display_name, org_id } => {
+                cloud::commands::byoc_create(&client, &region_id, &account_id, display_name.as_deref(), org_id.as_deref(), json).await
             }
-            ByocCommands::Update { byoc_id, state, vpc_id, org_id } => {
-                cloud::commands::byoc_update(&client, &byoc_id, state.as_deref(), vpc_id.as_deref(), org_id.as_deref(), json).await
+            ByocCommands::Update { byoc_id, display_name, org_id } => {
+                cloud::commands::byoc_update(&client, &byoc_id, display_name.as_deref(), org_id.as_deref(), json).await
             }
             ByocCommands::Delete { byoc_id, org_id } => {
                 cloud::commands::byoc_delete(&client, &byoc_id, org_id.as_deref()).await

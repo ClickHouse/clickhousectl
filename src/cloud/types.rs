@@ -67,7 +67,7 @@ pub struct Backup {
     pub id: String,
     pub service_id: Option<String>,
     pub status: String,
-    pub created_at: Option<String>,
+    pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub size_in_bytes: Option<u64>,
 }
@@ -436,8 +436,8 @@ pub struct UpdateApiKeyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct Activity {
     pub id: String,
+    #[serde(rename = "type")]
     pub activity_type: String,
-    pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -446,76 +446,117 @@ pub struct Activity {
     pub created_at: Option<String>,
 }
 
-/// BYOC (Bring Your Own Cloud) infrastructure
+/// BYOC (Bring Your Own Cloud) infrastructure (ByocConfig in OpenAPI spec)
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ByocInfrastructure {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    pub provider: String,
-    pub region: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
-/// Create BYOC infrastructure request
+/// Create BYOC infrastructure request (ByocInfrastructurePostRequest in OpenAPI spec)
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateByocRequest {
-    pub provider: String,
-    pub region: String,
+    pub region_id: String,
+    pub account_id: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vpc_id: Option<String>,
+    pub availability_zone_suffixes: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vpc_cidr_range: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
-/// Update BYOC infrastructure request
+/// Update BYOC infrastructure request (ByocInfrastructurePatchRequest in OpenAPI spec)
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateByocRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vpc_id: Option<String>,
+    pub display_name: Option<String>,
 }
 
-/// Backup bucket configuration
+/// Backup bucket configuration (oneOf: AWS, GCP, Azure variants in OpenAPI spec)
+/// Uses a flat struct with optional provider-specific fields.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupBucket {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    pub bucket_name: String,
+    pub bucket_provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket_path: Option<String>,
+    // AWS-specific
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub iam_role_arn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub region: Option<String>,
+    pub iam_role_session_name: Option<String>,
+    // GCP-specific
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
+    pub access_key_id: Option<String>,
+    // Azure-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
 }
 
-/// Create backup bucket request
+/// Create backup bucket request (oneOf: provider-specific in OpenAPI spec)
+/// Uses a flat struct — set fields for the target provider, leave others as None.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupBucketRequest {
-    pub bucket_name: String,
-
+    pub bucket_provider: String,
+    pub bucket_path: String,
+    // AWS-specific
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket_path: Option<String>,
+    pub iam_role_arn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role_session_name: Option<String>,
+    // GCP-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<String>,
+    // Azure-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<String>,
 }
 
-/// Update backup bucket request
+/// Update backup bucket request (provider-specific fields required per spec)
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBackupBucketRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket_path: Option<String>,
-
+    // AWS-specific
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
+    pub iam_role_arn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role_session_name: Option<String>,
+    // GCP-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret_access_key: Option<String>,
+    // Azure-specific
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<String>,
 }
 
 /// Backup configuration (schedule and retention)
