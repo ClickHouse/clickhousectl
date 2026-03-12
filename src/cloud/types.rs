@@ -122,8 +122,6 @@ pub struct OrganizationPatchPrivateEndpoint {
 #[serde(rename_all = "camelCase")]
 pub struct OrganizationPrivateEndpointsPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub remove: Option<Vec<OrganizationPatchPrivateEndpoint>>,
 }
 
@@ -732,4 +730,3 @@ pub struct UpdateBackupConfigRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_start_time: Option<String>,
 }
-

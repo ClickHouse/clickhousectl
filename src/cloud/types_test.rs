@@ -635,32 +635,25 @@ fn test_update_org_request_full() {
     let req = UpdateOrgRequest {
         name: Some("Updated Org".to_string()),
         private_endpoints: Some(OrganizationPrivateEndpointsPatch {
-            add: Some(vec![OrganizationPatchPrivateEndpoint {
+            remove: Some(vec![OrganizationPatchPrivateEndpoint {
                 id: Some("vpce-123".to_string()),
                 description: Some("My endpoint".to_string()),
                 cloud_provider: Some("aws".to_string()),
                 region: Some("us-east-1".to_string()),
             }]),
-            remove: None,
         }),
         enable_core_dumps: Some(true),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "Updated Org");
-    assert_eq!(json["privateEndpoints"]["add"][0]["id"], "vpce-123");
-    assert_eq!(json["privateEndpoints"]["add"][0]["cloudProvider"], "aws");
+    assert_eq!(json["privateEndpoints"]["remove"][0]["id"], "vpce-123");
+    assert_eq!(json["privateEndpoints"]["remove"][0]["cloudProvider"], "aws");
     assert_eq!(json["enableCoreDumps"], true);
 }
 
 #[test]
 fn test_organization_private_endpoints_patch_serialize() {
     let patch = OrganizationPrivateEndpointsPatch {
-        add: Some(vec![OrganizationPatchPrivateEndpoint {
-            id: Some("vpce-1".to_string()),
-            description: None,
-            cloud_provider: None,
-            region: None,
-        }]),
         remove: Some(vec![OrganizationPatchPrivateEndpoint {
             id: Some("vpce-2".to_string()),
             description: None,
@@ -669,7 +662,6 @@ fn test_organization_private_endpoints_patch_serialize() {
         }]),
     };
     let json = serde_json::to_value(&patch).unwrap();
-    assert_eq!(json["add"][0]["id"], "vpce-1");
     assert_eq!(json["remove"][0]["id"], "vpce-2");
 }
 
@@ -677,7 +669,6 @@ fn test_organization_private_endpoints_patch_serialize() {
 fn test_organization_private_endpoints_patch_empty() {
     let patch = OrganizationPrivateEndpointsPatch::default();
     let json = serde_json::to_value(&patch).unwrap();
-    assert!(json.get("add").is_none());
     assert!(json.get("remove").is_none());
 }
 
