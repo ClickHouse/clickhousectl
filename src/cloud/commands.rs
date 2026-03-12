@@ -638,12 +638,10 @@ pub async fn org_update(
 pub async fn org_prometheus(
     client: &CloudClient,
     org_id: &str,
-    json: bool,
+    _json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prom = client.get_org_prometheus(org_id).await?;
-
-    // Org prometheus returns text/plain, so we just print the JSON value
-    println!("{}", serde_json::to_string_pretty(&prom)?);
+    println!("{}", prom);
     Ok(())
 }
 

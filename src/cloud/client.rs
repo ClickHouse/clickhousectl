@@ -436,8 +436,8 @@ impl CloudClient {
             .await
     }
 
-    pub async fn get_org_prometheus(&self, org_id: &str) -> Result<serde_json::Value> {
-        self.get(&format!("/organizations/{}/prometheus", org_id))
+    pub async fn get_org_prometheus(&self, org_id: &str) -> Result<String> {
+        self.get_text(&format!("/organizations/{}/prometheus", org_id))
             .await
     }
 
