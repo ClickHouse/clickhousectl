@@ -939,6 +939,14 @@ pub enum ActivityCommands {
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
+
+        /// Start date filter (ISO 8601, e.g. 2024-01-01)
+        #[arg(long)]
+        from_date: Option<String>,
+
+        /// End date filter (ISO 8601, e.g. 2024-12-31)
+        #[arg(long)]
+        to_date: Option<String>,
     },
 
     /// Get activity log entry details

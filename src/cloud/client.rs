@@ -504,9 +504,26 @@ impl CloudClient {
     }
 
     // Phase 6 - Activity endpoints
-    pub async fn list_activities(&self, org_id: &str) -> Result<Vec<Activity>> {
-        self.get(&format!("/organizations/{}/activities", org_id))
-            .await
+    pub async fn list_activities(
+        &self,
+        org_id: &str,
+        from_date: Option<&str>,
+        to_date: Option<&str>,
+    ) -> Result<Vec<Activity>> {
+        let path = format!("/organizations/{}/activities", org_id);
+        let mut params = Vec::new();
+        if let Some(from) = from_date {
+            params.push(format!("from_date={}", urlencoding::encode(from)));
+        }
+        if let Some(to) = to_date {
+            params.push(format!("to_date={}", urlencoding::encode(to)));
+        }
+        let full_url = if params.is_empty() {
+            self.url(&path)
+        } else {
+            format!("{}?{}", self.url(&path), params.join("&"))
+        };
+        self.request(self.client.get(full_url)).await
     }
 
     pub async fn get_activity(&self, org_id: &str, activity_id: &str) -> Result<Activity> {

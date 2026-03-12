@@ -1005,11 +1005,13 @@ pub async fn key_delete(
 pub async fn activity_list(
     client: &CloudClient,
     org_id: Option<&str>,
+    from_date: Option<&str>,
+    to_date: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let activities = client.list_activities(&org_id).await?;
+    let activities = client.list_activities(&org_id, from_date, to_date).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&activities)?);

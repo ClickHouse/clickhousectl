@@ -688,8 +688,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             }
         },
         CloudCommands::Activity { command } => match command {
-            ActivityCommands::List { org_id } => {
-                cloud::commands::activity_list(&client, org_id.as_deref(), json).await
+            ActivityCommands::List { org_id, from_date, to_date } => {
+                cloud::commands::activity_list(&client, org_id.as_deref(), from_date.as_deref(), to_date.as_deref(), json).await
             }
             ActivityCommands::Get { activity_id, org_id } => {
                 cloud::commands::activity_get(&client, &activity_id, org_id.as_deref(), json).await
