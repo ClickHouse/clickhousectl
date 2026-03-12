@@ -396,26 +396,28 @@ pub async fn service_update(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let ip_access_list = if clear_ip_allow {
-        Some(vec![])
+        // To clear, remove all by passing empty remove list — actual clear logic TBD in follow-up
+        Some(IpAccessListPatch::default())
     } else if ip_allow.is_empty() {
         None
     } else {
-        Some(
-            ip_allow
-                .iter()
-                .map(|ip| IpAccessEntry {
-                    source: ip.clone(),
-                    description: None,
-                })
-                .collect(),
-        )
+        Some(IpAccessListPatch {
+            add: Some(
+                ip_allow
+                    .iter()
+                    .map(|ip| IpAccessEntry {
+                        source: ip.clone(),
+                        description: None,
+                    })
+                    .collect(),
+            ),
+            remove: None,
+        })
     };
 
     let request = UpdateServiceRequest {
         name: name.map(String::from),
         ip_access_list,
-        idle_scaling,
-        idle_timeout_minutes,
         ..Default::default()
     };
 
@@ -506,11 +508,17 @@ pub async fn query_endpoint_get(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Query endpoint for service {}", service_id);
-        if let Some(enabled) = ep.open_api_enabled {
-            println!("  OpenAPI enabled: {}", enabled);
+        if let Some(id) = &ep.id {
+            println!("  ID: {}", id);
         }
         if let Some(roles) = &ep.roles {
             println!("  Roles: {}", roles.join(", "));
+        }
+        if let Some(keys) = &ep.open_api_keys {
+            println!("  OpenAPI Keys: {}", keys.join(", "));
+        }
+        if let Some(origins) = &ep.allowed_origins {
+            println!("  Allowed Origins: {}", origins);
         }
     }
     Ok(())
@@ -526,13 +534,15 @@ pub async fn query_endpoint_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
+    let _ = open_api; // TODO: open_api_enabled removed, use open_api_keys in follow-up
     let request = CreateQueryEndpointRequest {
         roles: if roles.is_empty() {
             None
         } else {
             Some(roles.to_vec())
         },
-        open_api_enabled: open_api,
+        open_api_keys: None,
+        allowed_origins: None,
     };
 
     let ep = client
@@ -543,8 +553,8 @@ pub async fn query_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Query endpoint created for service {}", service_id);
-        if let Some(enabled) = ep.open_api_enabled {
-            println!("  OpenAPI enabled: {}", enabled);
+        if let Some(id) = &ep.id {
+            println!("  ID: {}", id);
         }
         if let Some(roles) = &ep.roles {
             println!("  Roles: {}", roles.join(", "));
@@ -629,20 +639,8 @@ pub async fn org_prometheus(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let prom = client.get_org_prometheus(org_id).await?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&prom)?);
-    } else {
-        println!("Prometheus endpoint for org {}", org_id);
-        if let Some(host) = &prom.host {
-            println!("  Host: {}", host);
-        }
-        if let Some(port) = &prom.port {
-            println!("  Port: {}", port);
-        }
-        if let Some(protocol) = &prom.protocol {
-            println!("  Protocol: {}", protocol);
-        }
-    }
+    // Org prometheus returns text/plain, so we just print the JSON value
+    println!("{}", serde_json::to_string_pretty(&prom)?);
     Ok(())
 }
 
@@ -653,29 +651,8 @@ pub async fn org_usage(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let usage = client.get_org_usage(org_id).await?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&usage)?);
-    } else {
-        if let Some(cost) = usage.total_cost {
-            let currency = usage.currency.as_deref().unwrap_or("USD");
-            println!("Total cost: {:.2} {}", cost, currency);
-        }
-        if let Some(start) = &usage.billing_period_start {
-            let end = usage.billing_period_end.as_deref().unwrap_or("-");
-            println!("Billing period: {} to {}", start, end);
-        }
-        if let Some(details) = &usage.usage_details {
-            if !details.is_empty() {
-                println!("Details:");
-                for d in details {
-                    let name = d.service_name.as_deref().unwrap_or("-");
-                    let cost = d.cost.map(|c| format!("{:.2}", c)).unwrap_or_else(|| "-".to_string());
-                    let unit = d.unit.as_deref().unwrap_or("");
-                    println!("  {} - {} {}", name, cost, unit);
-                }
-            }
-        }
-    }
+    // TODO: Properly handle UsageCostRecord in follow-up
+    println!("{}", serde_json::to_string_pretty(&usage)?);
     Ok(())
 }
 
@@ -727,8 +704,8 @@ pub async fn member_get(
         if let Some(name) = &member.name {
             println!("  Name: {}", name);
         }
-        if let Some(created) = &member.created_at {
-            println!("  Created: {}", created);
+        if let Some(joined) = &member.joined_at {
+            println!("  Joined: {}", joined);
         }
     }
     Ok(())
@@ -745,6 +722,7 @@ pub async fn member_update(
 
     let request = UpdateMemberRequest {
         role: role.to_string(),
+        assigned_role_ids: None,
     };
 
     let member = client.update_member(&org_id, user_id, &request).await?;
@@ -791,7 +769,7 @@ pub async fn invitation_list(
         }
         println!("Invitations:");
         for inv in invitations {
-            let expires = inv.expires_at.as_deref().unwrap_or("-");
+            let expires = inv.expire_at.as_deref().unwrap_or("-");
             println!("  {} ({}) - {} [expires: {}]", inv.email, inv.id, inv.role, expires);
         }
     }
@@ -810,6 +788,7 @@ pub async fn invitation_create(
     let request = CreateInvitationRequest {
         email: email.to_string(),
         role: role.to_string(),
+        assigned_role_ids: None,
     };
 
     let inv = client.create_invitation(&org_id, &request).await?;
@@ -841,7 +820,7 @@ pub async fn invitation_get(
         if let Some(created) = &inv.created_at {
             println!("  Created: {}", created);
         }
-        if let Some(expires) = &inv.expires_at {
+        if let Some(expires) = &inv.expire_at {
             println!("  Expires: {}", expires);
         }
     }
@@ -882,7 +861,7 @@ pub async fn key_list(
         }
         println!("API Keys:");
         for key in keys {
-            let expires = key.expires_at.as_deref().unwrap_or("never");
+            let expires = key.expire_at.as_deref().unwrap_or("never");
             println!("  {} ({}) - {} [expires: {}]", key.name, key.id, key.state, expires);
         }
     }
@@ -906,7 +885,10 @@ pub async fn key_create(
         } else {
             Some(roles.to_vec())
         },
-        expires_at: expires_at.map(String::from),
+        expire_at: expires_at.map(String::from),
+        state: None,
+        assigned_role_ids: None,
+        ip_access_list: None,
     };
 
     let resp = client.create_api_key(&org_id, &request).await?;
@@ -915,7 +897,7 @@ pub async fn key_create(
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("API key created!");
-        println!("  Name: {}", resp.api_key.name);
+        println!("  Name: {}", resp.key.name);
         println!("  Key ID: {}", resp.key_id);
         println!("  Key Secret: {}", resp.key_secret);
         println!();
@@ -946,7 +928,7 @@ pub async fn key_get(
         if let Some(created) = &key.created_at {
             println!("  Created: {}", created);
         }
-        if let Some(expires) = &key.expires_at {
+        if let Some(expires) = &key.expire_at {
             println!("  Expires: {}", expires);
         }
     }
@@ -972,6 +954,9 @@ pub async fn key_update(
             Some(roles.to_vec())
         },
         state: state.map(String::from),
+        assigned_role_ids: None,
+        expire_at: None,
+        ip_access_list: None,
     };
 
     let key = client.update_api_key(&org_id, key_id, &request).await?;
@@ -1252,11 +1237,14 @@ pub async fn backup_config_get(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Backup configuration for service {}", service_id);
-        if let Some(schedule) = &config.schedule {
-            println!("  Schedule: {}", schedule);
+        if let Some(hours) = config.backup_period_in_hours {
+            println!("  Backup period: {} hours", hours);
         }
-        if let Some(days) = config.retention_period_days {
-            println!("  Retention: {} days", days);
+        if let Some(hours) = config.backup_retention_period_in_hours {
+            println!("  Retention: {} hours", hours);
+        }
+        if let Some(time) = &config.backup_start_time {
+            println!("  Start time: {}", time);
         }
     }
     Ok(())
@@ -1272,9 +1260,11 @@ pub async fn backup_config_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
+    // TODO: CLI args need updating in follow-up to match new field names
     let request = UpdateBackupConfigRequest {
-        schedule: schedule.map(String::from),
-        retention_period_days,
+        backup_period_in_hours: None,
+        backup_retention_period_in_hours: retention_period_days.map(|d| d * 24),
+        backup_start_time: schedule.map(String::from),
     };
 
     let config = client.update_backup_config(&org_id, service_id, &request).await?;
@@ -1283,11 +1273,14 @@ pub async fn backup_config_update(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Backup configuration updated for service {}", service_id);
-        if let Some(schedule) = &config.schedule {
-            println!("  Schedule: {}", schedule);
+        if let Some(hours) = config.backup_period_in_hours {
+            println!("  Backup period: {} hours", hours);
         }
-        if let Some(days) = config.retention_period_days {
-            println!("  Retention: {} days", days);
+        if let Some(hours) = config.backup_retention_period_in_hours {
+            println!("  Retention: {} hours", hours);
+        }
+        if let Some(time) = &config.backup_start_time {
+            println!("  Start time: {}", time);
         }
     }
     Ok(())

@@ -376,12 +376,12 @@ impl CloudClient {
             .await
     }
 
-    pub async fn get_org_prometheus(&self, org_id: &str) -> Result<OrgPrometheus> {
+    pub async fn get_org_prometheus(&self, org_id: &str) -> Result<serde_json::Value> {
         self.get(&format!("/organizations/{}/prometheus", org_id))
             .await
     }
 
-    pub async fn get_org_usage(&self, org_id: &str) -> Result<UsageCost> {
+    pub async fn get_org_usage(&self, org_id: &str) -> Result<serde_json::Value> {
         self.get(&format!("/organizations/{}/usageCost", org_id))
             .await
     }

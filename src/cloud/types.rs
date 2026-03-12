@@ -15,33 +15,16 @@ pub struct ApiError {
     pub message: String,
 }
 
-/// Organization
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Organization {
-    pub id: String,
-    pub name: String,
-    pub created_at: Option<String>,
-}
+// =============================================================================
+// Shared helper types
+// =============================================================================
 
-/// Service (ClickHouse Cloud instance)
-#[derive(Debug, Deserialize, Serialize)]
+/// Resource tag
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Service {
-    pub id: String,
-    pub name: String,
-    pub provider: String,
-    pub region: String,
-    pub state: String,
-    pub tier: Option<String>,
-    pub idle_scaling: Option<bool>,
-    pub idle_timeout_minutes: Option<u32>,
-    pub ip_access_list: Option<Vec<IpAccessEntry>>,
-    pub created_at: Option<String>,
-    pub endpoints: Option<Vec<Endpoint>>,
-    pub min_replica_memory_gb: Option<u32>,
-    pub max_replica_memory_gb: Option<u32>,
-    pub num_replicas: Option<u32>,
+pub struct ResourceTag {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -52,118 +35,228 @@ pub struct IpAccessEntry {
     pub description: Option<String>,
 }
 
+/// Patch-style add/remove for IP access list entries
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IpAccessListPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add: Option<Vec<IpAccessEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<IpAccessEntry>>,
+}
+
+/// Patch-style add/remove for private endpoint IDs
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstancePrivateEndpointsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<String>>,
+}
+
+/// Patch-style add/remove for resource tags
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceTagsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub add: Option<Vec<ResourceTag>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<ResourceTag>>,
+}
+
+/// Enable/disable a service endpoint protocol (e.g. mysql)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceEndpointChange {
+    pub protocol: String,
+    pub enabled: bool,
+}
+
+/// Role assigned to an API key, member, or invitation
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignedRole {
+    pub role_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_type: Option<String>,
+}
+
+// =============================================================================
+// Organization
+// =============================================================================
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Organization {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_endpoints: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byoc_config: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
+}
+
+/// Update organization request
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateOrgRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+// =============================================================================
+// Service
+// =============================================================================
+
+/// Service (ClickHouse Cloud instance)
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Service {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub region: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<Endpoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_replicas: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_assumed_role_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub available_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transparent_data_encryption_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption_role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compliance_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<ResourceTag>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
     pub protocol: String,
     pub host: String,
     pub port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
-/// Backup
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Backup {
-    pub id: String,
-    pub service_id: Option<String>,
-    pub status: String,
-    pub started_at: Option<String>,
-    pub finished_at: Option<String>,
-    pub size_in_bytes: Option<u64>,
-}
-
-/// Resource tag
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ResourceTag {
-    pub key: String,
-    pub value: String,
-}
-
-/// Create service request - all non-deprecated fields from OpenAPI spec
+/// Create service request — all non-deprecated fields from OpenAPI spec
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateServiceRequest {
-    /// Name of the service (required)
     pub name: String,
-
-    /// Cloud provider: aws, gcp, azure (required)
     pub provider: String,
-
-    /// Service region (required)
     pub region: String,
 
-    /// List of IP addresses allowed to access the service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessEntry>>,
 
-    /// Minimum memory per replica in GB (8-356, multiple of 4)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<u32>,
 
-    /// Maximum memory per replica in GB (8-356, multiple of 4)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<u32>,
 
-    /// Number of replicas (1-20)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<u32>,
 
-    /// Allow scale to zero when idle (default: true)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
 
-    /// Minimum idle timeout in minutes (>= 5)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<u32>,
 
-    /// Backup ID to restore from
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_id: Option<String>,
 
-    /// Release channel: slow, default, fast
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<String>,
 
-    /// Tags for the service
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<ResourceTag>>,
 
-    /// Data warehouse ID (for read replicas)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_warehouse_id: Option<String>,
 
-    /// Make service read-only (requires data_warehouse_id)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_readonly: Option<bool>,
 
-    /// Customer-provided disk encryption key
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
 
-    /// Role for disk encryption
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption_assumed_role_identifier: Option<String>,
 
-    /// Enable Transparent Data Encryption (enterprise only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_transparent_data_encryption: Option<bool>,
 
-    /// BYOC region ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub byoc_id: Option<String>,
 
-    /// Compliance type: hipaa, pci
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compliance_type: Option<String>,
 
-    /// Custom instance profile (enterprise only)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
 
-    /// Accept private preview terms
     #[serde(skip_serializing_if = "Option::is_none")]
     pub private_preview_terms_checked: Option<bool>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<ServiceEndpointChange>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
 }
 
 /// Create service response includes credentials
@@ -178,7 +271,7 @@ pub struct CreateServiceResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateChangeRequest {
-    pub command: String, // "start" or "stop"
+    pub command: String,
 }
 
 /// Update service request (PATCH /organizations/{orgId}/services/{serviceId})
@@ -189,16 +282,25 @@ pub struct UpdateServiceRequest {
     pub name: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip_access_list: Option<Vec<IpAccessEntry>>,
+    pub ip_access_list: Option<IpAccessListPatch>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_scaling: Option<bool>,
+    pub private_endpoint_ids: Option<InstancePrivateEndpointsPatch>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub idle_timeout_minutes: Option<u32>,
+    pub release_channel: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<ResourceTag>>,
+    pub endpoints: Option<Vec<ServiceEndpointChange>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transparent_data_encryption_key_id: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<InstanceTagsPatch>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
 }
 
 /// Replica scaling request (PATCH .../services/{serviceId}/replicaScaling)
@@ -228,14 +330,18 @@ pub struct PasswordResetResponse {
     pub password: String,
 }
 
-/// Service query endpoint
+/// Service query endpoint (ServiceQueryAPIEndpoint in OpenAPI spec)
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceQueryEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub open_api_enabled: Option<bool>,
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_api_keys: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<String>,
 }
 
 /// Create query endpoint request
@@ -246,7 +352,10 @@ pub struct CreateQueryEndpointRequest {
     pub roles: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub open_api_enabled: Option<bool>,
+    pub open_api_keys: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<String>,
 }
 
 /// Private endpoint
@@ -274,61 +383,36 @@ pub struct CreatePrivateEndpointRequest {
 }
 
 // =============================================================================
-// Phase 3 — Org types
+// Usage cost
 // =============================================================================
 
-/// Update organization request
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateOrgRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-/// Organization Prometheus endpoint configuration
+/// Usage cost record (per-entity, per-day)
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OrgPrometheus {
+pub struct UsageCostRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol: Option<String>,
-}
-
-/// Usage cost summary for an organization
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageCost {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_cost: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub currency: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub billing_period_start: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub billing_period_end: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage_details: Option<Vec<UsageCostDetail>>,
-}
-
-/// Individual service usage cost detail
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UsageCostDetail {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_name: Option<String>,
+    pub data_warehouse_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cost: Option<f64>,
+    pub date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
+    pub entity_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<serde_json::Value>,
+    #[serde(rename = "totalCHC")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_chc: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
 }
 
 // =============================================================================
-// Phase 4 — Member types
+// Member types
 // =============================================================================
 
 /// Organization member
@@ -341,14 +425,18 @@ pub struct Member {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
+    pub joined_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
 }
 
 /// Update member request (change role)
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateMemberRequest {
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_role_ids: Option<Vec<String>>,
 }
 
 /// Organization invitation
@@ -361,7 +449,9 @@ pub struct Invitation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
+    pub expire_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
 }
 
 /// Create invitation request
@@ -370,10 +460,12 @@ pub struct Invitation {
 pub struct CreateInvitationRequest {
     pub email: String,
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_role_ids: Option<Vec<String>>,
 }
 
 // =============================================================================
-// Phase 5 — API Key types
+// API Key types
 // =============================================================================
 
 /// API key
@@ -386,9 +478,17 @@ pub struct ApiKey {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
+    pub expire_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessEntry>>,
 }
 
 /// Create API key request
@@ -398,17 +498,26 @@ pub struct CreateApiKeyRequest {
     pub name: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub expire_at: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
+    pub assigned_role_ids: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessEntry>>,
 }
 
 /// Create API key response (includes the secret, shown only once)
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyResponse {
-    pub api_key: ApiKey,
+    pub key: ApiKey,
     pub key_id: String,
     pub key_secret: String,
 }
@@ -424,11 +533,20 @@ pub struct UpdateApiKeyRequest {
     pub roles: Option<Vec<String>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_role_ids: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expire_at: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessEntry>>,
 }
 
 // =============================================================================
-// Phase 6 — Activity, BYOC, Backup Bucket, Backup Config, Prometheus
+// Activity, BYOC, Backup, Backup Bucket, Backup Config, Prometheus
 // =============================================================================
 
 /// Activity log entry
@@ -444,6 +562,45 @@ pub struct Activity {
     pub actor_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_details: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_ip_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_update_type: Option<String>,
+}
+
+/// Backup
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Backup {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_in_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_in_seconds: Option<f64>,
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<serde_json::Value>,
 }
 
 /// BYOC (Bring Your Own Cloud) infrastructure (ByocConfig in OpenAPI spec)
@@ -464,7 +621,7 @@ pub struct ByocInfrastructure {
     pub display_name: Option<String>,
 }
 
-/// Create BYOC infrastructure request (ByocInfrastructurePostRequest in OpenAPI spec)
+/// Create BYOC infrastructure request
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateByocRequest {
@@ -481,7 +638,7 @@ pub struct CreateByocRequest {
     pub display_name: Option<String>,
 }
 
-/// Update BYOC infrastructure request (ByocInfrastructurePatchRequest in OpenAPI spec)
+/// Update BYOC infrastructure request
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateByocRequest {
@@ -490,7 +647,6 @@ pub struct UpdateByocRequest {
 }
 
 /// Backup bucket configuration (oneOf: AWS, GCP, Azure variants in OpenAPI spec)
-/// Uses a flat struct with optional provider-specific fields.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupBucket {
@@ -512,61 +668,56 @@ pub struct BackupBucket {
     pub container_name: Option<String>,
 }
 
-/// Create backup bucket request (oneOf: provider-specific in OpenAPI spec)
-/// Uses a flat struct — set fields for the target provider, leave others as None.
+/// Create backup bucket request
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateBackupBucketRequest {
     pub bucket_provider: String,
     pub bucket_path: String,
-    // AWS-specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iam_role_arn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iam_role_session_name: Option<String>,
-    // GCP-specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_access_key: Option<String>,
-    // Azure-specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_string: Option<String>,
 }
 
-/// Update backup bucket request (provider-specific fields required per spec)
+/// Update backup bucket request
 #[derive(Debug, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBackupBucketRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket_path: Option<String>,
-    // AWS-specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iam_role_arn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iam_role_session_name: Option<String>,
-    // GCP-specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret_access_key: Option<String>,
-    // Azure-specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_string: Option<String>,
 }
 
-/// Backup configuration (schedule and retention)
+/// Backup configuration
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupConfiguration {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<String>,
+    pub backup_period_in_hours: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub retention_period_days: Option<u32>,
+    pub backup_retention_period_in_hours: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_start_time: Option<String>,
 }
 
 /// Update backup configuration request
@@ -574,10 +725,13 @@ pub struct BackupConfiguration {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBackupConfigRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<String>,
+    pub backup_period_in_hours: Option<u32>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub retention_period_days: Option<u32>,
+    pub backup_retention_period_in_hours: Option<u32>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_start_time: Option<String>,
 }
 
 /// Service-level Prometheus configuration
