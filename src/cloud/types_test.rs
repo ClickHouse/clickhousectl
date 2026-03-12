@@ -56,6 +56,22 @@ fn test_organization_with_new_fields() {
 }
 
 #[test]
+fn test_byoc_config_state_values() {
+    for state in &["infra-ready", "infra-provisioning", "infra-terminated"] {
+        let json = serde_json::json!({
+            "id": "org-1",
+            "name": "My Org",
+            "byocConfig": [{
+                "id": "byoc-1",
+                "state": state
+            }]
+        });
+        let org: Organization = serde_json::from_value(json).unwrap();
+        assert_eq!(org.byoc_config.as_ref().unwrap()[0].state.as_deref(), Some(*state));
+    }
+}
+
+#[test]
 fn test_organization_roundtrip() {
     let org = Organization {
         id: "org-1".to_string(),
@@ -385,6 +401,18 @@ fn test_service_endpoint_change_serialize() {
 }
 
 #[test]
+fn test_service_toggleable_endpoint_protocol_values() {
+    for protocol in &["mysql"] {
+        let change = ServiceEndpointChange {
+            protocol: ServiceToggleableEndpointProtocol::Mysql,
+            enabled: false,
+        };
+        let json = serde_json::to_value(&change).unwrap();
+        assert_eq!(json["protocol"], *protocol);
+    }
+}
+
+#[test]
 fn test_assigned_role_deserialize() {
     let json = serde_json::json!({
         "roleId": "role-uuid-1",
@@ -510,6 +538,19 @@ fn test_state_change_request_serialize() {
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["command"], "start");
+}
+
+#[test]
+fn test_service_state_command_values() {
+    let cases = [
+        (ServiceStateCommand::Start, "start"),
+        (ServiceStateCommand::Stop, "stop"),
+    ];
+    for (command, expected) in cases {
+        let req = StateChangeRequest { command };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["command"], expected);
+    }
 }
 
 // ── ApiResponse wrapper tests ───────────────────────────────────────
@@ -1547,6 +1588,30 @@ fn test_service_region_values() {
         });
         let svc: Service = serde_json::from_value(json).unwrap();
         assert_eq!(svc.region, *region);
+    }
+}
+
+#[test]
+fn test_service_tier_values() {
+    let tiers = [
+        "development", "production", "dedicated_high_mem", "dedicated_high_cpu",
+        "dedicated_standard", "dedicated_standard_n2d_standard_4",
+        "dedicated_standard_n2d_standard_8", "dedicated_standard_n2d_standard_32",
+        "dedicated_standard_n2d_standard_128",
+        "dedicated_standard_n2d_standard_32_16SSD",
+        "dedicated_standard_n2d_standard_64_24SSD",
+    ];
+    for tier in &tiers {
+        let json = serde_json::json!({
+            "id": "svc-1",
+            "name": "svc",
+            "provider": "aws",
+            "region": "us-east-1",
+            "state": "running",
+            "tier": tier
+        });
+        let svc: Service = serde_json::from_value(json).unwrap();
+        assert_eq!(svc.tier.as_deref(), Some(*tier));
     }
 }
 
