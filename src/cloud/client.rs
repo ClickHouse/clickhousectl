@@ -274,10 +274,6 @@ impl CloudClient {
             .await
     }
 
-    async fn get_text(&self, path: &str) -> Result<String> {
-        self.request_text(self.client.get(&self.url(path))).await
-    }
-
     // Organization endpoints
     pub async fn list_organizations(&self) -> Result<Vec<Organization>> {
         self.get("/organizations").await
@@ -399,14 +395,14 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
+        request: &ServicePasswordPatchRequest,
     ) -> Result<ServicePasswordPatchResponse> {
-        // The API expects an empty JSON object
         self.patch(
             &format!(
                 "/organizations/{}/services/{}/password",
                 org_id, service_id
             ),
-            &serde_json::json!({}),
+            request,
         )
         .await
     }

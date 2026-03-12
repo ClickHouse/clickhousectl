@@ -22,6 +22,169 @@ where
     T::from_str(value).map_err(|err| format!("invalid {} '{}': {}", field, value, err).into())
 }
 
+fn parse_tag(value: &str) -> ResourceTag {
+    match value.split_once('=') {
+        Some((key, tag_value)) => ResourceTag {
+            key: key.to_string(),
+            value: Some(tag_value.to_string()),
+        },
+        None => ResourceTag {
+            key: value.to_string(),
+            value: None,
+        },
+    }
+}
+
+fn parse_tags(values: &[String]) -> Option<Vec<ResourceTag>> {
+    (!values.is_empty()).then(|| values.iter().map(|value| parse_tag(value)).collect())
+}
+
+fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessEntry>> {
+    (!values.is_empty()).then(|| {
+        values
+            .iter()
+            .map(|value| IpAccessEntry {
+                source: value.clone(),
+                description: None,
+            })
+            .collect()
+    })
+}
+
+fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAccessListPatch> {
+    let patch = IpAccessListPatch {
+        add: parse_ip_access_entries(add),
+        remove: parse_ip_access_entries(remove),
+    };
+
+    (patch.add.is_some() || patch.remove.is_some()).then_some(patch)
+}
+
+fn parse_private_endpoint_ids_patch(
+    add: &[String],
+    remove: &[String],
+) -> Option<InstancePrivateEndpointsPatch> {
+    let patch = InstancePrivateEndpointsPatch {
+        add: (!add.is_empty()).then(|| add.to_vec()),
+        remove: (!remove.is_empty()).then(|| remove.to_vec()),
+    };
+
+    (patch.add.is_some() || patch.remove.is_some()).then_some(patch)
+}
+
+fn parse_service_endpoint_changes(
+    enable: &[String],
+    disable: &[String],
+) -> Result<Option<Vec<ServiceEndpointChange>>, Box<dyn std::error::Error>> {
+    let mut changes = Vec::new();
+
+    for protocol in enable {
+        changes.push(ServiceEndpointChange {
+            protocol: parse_enum(protocol, "endpoint")?,
+            enabled: true,
+        });
+    }
+
+    for protocol in disable {
+        changes.push(ServiceEndpointChange {
+            protocol: parse_enum(protocol, "endpoint")?,
+            enabled: false,
+        });
+    }
+
+    Ok((!changes.is_empty()).then_some(changes))
+}
+
+fn parse_instance_tag_patches(add: &[String], remove: &[String]) -> Option<Vec<InstanceTagsPatch>> {
+    let patch = InstanceTagsPatch {
+        add: parse_tags(add),
+        remove: parse_tags(remove),
+    };
+
+    (patch.add.is_some() || patch.remove.is_some()).then_some(vec![patch])
+}
+
+fn parse_org_private_endpoint_remove(
+    value: &str,
+) -> Result<OrganizationPatchPrivateEndpoint, Box<dyn std::error::Error>> {
+    let mut endpoint = OrganizationPatchPrivateEndpoint {
+        id: None,
+        description: None,
+        cloud_provider: None,
+        region: None,
+    };
+
+    for (index, part) in value.split(',').enumerate() {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        if index == 0 && !part.contains('=') {
+            endpoint.id = Some(part.to_string());
+            continue;
+        }
+
+        let (key, raw_value) = part
+            .split_once('=')
+            .ok_or_else(|| format!("invalid remove-private-endpoint segment '{}'", part))?;
+
+        match key {
+            "id" => endpoint.id = Some(raw_value.to_string()),
+            "description" => endpoint.description = Some(raw_value.to_string()),
+            "cloud-provider" => {
+                endpoint.cloud_provider = Some(parse_enum(raw_value, "cloud_provider")?)
+            }
+            "region" => endpoint.region = Some(parse_enum(raw_value, "region")?),
+            _ => {
+                return Err(format!(
+                    "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
+                    key
+                )
+                .into())
+            }
+        }
+    }
+
+    Ok(endpoint)
+}
+
+fn parse_org_private_endpoints_patch(
+    remove: &[String],
+) -> Result<Option<OrganizationPrivateEndpointsPatch>, Box<dyn std::error::Error>> {
+    if remove.is_empty() {
+        return Ok(None);
+    }
+
+    let endpoints = remove
+        .iter()
+        .map(|value| parse_org_private_endpoint_remove(value))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Some(OrganizationPrivateEndpointsPatch {
+        remove: Some(endpoints),
+    }))
+}
+
+fn parse_api_key_hash_data(
+    key_id_hash: Option<&str>,
+    key_id_suffix: Option<&str>,
+    key_secret_hash: Option<&str>,
+) -> Result<Option<ApiKeyHashData>, Box<dyn std::error::Error>> {
+    match (key_id_hash, key_id_suffix, key_secret_hash) {
+        (None, None, None) => Ok(None),
+        (Some(key_id_hash), Some(key_id_suffix), Some(key_secret_hash)) => Ok(Some(ApiKeyHashData {
+            key_id_hash: key_id_hash.to_string(),
+            key_id_suffix: key_id_suffix.to_string(),
+            key_secret_hash: key_secret_hash.to_string(),
+        })),
+        _ => Err(
+            "pre-hashed API key input requires --hash-key-id, --hash-key-id-suffix, and --hash-key-secret together"
+                .into(),
+        ),
+    }
+}
+
 pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let orgs = client.list_organizations().await?;
 
@@ -159,37 +322,98 @@ pub struct CreateServiceOptions {
     pub enable_tde: bool,
     pub compliance_type: Option<String>,
     pub profile: Option<String>,
+    pub tags: Vec<String>,
+    pub enable_endpoints: Vec<String>,
+    pub disable_endpoints: Vec<String>,
+    pub private_preview_terms_checked: bool,
+    pub enable_core_dumps: Option<bool>,
     pub org_id: Option<String>,
 }
 
-pub async fn service_create(
-    client: &CloudClient,
-    opts: CreateServiceOptions,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+#[derive(Default)]
+pub struct ServiceUpdateOptions {
+    pub name: Option<String>,
+    pub add_ip_allow: Vec<String>,
+    pub remove_ip_allow: Vec<String>,
+    pub add_private_endpoint_ids: Vec<String>,
+    pub remove_private_endpoint_ids: Vec<String>,
+    pub release_channel: Option<String>,
+    pub enable_endpoints: Vec<String>,
+    pub disable_endpoints: Vec<String>,
+    pub transparent_data_encryption_key_id: Option<String>,
+    pub add_tags: Vec<String>,
+    pub remove_tags: Vec<String>,
+    pub enable_core_dumps: Option<bool>,
+    pub org_id: Option<String>,
+}
 
-    // Build IP access list
+#[derive(Default)]
+pub struct ServiceResetPasswordOptions {
+    pub new_password_hash: Option<String>,
+    pub new_double_sha1_hash: Option<String>,
+    pub org_id: Option<String>,
+}
+
+#[derive(Default)]
+pub struct QueryEndpointCreateOptions {
+    pub roles: Vec<String>,
+    pub open_api_keys: Vec<String>,
+    pub allowed_origins: Option<String>,
+    pub org_id: Option<String>,
+}
+
+#[derive(Default)]
+pub struct OrgUpdateOptions {
+    pub name: Option<String>,
+    pub remove_private_endpoints: Vec<String>,
+    pub enable_core_dumps: Option<bool>,
+}
+
+#[derive(Default)]
+pub struct KeyCreateOptions {
+    pub name: String,
+    pub role_ids: Vec<String>,
+    pub expires_at: Option<String>,
+    pub state: Option<String>,
+    pub ip_allow: Vec<String>,
+    pub hash_key_id: Option<String>,
+    pub hash_key_id_suffix: Option<String>,
+    pub hash_key_secret: Option<String>,
+    pub org_id: Option<String>,
+}
+
+#[derive(Default)]
+pub struct KeyUpdateOptions {
+    pub name: Option<String>,
+    pub role_ids: Vec<String>,
+    pub expires_at: Option<String>,
+    pub state: Option<String>,
+    pub ip_allow: Vec<String>,
+    pub org_id: Option<String>,
+}
+
+#[derive(Default)]
+pub struct BackupConfigUpdateOptions {
+    pub backup_period_hours: Option<u32>,
+    pub backup_retention_period_hours: Option<u32>,
+    pub backup_start_time: Option<String>,
+    pub org_id: Option<String>,
+}
+
+fn build_create_service_request(
+    opts: &CreateServiceOptions,
+) -> Result<CreateServiceRequest, Box<dyn std::error::Error>> {
     let ip_access_list = if opts.ip_allow.is_empty() {
-        // Default to allow all if not specified
         Some(vec![IpAccessEntry {
             source: "0.0.0.0/0".to_string(),
             description: Some("Allow all (created by clickhousectl)".to_string()),
         }])
     } else {
-        Some(
-            opts.ip_allow
-                .iter()
-                .map(|ip| IpAccessEntry {
-                    source: ip.clone(),
-                    description: None,
-                })
-                .collect(),
-        )
+        parse_ip_access_entries(&opts.ip_allow)
     };
 
-    let request = CreateServiceRequest {
-        name: opts.name,
+    Ok(CreateServiceRequest {
+        name: opts.name.clone(),
         provider: parse_enum(&opts.provider, "provider")?,
         region: parse_enum(&opts.region, "region")?,
         ip_access_list,
@@ -198,17 +422,18 @@ pub async fn service_create(
         num_replicas: opts.num_replicas.map(f64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
-        backup_id: opts.backup_id,
+        backup_id: opts.backup_id.clone(),
         release_channel: opts
             .release_channel
             .as_deref()
             .map(|value| parse_enum(value, "release_channel"))
             .transpose()?,
-        data_warehouse_id: opts.data_warehouse_id,
-        is_readonly: if opts.is_readonly { Some(true) } else { None },
-        encryption_key: opts.encryption_key,
-        encryption_assumed_role_identifier: opts.encryption_role,
-        has_transparent_data_encryption: if opts.enable_tde { Some(true) } else { None },
+        tags: parse_tags(&opts.tags),
+        data_warehouse_id: opts.data_warehouse_id.clone(),
+        is_readonly: opts.is_readonly.then_some(true),
+        encryption_key: opts.encryption_key.clone(),
+        encryption_assumed_role_identifier: opts.encryption_role.clone(),
+        has_transparent_data_encryption: opts.enable_tde.then_some(true),
         compliance_type: opts
             .compliance_type
             .as_deref()
@@ -219,8 +444,113 @@ pub async fn service_create(
             .as_deref()
             .map(|value| parse_enum(value, "profile"))
             .transpose()?,
-        ..Default::default()
-    };
+        private_preview_terms_checked: opts.private_preview_terms_checked.then_some(true),
+        endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
+        enable_core_dumps: opts.enable_core_dumps,
+    })
+}
+
+fn build_update_service_request(
+    opts: &ServiceUpdateOptions,
+) -> Result<UpdateServiceRequest, Box<dyn std::error::Error>> {
+    Ok(UpdateServiceRequest {
+        name: opts.name.clone(),
+        ip_access_list: parse_ip_access_list_patch(&opts.add_ip_allow, &opts.remove_ip_allow),
+        private_endpoint_ids: parse_private_endpoint_ids_patch(
+            &opts.add_private_endpoint_ids,
+            &opts.remove_private_endpoint_ids,
+        ),
+        release_channel: opts
+            .release_channel
+            .as_deref()
+            .map(|value| parse_enum(value, "release_channel"))
+            .transpose()?,
+        endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
+        transparent_data_encryption_key_id: opts.transparent_data_encryption_key_id.clone(),
+        tags: parse_instance_tag_patches(&opts.add_tags, &opts.remove_tags),
+        enable_core_dumps: opts.enable_core_dumps,
+    })
+}
+
+fn build_service_password_patch_request(
+    opts: &ServiceResetPasswordOptions,
+) -> ServicePasswordPatchRequest {
+    ServicePasswordPatchRequest {
+        new_password_hash: opts.new_password_hash.clone(),
+        new_double_sha1_hash: opts.new_double_sha1_hash.clone(),
+    }
+}
+
+fn build_query_endpoint_create_request(opts: &QueryEndpointCreateOptions) -> CreateQueryEndpointRequest {
+    CreateQueryEndpointRequest {
+        roles: (!opts.roles.is_empty()).then(|| opts.roles.clone()),
+        open_api_keys: (!opts.open_api_keys.is_empty()).then(|| opts.open_api_keys.clone()),
+        allowed_origins: opts.allowed_origins.clone(),
+    }
+}
+
+fn build_org_update_request(
+    opts: &OrgUpdateOptions,
+) -> Result<UpdateOrgRequest, Box<dyn std::error::Error>> {
+    Ok(UpdateOrgRequest {
+        name: opts.name.clone(),
+        private_endpoints: parse_org_private_endpoints_patch(&opts.remove_private_endpoints)?,
+        enable_core_dumps: opts.enable_core_dumps,
+    })
+}
+
+fn build_api_key_create_request(
+    opts: &KeyCreateOptions,
+) -> Result<CreateApiKeyRequest, Box<dyn std::error::Error>> {
+    Ok(CreateApiKeyRequest {
+        name: opts.name.clone(),
+        expire_at: opts.expires_at.clone(),
+        state: opts
+            .state
+            .as_deref()
+            .map(|value| parse_enum(value, "state"))
+            .transpose()?,
+        assigned_role_ids: (!opts.role_ids.is_empty()).then(|| opts.role_ids.clone()),
+        ip_access_list: parse_ip_access_entries(&opts.ip_allow),
+        hash_data: parse_api_key_hash_data(
+            opts.hash_key_id.as_deref(),
+            opts.hash_key_id_suffix.as_deref(),
+            opts.hash_key_secret.as_deref(),
+        )?,
+    })
+}
+
+fn build_api_key_update_request(
+    opts: &KeyUpdateOptions,
+) -> Result<UpdateApiKeyRequest, Box<dyn std::error::Error>> {
+    Ok(UpdateApiKeyRequest {
+        name: opts.name.clone(),
+        assigned_role_ids: (!opts.role_ids.is_empty()).then(|| opts.role_ids.clone()),
+        expire_at: opts.expires_at.clone(),
+        state: opts
+            .state
+            .as_deref()
+            .map(|value| parse_enum(value, "state"))
+            .transpose()?,
+        ip_access_list: parse_ip_access_entries(&opts.ip_allow),
+    })
+}
+
+fn build_backup_config_update_request(opts: &BackupConfigUpdateOptions) -> UpdateBackupConfigRequest {
+    UpdateBackupConfigRequest {
+        backup_period_in_hours: opts.backup_period_hours.map(f64::from),
+        backup_retention_period_in_hours: opts.backup_retention_period_hours.map(f64::from),
+        backup_start_time: opts.backup_start_time.clone(),
+    }
+}
+
+pub async fn service_create(
+    client: &CloudClient,
+    opts: CreateServiceOptions,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_create_service_request(&opts)?;
 
     let response = client.create_service(&org_id, &request).await?;
 
@@ -403,41 +733,11 @@ pub fn auth_interactive() -> Result<(), Box<dyn std::error::Error>> {
 pub async fn service_update(
     client: &CloudClient,
     service_id: &str,
-    name: Option<&str>,
-    ip_allow: &[String],
-    clear_ip_allow: bool,
-    idle_scaling: Option<bool>,
-    idle_timeout_minutes: Option<u32>,
-    org_id: Option<&str>,
+    opts: ServiceUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let ip_access_list = if clear_ip_allow {
-        // To clear, remove all by passing empty remove list — actual clear logic TBD in follow-up
-        Some(IpAccessListPatch::default())
-    } else if ip_allow.is_empty() {
-        None
-    } else {
-        Some(IpAccessListPatch {
-            add: Some(
-                ip_allow
-                    .iter()
-                    .map(|ip| IpAccessEntry {
-                        source: ip.clone(),
-                        description: None,
-                    })
-                    .collect(),
-            ),
-            remove: None,
-        })
-    };
-
-    let request = UpdateServiceRequest {
-        name: name.map(String::from),
-        ip_access_list,
-        ..Default::default()
-    };
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_update_service_request(&opts)?;
 
     let svc = client.update_service(&org_id, service_id, &request).await?;
 
@@ -496,12 +796,12 @@ pub async fn service_scale(
 pub async fn service_reset_password(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
+    opts: ServiceResetPasswordOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let resp = client.reset_password(&org_id, service_id).await?;
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_service_password_patch_request(&opts);
+    let resp = client.reset_password(&org_id, service_id, &request).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -549,23 +849,11 @@ pub async fn query_endpoint_get(
 pub async fn query_endpoint_create(
     client: &CloudClient,
     service_id: &str,
-    roles: &[String],
-    open_api: Option<bool>,
-    org_id: Option<&str>,
+    opts: QueryEndpointCreateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let _ = open_api; // TODO: open_api_enabled removed, use open_api_keys in follow-up
-    let request = CreateQueryEndpointRequest {
-        roles: if roles.is_empty() {
-            None
-        } else {
-            Some(roles.to_vec())
-        },
-        open_api_keys: None,
-        allowed_origins: None,
-    };
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_query_endpoint_create_request(&opts);
 
     let ep = client
         .create_query_endpoint(&org_id, service_id, &request)
@@ -630,6 +918,27 @@ pub async fn private_endpoint_create(
     Ok(())
 }
 
+pub async fn private_endpoint_get_config(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let config = client
+        .get_service_private_endpoint_config(&org_id, service_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+    } else {
+        println!("Private endpoint configuration for service {}", service_id);
+        println!("  Endpoint Service ID: {}", config.endpoint_service_id);
+        println!("  Private DNS Hostname: {}", config.private_dns_hostname);
+    }
+    Ok(())
+}
+
 // =============================================================================
 // Phase 3 — Org command handlers
 // =============================================================================
@@ -637,13 +946,10 @@ pub async fn private_endpoint_create(
 pub async fn org_update(
     client: &CloudClient,
     org_id: &str,
-    name: Option<&str>,
+    opts: OrgUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let request = UpdateOrgRequest {
-        name: name.map(String::from),
-        ..Default::default()
-    };
+    let request = build_org_update_request(&opts)?;
 
     let org = client.update_organization(org_id, &request).await?;
 
@@ -936,26 +1242,11 @@ pub async fn key_list(
 
 pub async fn key_create(
     client: &CloudClient,
-    name: &str,
-    role_ids: &[String],
-    expires_at: Option<&str>,
-    org_id: Option<&str>,
+    opts: KeyCreateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = CreateApiKeyRequest {
-        name: name.to_string(),
-        expire_at: expires_at.map(String::from),
-        state: None,
-        assigned_role_ids: if role_ids.is_empty() {
-            None
-        } else {
-            Some(role_ids.to_vec())
-        },
-        ip_access_list: None,
-        hash_data: None,
-    };
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_api_key_create_request(&opts)?;
 
     let resp = client.create_api_key(&org_id, &request).await?;
 
@@ -1012,27 +1303,11 @@ pub async fn key_get(
 pub async fn key_update(
     client: &CloudClient,
     key_id: &str,
-    name: Option<&str>,
-    role_ids: &[String],
-    state: Option<&str>,
-    org_id: Option<&str>,
+    opts: KeyUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = UpdateApiKeyRequest {
-        name: name.map(String::from),
-        assigned_role_ids: if role_ids.is_empty() {
-            None
-        } else {
-            Some(role_ids.to_vec())
-        },
-        state: state
-            .map(|value| parse_enum(value, "state"))
-            .transpose()?,
-        expire_at: None,
-        ip_access_list: None,
-    };
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_api_key_update_request(&opts)?;
 
     let key = client.update_api_key(&org_id, key_id, &request).await?;
 
@@ -1151,19 +1426,11 @@ pub async fn backup_config_get(
 pub async fn backup_config_update(
     client: &CloudClient,
     service_id: &str,
-    schedule: Option<&str>,
-    retention_period_days: Option<u32>,
-    org_id: Option<&str>,
+    opts: BackupConfigUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    // TODO: CLI args need updating in follow-up to match new field names
-    let request = UpdateBackupConfigRequest {
-        backup_period_in_hours: None,
-        backup_retention_period_in_hours: retention_period_days.map(|d| f64::from(d * 24)),
-        backup_start_time: schedule.map(String::from),
-    };
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let request = build_backup_config_update_request(&opts);
 
     let config = client.update_backup_config(&org_id, service_id, &request).await?;
 
@@ -1197,5 +1464,162 @@ fn format_bytes(bytes: f64) -> String {
         format!("{:.2} KB", bytes / KB)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_create_service_request_supports_ga_optional_fields() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replica_memory_gb: Some(24),
+            max_replica_memory_gb: Some(48),
+            num_replicas: Some(3),
+            idle_scaling: Some(true),
+            idle_timeout_minutes: Some(10),
+            ip_allow: vec!["10.0.0.0/8".to_string()],
+            backup_id: Some("backup-1".to_string()),
+            release_channel: Some("fast".to_string()),
+            data_warehouse_id: Some("dw-1".to_string()),
+            is_readonly: true,
+            encryption_key: Some("key-1".to_string()),
+            encryption_role: Some("role-1".to_string()),
+            enable_tde: true,
+            compliance_type: Some("hipaa".to_string()),
+            profile: Some("v1-default".to_string()),
+            tags: vec!["env=prod".to_string()],
+            enable_endpoints: vec!["mysql".to_string()],
+            disable_endpoints: vec![],
+            private_preview_terms_checked: true,
+            enable_core_dumps: Some(true),
+            org_id: None,
+        };
+
+        let request = build_create_service_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["tags"][0]["key"], "env");
+        assert_eq!(json["endpoints"][0]["protocol"], "mysql");
+        assert_eq!(json["privatePreviewTermsChecked"], true);
+        assert_eq!(json["enableCoreDumps"], true);
+        assert!(json.get("byocId").is_none());
+    }
+
+    #[test]
+    fn build_update_service_request_supports_patch_fields() {
+        let opts = ServiceUpdateOptions {
+            name: Some("updated".to_string()),
+            add_ip_allow: vec!["10.0.0.0/8".to_string()],
+            remove_ip_allow: vec!["0.0.0.0/0".to_string()],
+            add_private_endpoint_ids: vec!["pe-1".to_string()],
+            remove_private_endpoint_ids: vec!["pe-2".to_string()],
+            release_channel: Some("default".to_string()),
+            enable_endpoints: vec!["mysql".to_string()],
+            disable_endpoints: vec![],
+            transparent_data_encryption_key_id: Some("tde-1".to_string()),
+            add_tags: vec!["env=staging".to_string()],
+            remove_tags: vec!["old=tag".to_string()],
+            enable_core_dumps: Some(false),
+            org_id: None,
+        };
+
+        let request = build_update_service_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["ipAccessList"]["add"][0]["source"], "10.0.0.0/8");
+        assert_eq!(json["ipAccessList"]["remove"][0]["source"], "0.0.0.0/0");
+        assert_eq!(json["privateEndpointIds"]["add"][0], "pe-1");
+        assert_eq!(json["privateEndpointIds"]["remove"][0], "pe-2");
+        assert_eq!(json["tags"][0]["add"][0]["key"], "env");
+        assert_eq!(json["tags"][0]["remove"][0]["key"], "old");
+        assert_eq!(json["transparentDataEncryptionKeyId"], "tde-1");
+        assert_eq!(json["enableCoreDumps"], false);
+    }
+
+    #[test]
+    fn build_api_key_requests_support_hashes_and_ip_allowlists() {
+        let create_opts = KeyCreateOptions {
+            name: "ci-key".to_string(),
+            role_ids: vec!["role-1".to_string()],
+            expires_at: Some("2025-12-31T23:59:59Z".to_string()),
+            state: Some("enabled".to_string()),
+            ip_allow: vec!["10.0.0.0/8".to_string()],
+            hash_key_id: Some("id-hash".to_string()),
+            hash_key_id_suffix: Some("abcd".to_string()),
+            hash_key_secret: Some("secret-hash".to_string()),
+            org_id: None,
+        };
+        let create_request = build_api_key_create_request(&create_opts).unwrap();
+        let create_json = serde_json::to_value(&create_request).unwrap();
+        assert_eq!(create_json["hashData"]["keyIdHash"], "id-hash");
+        assert_eq!(create_json["ipAccessList"][0]["source"], "10.0.0.0/8");
+
+        let update_opts = KeyUpdateOptions {
+            name: Some("renamed".to_string()),
+            role_ids: vec!["role-1".to_string()],
+            expires_at: Some("2025-01-01T00:00:00Z".to_string()),
+            state: Some("disabled".to_string()),
+            ip_allow: vec!["0.0.0.0/0".to_string()],
+            org_id: None,
+        };
+        let update_request = build_api_key_update_request(&update_opts).unwrap();
+        let update_json = serde_json::to_value(&update_request).unwrap();
+        assert_eq!(update_json["expireAt"], "2025-01-01T00:00:00Z");
+        assert_eq!(update_json["state"], "disabled");
+        assert_eq!(update_json["ipAccessList"][0]["source"], "0.0.0.0/0");
+    }
+
+    #[test]
+    fn build_org_and_backup_config_requests_match_tested_shapes() {
+        let org_opts = OrgUpdateOptions {
+            name: Some("Updated Org".to_string()),
+            remove_private_endpoints: vec![
+                "pe-1,description=old,cloud-provider=aws,region=us-east-1".to_string(),
+            ],
+            enable_core_dumps: Some(false),
+        };
+        let org_request = build_org_update_request(&org_opts).unwrap();
+        let org_json = serde_json::to_value(&org_request).unwrap();
+        assert_eq!(org_json["privateEndpoints"]["remove"][0]["id"], "pe-1");
+        assert_eq!(org_json["privateEndpoints"]["remove"][0]["cloudProvider"], "aws");
+        assert_eq!(org_json["enableCoreDumps"], false);
+
+        let backup_opts = BackupConfigUpdateOptions {
+            backup_period_hours: Some(12),
+            backup_retention_period_hours: Some(336),
+            backup_start_time: Some("03:00".to_string()),
+            org_id: None,
+        };
+        let backup_request = build_backup_config_update_request(&backup_opts);
+        let backup_json = serde_json::to_value(&backup_request).unwrap();
+        assert_eq!(backup_json["backupPeriodInHours"], 12.0);
+        assert_eq!(backup_json["backupRetentionPeriodInHours"], 336.0);
+        assert_eq!(backup_json["backupStartTime"], "03:00");
+    }
+
+    #[test]
+    fn build_password_and_query_endpoint_requests_use_new_fields() {
+        let password_request = build_service_password_patch_request(&ServiceResetPasswordOptions {
+            new_password_hash: Some("sha256".to_string()),
+            new_double_sha1_hash: Some("sha1".to_string()),
+            org_id: None,
+        });
+        let password_json = serde_json::to_value(&password_request).unwrap();
+        assert_eq!(password_json["newPasswordHash"], "sha256");
+        assert_eq!(password_json["newDoubleSha1Hash"], "sha1");
+
+        let query_request = build_query_endpoint_create_request(&QueryEndpointCreateOptions {
+            roles: vec!["admin".to_string()],
+            open_api_keys: vec!["key-1".to_string()],
+            allowed_origins: Some("https://example.com".to_string()),
+            org_id: None,
+        });
+        let query_json = serde_json::to_value(&query_request).unwrap();
+        assert_eq!(query_json["roles"][0], "admin");
+        assert_eq!(query_json["openApiKeys"][0], "key-1");
+        assert_eq!(query_json["allowedOrigins"], "https://example.com");
     }
 }

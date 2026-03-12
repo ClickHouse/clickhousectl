@@ -433,8 +433,18 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         CloudCommands::Org { command } => match command {
             OrgCommands::List => cloud::commands::org_list(&client, json).await,
             OrgCommands::Get { org_id } => cloud::commands::org_get(&client, &org_id, json).await,
-            OrgCommands::Update { org_id, name } => {
-                cloud::commands::org_update(&client, &org_id, name.as_deref(), json).await
+            OrgCommands::Update {
+                org_id,
+                name,
+                remove_private_endpoint,
+                enable_core_dumps,
+            } => {
+                let opts = cloud::commands::OrgUpdateOptions {
+                    name,
+                    remove_private_endpoints: remove_private_endpoint,
+                    enable_core_dumps,
+                };
+                cloud::commands::org_update(&client, &org_id, opts, json).await
             }
             OrgCommands::Prometheus {
                 org_id,
@@ -485,6 +495,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 enable_tde,
                 compliance_type,
                 profile,
+                tag,
+                enable_endpoint,
+                disable_endpoint,
+                private_preview_terms_checked,
+                enable_core_dumps,
                 org_id,
             } => {
                 let opts = cloud::commands::CreateServiceOptions {
@@ -506,6 +521,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     enable_tde,
                     compliance_type,
                     profile,
+                    tags: tag,
+                    enable_endpoints: enable_endpoint,
+                    disable_endpoints: disable_endpoint,
+                    private_preview_terms_checked,
+                    enable_core_dumps,
                     org_id,
                 };
                 cloud::commands::service_create(&client, opts, json).await
@@ -522,24 +542,35 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             ServiceCommands::Update {
                 service_id,
                 name,
-                ip_allow,
-                clear_ip_allow,
-                idle_scaling,
-                idle_timeout_minutes,
+                add_ip_allow,
+                remove_ip_allow,
+                add_private_endpoint_id,
+                remove_private_endpoint_id,
+                release_channel,
+                enable_endpoint,
+                disable_endpoint,
+                transparent_data_encryption_key_id,
+                add_tag,
+                remove_tag,
+                enable_core_dumps,
                 org_id,
             } => {
-                cloud::commands::service_update(
-                    &client,
-                    &service_id,
-                    name.as_deref(),
-                    &ip_allow,
-                    clear_ip_allow,
-                    idle_scaling,
-                    idle_timeout_minutes,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+                let opts = cloud::commands::ServiceUpdateOptions {
+                    name,
+                    add_ip_allow,
+                    remove_ip_allow,
+                    add_private_endpoint_ids: add_private_endpoint_id,
+                    remove_private_endpoint_ids: remove_private_endpoint_id,
+                    release_channel,
+                    enable_endpoints: enable_endpoint,
+                    disable_endpoints: disable_endpoint,
+                    transparent_data_encryption_key_id,
+                    add_tags: add_tag,
+                    remove_tags: remove_tag,
+                    enable_core_dumps,
+                    org_id,
+                };
+                cloud::commands::service_update(&client, &service_id, opts, json).await
             }
             ServiceCommands::Scale {
                 service_id,
@@ -563,14 +594,18 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 )
                 .await
             }
-            ServiceCommands::ResetPassword { service_id, org_id } => {
-                cloud::commands::service_reset_password(
-                    &client,
-                    &service_id,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+            ServiceCommands::ResetPassword {
+                service_id,
+                new_password_hash,
+                new_double_sha1_hash,
+                org_id,
+            } => {
+                let opts = cloud::commands::ServiceResetPasswordOptions {
+                    new_password_hash,
+                    new_double_sha1_hash,
+                    org_id,
+                };
+                cloud::commands::service_reset_password(&client, &service_id, opts, json).await
             }
             ServiceCommands::QueryEndpoint { command } => match command {
                 QueryEndpointCommands::Get { service_id, org_id } => {
@@ -585,18 +620,17 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 QueryEndpointCommands::Create {
                     service_id,
                     role,
-                    open_api,
+                    open_api_key,
+                    allowed_origins,
                     org_id,
                 } => {
-                    cloud::commands::query_endpoint_create(
-                        &client,
-                        &service_id,
-                        &role,
-                        open_api,
-                        org_id.as_deref(),
-                        json,
-                    )
-                    .await
+                    let opts = cloud::commands::QueryEndpointCreateOptions {
+                        roles: role,
+                        open_api_keys: open_api_key,
+                        allowed_origins,
+                        org_id,
+                    };
+                    cloud::commands::query_endpoint_create(&client, &service_id, opts, json).await
                 }
                 QueryEndpointCommands::Delete { service_id, org_id } => {
                     cloud::commands::query_endpoint_delete(
@@ -624,13 +658,34 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     )
                     .await
                 }
+                PrivateEndpointCommands::GetConfig { service_id, org_id } => {
+                    cloud::commands::private_endpoint_get_config(
+                        &client,
+                        &service_id,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
             },
             ServiceCommands::BackupConfig { command } => match command {
                 BackupConfigCommands::Get { service_id, org_id } => {
                     cloud::commands::backup_config_get(&client, &service_id, org_id.as_deref(), json).await
                 }
-                BackupConfigCommands::Update { service_id, schedule, retention_period_days, org_id } => {
-                    cloud::commands::backup_config_update(&client, &service_id, schedule.as_deref(), retention_period_days, org_id.as_deref(), json).await
+                BackupConfigCommands::Update {
+                    service_id,
+                    backup_period_hours,
+                    backup_retention_period_hours,
+                    backup_start_time,
+                    org_id,
+                } => {
+                    let opts = cloud::commands::BackupConfigUpdateOptions {
+                        backup_period_hours,
+                        backup_retention_period_hours,
+                        backup_start_time,
+                        org_id,
+                    };
+                    cloud::commands::backup_config_update(&client, &service_id, opts, json).await
                 }
             },
             ServiceCommands::Prometheus {
@@ -679,14 +734,51 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             KeyCommands::List { org_id } => {
                 cloud::commands::key_list(&client, org_id.as_deref(), json).await
             }
-            KeyCommands::Create { name, role_id, expires_at, org_id } => {
-                cloud::commands::key_create(&client, &name, &role_id, expires_at.as_deref(), org_id.as_deref(), json).await
+            KeyCommands::Create {
+                name,
+                role_id,
+                expires_at,
+                state,
+                ip_allow,
+                hash_key_id,
+                hash_key_id_suffix,
+                hash_key_secret,
+                org_id,
+            } => {
+                let opts = cloud::commands::KeyCreateOptions {
+                    name,
+                    role_ids: role_id,
+                    expires_at,
+                    state,
+                    ip_allow,
+                    hash_key_id,
+                    hash_key_id_suffix,
+                    hash_key_secret,
+                    org_id,
+                };
+                cloud::commands::key_create(&client, opts, json).await
             }
             KeyCommands::Get { key_id, org_id } => {
                 cloud::commands::key_get(&client, &key_id, org_id.as_deref(), json).await
             }
-            KeyCommands::Update { key_id, name, role_id, state, org_id } => {
-                cloud::commands::key_update(&client, &key_id, name.as_deref(), &role_id, state.as_deref(), org_id.as_deref(), json).await
+            KeyCommands::Update {
+                key_id,
+                name,
+                role_id,
+                expires_at,
+                state,
+                ip_allow,
+                org_id,
+            } => {
+                let opts = cloud::commands::KeyUpdateOptions {
+                    name,
+                    role_ids: role_id,
+                    expires_at,
+                    state,
+                    ip_allow,
+                    org_id,
+                };
+                cloud::commands::key_update(&client, &key_id, opts, json).await
             }
             KeyCommands::Delete { key_id, org_id } => {
                 cloud::commands::key_delete(&client, &key_id, org_id.as_deref()).await
