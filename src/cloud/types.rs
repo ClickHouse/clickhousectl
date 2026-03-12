@@ -353,7 +353,8 @@ pub struct ReplicaScalingRequest {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasswordResetResponse {
-    pub password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// Password patch request (PATCH .../services/{serviceId}/password)
@@ -580,8 +581,10 @@ pub struct CreateApiKeyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyResponse {
     pub key: ApiKey,
-    pub key_id: String,
-    pub key_secret: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_secret: Option<String>,
 }
 
 /// Update API key request

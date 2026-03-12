@@ -532,7 +532,14 @@ fn test_replica_scaling_request_serialize() {
 fn test_password_reset_response_deserialize() {
     let json = r#"{"password":"new-secret-123"}"#;
     let resp: PasswordResetResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.password, "new-secret-123");
+    assert_eq!(resp.password.as_deref(), Some("new-secret-123"));
+}
+
+#[test]
+fn test_password_reset_response_without_password() {
+    let json = r#"{}"#;
+    let resp: PasswordResetResponse = serde_json::from_str(json).unwrap();
+    assert!(resp.password.is_none());
 }
 
 #[test]
@@ -945,8 +952,23 @@ fn test_create_api_key_response_deserialize() {
     assert_eq!(resp.key.id, "key-2");
     assert_eq!(resp.key.name, "new-key");
     assert_eq!(resp.key.state, "enabled");
-    assert_eq!(resp.key_id, "kid-abc");
-    assert_eq!(resp.key_secret, "secret-xyz");
+    assert_eq!(resp.key_id.as_deref(), Some("kid-abc"));
+    assert_eq!(resp.key_secret.as_deref(), Some("secret-xyz"));
+}
+
+#[test]
+fn test_create_api_key_response_without_generated_credentials() {
+    let json = serde_json::json!({
+        "key": {
+            "id": "key-2",
+            "name": "prehashed-key",
+            "state": "enabled"
+        }
+    });
+    let resp: CreateApiKeyResponse = serde_json::from_value(json).unwrap();
+    assert_eq!(resp.key.id, "key-2");
+    assert!(resp.key_id.is_none());
+    assert!(resp.key_secret.is_none());
 }
 
 #[test]

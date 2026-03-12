@@ -489,7 +489,11 @@ pub async fn service_reset_password(
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("Password reset for service {}", service_id);
-        println!("  New password: {}", resp.password);
+        if let Some(password) = resp.password {
+            println!("  New password: {}", password);
+        } else {
+            println!("  Password hash updated; no plaintext password returned");
+        }
     }
     Ok(())
 }
@@ -926,10 +930,18 @@ pub async fn key_create(
     } else {
         println!("API key created!");
         println!("  Name: {}", resp.key.name);
-        println!("  Key ID: {}", resp.key_id);
-        println!("  Key Secret: {}", resp.key_secret);
-        println!();
-        println!("Save the key secret now — it will not be shown again.");
+        if let Some(key_id) = &resp.key_id {
+            println!("  Key ID: {}", key_id);
+        }
+        if let Some(key_secret) = &resp.key_secret {
+            println!("  Key Secret: {}", key_secret);
+        }
+        if resp.key_id.is_some() || resp.key_secret.is_some() {
+            println!();
+            println!("Save the key secret now — it will not be shown again.");
+        } else {
+            println!("  Pre-hashed credentials accepted; no generated key material returned");
+        }
     }
     Ok(())
 }
