@@ -387,6 +387,7 @@ pub async fn service_update(
     service_id: &str,
     name: Option<&str>,
     ip_allow: &[String],
+    clear_ip_allow: bool,
     idle_scaling: Option<bool>,
     idle_timeout_minutes: Option<u32>,
     org_id: Option<&str>,
@@ -394,7 +395,9 @@ pub async fn service_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let ip_access_list = if ip_allow.is_empty() {
+    let ip_access_list = if clear_ip_allow {
+        Some(vec![])
+    } else if ip_allow.is_empty() {
         None
     } else {
         Some(

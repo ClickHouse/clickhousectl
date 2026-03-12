@@ -497,8 +497,12 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// IP addresses to allow (CIDR format). Replaces the entire access list
-        #[arg(long = "ip-allow")]
+        #[arg(long = "ip-allow", conflicts_with = "clear_ip_allow")]
         ip_allow: Vec<String>,
+
+        /// Remove all IP access restrictions (allow from anywhere)
+        #[arg(long)]
+        clear_ip_allow: bool,
 
         /// Allow scale to zero when idle
         #[arg(long)]
