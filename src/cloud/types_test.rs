@@ -1,5 +1,11 @@
 use super::types::*;
 
+// Contract policy for this suite:
+// - mirror GA request/response schemas and query surfaces only
+// - exclude beta endpoints, deprecated endpoints, and deprecated request fields
+// - allow deprecated or BYOC fields in responses when they appear in GA schemas
+// - keep BYOC request/command surface out of scope until explicitly added
+
 // ── Response deserialization tests ──────────────────────────────────
 
 #[test]
