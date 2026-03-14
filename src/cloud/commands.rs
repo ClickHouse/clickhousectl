@@ -95,13 +95,13 @@ fn parse_service_endpoint_changes(
     Ok((!changes.is_empty()).then_some(changes))
 }
 
-fn parse_instance_tag_patches(add: &[String], remove: &[String]) -> Option<Vec<InstanceTagsPatch>> {
+fn parse_instance_tag_patches(add: &[String], remove: &[String]) -> Option<InstanceTagsPatch> {
     let patch = InstanceTagsPatch {
         add: parse_tags(add),
         remove: parse_tags(remove),
     };
 
-    (patch.add.is_some() || patch.remove.is_some()).then_some(vec![patch])
+    (patch.add.is_some() || patch.remove.is_some()).then_some(patch)
 }
 
 fn parse_org_private_endpoint_remove(
@@ -1545,8 +1545,9 @@ mod tests {
         assert_eq!(json["ipAccessList"]["remove"][0]["source"], "0.0.0.0/0");
         assert_eq!(json["privateEndpointIds"]["add"][0], "pe-1");
         assert_eq!(json["privateEndpointIds"]["remove"][0], "pe-2");
-        assert_eq!(json["tags"][0]["add"][0]["key"], "env");
-        assert_eq!(json["tags"][0]["remove"][0]["key"], "old");
+        assert!(json["tags"].is_object());
+        assert_eq!(json["tags"]["add"][0]["key"], "env");
+        assert_eq!(json["tags"]["remove"][0]["key"], "old");
         assert_eq!(json["transparentDataEncryptionKeyId"], "tde-1");
         assert_eq!(json["enableCoreDumps"], false);
     }
