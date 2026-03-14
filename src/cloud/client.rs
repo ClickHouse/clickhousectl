@@ -67,6 +67,7 @@ impl CloudClient {
         })
     }
 
+
     /// Send a request and parse the JSON response body.
     async fn request<T: serde::de::DeserializeOwned>(
         &self,
@@ -136,8 +137,114 @@ impl CloudClient {
         Ok(())
     }
 
+    /// Send a request and return a plaintext response body.
+    async fn request_text(&self, req: reqwest::RequestBuilder) -> Result<String> {
+        let response = req
+            .header("Authorization", &self.auth_header)
+            .send()
+            .await
+            .map_err(|e| CloudError {
+                message: format!("Request failed: {}", e),
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| CloudError {
+            message: format!("Failed to read response: {}", e),
+        })?;
+
+        if !status.is_success() {
+            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body) {
+                if let Some(err) = api_resp.error {
+                    return Err(CloudError {
+                        message: err.message,
+                    });
+                }
+            }
+            return Err(CloudError {
+                message: format!("API error ({}): {}", status, body),
+            });
+        }
+
+        Ok(body)
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{}", BASE_URL, path)
+    }
+
+    fn list_services_url(&self, org_id: &str, filters: &[String]) -> String {
+        let path = format!("/organizations/{}/services", org_id);
+        let query: Vec<String> = filters
+            .iter()
+            .map(|f| format!("filter={}", urlencoding::encode(f)))
+            .collect();
+        if query.is_empty() {
+            self.url(&path)
+        } else {
+            format!("{}?{}", self.url(&path), query.join("&"))
+        }
+    }
+
+    fn org_prometheus_url(&self, org_id: &str, filtered_metrics: Option<bool>) -> String {
+        let path = format!("/organizations/{}/prometheus", org_id);
+        match filtered_metrics {
+            Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
+            None => self.url(&path),
+        }
+    }
+
+    fn service_prometheus_url(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        filtered_metrics: Option<bool>,
+    ) -> String {
+        let path = format!("/organizations/{}/services/{}/prometheus", org_id, service_id);
+        match filtered_metrics {
+            Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
+            None => self.url(&path),
+        }
+    }
+
+    fn org_usage_url(
+        &self,
+        org_id: &str,
+        from_date: &str,
+        to_date: &str,
+        filters: &[String],
+    ) -> String {
+        let path = format!("/organizations/{}/usageCost", org_id);
+        let mut params = vec![
+            format!("from_date={}", urlencoding::encode(from_date)),
+            format!("to_date={}", urlencoding::encode(to_date)),
+        ];
+        params.extend(
+            filters
+                .iter()
+                .map(|f| format!("filter={}", urlencoding::encode(f))),
+        );
+        format!("{}?{}", self.url(&path), params.join("&"))
+    }
+
+    fn activities_url(
+        &self,
+        org_id: &str,
+        from_date: Option<&str>,
+        to_date: Option<&str>,
+    ) -> String {
+        let path = format!("/organizations/{}/activities", org_id);
+        let mut params = Vec::new();
+        if let Some(from) = from_date {
+            params.push(format!("from_date={}", urlencoding::encode(from)));
+        }
+        if let Some(to) = to_date {
+            params.push(format!("to_date={}", urlencoding::encode(to)));
+        }
+        if params.is_empty() {
+            self.url(&path)
+        } else {
+            format!("{}?{}", self.url(&path), params.join("&"))
+        }
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -182,6 +289,15 @@ impl CloudClient {
             .await
     }
 
+    pub async fn list_services_filtered(
+        &self,
+        org_id: &str,
+        filters: &[String],
+    ) -> Result<Vec<Service>> {
+        self.request(self.client.get(self.list_services_url(org_id, filters)))
+            .await
+    }
+
     pub async fn get_service(&self, org_id: &str, service_id: &str) -> Result<Service> {
         self.get(&format!(
             "/organizations/{}/services/{}",
@@ -211,11 +327,9 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        command: &str,
+        command: ServiceStateCommand,
     ) -> Result<Service> {
-        let request = StateChangeRequest {
-            command: command.to_string(),
-        };
+        let request = StateChangeRequest { command };
         self.patch(
             &format!("/organizations/{}/services/{}/state", org_id, service_id),
             &request,
@@ -245,13 +359,474 @@ impl CloudClient {
         .await
     }
 
+    // Update service
+    pub async fn update_service(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &UpdateServiceRequest,
+    ) -> Result<Service> {
+        self.patch(
+            &format!("/organizations/{}/services/{}", org_id, service_id),
+            request,
+        )
+        .await
+    }
+
+    // Replica scaling
+    pub async fn update_replica_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ReplicaScalingRequest,
+    ) -> Result<ServiceScalingPatchResponse> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/replicaScaling",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    // Reset password
+    pub async fn reset_password(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ServicePasswordPatchRequest,
+    ) -> Result<ServicePasswordPatchResponse> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/password",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    // Query endpoint
+    pub async fn get_query_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<ServiceQueryEndpoint> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/serviceQueryEndpoint",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn create_query_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &CreateQueryEndpointRequest,
+    ) -> Result<ServiceQueryEndpoint> {
+        self.post(
+            &format!(
+                "/organizations/{}/services/{}/serviceQueryEndpoint",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_query_endpoint(&self, org_id: &str, service_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/services/{}/serviceQueryEndpoint",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    // Private endpoint
+    pub async fn create_private_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &CreatePrivateEndpointRequest,
+    ) -> Result<InstancePrivateEndpoint> {
+        self.post(
+            &format!(
+                "/organizations/{}/services/{}/privateEndpoint",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    // Private endpoint config
+    pub async fn get_service_private_endpoint_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<PrivateEndpointConfig> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/privateEndpointConfig",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn get_service_prometheus(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        filtered_metrics: Option<bool>,
+    ) -> Result<String> {
+        self.request_text(
+            self.client
+                .get(self.service_prometheus_url(org_id, service_id, filtered_metrics)),
+        )
+        .await
+    }
+
+    // Phase 3 - Org endpoints
+    pub async fn update_organization(
+        &self,
+        org_id: &str,
+        request: &UpdateOrgRequest,
+    ) -> Result<Organization> {
+        self.patch(&format!("/organizations/{}", org_id), request)
+            .await
+    }
+
+    pub async fn get_org_prometheus(
+        &self,
+        org_id: &str,
+        filtered_metrics: Option<bool>,
+    ) -> Result<String> {
+        self.request_text(
+            self.client
+                .get(self.org_prometheus_url(org_id, filtered_metrics)),
+        )
+        .await
+    }
+
+    pub async fn get_org_usage(
+        &self,
+        org_id: &str,
+        from_date: &str,
+        to_date: &str,
+        filters: &[String],
+    ) -> Result<UsageCost> {
+        self.request(
+            self.client
+                .get(self.org_usage_url(org_id, from_date, to_date, filters)),
+        )
+        .await
+    }
+
+    // Phase 4 - Member endpoints
+    pub async fn list_members(&self, org_id: &str) -> Result<Vec<Member>> {
+        self.get(&format!("/organizations/{}/members", org_id))
+            .await
+    }
+
+    pub async fn get_member(&self, org_id: &str, user_id: &str) -> Result<Member> {
+        self.get(&format!(
+            "/organizations/{}/members/{}",
+            org_id, user_id
+        ))
+        .await
+    }
+
+    pub async fn update_member(
+        &self,
+        org_id: &str,
+        user_id: &str,
+        request: &UpdateMemberRequest,
+    ) -> Result<Member> {
+        self.patch(
+            &format!("/organizations/{}/members/{}", org_id, user_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/members/{}",
+            org_id, user_id
+        ))
+        .await
+    }
+
+    // Phase 4 - Invitation endpoints
+    pub async fn list_invitations(&self, org_id: &str) -> Result<Vec<Invitation>> {
+        self.get(&format!("/organizations/{}/invitations", org_id))
+            .await
+    }
+
+    pub async fn create_invitation(
+        &self,
+        org_id: &str,
+        request: &CreateInvitationRequest,
+    ) -> Result<Invitation> {
+        self.post(
+            &format!("/organizations/{}/invitations", org_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn get_invitation(
+        &self,
+        org_id: &str,
+        invitation_id: &str,
+    ) -> Result<Invitation> {
+        self.get(&format!(
+            "/organizations/{}/invitations/{}",
+            org_id, invitation_id
+        ))
+        .await
+    }
+
+    pub async fn delete_invitation(&self, org_id: &str, invitation_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/invitations/{}",
+            org_id, invitation_id
+        ))
+        .await
+    }
+
+    // Phase 5 - API Key endpoints
+    pub async fn list_api_keys(&self, org_id: &str) -> Result<Vec<ApiKey>> {
+        self.get(&format!("/organizations/{}/keys", org_id)).await
+    }
+
+    pub async fn create_api_key(
+        &self,
+        org_id: &str,
+        request: &CreateApiKeyRequest,
+    ) -> Result<CreateApiKeyResponse> {
+        self.post(&format!("/organizations/{}/keys", org_id), request)
+            .await
+    }
+
+    pub async fn get_api_key(&self, org_id: &str, key_id: &str) -> Result<ApiKey> {
+        self.get(&format!(
+            "/organizations/{}/keys/{}",
+            org_id, key_id
+        ))
+        .await
+    }
+
+    pub async fn update_api_key(
+        &self,
+        org_id: &str,
+        key_id: &str,
+        request: &UpdateApiKeyRequest,
+    ) -> Result<ApiKey> {
+        self.patch(
+            &format!("/organizations/{}/keys/{}", org_id, key_id),
+            request,
+        )
+        .await
+    }
+
+    pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/keys/{}",
+            org_id, key_id
+        ))
+        .await
+    }
+
+    // Phase 6 - Activity endpoints
+    pub async fn list_activities(
+        &self,
+        org_id: &str,
+        from_date: Option<&str>,
+        to_date: Option<&str>,
+    ) -> Result<Vec<Activity>> {
+        self.request(self.client.get(self.activities_url(org_id, from_date, to_date)))
+            .await
+    }
+
+    pub async fn get_activity(&self, org_id: &str, activity_id: &str) -> Result<Activity> {
+        self.get(&format!(
+            "/organizations/{}/activities/{}",
+            org_id, activity_id
+        ))
+        .await
+    }
+
+    // Phase 6 - Backup Config endpoints
+    pub async fn get_backup_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<BackupConfiguration> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/backupConfiguration",
+            org_id, service_id
+        ))
+        .await
+    }
+
+    pub async fn update_backup_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &UpdateBackupConfigRequest,
+    ) -> Result<BackupConfiguration> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/backupConfiguration",
+                org_id, service_id
+            ),
+            request,
+        )
+        .await
+    }
+
     // Helper to get the default organization
     pub async fn get_default_org_id(&self) -> Result<String> {
         let orgs = self.list_organizations().await?;
-        orgs.first()
-            .map(|o| o.id.clone())
-            .ok_or_else(|| CloudError {
+        match orgs.len() {
+            0 => Err(CloudError {
                 message: "No organization found for this API key".into(),
-            })
+            }),
+            1 => Ok(orgs[0].id.clone()),
+            _ => Err(CloudError {
+                message: "Multiple organizations found. Specify --org-id to choose one. \
+                          Use `clickhousectl cloud org list` to see your organizations."
+                    .into(),
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client() -> CloudClient {
+        CloudClient {
+            client: Client::builder().build().unwrap(),
+            auth_header: "Basic test".to_string(),
+        }
+    }
+
+    #[test]
+    fn list_services_url_includes_repeated_filters() {
+        let client = test_client();
+        let url = client.list_services_url(
+            "org-1",
+            &[
+                "tag:env=prod".to_string(),
+                "state=running".to_string(),
+            ],
+        );
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services?filter=tag%3Aenv%3Dprod&filter=state%3Drunning"
+        );
+    }
+
+    #[test]
+    fn list_services_url_omits_query_without_filters() {
+        let client = test_client();
+        let url = client.list_services_url("org-1", &[]);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services"
+        );
+    }
+
+    #[test]
+    fn activities_url_includes_optional_date_filters() {
+        let client = test_client();
+        let url = client.activities_url(
+            "org-1",
+            Some("2024-01-01T00:00:00Z"),
+            Some("2024-01-31T23:59:59Z"),
+        );
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z"
+        );
+    }
+
+    #[test]
+    fn activities_url_omits_query_without_dates() {
+        let client = test_client();
+        let url = client.activities_url("org-1", None, None);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/activities"
+        );
+    }
+
+    #[test]
+    fn org_usage_url_requires_dates_and_supports_filters() {
+        let client = test_client();
+        let url = client.org_usage_url(
+            "org-1",
+            "2024-01-01T00:00:00Z",
+            "2024-01-31T23:59:59Z",
+            &["entityType=service".to_string(), "entityName=my svc".to_string()],
+        );
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/usageCost?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z&filter=entityType%3Dservice&filter=entityName%3Dmy%20svc"
+        );
+    }
+
+    #[test]
+    fn org_usage_url_includes_only_required_dates_without_filters() {
+        let client = test_client();
+        let url = client.org_usage_url("org-1", "2024-01-01", "2024-01-31", &[]);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/usageCost?from_date=2024-01-01&to_date=2024-01-31"
+        );
+    }
+
+    #[test]
+    fn org_prometheus_url_supports_filtered_metrics_query() {
+        let client = test_client();
+        let url = client.org_prometheus_url("org-1", Some(true));
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/prometheus?filtered_metrics=true"
+        );
+    }
+
+    #[test]
+    fn org_prometheus_url_omits_filtered_metrics_when_not_set() {
+        let client = test_client();
+        let url = client.org_prometheus_url("org-1", None);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/prometheus"
+        );
+    }
+
+    #[test]
+    fn service_prometheus_url_supports_filtered_metrics_query() {
+        let client = test_client();
+        let url = client.service_prometheus_url("org-1", "svc-1", Some(false));
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus?filtered_metrics=false"
+        );
+    }
+
+    #[test]
+    fn service_prometheus_url_omits_filtered_metrics_when_not_set() {
+        let client = test_client();
+        let url = client.service_prometheus_url("org-1", "svc-1", None);
+        assert_eq!(
+            url,
+            "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus"
+        );
     }
 }

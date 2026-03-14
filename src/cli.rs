@@ -41,12 +41,12 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure.
-  Gateway to org/service/backup subcommands for ClickHouse Cloud.
+  Gateway to org/service/backup/member/invitation/key/activity subcommands for ClickHouse Cloud.
   Auth: `clickhousectl cloud auth` to save credentials interactively (stored in .clickhouse/credentials.json).
   Or use env vars CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or --api-key/--api-secret flags.
   Verify auth with `clickhousectl cloud org list`.
   Add --json to any cloud command for machine-readable output.
-  Typical workflow: `cloud org list` → get org ID → `cloud service list` → manage services.
+  Typical workflow: `cloud org list` → get org ID → `cloud service list` → manage services and related resources.
   Related: `clickhousectl cloud org list` to start.")]
     Cloud(CloudArgs),
 }
@@ -194,7 +194,7 @@ pub enum CloudCommands {
     /// Organization commands
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud organizations. Subcommands: list, get.
+  Manage ClickHouse Cloud organizations. Subcommands: list, get, update, prometheus, usage.
   Org IDs are needed for most service and backup operations.
   Start with `clickhousectl cloud org list` to discover available org IDs.
   Related: `clickhousectl cloud service list` (uses org ID).")]
@@ -206,7 +206,8 @@ CONTEXT FOR AGENTS:
     /// Service commands
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud services. Subcommands: list, get, create, delete, start, stop.
+  Manage ClickHouse Cloud services. Subcommands: list, get, create, delete, start, stop, update,
+  scale, reset-password, query-endpoint, private-endpoint, backup-config, prometheus.
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
   Add --json for machine-readable output. All write operations are immediate.
@@ -236,6 +237,31 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: BackupCommands,
     },
+
+    /// Manage organization members
+    Member {
+        #[command(subcommand)]
+        command: MemberCommands,
+    },
+
+    /// Manage organization invitations
+    Invitation {
+        #[command(subcommand)]
+        command: InvitationCommands,
+    },
+
+    /// Manage API keys
+    Key {
+        #[command(subcommand)]
+        command: KeyCommands,
+    },
+
+    /// View activity log
+    Activity {
+        #[command(subcommand)]
+        command: ActivityCommands,
+    },
+
 }
 
 #[derive(Subcommand)]
@@ -260,6 +286,53 @@ CONTEXT FOR AGENTS:
         /// Organization ID
         org_id: String,
     },
+
+    /// Update organization settings
+    Update {
+        /// Organization ID
+        org_id: String,
+
+        /// New organization name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Remove a private endpoint from the organization allow list.
+        /// Format: id[,description=TEXT][,cloud-provider=aws|gcp|azure][,region=REGION]
+        #[arg(long = "remove-private-endpoint")]
+        remove_private_endpoint: Vec<String>,
+
+        /// Enable or disable core dump collection at the organization level
+        #[arg(long)]
+        enable_core_dumps: Option<bool>,
+    },
+
+    /// Get organization Prometheus configuration
+    Prometheus {
+        /// Organization ID
+        org_id: String,
+
+        /// Whether to request filtered metrics
+        #[arg(long)]
+        filtered_metrics: Option<bool>,
+    },
+
+    /// Get organization usage/billing information
+    Usage {
+        /// Organization ID
+        org_id: String,
+
+        /// Start date filter (ISO 8601, e.g. 2024-01-01T00:00:00Z)
+        #[arg(long)]
+        from_date: String,
+
+        /// End date filter (ISO 8601, e.g. 2024-01-31T23:59:59Z)
+        #[arg(long)]
+        to_date: String,
+
+        /// Filter by entity attributes
+        #[arg(long)]
+        filter: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -275,6 +348,10 @@ CONTEXT FOR AGENTS:
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
+
+        /// Filter by resource tags (e.g., "tag:env=production")
+        #[arg(long)]
+        filter: Vec<String>,
     },
 
     /// Get service details
@@ -366,10 +443,6 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         enable_tde: bool,
 
-        /// BYOC region ID
-        #[arg(long)]
-        byoc_id: Option<String>,
-
         /// Compliance type: hipaa, pci
         #[arg(long)]
         compliance_type: Option<String>,
@@ -377,6 +450,26 @@ CONTEXT FOR AGENTS:
         /// Instance profile (enterprise only): v1-default, v1-highmem-xs, etc.
         #[arg(long)]
         profile: Option<String>,
+
+        /// Tag to attach to the service. Format: key or key=value
+        #[arg(long = "tag", value_name = "KEY[=VALUE]")]
+        tag: Vec<String>,
+
+        /// Enable a toggleable endpoint protocol. Currently supported: mysql
+        #[arg(long = "enable-endpoint")]
+        enable_endpoint: Vec<String>,
+
+        /// Disable a toggleable endpoint protocol. Currently supported: mysql
+        #[arg(long = "disable-endpoint")]
+        disable_endpoint: Vec<String>,
+
+        /// Accept private preview terms for eligible service creation flows
+        #[arg(long)]
+        private_preview_terms_checked: bool,
+
+        /// Enable or disable service core dump collection
+        #[arg(long)]
+        enable_core_dumps: Option<bool>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -423,6 +516,223 @@ CONTEXT FOR AGENTS:
   Add --json for machine-readable output.
   Related: `clickhousectl cloud service start <id>` to resume, `clickhousectl cloud service delete <id>` to remove.")]
     Stop {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update service settings
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// New service name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Add an IP/CIDR entry to the service allow list
+        #[arg(long = "add-ip-allow")]
+        add_ip_allow: Vec<String>,
+
+        /// Remove an IP/CIDR entry from the service allow list
+        #[arg(long = "remove-ip-allow")]
+        remove_ip_allow: Vec<String>,
+
+        /// Add a private endpoint ID to the service
+        #[arg(long = "add-private-endpoint-id")]
+        add_private_endpoint_id: Vec<String>,
+
+        /// Remove a private endpoint ID from the service
+        #[arg(long = "remove-private-endpoint-id")]
+        remove_private_endpoint_id: Vec<String>,
+
+        /// Release channel: slow, default, fast
+        #[arg(long)]
+        release_channel: Option<String>,
+
+        /// Enable a toggleable endpoint protocol. Currently supported: mysql
+        #[arg(long = "enable-endpoint")]
+        enable_endpoint: Vec<String>,
+
+        /// Disable a toggleable endpoint protocol. Currently supported: mysql
+        #[arg(long = "disable-endpoint")]
+        disable_endpoint: Vec<String>,
+
+        /// Transparent Data Encryption key ID to rotate to
+        #[arg(long)]
+        transparent_data_encryption_key_id: Option<String>,
+
+        /// Tag to add. Format: key or key=value
+        #[arg(long = "add-tag", value_name = "KEY[=VALUE]")]
+        add_tag: Vec<String>,
+
+        /// Tag to remove. Format: key or key=value
+        #[arg(long = "remove-tag", value_name = "KEY[=VALUE]")]
+        remove_tag: Vec<String>,
+
+        /// Enable or disable service core dump collection
+        #[arg(long)]
+        enable_core_dumps: Option<bool>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update replica scaling settings
+    Scale {
+        /// Service ID
+        service_id: String,
+
+        /// Minimum memory per replica in GB (8-356, multiple of 4)
+        #[arg(long)]
+        min_replica_memory_gb: Option<u32>,
+
+        /// Maximum memory per replica in GB (8-356, multiple of 4)
+        #[arg(long)]
+        max_replica_memory_gb: Option<u32>,
+
+        /// Number of replicas (1-20)
+        #[arg(long)]
+        num_replicas: Option<u32>,
+
+        /// Allow scale to zero when idle
+        #[arg(long)]
+        idle_scaling: Option<bool>,
+
+        /// Minimum idle timeout in minutes (>= 5)
+        #[arg(long)]
+        idle_timeout_minutes: Option<u32>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Reset a service's default user password
+    ResetPassword {
+        /// Service ID
+        service_id: String,
+
+        /// SHA256 password hash encoded as base64
+        #[arg(long)]
+        new_password_hash: Option<String>,
+
+        /// MySQL-compatible double SHA1 password hash
+        #[arg(long)]
+        new_double_sha1_hash: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Manage query endpoints
+    #[command(name = "query-endpoint")]
+    QueryEndpoint {
+        #[command(subcommand)]
+        command: QueryEndpointCommands,
+    },
+
+    /// Manage private endpoints for a service
+    #[command(name = "private-endpoint")]
+    PrivateEndpoint {
+        #[command(subcommand)]
+        command: PrivateEndpointCommands,
+    },
+
+    /// Manage backup configuration for a service
+    #[command(name = "backup-config")]
+    BackupConfig {
+        #[command(subcommand)]
+        command: BackupConfigCommands,
+    },
+
+    /// Get service Prometheus metrics
+    Prometheus {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Whether to request filtered metrics
+        #[arg(long)]
+        filtered_metrics: Option<bool>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum QueryEndpointCommands {
+    /// Get query endpoint configuration
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create/enable query endpoint
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Roles to grant access (can be specified multiple times)
+        #[arg(long)]
+        role: Vec<String>,
+
+        /// OpenAPI key IDs to authorize
+        #[arg(long = "open-api-key")]
+        open_api_key: Vec<String>,
+
+        /// Allowed origins string for browser access
+        #[arg(long)]
+        allowed_origins: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete/disable query endpoint
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PrivateEndpointCommands {
+    /// Create a private endpoint connection
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Private endpoint ID (VPC endpoint ID)
+        #[arg(long)]
+        endpoint_id: String,
+
+        /// Description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get service private endpoint configuration
+    GetConfig {
         /// Service ID
         service_id: String,
 
@@ -548,4 +858,455 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         org_id: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MemberCommands {
+    /// List organization members
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get member details
+    Get {
+        /// User ID
+        user_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update member roles
+    Update {
+        /// User ID
+        user_id: String,
+
+        /// Role IDs to assign (can be specified multiple times)
+        #[arg(long)]
+        role_id: Vec<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Remove a member from the organization
+    Remove {
+        /// User ID
+        user_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum InvitationCommands {
+    /// List pending invitations
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create an invitation
+    Create {
+        /// Email address to invite
+        #[arg(long)]
+        email: String,
+
+        /// Role IDs to assign (can be specified multiple times)
+        #[arg(long)]
+        role_id: Vec<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get invitation details
+    Get {
+        /// Invitation ID
+        invitation_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete an invitation
+    Delete {
+        /// Invitation ID
+        invitation_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KeyCommands {
+    /// List API keys
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create an API key
+    Create {
+        /// Key name
+        #[arg(long)]
+        name: String,
+
+        /// Role IDs to assign (can be specified multiple times)
+        #[arg(long)]
+        role_id: Vec<String>,
+
+        /// Expiration date (ISO 8601 format)
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Key state (enabled or disabled)
+        #[arg(long)]
+        state: Option<String>,
+
+        /// IP/CIDR entries allowed to use the key
+        #[arg(long = "ip-allow")]
+        ip_allow: Vec<String>,
+
+        /// Pre-hashed key ID digest
+        #[arg(long)]
+        hash_key_id: Option<String>,
+
+        /// Suffix of the pre-hashed key ID
+        #[arg(long)]
+        hash_key_id_suffix: Option<String>,
+
+        /// Pre-hashed key secret digest
+        #[arg(long)]
+        hash_key_secret: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get API key details
+    Get {
+        /// API key ID
+        key_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update an API key
+    Update {
+        /// API key ID
+        key_id: String,
+
+        /// New key name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Role IDs to assign (can be specified multiple times)
+        #[arg(long)]
+        role_id: Vec<String>,
+
+        /// Expiration date (ISO 8601 format)
+        #[arg(long)]
+        expires_at: Option<String>,
+
+        /// Key state (e.g., enabled, disabled)
+        #[arg(long)]
+        state: Option<String>,
+
+        /// IP/CIDR entries allowed to use the key
+        #[arg(long = "ip-allow")]
+        ip_allow: Vec<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete an API key
+    Delete {
+        /// API key ID
+        key_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ActivityCommands {
+    /// List activity log entries
+    List {
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Start date filter (ISO 8601, e.g. 2024-01-01)
+        #[arg(long)]
+        from_date: Option<String>,
+
+        /// End date filter (ISO 8601, e.g. 2024-12-31)
+        #[arg(long)]
+        to_date: Option<String>,
+    },
+
+    /// Get activity log entry details
+    Get {
+        /// Activity ID
+        activity_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupConfigCommands {
+    /// Get backup configuration for a service
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update backup configuration for a service
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// The interval in hours between each backup
+        #[arg(long)]
+        backup_period_hours: Option<u32>,
+
+        /// Retention period in hours
+        #[arg(long)]
+        backup_retention_period_hours: Option<u32>,
+
+        /// Backup start time in UTC (HH:MM)
+        #[arg(long)]
+        backup_start_time: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_service_update_ga_patch_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--add-ip-allow",
+            "10.0.0.0/8",
+            "--remove-ip-allow",
+            "0.0.0.0/0",
+            "--add-private-endpoint-id",
+            "pe-1",
+            "--remove-private-endpoint-id",
+            "pe-2",
+            "--release-channel",
+            "fast",
+            "--enable-endpoint",
+            "mysql",
+            "--add-tag",
+            "env=prod",
+            "--enable-core-dumps",
+            "true",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Update {
+            service_id,
+            add_ip_allow,
+            remove_ip_allow,
+            add_private_endpoint_id,
+            remove_private_endpoint_id,
+            release_channel,
+            enable_endpoint,
+            add_tag,
+            enable_core_dumps,
+            ..
+        } = command
+        else {
+            panic!("expected service update");
+        };
+
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(add_ip_allow, vec!["10.0.0.0/8"]);
+        assert_eq!(remove_ip_allow, vec!["0.0.0.0/0"]);
+        assert_eq!(add_private_endpoint_id, vec!["pe-1"]);
+        assert_eq!(remove_private_endpoint_id, vec!["pe-2"]);
+        assert_eq!(release_channel.as_deref(), Some("fast"));
+        assert_eq!(enable_endpoint, vec!["mysql"]);
+        assert_eq!(add_tag, vec!["env=prod"]);
+        assert_eq!(enable_core_dumps, Some(true));
+    }
+
+    #[test]
+    fn parses_private_endpoint_config_and_password_hash_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "reset-password",
+            "svc-1",
+            "--new-password-hash",
+            "sha256",
+            "--new-double-sha1-hash",
+            "sha1",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::ResetPassword {
+            new_password_hash,
+            new_double_sha1_hash,
+            ..
+        } = command
+        else {
+            panic!("expected reset-password");
+        };
+        assert_eq!(new_password_hash.as_deref(), Some("sha256"));
+        assert_eq!(new_double_sha1_hash.as_deref(), Some("sha1"));
+
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "private-endpoint",
+            "get-config",
+            "svc-1",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::PrivateEndpoint { command } = command else {
+            panic!("expected private-endpoint command");
+        };
+        let PrivateEndpointCommands::GetConfig { service_id, .. } = command else {
+            panic!("expected get-config");
+        };
+        assert_eq!(service_id, "svc-1");
+    }
+
+    #[test]
+    fn parses_key_create_and_backup_config_update_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "create",
+            "--name",
+            "ci-key",
+            "--ip-allow",
+            "10.0.0.0/8",
+            "--hash-key-id",
+            "id-hash",
+            "--hash-key-id-suffix",
+            "abcd",
+            "--hash-key-secret",
+            "secret-hash",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Key { command } = args.command else {
+            panic!("expected key command");
+        };
+        let KeyCommands::Create {
+            ip_allow,
+            hash_key_id,
+            hash_key_id_suffix,
+            hash_key_secret,
+            ..
+        } = command
+        else {
+            panic!("expected key create");
+        };
+        assert_eq!(ip_allow, vec!["10.0.0.0/8"]);
+        assert_eq!(hash_key_id.as_deref(), Some("id-hash"));
+        assert_eq!(hash_key_id_suffix.as_deref(), Some("abcd"));
+        assert_eq!(hash_key_secret.as_deref(), Some("secret-hash"));
+
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-period-hours",
+            "12",
+            "--backup-retention-period-hours",
+            "336",
+            "--backup-start-time",
+            "03:00",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::BackupConfig { command } = command else {
+            panic!("expected backup-config");
+        };
+        let BackupConfigCommands::Update {
+            backup_period_hours,
+            backup_retention_period_hours,
+            backup_start_time,
+            ..
+        } = command
+        else {
+            panic!("expected backup-config update");
+        };
+        assert_eq!(backup_period_hours, Some(12));
+        assert_eq!(backup_retention_period_hours, Some(336));
+        assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
 }

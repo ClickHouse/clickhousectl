@@ -172,6 +172,14 @@ Credential resolution order: CLI flags > `.clickhouse/credentials.json` > enviro
 ```bash
 clickhousectl cloud org list              # List organizations
 clickhousectl cloud org get <org-id>      # Get organization details
+clickhousectl cloud org update <org-id> --name "Renamed Org"
+clickhousectl cloud org update <org-id> \
+  --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
+  --enable-core-dumps false
+clickhousectl cloud org prometheus <org-id> --filtered-metrics true
+clickhousectl cloud org usage <org-id> \
+  --from-date 2024-01-01T00:00:00Z \
+  --to-date 2024-01-31T23:59:59Z
 ```
 
 ### Services
@@ -205,9 +213,66 @@ clickhousectl cloud service create --name restored-service --backup-id <backup-u
 # Create with release channel
 clickhousectl cloud service create --name my-service --release-channel fast
 
+# Create with GA request-only extras
+clickhousectl cloud service create --name my-service \
+  --tag env=prod \
+  --enable-endpoint mysql \
+  --private-preview-terms-checked \
+  --enable-core-dumps true
+
 # Start/stop a service
 clickhousectl cloud service start <service-id>
 clickhousectl cloud service stop <service-id>
+
+# Update service metadata and patches
+clickhousectl cloud service update <service-id> \
+  --name my-renamed-service \
+  --add-ip-allow 10.0.0.0/8 \
+  --remove-ip-allow 0.0.0.0/0 \
+  --add-private-endpoint-id pe-1 \
+  --release-channel fast \
+  --enable-endpoint mysql \
+  --add-tag env=staging \
+  --transparent-data-encryption-key-id tde-key-1 \
+  --enable-core-dumps false
+
+# Update replica scaling
+clickhousectl cloud service scale <service-id> \
+  --min-replica-memory-gb 24 \
+  --max-replica-memory-gb 48 \
+  --num-replicas 3 \
+  --idle-scaling true \
+  --idle-timeout-minutes 10
+
+# Reset password with generated credentials
+clickhousectl cloud service reset-password <service-id>
+
+# Reset password with precomputed hashes
+clickhousectl cloud service reset-password <service-id> \
+  --new-password-hash <base64-sha256-hash> \
+  --new-double-sha1-hash <mysql-double-sha1-hash>
+
+# Query endpoint management
+clickhousectl cloud service query-endpoint get <service-id>
+clickhousectl cloud service query-endpoint create <service-id> \
+  --role admin \
+  --open-api-key key-1 \
+  --allowed-origins https://app.example.com
+clickhousectl cloud service query-endpoint delete <service-id>
+
+# Private endpoint management
+clickhousectl cloud service private-endpoint create <service-id> --endpoint-id vpce-123
+clickhousectl cloud service private-endpoint get-config <service-id>
+
+# Backup configuration
+clickhousectl cloud service backup-config get <service-id>
+clickhousectl cloud service backup-config update <service-id> \
+  --backup-period-hours 24 \
+  --backup-retention-period-hours 720 \
+  --backup-start-time 02:00
+
+# Service Prometheus configuration
+clickhousectl cloud service prometheus <service-id> --filtered-metrics true
 
 # Delete a service
 clickhousectl cloud service delete <service-id>
@@ -232,9 +297,12 @@ clickhousectl cloud service delete <service-id>
 | `--encryption-key` | Customer disk encryption key |
 | `--encryption-role` | Role ARN for disk encryption |
 | `--enable-tde` | Enable Transparent Data Encryption |
-| `--byoc-id` | BYOC region ID |
 | `--compliance-type` | Compliance: hipaa, pci |
 | `--profile` | Instance profile (enterprise) |
+| `--tag` | Attach a GA service tag (`key` or `key=value`) |
+| `--enable-endpoint` / `--disable-endpoint` | Toggle GA service endpoints (currently `mysql`) |
+| `--private-preview-terms-checked` | Accept private preview terms when required |
+| `--enable-core-dumps` | Enable or disable service core dump collection |
 
 ### Backups
 
@@ -243,14 +311,45 @@ clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
 ```
 
-### JSON Output
-
-Add `--json` for machine-readable output (useful for AI agents):
+### Members, Invitations, and Keys
 
 ```bash
+clickhousectl cloud member list
+clickhousectl cloud member get <user-id>
+clickhousectl cloud member update <user-id> --role-id <role-id>
+clickhousectl cloud member remove <user-id>
+
+clickhousectl cloud invitation list
+clickhousectl cloud invitation create --email dev@example.com --role-id <role-id>
+clickhousectl cloud invitation get <invitation-id>
+clickhousectl cloud invitation delete <invitation-id>
+
+clickhousectl cloud key list
+clickhousectl cloud key get <key-id>
+clickhousectl cloud key create --name ci-key --role-id <role-id> --ip-allow 10.0.0.0/8
+clickhousectl cloud key create --name prehashed-key \
+  --hash-key-id <hash> \
+  --hash-key-id-suffix <suffix> \
+  --hash-key-secret <hash>
+clickhousectl cloud key update <key-id> \
+  --name renamed-key \
+  --expires-at 2025-12-31T00:00:00Z \
+  --state disabled \
+  --ip-allow 0.0.0.0/0
+clickhousectl cloud key delete <key-id>
+```
+
+### Activity and JSON Output
+
+```bash
+clickhousectl cloud activity list --from-date 2024-01-01 --to-date 2024-12-31
+clickhousectl cloud activity get <activity-id>
+
 clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
+
+The cloud CLI only implements GA endpoints and GA request fields. Deprecated and BYOC fields may still appear in JSON responses where the current response types model them, but they are intentionally not exposed on the request side.
 
 ## Requirements
 
