@@ -215,14 +215,7 @@ impl<'a> CliRunner<'a> {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let mut command_args = vec![
-            "cloud".to_string(),
-            "--api-key".to_string(),
-            self.ctx.api_key.clone(),
-            "--api-secret".to_string(),
-            self.ctx.api_secret.clone(),
-            "--json".to_string(),
-        ];
+        let mut command_args = vec!["cloud".to_string(), "--json".to_string()];
         command_args.extend(args.into_iter().map(Into::into));
         self.run(command_args)
     }
@@ -232,14 +225,7 @@ impl<'a> CliRunner<'a> {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let mut command_args = vec![
-            "cloud".to_string(),
-            "--api-key".to_string(),
-            self.ctx.api_key.clone(),
-            "--api-secret".to_string(),
-            self.ctx.api_secret.clone(),
-            "--json".to_string(),
-        ];
+        let mut command_args = vec!["cloud".to_string(), "--json".to_string()];
         command_args.extend(args.into_iter().map(Into::into));
         self.run_raw(command_args)
     }
@@ -292,6 +278,8 @@ impl<'a> CliRunner<'a> {
         let output = Command::new(&self.binary_path)
             .args(&args)
             .env("HOME", &self.ctx.temp_home)
+            .env("CLICKHOUSE_CLOUD_API_KEY", &self.ctx.api_key)
+            .env("CLICKHOUSE_CLOUD_API_SECRET", &self.ctx.api_secret)
             .output()?;
         let elapsed = started.elapsed();
         let raw = RawCliOutput::from_output(output, elapsed, redacted_command)?;
@@ -393,7 +381,7 @@ impl CleanupRegistry {
         let mut failures = Vec::new();
 
         while let Some(service_id) = self.service_ids.pop() {
-            if let Err(error) = delete_service_and_confirm_gone(runner, &service_id) {
+            if let Err(error) = ensure_service_gone(runner, &service_id) {
                 failures.push(format!("{service_id}: {error}"));
             }
         }
@@ -520,8 +508,32 @@ pub fn service_has_ip_access_entry(value: &Value, source: &str) -> bool {
         })
 }
 
-pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
+// Strict deletion is used by the test body itself to verify that the explicit delete
+// command succeeded for a still-existing service. If the service is already gone here,
+// the delete behavior was not actually exercised and the test should fail.
+pub fn delete_service_and_confirm_gone(
+    runner: &CliRunner<'_>,
+    service_id: &str,
+) -> TestResult<()> {
+    eprintln!("  delete: deleting service");
+    request_service_deletion(runner, service_id, false)?;
+    wait_for_service_to_disappear(runner, service_id)
+}
+
+// Cleanup teardown has different semantics from the strict test assertion above:
+// its job is only to ensure that no cloud resources are left behind. "Already gone"
+// is therefore a successful end state and should not cause cleanup to fail.
+pub fn ensure_service_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
     eprintln!("  cleanup: deleting service");
+    request_service_deletion(runner, service_id, true)?;
+    wait_for_service_to_disappear(runner, service_id)
+}
+
+fn request_service_deletion(
+    runner: &CliRunner<'_>,
+    service_id: &str,
+    allow_missing_service: bool,
+) -> TestResult<()> {
     let delete_args = [
         "service".to_string(),
         "delete".to_string(),
@@ -534,6 +546,10 @@ pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str)
         Ok(_) => {}
         Err(error) => {
             let message = error.to_string();
+            if allow_missing_service && service_missing(&message) {
+                return Ok(());
+            }
+
             if message.contains("409 Conflict") && message.contains("Current state: 'running'") {
                 eprintln!("  cleanup: service is running, stopping before delete");
                 let _ = runner.service_stop(service_id)?;
@@ -552,13 +568,26 @@ pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str)
                     },
                 )?;
 
-                runner.run_cloud_raw(delete_args)?;
+                match runner.run_cloud_raw(delete_args) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        let message = error.to_string();
+                        if allow_missing_service && service_missing(&message) {
+                            return Ok(());
+                        }
+                        return Err(error);
+                    }
+                }
             } else {
                 return Err(error);
             }
         }
     }
 
+    Ok(())
+}
+
+fn wait_for_service_to_disappear(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
     poll_until(
         "service deletion",
         runner.ctx.delete_timeout,
@@ -583,6 +612,10 @@ pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str)
     )?;
 
     Ok(())
+}
+
+fn service_missing(message: &str) -> bool {
+    message.contains("404") || message.contains("not found")
 }
 
 fn duration_from_env(name: &str, default_secs: u64) -> TestResult<Duration> {
@@ -682,7 +715,7 @@ fn redact_command(binary_path: &PathBuf, args: &[String]) -> String {
             continue;
         }
 
-        if arg == "--api-key" || arg == "--api-secret" || arg == "--org-id" {
+        if arg == "--org-id" {
             rendered.push(arg.clone());
             redact_next = true;
             continue;

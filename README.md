@@ -169,7 +169,7 @@ Credential resolution order: CLI flags > `.clickhouse/credentials.json` > enviro
 
 ### Cloud integration testing
 
-The repository also includes a real-cloud integration test scaffold for CI under [`tests/cloud_cli.rs`](/Users/al/ch/clickhouse_cli/tests/cloud_cli.rs). Phase 1 is a single service CRUD lifecycle that invokes the built `clickhousectl` binary and asserts on `--json` output.
+The repository also includes a real-cloud integration test scaffold for CI under [`tests/cloud_cli.rs`](tests/cloud_cli.rs). Phase 1 is a single service CRUD lifecycle that invokes the built `clickhousectl` binary and asserts on `--json` output.
 
 Required environment variables:
 
