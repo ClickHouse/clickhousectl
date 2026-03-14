@@ -238,8 +238,8 @@ clickhousectl cloud org update <org-id> \
   --enable-core-dumps false
 clickhousectl cloud org prometheus <org-id> --filtered-metrics true
 clickhousectl cloud org usage <org-id> \
-  --from-date 2024-01-01T00:00:00Z \
-  --to-date 2024-01-31T23:59:59Z
+  --from-date 2024-01-01 \
+  --to-date 2024-01-31
 ```
 
 ### Services
