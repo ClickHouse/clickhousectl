@@ -1,16 +1,8 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
-use serde::Serialize;
 use std::io::Write;
 use std::str::FromStr;
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteServiceResponse<'a> {
-    service_id: &'a str,
-    status: &'a str,
-}
 
 /// Resolve org ID from explicit arg or auto-detect
 async fn resolve_org_id(
@@ -607,12 +599,8 @@ pub async fn service_delete(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_service(&org_id, service_id).await?;
+    let response = client.delete_service(&org_id, service_id).await?;
     if json {
-        let response = DeleteServiceResponse {
-            service_id,
-            status: "deletion_initiated",
-        };
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
         println!("Service {} deletion initiated", service_id);
@@ -1570,14 +1558,14 @@ mod tests {
 
     #[test]
     fn service_delete_json_payload_is_machine_readable() {
-        let json = serde_json::to_value(DeleteServiceResponse {
-            service_id: "svc-1",
-            status: "deletion_initiated",
+        let json = serde_json::to_value(StatusResponse {
+            status: 200.0,
+            request_id: "0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string(),
         })
         .unwrap();
 
-        assert_eq!(json["serviceId"], "svc-1");
-        assert_eq!(json["status"], "deletion_initiated");
+        assert_eq!(json["status"], 200.0);
+        assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
     }
 
     #[test]

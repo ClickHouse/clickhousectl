@@ -73,6 +73,14 @@ pub struct ApiError {
     pub message: String,
 }
 
+/// Common success envelope returned by async mutation endpoints without a result body
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusResponse {
+    pub status: f64,
+    pub request_id: String,
+}
+
 // =============================================================================
 // Shared helper types
 // =============================================================================
