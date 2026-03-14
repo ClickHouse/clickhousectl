@@ -1,7 +1,8 @@
 use crate::support::{
     delete_service_and_confirm_gone, CleanupRegistry, CliRunner, FailureRecorder, StepKind,
-    TestContext, TestResult, json_string, poll_until, service_has_ip_access_entry,
-    service_list_is_empty, service_name_in_list, service_present_in_list,
+    TestContext, TestResult, json_string, log_phase, log_run_header, poll_until,
+    service_has_ip_access_entry, service_list_is_empty, service_name_in_list,
+    service_present_in_list,
 };
 use serde_json::Value;
 
@@ -13,17 +14,17 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
     let mut cleanup = CleanupRegistry::default();
 
     let test_result = (|| -> TestResult<()> {
-        eprintln!("[service-crud] run_id={}", ctx.run_id);
-        eprintln!(
-            "[service-crud] continue_on_non_blocking_failures={}",
-            ctx.continue_on_non_blocking_failures
-        );
+        log_run_header("cloud_service_crud_lifecycle", &ctx);
         let mut failures = FailureRecorder::default();
         let primary_ip = "203.0.113.10/32";
         let secondary_ip = "203.0.113.11/32";
         let create_options_ip = "203.0.113.12/32";
+        let base_memory_gb = 8_u64;
+        let scaled_memory_gb = 16_u64;
+        let base_replicas = 3_u64;
+        let scaled_replicas = 4_u64;
 
-        eprintln!("[service-crud] verifying org access");
+        log_phase("Org Checks");
         let org = failures
             .run(&ctx, StepKind::Blocking, "verify org access", || {
                 runner.run_cloud(["org".to_string(), "get".to_string(), ctx.org_id.clone()])
@@ -33,7 +34,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         assert_eq!(org_id, ctx.org_id);
         let current_org_name = json_string(&org.json, &["/name", "/org/name"])?.to_string();
 
-        eprintln!("[service-crud] verifying org list includes the target org");
         let org_list = failures
             .run(&ctx, StepKind::Blocking, "verify org list includes target org", || {
                 runner.run_cloud(["org".to_string(), "list".to_string()])
@@ -45,7 +45,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             ctx.org_id
         );
 
-        eprintln!("[service-crud] testing non-blocking idempotent org update");
         failures.run(&ctx, StepKind::NonBlocking, "idempotent org update", || {
             let updated = runner.run_cloud([
                 "org".to_string(),
@@ -61,16 +60,15 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] testing non-blocking org usage");
         failures.run(&ctx, StepKind::NonBlocking, "org usage", || {
             let usage = runner.run_cloud([
                 "org".to_string(),
                 "usage".to_string(),
                 ctx.org_id.clone(),
                 "--from-date".to_string(),
-                "2025-01-01T00:00:00Z".to_string(),
+                "2025-01-01".to_string(),
                 "--to-date".to_string(),
-                "2025-01-31T23:59:59Z".to_string(),
+                "2025-01-31".to_string(),
             ])?;
             if usage.json.is_null() {
                 return Err("org usage returned null JSON".into());
@@ -78,7 +76,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] checking for leftover tagged services");
+        log_phase("Provision Service");
         let list_before = failures
             .run(&ctx, StepKind::Blocking, "check for leftover tagged services", || {
                 runner.service_list_for_run()
@@ -98,6 +96,12 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             ctx.provider.clone(),
             "--region".to_string(),
             ctx.region.clone(),
+            "--min-replica-memory-gb".to_string(),
+            base_memory_gb.to_string(),
+            "--max-replica-memory-gb".to_string(),
+            base_memory_gb.to_string(),
+            "--num-replicas".to_string(),
+            base_replicas.to_string(),
             "--ip-allow".to_string(),
             create_options_ip.to_string(),
             "--idle-scaling".to_string(),
@@ -113,7 +117,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             create_args.push(tag);
         }
 
-        eprintln!("[service-crud] creating service {}", ctx.service_name());
         let created = failures
             .run(&ctx, StepKind::Blocking, "create service", || {
                 runner.run_cloud(create_args)
@@ -121,14 +124,13 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         let service_id = json_string(&created.json, &["/service/id", "/id"])?.to_string();
         let _password = json_string(&created.json, &["/password", "/service/password"])?;
-        eprintln!("[service-crud] created service_id={service_id}");
+        eprintln!("service_id: <redacted>");
         cleanup.register_service(service_id.clone());
 
-        eprintln!("[service-crud] waiting for steady state");
         let ready = failures
             .run(&ctx, StepKind::Blocking, "wait for service steady state", || {
                 poll_until(
-                    &format!("service {service_id} steady state"),
+                    "service steady state",
                     ctx.steady_state_timeout,
                     ctx.poll_interval,
                     || {
@@ -150,8 +152,19 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "created service did not expose expected initial ip allow entry {}",
             create_options_ip
         );
+        assert_eq!(
+            json_u64(&ready.json, &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"]),
+            Some(base_memory_gb)
+        );
+        assert_eq!(
+            json_u64(&ready.json, &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"]),
+            Some(base_memory_gb)
+        );
+        assert_eq!(
+            json_u64(&ready.json, &["/service/numReplicas", "/numReplicas"]),
+            Some(base_replicas)
+        );
 
-        eprintln!("[service-crud] verifying service is discoverable in list");
         let listed = failures
             .run(&ctx, StepKind::Blocking, "verify service is discoverable in list", || {
                 runner.service_list_for_run()
@@ -162,10 +175,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "created service {service_id} was not visible in service list"
         );
 
-        eprintln!(
-            "[service-crud] renaming service to {}",
-            ctx.updated_service_name()
-        );
         failures.run(&ctx, StepKind::Blocking, "rename service", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -178,11 +187,10 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             ])
         })?;
 
-        eprintln!("[service-crud] waiting for rename visibility in get");
         let updated = failures
             .run(&ctx, StepKind::Blocking, "wait for rename visibility in get", || {
                 poll_until(
-                    &format!("service {service_id} update visibility"),
+                    "service rename visibility in get",
                     ctx.create_timeout,
                     ctx.poll_interval,
                     || {
@@ -200,11 +208,10 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let updated_name = json_string(&updated.json, &["/service/name", "/name"])?;
         assert_eq!(updated_name, ctx.updated_service_name());
 
-        eprintln!("[service-crud] waiting for rename visibility in list");
         let renamed_list = failures
             .run(&ctx, StepKind::Blocking, "verify rename is visible in list", || {
                 poll_until(
-                    &format!("service {service_id} rename visibility in list"),
+                    "service rename visibility in list",
                     ctx.create_timeout,
                     ctx.poll_interval,
                     || {
@@ -226,7 +233,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Some(ctx.updated_service_name().as_str())
         );
 
-        eprintln!("[service-crud] testing non-blocking service prometheus");
+        log_phase("Capability Checks");
         failures.run(&ctx, StepKind::NonBlocking, "service prometheus", || {
             let metrics = runner.run_cloud_raw([
                 "service".to_string(),
@@ -241,7 +248,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] testing non-blocking idempotent rename");
         failures.run(&ctx, StepKind::NonBlocking, "idempotent rename", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -255,7 +261,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] testing non-blocking service update enable_core_dumps");
         failures.run(&ctx, StepKind::NonBlocking, "service update enable_core_dumps", || {
             let current = runner.service_get(&service_id)?;
             let current_value = json_bool(
@@ -275,7 +280,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] testing non-blocking tag mutation");
         failures.run(&ctx, StepKind::NonBlocking, "add service tag", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -289,17 +293,15 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] testing non-blocking ip allow add");
         failures.run(&ctx, StepKind::NonBlocking, "add first ip allow entry", || {
             mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", primary_ip)?;
             poll_for_ip_presence(&ctx, &runner, &service_id, primary_ip, true)
         })?;
 
-        eprintln!("[service-crud] testing non-blocking second ip allow add");
         failures.run(&ctx, StepKind::NonBlocking, "add second ip allow entry", || {
             mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", secondary_ip)?;
             poll_until(
-                &format!("service {service_id} multiple ip allow visibility"),
+                "multiple ip allow visibility",
                 ctx.create_timeout,
                 ctx.poll_interval,
                 || {
@@ -316,7 +318,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] testing non-blocking partial ip allow removal");
         failures.run(
             &ctx,
             StepKind::NonBlocking,
@@ -330,7 +331,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     primary_ip,
                 )?;
                 poll_until(
-                    &format!("service {service_id} partial ip allow removal"),
+                    "partial ip allow removal",
                     ctx.create_timeout,
                     ctx.poll_interval,
                     || {
@@ -348,13 +349,12 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             },
         )?;
 
-        eprintln!("[service-crud] testing non-blocking final ip allow removal");
         failures.run(&ctx, StepKind::NonBlocking, "remove remaining ip allow entry", || {
             mutate_ip_allow_entry(&ctx, &runner, &service_id, "--remove-ip-allow", secondary_ip)?;
             poll_for_ip_presence(&ctx, &runner, &service_id, secondary_ip, false)
         })?;
 
-        eprintln!("[service-crud] stopping service");
+        log_phase("Shutdown And Delete");
         failures.run(&ctx, StepKind::Blocking, "stop service", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -364,7 +364,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 ctx.org_id.clone(),
             ])?;
             poll_until(
-                &format!("service {service_id} stopped"),
+                "service stopped",
                 ctx.create_timeout,
                 ctx.poll_interval,
                 || {
@@ -380,7 +380,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] starting service");
         failures.run(&ctx, StepKind::Blocking, "start service", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -390,7 +389,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 ctx.org_id.clone(),
             ])?;
             poll_until(
-                &format!("service {service_id} restarted"),
+                "service restarted",
                 ctx.steady_state_timeout,
                 ctx.poll_interval,
                 || {
@@ -406,98 +405,54 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        eprintln!("[service-crud] scaling service vertically and horizontally");
-        failures.run(&ctx, StepKind::Blocking, "scale service vertically and horizontally", || {
-            let current = runner.service_get(&service_id)?;
-            let min_memory = json_u64(
-                &current.json,
-                &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"],
+        failures.run(&ctx, StepKind::Blocking, "scale out to 4 replicas", || {
+            scale_service_and_wait(
+                &ctx,
+                &runner,
+                &service_id,
+                Some(base_memory_gb),
+                Some(base_memory_gb),
+                Some(scaled_replicas),
+                "replica scale out",
             )
-            .ok_or("service scale test could not read minReplicaMemoryGb")?;
-            let max_memory = json_u64(
-                &current.json,
-                &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"],
-            )
-            .ok_or("service scale test could not read maxReplicaMemoryGb")?;
-            let replicas = json_u64(&current.json, &["/service/numReplicas", "/numReplicas"])
-                .ok_or("service scale test could not read numReplicas")?;
-
-            let target_min = if min_memory + 4 <= 356 {
-                min_memory + 4
-            } else if min_memory >= 12 {
-                min_memory - 4
-            } else {
-                return Err("service scale test could not derive a safe minReplicaMemoryGb target".into());
-            };
-
-            let target_max = if max_memory + 4 <= 356 {
-                max_memory + 4
-            } else if max_memory >= target_min + 4 {
-                max_memory - 4
-            } else {
-                max_memory
-            };
-
-            if target_max < target_min {
-                return Err(format!(
-                    "service scale targets are invalid: min={} max={}",
-                    target_min, target_max
-                )
-                .into());
-            }
-
-            let target_replicas = if replicas < 20 {
-                replicas + 1
-            } else if replicas > 1 {
-                replicas - 1
-            } else {
-                return Err("service scale test could not derive a safe numReplicas target".into());
-            };
-
-            runner.run_cloud([
-                "service".to_string(),
-                "scale".to_string(),
-                service_id.clone(),
-                "--min-replica-memory-gb".to_string(),
-                target_min.to_string(),
-                "--max-replica-memory-gb".to_string(),
-                target_max.to_string(),
-                "--num-replicas".to_string(),
-                target_replicas.to_string(),
-                "--org-id".to_string(),
-                ctx.org_id.clone(),
-            ])?;
-
-            poll_until(
-                &format!("service {service_id} scale visibility"),
-                ctx.steady_state_timeout,
-                ctx.poll_interval,
-                || {
-                    let output = runner.service_get(&service_id)?;
-                    let current_min = json_u64(
-                        &output.json,
-                        &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"],
-                    );
-                    let current_max = json_u64(
-                        &output.json,
-                        &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"],
-                    );
-                    let current_replicas =
-                        json_u64(&output.json, &["/service/numReplicas", "/numReplicas"]);
-                    if current_min == Some(target_min)
-                        && current_max == Some(target_max)
-                        && current_replicas == Some(target_replicas)
-                    {
-                        Ok(Some(()))
-                    } else {
-                        Ok(None)
-                    }
-                },
-            )?;
-            Ok(())
         })?;
 
-        eprintln!("[service-crud] deleting service");
+        failures.run(&ctx, StepKind::Blocking, "scale back to 3 replicas", || {
+            scale_service_and_wait(
+                &ctx,
+                &runner,
+                &service_id,
+                Some(base_memory_gb),
+                Some(base_memory_gb),
+                Some(base_replicas),
+                "replica scale in",
+            )
+        })?;
+
+        failures.run(&ctx, StepKind::Blocking, "scale up to 16 GB", || {
+            scale_service_and_wait(
+                &ctx,
+                &runner,
+                &service_id,
+                Some(scaled_memory_gb),
+                Some(scaled_memory_gb),
+                Some(base_replicas),
+                "vertical scale up",
+            )
+        })?;
+
+        failures.run(&ctx, StepKind::Blocking, "scale back down to 8 GB", || {
+            scale_service_and_wait(
+                &ctx,
+                &runner,
+                &service_id,
+                Some(base_memory_gb),
+                Some(base_memory_gb),
+                Some(base_replicas),
+                "vertical scale down",
+            )
+        })?;
+
         failures.run(&ctx, StepKind::Blocking, "delete service", || {
             delete_service_and_confirm_gone(&runner, &service_id)
         })?;
@@ -545,7 +500,7 @@ fn poll_for_ip_presence(
     expected_present: bool,
 ) -> TestResult<()> {
     poll_until(
-        &format!("service {service_id} ip visibility for {ip}"),
+        &format!("ip visibility for {}", ip),
         ctx.create_timeout,
         ctx.poll_interval,
         || {
@@ -593,4 +548,63 @@ fn json_bool(value: &Value, pointers: &[&str]) -> Option<bool> {
     pointers
         .iter()
         .find_map(|pointer| value.pointer(pointer).and_then(Value::as_bool))
+}
+
+fn scale_service_and_wait(
+    ctx: &TestContext,
+    runner: &CliRunner<'_>,
+    service_id: &str,
+    min_memory_gb: Option<u64>,
+    max_memory_gb: Option<u64>,
+    replicas: Option<u64>,
+    description: &str,
+) -> TestResult<()> {
+    let mut args = vec![
+        "service".to_string(),
+        "scale".to_string(),
+        service_id.to_string(),
+    ];
+
+    if let Some(value) = min_memory_gb {
+        args.push("--min-replica-memory-gb".to_string());
+        args.push(value.to_string());
+    }
+    if let Some(value) = max_memory_gb {
+        args.push("--max-replica-memory-gb".to_string());
+        args.push(value.to_string());
+    }
+    if let Some(value) = replicas {
+        args.push("--num-replicas".to_string());
+        args.push(value.to_string());
+    }
+    args.push("--org-id".to_string());
+    args.push(ctx.org_id.clone());
+
+    runner.run_cloud(args)?;
+
+    poll_until(
+        &format!("{description} visibility"),
+        ctx.steady_state_timeout,
+        ctx.poll_interval,
+        || {
+            let output = runner.service_get(service_id)?;
+            let current_min =
+                json_u64(&output.json, &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"]);
+            let current_max =
+                json_u64(&output.json, &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"]);
+            let current_replicas =
+                json_u64(&output.json, &["/service/numReplicas", "/numReplicas"]);
+
+            if min_memory_gb.is_none_or(|value| current_min == Some(value))
+                && max_memory_gb.is_none_or(|value| current_max == Some(value))
+                && replicas.is_none_or(|value| current_replicas == Some(value))
+            {
+                Ok(Some(()))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
+
+    Ok(())
 }

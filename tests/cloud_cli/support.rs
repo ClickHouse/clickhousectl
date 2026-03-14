@@ -98,10 +98,10 @@ pub enum StepKind {
 }
 
 impl StepKind {
-    pub fn as_str(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
-            StepKind::Blocking => "blocking",
-            StepKind::NonBlocking => "non-blocking",
+            StepKind::Blocking => "BLOCKING",
+            StepKind::NonBlocking => "NON-BLOCKING",
         }
     }
 }
@@ -129,16 +129,16 @@ impl FailureRecorder {
     where
         F: FnOnce() -> TestResult<T>,
     {
-        eprintln!("[step:{}] {}", kind.as_str(), step_name);
+        log_step_start(kind, step_name);
         match step() {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => {
+                log_step_ok(kind, step_name);
+                Ok(Some(value))
+            }
             Err(error) => {
                 if kind == StepKind::NonBlocking && ctx.continue_on_non_blocking_failures {
                     let rendered = error.to_string();
-                    eprintln!(
-                        "[step:non-blocking] continuing after failure in '{}': {}",
-                        step_name, rendered
-                    );
+                    log_step_continue(step_name, &rendered);
                     self.failures.push(RecordedFailure {
                         step_name: step_name.to_string(),
                         kind,
@@ -146,6 +146,7 @@ impl FailureRecorder {
                     });
                     Ok(None)
                 } else {
+                    log_step_fail(kind, step_name, &error.to_string());
                     Err(error)
                 }
             }
@@ -154,19 +155,45 @@ impl FailureRecorder {
 
     pub fn finish(self) -> TestResult<()> {
         if self.failures.is_empty() {
+            eprintln!("== Result ==");
+            eprintln!("PASS: all recorded steps completed successfully in this test run");
             return Ok(());
         }
 
-        let mut message = String::from("non-blocking failures were recorded:");
-        for failure in self.failures {
-            message.push_str(&format!(
-                "\n- [{}] {}: {}",
-                failure.kind.as_str(),
-                failure.step_name,
-                failure.error
-            ));
+        eprintln!("== Result ==");
+        eprintln!(
+            "FAIL: {} non-blocking step failure(s) recorded in this single test run",
+            self.failures.len()
+        );
+        for failure in &self.failures {
+            eprintln!(
+                "  - [{}] {}",
+                failure.kind.label(),
+                failure.step_name
+            );
         }
-        Err(message.into())
+
+        eprintln!("\n== Failure Details ==");
+        for (index, failure) in self.failures.iter().enumerate() {
+            eprintln!(
+                "{}. [{}] {}",
+                index + 1,
+                failure.kind.label(),
+                failure.step_name
+            );
+            for line in failure.error.lines() {
+                eprintln!("   {}", line);
+            }
+            if index + 1 != self.failures.len() {
+                eprintln!();
+            }
+        }
+
+        Err(format!(
+            "{} non-blocking step failure(s) recorded; see summary above",
+            self.failures.len()
+        )
+        .into())
     }
 }
 
@@ -260,7 +287,7 @@ impl<'a> CliRunner<'a> {
 
     fn run_raw(&self, args: Vec<String>) -> TestResult<RawCliOutput> {
         let redacted_command = redact_command(&self.binary_path, &args);
-        eprintln!("[cloud-cli] -> {redacted_command}");
+        log_command_start(&redacted_command);
         let started = Instant::now();
         let output = Command::new(&self.binary_path)
             .args(&args)
@@ -268,10 +295,7 @@ impl<'a> CliRunner<'a> {
             .output()?;
         let elapsed = started.elapsed();
         let raw = RawCliOutput::from_output(output, elapsed, redacted_command)?;
-        eprintln!(
-            "[cloud-cli] <- status={} elapsed={:?}",
-            raw.status_code, raw.elapsed
-        );
+        log_command_ok(raw.status_code, raw.elapsed);
         Ok(raw)
     }
 }
@@ -393,15 +417,12 @@ where
 {
     let started = Instant::now();
     let mut last_error: Option<String> = None;
-    eprintln!("[poll] waiting for {description}");
+    eprintln!("  poll: waiting for {description}");
 
     loop {
         match check() {
             Ok(Some(value)) => {
-                eprintln!(
-                    "[poll] complete: {description} after {:?}",
-                    started.elapsed()
-                );
+                eprintln!("  poll: complete after {:?}", started.elapsed());
                 return Ok(value);
             }
             Ok(None) => {}
@@ -500,7 +521,7 @@ pub fn service_has_ip_access_entry(value: &Value, source: &str) -> bool {
 }
 
 pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
-    eprintln!("[cleanup] deleting service {service_id}");
+    eprintln!("  cleanup: deleting service");
     let delete_args = [
         "service".to_string(),
         "delete".to_string(),
@@ -514,10 +535,10 @@ pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str)
         Err(error) => {
             let message = error.to_string();
             if message.contains("409 Conflict") && message.contains("Current state: 'running'") {
-                eprintln!("[cleanup] service {service_id} is running, stopping before delete");
+                eprintln!("  cleanup: service is running, stopping before delete");
                 let _ = runner.service_stop(service_id)?;
                 poll_until(
-                    &format!("service {service_id} stop before deletion"),
+                    "service stop before deletion",
                     runner.ctx.delete_timeout,
                     runner.ctx.poll_interval,
                     || {
@@ -539,7 +560,7 @@ pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str)
     }
 
     poll_until(
-        &format!("service {service_id} deletion"),
+        "service deletion",
         runner.ctx.delete_timeout,
         runner.ctx.poll_interval,
         || match runner.service_get(service_id) {
@@ -588,6 +609,56 @@ fn required_env(name: &str) -> TestResult<String> {
     Ok(env::var(name).map_err(|_| format!("missing required environment variable {name}"))?)
 }
 
+pub fn log_run_header(test_name: &str, ctx: &TestContext) {
+    eprintln!("== {} ==", test_name);
+    eprintln!("run_id: {}", ctx.run_id);
+    eprintln!("org_id: <redacted>");
+    eprintln!("provider: {}", ctx.provider);
+    eprintln!("region: {}", ctx.region);
+    eprintln!(
+        "mode: {}",
+        if ctx.continue_on_non_blocking_failures {
+            "continue-on-non-blocking-failures"
+        } else {
+            "strict"
+        }
+    );
+}
+
+pub fn log_phase(name: &str) {
+    eprintln!("\n== {} ==", name);
+}
+
+fn log_step_start(kind: StepKind, step_name: &str) {
+    eprintln!("START [{}] {}", kind.label(), step_name);
+}
+
+fn log_step_ok(kind: StepKind, step_name: &str) {
+    eprintln!("PASS  [{}] {}", kind.label(), step_name);
+}
+
+fn log_step_fail(kind: StepKind, step_name: &str, error: &str) {
+    eprintln!("FAIL  [{}] {}", kind.label(), step_name);
+    eprintln!("  error: {}", first_line(error));
+}
+
+fn log_step_continue(step_name: &str, error: &str) {
+    eprintln!("WARN  [NON-BLOCKING] {}", step_name);
+    eprintln!("  continuing: {}", first_line(error));
+}
+
+fn log_command_start(command: &str) {
+    eprintln!("  cmd: {}", command);
+}
+
+fn log_command_ok(status_code: i32, elapsed: Duration) {
+    eprintln!("  cmd result: status={} elapsed={:?}", status_code, elapsed);
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or(text)
+}
+
 fn resolve_binary_path() -> PathBuf {
     if let Ok(path) = env::var("CLICKHOUSECTL_BIN") {
         return PathBuf::from(path);
@@ -611,9 +682,14 @@ fn redact_command(binary_path: &PathBuf, args: &[String]) -> String {
             continue;
         }
 
-        if arg == "--api-key" || arg == "--api-secret" {
+        if arg == "--api-key" || arg == "--api-secret" || arg == "--org-id" {
             rendered.push(arg.clone());
             redact_next = true;
+            continue;
+        }
+
+        if looks_like_uuid(arg) {
+            rendered.push("<redacted-id>".to_string());
             continue;
         }
 
@@ -621,6 +697,19 @@ fn redact_command(binary_path: &PathBuf, args: &[String]) -> String {
     }
 
     rendered.join(" ")
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+
+    let expected = [8, 4, 4, 4, 12];
+    parts
+        .iter()
+        .zip(expected.iter())
+        .all(|(part, len)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 #[derive(Debug)]
