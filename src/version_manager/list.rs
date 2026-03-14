@@ -71,13 +71,14 @@ pub struct VersionEntry {
 /// Fetches available versions from GitHub releases
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = reqwest::Client::builder()
-        .user_agent("ch-cli")
-        .build()?;
+    let client = reqwest::Client::builder().user_agent("ch-cli").build()?;
 
-    let response = client.get(url).send().await?.error_for_status().map_err(|e| {
-        Error::Download(format!("GitHub API request failed: {}", e))
-    })?;
+    let response = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
     let releases: Vec<GitHubRelease> = response.json().await?;
 
     let mut versions = Vec::new();
@@ -89,7 +90,10 @@ pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
                 let v = &version[..dash_pos];
                 let suffix = &version[dash_pos + 1..];
                 if let Some(channel) = Channel::from_tag_suffix(suffix) {
-                    versions.push(VersionEntry { version: v.to_string(), channel });
+                    versions.push(VersionEntry {
+                        version: v.to_string(),
+                        channel,
+                    });
                 }
             }
         }
@@ -108,9 +112,7 @@ pub fn get_default_version() -> Result<String> {
         return Err(Error::NoDefaultVersion);
     }
 
-    let version = std::fs::read_to_string(&default_file)?
-        .trim()
-        .to_string();
+    let version = std::fs::read_to_string(&default_file)?.trim().to_string();
 
     if version.is_empty() {
         return Err(Error::NoDefaultVersion);
@@ -173,18 +175,27 @@ mod tests {
 
     #[test]
     fn test_equal_versions() {
-        assert_eq!(compare_versions("25.12.5.44", "25.12.5.44"), Ordering::Equal);
+        assert_eq!(
+            compare_versions("25.12.5.44", "25.12.5.44"),
+            Ordering::Equal
+        );
     }
 
     #[test]
     fn test_different_versions() {
-        assert_eq!(compare_versions("25.12.5.44", "25.12.5.43"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("25.12.5.44", "25.12.5.43"),
+            Ordering::Greater
+        );
         assert_eq!(compare_versions("25.12.5.43", "25.12.5.44"), Ordering::Less);
     }
 
     #[test]
     fn test_major_minor_difference() {
-        assert_eq!(compare_versions("25.12.5.44", "24.12.5.44"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("25.12.5.44", "24.12.5.44"),
+            Ordering::Greater
+        );
         assert_eq!(compare_versions("25.11.5.44", "25.12.5.44"), Ordering::Less);
     }
 
@@ -205,7 +216,10 @@ mod tests {
     #[test]
     fn test_non_numeric_suffix() {
         // 20.3.2-alpha1 should be greater than 20.3.1 (compare_part "2-alpha1" vs "1": lexicographic, "2" > "1")
-        assert_eq!(compare_versions("20.3.2-alpha1", "20.3.1"), Ordering::Greater);
+        assert_eq!(
+            compare_versions("20.3.2-alpha1", "20.3.1"),
+            Ordering::Greater
+        );
     }
 
     #[test]

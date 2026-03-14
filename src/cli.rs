@@ -12,13 +12,11 @@ CONTEXT FOR AGENTS:
   1. Local: Install and interact with versions of ClickHouse to develop locally.
   2. Cloud: Manage ClickHouse Cloud infrastructure and push local work to cloud.
 
-  You can install the ClickHouse Agent Skills for best practices on using ClikHouse:
+  You can install the ClickHouse Agent Skills with:
 
-  `npx skills add clickhouse/agent-skills`
+  `clickhousectl skills`
 
-  Typical local workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
-
-  Use `clickhousectl <command> --help` to get more context for specific commands.")]
+  Typical local workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -37,7 +35,7 @@ CONTEXT FOR AGENTS:
         command: LocalCommands,
     },
 
-    /// ClickHouse Cloud API commands
+    /// Work with serverless ClickHouse in ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure.
@@ -49,6 +47,15 @@ CONTEXT FOR AGENTS:
   Typical workflow: `cloud org list` → get org ID → `cloud service list` → manage services and related resources.
   Related: `clickhousectl cloud org list` to start.")]
     Cloud(CloudArgs),
+
+    /// Install ClickHouse agent skills into supported coding agents
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Installs the official ClickHouse agent skills. These skills contain knowledge on how to use
+  ClickHouse and this CLI.
+  Using any flags skips interactive mode. Project scope is the default. Universal `.agents/skills`
+  is always included.")]
+    Skills(SkillsArgs),
 }
 
 #[derive(Subcommand)]
@@ -171,6 +178,30 @@ CONTEXT FOR AGENTS:
     },
 }
 
+#[derive(Args, Debug)]
+pub struct SkillsArgs {
+    /// Install into specific agents (repeatable or comma-separated).
+    #[arg(
+        long = "agent",
+        value_name = "AGENT",
+        value_delimiter = ',',
+        long_help = "Install into specific agents (repeatable or comma-separated).\n\nValid names:\n  claude, cursor, opencode, codex\n  agent, roo, trae, windsurf\n  zencoder, neovate, pochi, adal\n  openclaw, cline, command-code\n  kiro-cli, agents"
+    )]
+    pub agents: Vec<String>,
+
+    /// Install into every supported agent in the selected scope without prompting
+    #[arg(long, conflicts_with_all = ["agents", "detected_only"])]
+    pub all: bool,
+
+    /// Install only into agents detected from your home directory without prompting
+    #[arg(long = "detected-only", conflicts_with_all = ["agents", "all"])]
+    pub detected_only: bool,
+
+    /// Install into global agent config directories in your home directory
+    #[arg(long)]
+    pub global: bool,
+}
+
 #[derive(Args)]
 pub struct CloudArgs {
     /// API key (or set CLICKHOUSE_CLOUD_API_KEY)
@@ -261,7 +292,6 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ActivityCommands,
     },
-
 }
 
 #[derive(Subcommand)]
@@ -1308,5 +1338,53 @@ mod tests {
         assert_eq!(backup_period_hours, Some(12));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn parses_skills_all_and_agent_flags() {
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--all"]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(args.all);
+        assert!(args.agents.is_empty());
+        assert!(!args.detected_only);
+        assert!(!args.global);
+
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--global"]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(args.global);
+        assert!(!args.all);
+        assert!(!args.detected_only);
+        assert!(args.agents.is_empty());
+
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--detected-only"]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(args.detected_only);
+        assert!(!args.all);
+        assert!(!args.global);
+        assert!(args.agents.is_empty());
+
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "skills",
+            "--global",
+            "--agent",
+            "claude,codex",
+            "--agent",
+            "agents",
+        ])
+        .unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(!args.all);
+        assert!(!args.detected_only);
+        assert!(args.global);
+        assert_eq!(args.agents, vec!["claude", "codex", "agents"]);
     }
 }

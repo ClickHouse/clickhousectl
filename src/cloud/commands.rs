@@ -481,7 +481,9 @@ fn build_service_password_patch_request(
     }
 }
 
-fn build_query_endpoint_create_request(opts: &QueryEndpointCreateOptions) -> CreateQueryEndpointRequest {
+fn build_query_endpoint_create_request(
+    opts: &QueryEndpointCreateOptions,
+) -> CreateQueryEndpointRequest {
     CreateQueryEndpointRequest {
         roles: (!opts.roles.is_empty()).then(|| opts.roles.clone()),
         open_api_keys: (!opts.open_api_keys.is_empty()).then(|| opts.open_api_keys.clone()),
@@ -536,7 +538,9 @@ fn build_api_key_update_request(
     })
 }
 
-fn build_backup_config_update_request(opts: &BackupConfigUpdateOptions) -> UpdateBackupConfigRequest {
+fn build_backup_config_update_request(
+    opts: &BackupConfigUpdateOptions,
+) -> UpdateBackupConfigRequest {
     UpdateBackupConfigRequest {
         backup_period_in_hours: opts.backup_period_hours.map(f64::from),
         backup_retention_period_in_hours: opts.backup_retention_period_hours.map(f64::from),
@@ -1139,7 +1143,10 @@ pub async fn invitation_list(
         for inv in invitations {
             let expires = inv.expire_at.as_deref().unwrap_or("-");
             let role = inv.role.as_deref().unwrap_or("-");
-            println!("  {} ({}) - {} [expires: {}]", inv.email, inv.id, role, expires);
+            println!(
+                "  {} ({}) - {} [expires: {}]",
+                inv.email, inv.id, role, expires
+            );
         }
     }
     Ok(())
@@ -1234,7 +1241,10 @@ pub async fn key_list(
         println!("API Keys:");
         for key in keys {
             let expires = key.expire_at.as_deref().unwrap_or("never");
-            println!("  {} ({}) - {} [expires: {}]", key.name, key.id, key.state, expires);
+            println!(
+                "  {} ({}) - {} [expires: {}]",
+                key.name, key.id, key.state, expires
+            );
         }
     }
     Ok(())
@@ -1432,7 +1442,9 @@ pub async fn backup_config_update(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
     let request = build_backup_config_update_request(&opts);
 
-    let config = client.update_backup_config(&org_id, service_id, &request).await?;
+    let config = client
+        .update_backup_config(&org_id, service_id, &request)
+        .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&config)?);
@@ -1584,7 +1596,10 @@ mod tests {
         let org_request = build_org_update_request(&org_opts).unwrap();
         let org_json = serde_json::to_value(&org_request).unwrap();
         assert_eq!(org_json["privateEndpoints"]["remove"][0]["id"], "pe-1");
-        assert_eq!(org_json["privateEndpoints"]["remove"][0]["cloudProvider"], "aws");
+        assert_eq!(
+            org_json["privateEndpoints"]["remove"][0]["cloudProvider"],
+            "aws"
+        );
         assert_eq!(org_json["enableCoreDumps"], false);
 
         let backup_opts = BackupConfigUpdateOptions {

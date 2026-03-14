@@ -7,13 +7,13 @@ const DEFAULT_HTTP_PORT: u16 = 8123;
 const DEFAULT_TCP_PORT: u16 = 9000;
 
 const ADJECTIVES: &[&str] = &[
-    "bold", "calm", "dark", "fast", "gold", "keen", "loud", "neat", "pale", "red",
-    "slim", "tall", "warm", "blue", "cool", "deep", "flat", "gray", "iron", "wild",
+    "bold", "calm", "dark", "fast", "gold", "keen", "loud", "neat", "pale", "red", "slim", "tall",
+    "warm", "blue", "cool", "deep", "flat", "gray", "iron", "wild",
 ];
 
 const NOUNS: &[&str] = &[
-    "bear", "bird", "bolt", "crab", "crow", "dart", "fawn", "fish", "frog", "gull",
-    "hare", "hawk", "lynx", "moth", "newt", "orca", "puma", "seal", "swan", "wolf",
+    "bear", "bird", "bolt", "crab", "crow", "dart", "fawn", "fish", "frog", "gull", "hare", "hawk",
+    "lynx", "moth", "newt", "orca", "puma", "seal", "swan", "wolf",
 ];
 
 /// Metadata saved for each server instance.
@@ -161,8 +161,7 @@ fn is_process_alive(pid: u32) -> bool {
 
 /// Kill a server by name.
 pub fn kill_server(name: &str) -> Result<()> {
-    let info = load_running_info(name)
-        .ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
+    let info = load_running_info(name).ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
 
     unsafe {
         libc::kill(info.pid as i32, libc::SIGTERM);
@@ -253,10 +252,7 @@ fn find_free_port(start: u16) -> Option<u16> {
 /// Otherwise, try defaults (8123/9000) and auto-assign free ports if they're taken.
 /// Returns (http_port, tcp_port, auto_assigned) where auto_assigned is true if
 /// we picked non-default ports.
-pub fn resolve_ports(
-    http_port: Option<u16>,
-    tcp_port: Option<u16>,
-) -> Result<(u16, u16, bool)> {
+pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u16, u16, bool)> {
     let http = match http_port {
         Some(p) => p,
         None => {

@@ -8,6 +8,7 @@ With `clickhousectl` you can:
 - Execute queries against ClickHouse servers
 - Setup ClickHouse Cloud and create cloud-managed ClickHouse clusters
 - Manage ClickHouse Cloud resources
+- Install the official ClickHouse agent skills into supported coding agents
 - Push your local ClickHouse development to cloud
 
 `clickhousectl` helps humans and AI-agents to develop with ClickHouse.
@@ -27,6 +28,65 @@ The install script will download the correct version for your OS and install to 
 ```bash
 cargo install --path .
 ```
+
+## Skills
+
+Install the official ClickHouse agent skills from [ClickHouse/agent-skills](https://github.com/ClickHouse/agent-skills) into supported agent config folders in either the current project or your home directory.
+
+```bash
+# Default: choose scope, then choose agents interactively
+clickhousectl skills
+
+# Non-interactive: install into every supported project-local agent folder
+clickhousectl skills --all
+
+# Non-interactive: install only into detected agents
+clickhousectl skills --detected-only
+
+# Non-interactive: install into every supported global agent folder
+clickhousectl skills --global --all
+
+# Non-interactive: install only into detected global agents
+clickhousectl skills --global --detected-only
+
+# Non-interactive: install into specific project-local agents
+clickhousectl skills --agent claude --agent codex
+
+# Non-interactive: install into specific global agents
+clickhousectl skills --global --agent claude --agent codex
+```
+
+Supported agent targets:
+
+- `agents` -> `.agents/skills/` (always included)
+- `claude` -> `.claude/skills/`
+- `codex` -> `.codex/skills/`
+- `cursor` -> `.cursor/skills/`
+- `opencode` -> `.opencode/skills/`
+- `agent` -> `.agent/skills/`
+- `roo` -> `.roo/skills/`
+- `trae` -> `.trae/skills/`
+- `windsurf` -> `.windsurf/skills/`
+- `zencoder` -> `.zencoder/skills/`
+- `neovate` -> `.neovate/skills/`
+- `pochi` -> `.pochi/skills/`
+- `adal` -> `.adal/skills/`
+- `openclaw` -> `.openclaw/skills/`
+- `cline` -> `.cline/skills/`
+- `command-code` -> `.command-code/skills/`
+- `kiro-cli` -> `.kiro/skills/`
+
+Scope behavior:
+
+- Project scope installs into folders like `./.claude/skills/` and `./.codex/skills/`
+- Global scope installs into folders like `~/.claude/skills/` and `~/.codex/skills/`
+- Interactive mode asks for scope first and defaults to `Project`
+- `--global` switches non-interactive installs to the home-directory scope
+- `--all` installs into all supported agent directories for the selected scope
+- `--detected-only` installs only into the agents detected from your home directory
+- `.agents/skills/` is always included because it covers many agents that support the universal format
+
+In each scope, installed agents are discovered from your home directory. The interactive picker always includes the universal `.agents/skills/` install, then shows dedicated agent-specific installs with detected ones first and preselected, followed by the remaining supported agents unchecked. At install time the command downloads the latest archive from `ClickHouse/agent-skills` and copies every skill found under that repo's `skills/` directory into each selected agent config directory.
 
 ## Local
 
