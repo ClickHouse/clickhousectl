@@ -194,6 +194,12 @@ CLICKHOUSECTL_BIN=target/debug/clickhousectl \
 cargo test --test cloud_cli cloud_service_crud_lifecycle -- --ignored --nocapture --test-threads=1
 ```
 
+By default, any failed check fails the run. To keep going after `non-blocking` capability failures and collect them in a summary at the end, set:
+
+```bash
+export CONTINUE_ON_NON_BLOCKING_FAILURES=1
+```
+
 This initial suite is intentionally narrow: auth/org verification, disposable service create/get/list/update/delete, polling, and verified cleanup. Broader Cloud API coverage should be added after this flow is stable in CI.
 
 ### Organizations

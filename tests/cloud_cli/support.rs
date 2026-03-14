@@ -26,6 +26,7 @@ pub struct TestContext {
     pub delete_timeout: Duration,
     pub steady_state_timeout: Duration,
     pub poll_interval: Duration,
+    pub continue_on_non_blocking_failures: bool,
 }
 
 impl TestContext {
@@ -67,6 +68,9 @@ impl TestContext {
                 "CLICKHOUSE_CLOUD_TEST_POLL_INTERVAL_SECS",
                 DEFAULT_POLL_INTERVAL_SECS,
             )?,
+            continue_on_non_blocking_failures: bool_from_env(
+                "CONTINUE_ON_NON_BLOCKING_FAILURES",
+            )?,
         })
     }
 
@@ -84,6 +88,85 @@ impl TestContext {
             "suite=service-crud".to_string(),
             format!("run-id={}", self.run_id),
         ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepKind {
+    Blocking,
+    NonBlocking,
+}
+
+impl StepKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StepKind::Blocking => "blocking",
+            StepKind::NonBlocking => "non-blocking",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RecordedFailure {
+    pub step_name: String,
+    pub kind: StepKind,
+    pub error: String,
+}
+
+#[derive(Default)]
+pub struct FailureRecorder {
+    failures: Vec<RecordedFailure>,
+}
+
+impl FailureRecorder {
+    pub fn run<T, F>(
+        &mut self,
+        ctx: &TestContext,
+        kind: StepKind,
+        step_name: &str,
+        step: F,
+    ) -> TestResult<Option<T>>
+    where
+        F: FnOnce() -> TestResult<T>,
+    {
+        eprintln!("[step:{}] {}", kind.as_str(), step_name);
+        match step() {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => {
+                if kind == StepKind::NonBlocking && ctx.continue_on_non_blocking_failures {
+                    let rendered = error.to_string();
+                    eprintln!(
+                        "[step:non-blocking] continuing after failure in '{}': {}",
+                        step_name, rendered
+                    );
+                    self.failures.push(RecordedFailure {
+                        step_name: step_name.to_string(),
+                        kind,
+                        error: rendered,
+                    });
+                    Ok(None)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    pub fn finish(self) -> TestResult<()> {
+        if self.failures.is_empty() {
+            return Ok(());
+        }
+
+        let mut message = String::from("non-blocking failures were recorded:");
+        for failure in self.failures {
+            message.push_str(&format!(
+                "\n- [{}] {}: {}",
+                failure.kind.as_str(),
+                failure.step_name,
+                failure.error
+            ));
+        }
+        Err(message.into())
     }
 }
 
@@ -278,6 +361,10 @@ impl CleanupRegistry {
         self.service_ids.push(service_id.into());
     }
 
+    pub fn unregister_service(&mut self, service_id: &str) {
+        self.service_ids.retain(|registered| registered != service_id);
+    }
+
     pub fn cleanup(&mut self, runner: &CliRunner<'_>) -> Result<(), String> {
         let mut failures = Vec::new();
 
@@ -368,6 +455,21 @@ pub fn service_present_in_list(value: &Value, service_id: &str) -> bool {
     false
 }
 
+pub fn service_name_in_list(value: &Value, service_id: &str) -> Option<String> {
+    let services = value
+        .pointer("/services")
+        .and_then(Value::as_array)
+        .or_else(|| value.as_array());
+
+    services.and_then(|services| {
+        services.iter().find_map(|service| {
+            let id = json_string_opt(service, &["/id"])?;
+            let name = json_string_opt(service, &["/name"])?;
+            (id == service_id).then(|| name.to_string())
+        })
+    })
+}
+
 pub fn service_list_is_empty(value: &Value) -> bool {
     if let Some(services) = value.pointer("/services").and_then(Value::as_array) {
         return services.is_empty();
@@ -380,7 +482,24 @@ pub fn service_list_is_empty(value: &Value) -> bool {
     false
 }
 
-fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
+pub fn service_has_ip_access_entry(value: &Value, source: &str) -> bool {
+    let entries = value
+        .pointer("/service/ipAccessList")
+        .or_else(|| value.pointer("/ipAccessList"));
+
+    entries
+        .and_then(Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .pointer("/source")
+                    .and_then(Value::as_str)
+                    .is_some_and(|candidate| candidate == source)
+            })
+        })
+}
+
+pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
     eprintln!("[cleanup] deleting service {service_id}");
     let delete_args = [
         "service".to_string(),
@@ -449,6 +568,18 @@ fn duration_from_env(name: &str, default_secs: u64) -> TestResult<Duration> {
     match env::var(name) {
         Ok(value) => Ok(Duration::from_secs(value.parse()?)),
         Err(env::VarError::NotPresent) => Ok(Duration::from_secs(default_secs)),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn bool_from_env(name: &str) -> TestResult<bool> {
+    match env::var(name) {
+        Ok(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" | "" => Ok(false),
+            _ => Err(format!("invalid boolean value for {name}: {value}").into()),
+        },
+        Err(env::VarError::NotPresent) => Ok(false),
         Err(error) => Err(Box::new(error)),
     }
 }
