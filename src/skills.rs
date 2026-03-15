@@ -1,9 +1,13 @@
 use crate::cli::SkillsArgs;
 use crate::error::{Error, Result};
 use flate2::read::GzDecoder;
+use futures_util::StreamExt;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum InstallScope {
@@ -27,7 +31,7 @@ struct InstallSummary {
 struct SkillFile {
     skill_slug: String,
     relative_path: PathBuf,
-    contents: Vec<u8>,
+    source_path: PathBuf,
 }
 
 const AGENT_SKILLS_REPO: &str = "https://github.com/ClickHouse/agent-skills";
@@ -153,7 +157,8 @@ pub async fn install(args: SkillsArgs) -> Result<()> {
         AGENT_SKILLS_REPO
     );
     let archive = download_agent_skills_archive().await?;
-    let skill_files = extract_skills_from_tarball(&archive)?;
+    let extracted = extract_skills_from_tarball(&archive.path)?;
+    let skill_files = collect_skill_files(&extracted.path)?;
 
     if skill_files.is_empty() {
         return Err(Error::Skills(format!(
@@ -181,7 +186,55 @@ pub async fn install(args: SkillsArgs) -> Result<()> {
     Ok(())
 }
 
-async fn download_agent_skills_archive() -> Result<Vec<u8>> {
+struct TempArtifact {
+    path: PathBuf,
+    is_dir: bool,
+}
+
+impl Drop for TempArtifact {
+    fn drop(&mut self) {
+        let _ = if self.is_dir {
+            fs::remove_dir_all(&self.path)
+        } else {
+            fs::remove_file(&self.path)
+        };
+    }
+}
+
+fn create_temp_artifact(prefix: &str, suffix: &str, is_dir: bool) -> Result<TempArtifact> {
+    let base = std::env::temp_dir();
+    let pid = std::process::id();
+
+    for attempt in 0..100u32 {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| Error::Skills(format!("Failed to get system time: {err}")))?
+            .as_nanos();
+        let name = format!("{prefix}-{pid}-{timestamp}-{attempt}{suffix}");
+        let path = base.join(name);
+
+        if is_dir {
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(TempArtifact { path, is_dir }),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err.into()),
+            }
+        } else {
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(TempArtifact { path, is_dir }),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+
+    Err(Error::Skills(format!(
+        "Failed to create a temporary {} after multiple attempts.",
+        if is_dir { "directory" } else { "file" }
+    )))
+}
+
+async fn download_agent_skills_archive() -> Result<TempArtifact> {
     let response = reqwest::get(AGENT_SKILLS_ARCHIVE_URL).await?;
     if !response.status().is_success() {
         return Err(Error::Skills(format!(
@@ -191,14 +244,23 @@ async fn download_agent_skills_archive() -> Result<Vec<u8>> {
         )));
     }
 
-    Ok(response.bytes().await?.to_vec())
+    let temp_file = create_temp_artifact("clickhouse-agent-skills", ".tar.gz", false)?;
+    let mut file = tokio::fs::File::create(&temp_file.path).await?;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        file.write_all(&chunk?).await?;
+    }
+    file.flush().await?;
+
+    Ok(temp_file)
 }
 
-fn extract_skills_from_tarball(archive_bytes: &[u8]) -> Result<Vec<SkillFile>> {
-    let cursor = std::io::Cursor::new(archive_bytes);
-    let decoder = GzDecoder::new(cursor);
+fn extract_skills_from_tarball(archive_path: &Path) -> Result<TempArtifact> {
+    let archive_file = File::open(archive_path)?;
+    let decoder = GzDecoder::new(archive_file);
     let mut archive = Archive::new(decoder);
-    let mut skill_files = Vec::new();
+    let temp_dir = create_temp_artifact("clickhouse-agent-skills", "", true)?;
 
     for entry in archive.entries()? {
         let mut entry = entry?;
@@ -211,22 +273,15 @@ fn extract_skills_from_tarball(archive_bytes: &[u8]) -> Result<Vec<SkillFile>> {
             continue;
         };
 
-        let mut contents = Vec::new();
-        entry.read_to_end(&mut contents)?;
-        skill_files.push(SkillFile {
-            skill_slug,
-            relative_path,
-            contents,
-        });
+        let output_path = temp_dir.path.join(skill_slug).join(relative_path);
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output = File::create(output_path)?;
+        io::copy(&mut entry, &mut output)?;
     }
 
-    skill_files.sort_by(|left, right| {
-        left.skill_slug
-            .cmp(&right.skill_slug)
-            .then_with(|| left.relative_path.cmp(&right.relative_path))
-    });
-
-    Ok(skill_files)
+    Ok(temp_dir)
 }
 
 fn parse_skill_archive_path(path: &Path) -> Option<(String, PathBuf)> {
@@ -254,6 +309,68 @@ fn installed_skill_names(skill_files: &[SkillFile]) -> Vec<String> {
         .collect::<Vec<_>>();
     names.dedup();
     names
+}
+
+fn collect_skill_files(extracted_root: &Path) -> Result<Vec<SkillFile>> {
+    let mut skill_files = Vec::new();
+
+    for skill_dir in fs::read_dir(extracted_root)? {
+        let skill_dir = skill_dir?;
+        if !skill_dir.file_type()?.is_dir() {
+            continue;
+        }
+
+        let skill_slug = skill_dir.file_name().to_string_lossy().into_owned();
+        collect_skill_files_recursive(
+            &skill_dir.path(),
+            &skill_dir.path(),
+            &skill_slug,
+            &mut skill_files,
+        )?;
+    }
+
+    skill_files.sort_by(|left, right| {
+        left.skill_slug
+            .cmp(&right.skill_slug)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+
+    Ok(skill_files)
+}
+
+fn collect_skill_files_recursive(
+    skill_root: &Path,
+    current_dir: &Path,
+    skill_slug: &str,
+    skill_files: &mut Vec<SkillFile>,
+) -> Result<()> {
+    for entry in fs::read_dir(current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            collect_skill_files_recursive(skill_root, &path, skill_slug, skill_files)?;
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let relative_path = path
+            .strip_prefix(skill_root)
+            .map_err(|err| Error::Skills(format!("Failed to compute skill path: {err}")))?
+            .to_path_buf();
+
+        skill_files.push(SkillFile {
+            skill_slug: skill_slug.to_string(),
+            relative_path,
+            source_path: path,
+        });
+    }
+
+    Ok(())
 }
 
 fn resolve_selection<'a>(
@@ -463,21 +580,22 @@ fn install_into_agent(
             .join(agent.install_dir)
             .join(&file.skill_slug)
             .join(&file.relative_path);
+        let source_contents = fs::read(&file.source_path)?;
 
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         match std::fs::read(&output_path) {
-            Ok(existing) if existing == file.contents => {
+            Ok(existing) if existing == source_contents => {
                 summary.unchanged_files += 1;
             }
             Ok(_) => {
-                std::fs::write(&output_path, &file.contents)?;
+                std::fs::copy(&file.source_path, &output_path)?;
                 summary.updated_files += 1;
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                std::fs::write(&output_path, &file.contents)?;
+                std::fs::copy(&file.source_path, &output_path)?;
                 summary.created_files += 1;
             }
             Err(err) => return Err(err.into()),
@@ -708,7 +826,8 @@ mod tests {
             ("agent-skills-main/README.md", b"ignore me".as_slice()),
         ]);
 
-        let skill_files = extract_skills_from_tarball(&archive).unwrap();
+        let extracted = extract_skills_from_tarball(&archive.path).unwrap();
+        let skill_files = collect_skill_files(&extracted.path).unwrap();
         let paths = skill_files
             .iter()
             .map(|file| {
@@ -732,16 +851,29 @@ mod tests {
     #[test]
     fn installs_downloaded_skill_files_into_agent_directory() {
         let root = temp_test_dir("install");
+        let staging = temp_test_dir("staging");
+        std::fs::create_dir_all(staging.join("clickhouse-best-practices")).unwrap();
+        std::fs::create_dir_all(staging.join("clickhouse-cli/examples")).unwrap();
+        std::fs::write(
+            staging.join("clickhouse-best-practices/SKILL.md"),
+            b"best practices",
+        )
+        .unwrap();
+        std::fs::write(
+            staging.join("clickhouse-cli/examples/query.sql"),
+            b"SELECT 1",
+        )
+        .unwrap();
         let skill_files = vec![
             SkillFile {
                 skill_slug: "clickhouse-best-practices".into(),
                 relative_path: PathBuf::from("SKILL.md"),
-                contents: b"best practices".to_vec(),
+                source_path: staging.join("clickhouse-best-practices/SKILL.md"),
             },
             SkillFile {
                 skill_slug: "clickhouse-cli".into(),
                 relative_path: PathBuf::from("examples/query.sql"),
-                contents: b"SELECT 1".to_vec(),
+                source_path: staging.join("clickhouse-cli/examples/query.sql"),
             },
         ];
 
@@ -761,6 +893,7 @@ mod tests {
         assert_eq!(second_summary.unchanged_files, 2);
 
         std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(staging).unwrap();
     }
 
     #[test]
@@ -829,7 +962,7 @@ mod tests {
         assert_eq!(scope_root(InstallScope::Project).unwrap(), cwd);
     }
 
-    fn build_test_archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    fn build_test_archive(entries: &[(&str, &[u8])]) -> TempArtifact {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut builder = Builder::new(encoder);
 
@@ -843,7 +976,10 @@ mod tests {
         }
 
         let encoder = builder.into_inner().unwrap();
-        encoder.finish().unwrap()
+        let archive_bytes = encoder.finish().unwrap();
+        let artifact = create_temp_artifact("clickhousectl-skills-test", ".tar.gz", false).unwrap();
+        std::fs::write(&artifact.path, archive_bytes).unwrap();
+        artifact
     }
 
     fn temp_test_dir(name: &str) -> PathBuf {
