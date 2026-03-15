@@ -1426,25 +1426,48 @@ fn test_backup_type_values() {
 fn test_usage_cost_deserialize() {
     let json = serde_json::json!({
         "grandTotalCHC": 123.45,
-        "costs": {
+        "costs": [{
             "serviceId": "svc-1",
             "date": "2024-01-15",
             "totalCHC": 52.5
-        }
+        }]
     });
     let cost: UsageCost = serde_json::from_value(json).unwrap();
     assert_eq!(cost.grand_total_chc, Some(123.45));
-    assert_eq!(cost.costs.as_ref().unwrap().total_chc, Some(52.5));
+    assert_eq!(cost.costs.as_ref().unwrap().len(), 1);
+    assert_eq!(cost.costs.as_ref().unwrap()[0].total_chc, Some(52.5));
+}
+
+#[test]
+fn test_usage_cost_deserialize_empty_costs_array() {
+    let json = serde_json::json!({
+        "grandTotalCHC": 0,
+        "costs": []
+    });
+    let cost: UsageCost = serde_json::from_value(json).unwrap();
+    assert_eq!(cost.grand_total_chc, Some(0.0));
+    assert!(cost.costs.as_ref().unwrap().is_empty());
 }
 
 #[test]
 fn test_usage_cost_serialize_grand_total() {
     let cost = UsageCost {
         grand_total_chc: Some(99.99),
-        costs: None,
+        costs: Some(vec![UsageCostRecord {
+            data_warehouse_id: None,
+            service_id: Some("svc-1".to_string()),
+            date: Some("2024-01-15".to_string()),
+            entity_type: None,
+            entity_id: None,
+            entity_name: Some("my-service".to_string()),
+            metrics: None,
+            total_chc: Some(99.99),
+            locked: None,
+        }]),
     };
     let json = serde_json::to_value(&cost).unwrap();
     assert_eq!(json["grandTotalCHC"], 99.99);
+    assert_eq!(json["costs"][0]["serviceId"], "svc-1");
     assert!(json.get("grandTotalChc").is_none());
 }
 

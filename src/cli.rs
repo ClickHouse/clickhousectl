@@ -1,4 +1,13 @@
+use chrono::NaiveDate;
 use clap::{Args, Parser, Subcommand};
+
+fn parse_date_only(value: &str) -> Result<String, String> {
+    if NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
+        return Err(format!("invalid date '{}': expected YYYY-MM-DD", value));
+    }
+
+    Ok(value.to_string())
+}
 
 #[derive(Parser)]
 #[command(name = "clickhousectl")]
@@ -351,12 +360,12 @@ CONTEXT FOR AGENTS:
         /// Organization ID
         org_id: String,
 
-        /// Start date filter (ISO 8601, e.g. 2024-01-01T00:00:00Z)
-        #[arg(long)]
+        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
+        #[arg(long, value_parser = parse_date_only)]
         from_date: String,
 
-        /// End date filter (ISO 8601, e.g. 2024-01-31T23:59:59Z)
-        #[arg(long)]
+        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-01-31)
+        #[arg(long, value_parser = parse_date_only)]
         to_date: String,
 
         /// Filter by entity attributes
@@ -1338,6 +1347,77 @@ mod tests {
         assert_eq!(backup_period_hours, Some(12));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn parses_org_usage_date_only_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Usage {
+            from_date, to_date, ..
+        } = command
+        else {
+            panic!("expected org usage");
+        };
+        assert_eq!(from_date, "2025-01-01");
+        assert_eq!(to_date, "2025-01-31");
+    }
+
+    #[test]
+    fn rejects_org_usage_timestamps() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-01-01T00:00:00Z",
+            "--to-date",
+            "2025-01-31",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected timestamp input to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_org_usage_calendar_dates() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-02-31",
+            "--to-date",
+            "2025-03-01",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid calendar date to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
     }
 
     #[test]

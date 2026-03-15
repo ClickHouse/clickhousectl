@@ -1008,17 +1008,24 @@ pub async fn org_usage(
         if let Some(total) = usage.grand_total_chc {
             println!("Grand Total: {:.2} CHC", total);
         }
-        if let Some(cost) = &usage.costs {
-            let entity = cost.entity_name.as_deref().unwrap_or("-");
-            let date = cost.date.as_deref().unwrap_or("-");
-            let total = cost
-                .total_chc
-                .map(|v| format!("{:.2}", v))
-                .unwrap_or_else(|| "-".to_string());
-            println!("Usage cost:");
-            println!("  {} - {} ({} CHC)", entity, date, total);
+        if let Some(costs) = &usage.costs {
+            if costs.is_empty() {
+                println!("No usage cost records found");
+                return Ok(());
+            }
+
+            println!("Usage costs:");
+            for cost in costs {
+                let entity = cost.entity_name.as_deref().unwrap_or("-");
+                let date = cost.date.as_deref().unwrap_or("-");
+                let total = cost
+                    .total_chc
+                    .map(|v| format!("{:.2}", v))
+                    .unwrap_or_else(|| "-".to_string());
+                println!("  {} - {} ({} CHC)", entity, date, total);
+            }
         } else {
-            println!("No usage cost record found");
+            println!("No usage cost records found");
         }
     }
     Ok(())
