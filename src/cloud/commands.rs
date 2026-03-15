@@ -22,21 +22,44 @@ where
     T::from_str(value).map_err(|err| format!("invalid {} '{}': {}", field, value, err).into())
 }
 
-fn parse_tag(value: &str) -> ResourceTag {
+fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
     match value.split_once('=') {
-        Some((key, tag_value)) => ResourceTag {
-            key: key.to_string(),
-            value: Some(tag_value.to_string()),
-        },
-        None => ResourceTag {
-            key: value.to_string(),
-            value: None,
-        },
+        Some((key, tag_value)) => {
+            let key = key.trim();
+            if key.is_empty() {
+                Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
+            } else {
+                Ok(ResourceTag {
+                    key: key.to_string(),
+                    value: Some(tag_value.to_string()),
+                })
+            }
+        }
+        None => {
+            let key = value.trim();
+            if key.is_empty() {
+                Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
+            } else {
+                Ok(ResourceTag {
+                    key: key.to_string(),
+                    value: None,
+                })
+            }
+        }
     }
 }
 
-fn parse_tags(values: &[String]) -> Option<Vec<ResourceTag>> {
-    (!values.is_empty()).then(|| values.iter().map(|value| parse_tag(value)).collect())
+fn parse_tags(values: &[String]) -> Result<Option<Vec<ResourceTag>>, Box<dyn std::error::Error>> {
+    if values.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(
+            values
+                .iter()
+                .map(|value| parse_tag(value))
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
 }
 
 fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessEntry>> {
@@ -95,13 +118,16 @@ fn parse_service_endpoint_changes(
     Ok((!changes.is_empty()).then_some(changes))
 }
 
-fn parse_instance_tags_patch(add: &[String], remove: &[String]) -> Option<InstanceTagsPatch> {
+fn parse_instance_tags_patch(
+    add: &[String],
+    remove: &[String],
+) -> Result<Option<InstanceTagsPatch>, Box<dyn std::error::Error>> {
     let patch = InstanceTagsPatch {
-        add: parse_tags(add),
-        remove: parse_tags(remove),
+        add: parse_tags(add)?,
+        remove: parse_tags(remove)?,
     };
 
-    (patch.add.is_some() || patch.remove.is_some()).then_some(patch)
+    Ok((patch.add.is_some() || patch.remove.is_some()).then_some(patch))
 }
 
 fn parse_org_private_endpoint_remove(
@@ -428,7 +454,7 @@ fn build_create_service_request(
             .as_deref()
             .map(|value| parse_enum(value, "release_channel"))
             .transpose()?,
-        tags: parse_tags(&opts.tags),
+        tags: parse_tags(&opts.tags)?,
         data_warehouse_id: opts.data_warehouse_id.clone(),
         is_readonly: opts.is_readonly.then_some(true),
         encryption_key: opts.encryption_key.clone(),
@@ -467,7 +493,7 @@ fn build_update_service_request(
             .transpose()?,
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         transparent_data_encryption_key_id: opts.transparent_data_encryption_key_id.clone(),
-        tags: parse_instance_tags_patch(&opts.add_tags, &opts.remove_tags),
+        tags: parse_instance_tags_patch(&opts.add_tags, &opts.remove_tags)?,
         enable_core_dumps: opts.enable_core_dumps,
     })
 }
@@ -1496,6 +1522,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_tag_rejects_empty_keys() {
+        let err = parse_tag("=value").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid tag '=value': tag key cannot be empty"
+        );
+
+        let err = parse_tag("   ").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid tag '   ': tag key cannot be empty"
+        );
+    }
+
+    #[test]
     fn build_create_service_request_supports_ga_optional_fields() {
         let opts = CreateServiceOptions {
             name: "svc".to_string(),
@@ -1534,6 +1575,77 @@ mod tests {
     }
 
     #[test]
+    fn build_create_service_request_trims_tag_keys() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replica_memory_gb: None,
+            max_replica_memory_gb: None,
+            num_replicas: None,
+            idle_scaling: None,
+            idle_timeout_minutes: None,
+            ip_allow: vec![],
+            backup_id: None,
+            release_channel: None,
+            data_warehouse_id: None,
+            is_readonly: false,
+            encryption_key: None,
+            encryption_role: None,
+            enable_tde: false,
+            compliance_type: None,
+            profile: None,
+            tags: vec![" env =prod".to_string()],
+            enable_endpoints: vec![],
+            disable_endpoints: vec![],
+            private_preview_terms_checked: false,
+            enable_core_dumps: None,
+            org_id: None,
+        };
+
+        let request = build_create_service_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["tags"][0]["key"], "env");
+        assert_eq!(json["tags"][0]["value"], "prod");
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_empty_tag_keys() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replica_memory_gb: None,
+            max_replica_memory_gb: None,
+            num_replicas: None,
+            idle_scaling: None,
+            idle_timeout_minutes: None,
+            ip_allow: vec![],
+            backup_id: None,
+            release_channel: None,
+            data_warehouse_id: None,
+            is_readonly: false,
+            encryption_key: None,
+            encryption_role: None,
+            enable_tde: false,
+            compliance_type: None,
+            profile: None,
+            tags: vec!["=prod".to_string()],
+            enable_endpoints: vec![],
+            disable_endpoints: vec![],
+            private_preview_terms_checked: false,
+            enable_core_dumps: None,
+            org_id: None,
+        };
+
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid tag '=prod': tag key cannot be empty"
+        );
+    }
+
+    #[test]
     fn build_update_service_request_supports_patch_fields() {
         let opts = ServiceUpdateOptions {
             name: Some("updated".to_string()),
@@ -1562,6 +1674,31 @@ mod tests {
         assert_eq!(json["tags"]["remove"][0]["key"], "old");
         assert_eq!(json["transparentDataEncryptionKeyId"], "tde-1");
         assert_eq!(json["enableCoreDumps"], false);
+    }
+
+    #[test]
+    fn build_update_service_request_rejects_empty_tag_keys() {
+        let opts = ServiceUpdateOptions {
+            name: None,
+            add_ip_allow: vec![],
+            remove_ip_allow: vec![],
+            add_private_endpoint_ids: vec![],
+            remove_private_endpoint_ids: vec![],
+            release_channel: None,
+            enable_endpoints: vec![],
+            disable_endpoints: vec![],
+            transparent_data_encryption_key_id: None,
+            add_tags: vec![" =prod".to_string()],
+            remove_tags: vec![],
+            enable_core_dumps: None,
+            org_id: None,
+        };
+
+        let err = build_update_service_request(&opts).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid tag ' =prod': tag key cannot be empty"
+        );
     }
 
     #[test]
