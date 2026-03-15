@@ -724,14 +724,10 @@ mod tests {
     #[test]
     fn activities_url_includes_optional_date_filters() {
         let client = test_client();
-        let url = client.activities_url(
-            "org-1",
-            Some("2024-01-01T00:00:00Z"),
-            Some("2024-01-31T23:59:59Z"),
-        );
+        let url = client.activities_url("org-1", Some("2024-01-01"), Some("2024-01-31"));
         assert_eq!(
             url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z"
+            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01&to_date=2024-01-31"
         );
     }
 
