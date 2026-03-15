@@ -731,24 +731,27 @@ enum Key {
 fn read_key() -> Result<Key> {
     let mut stdin = io::stdin();
     let mut buf = [0; 1];
-    stdin.read_exact(&mut buf)?;
 
-    match buf[0] {
-        b' ' => Ok(Key::Toggle),
-        b'\r' | b'\n' => Ok(Key::Confirm),
-        b'k' => Ok(Key::Up),
-        b'j' => Ok(Key::Down),
-        b'q' | 3 => Ok(Key::Cancel),
-        27 => {
-            let mut seq = [0; 2];
-            stdin.read_exact(&mut seq)?;
-            match seq {
-                [b'[', b'A'] => Ok(Key::Up),
-                [b'[', b'B'] => Ok(Key::Down),
-                _ => Ok(Key::Cancel),
+    loop {
+        stdin.read_exact(&mut buf)?;
+
+        match buf[0] {
+            b' ' => return Ok(Key::Toggle),
+            b'\r' | b'\n' => return Ok(Key::Confirm),
+            b'k' => return Ok(Key::Up),
+            b'j' => return Ok(Key::Down),
+            b'q' | 3 => return Ok(Key::Cancel),
+            27 => {
+                let mut seq = [0; 2];
+                stdin.read_exact(&mut seq)?;
+                match seq {
+                    [b'[', b'A'] => return Ok(Key::Up),
+                    [b'[', b'B'] => return Ok(Key::Down),
+                    _ => return Ok(Key::Cancel),
+                }
             }
+            _ => continue,
         }
-        _ => read_key(),
     }
 }
 
