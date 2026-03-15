@@ -1,9 +1,28 @@
-use chrono::NaiveDate;
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
 use clap::{Args, Parser, Subcommand};
 
 fn parse_date_only(value: &str) -> Result<String, String> {
     if NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
         return Err(format!("invalid date '{}': expected YYYY-MM-DD", value));
+    }
+
+    Ok(value.to_string())
+}
+
+fn parse_datetime(value: &str) -> Result<String, String> {
+    if DateTime::<FixedOffset>::parse_from_rfc3339(value).is_err() {
+        return Err(format!(
+            "invalid datetime '{}': expected ISO 8601 / RFC 3339",
+            value
+        ));
+    }
+
+    Ok(value.to_string())
+}
+
+fn parse_time_only(value: &str) -> Result<String, String> {
+    if NaiveTime::parse_from_str(value, "%H:%M").is_err() {
+        return Err(format!("invalid time '{}': expected HH:MM", value));
     }
 
     Ok(value.to_string())
@@ -1007,8 +1026,8 @@ pub enum KeyCommands {
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiration date (ISO 8601 format)
-        #[arg(long)]
+        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
+        #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
         /// Key state (enabled or disabled)
@@ -1059,8 +1078,8 @@ pub enum KeyCommands {
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiration date (ISO 8601 format)
-        #[arg(long)]
+        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
+        #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
         /// Key state (e.g., enabled, disabled)
@@ -1141,7 +1160,7 @@ pub enum BackupConfigCommands {
         backup_retention_period_hours: Option<u32>,
 
         /// Backup start time in UTC (HH:MM)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_time_only)]
         backup_start_time: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
@@ -1347,6 +1366,101 @@ mod tests {
         assert_eq!(backup_period_hours, Some(12));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn parses_key_expires_at_rfc3339_timestamps() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "create",
+            "--name",
+            "ci-key",
+            "--expires-at",
+            "2025-12-31T23:59:59Z",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Key { command } = args.command else {
+            panic!("expected key command");
+        };
+        let KeyCommands::Create { expires_at, .. } = command else {
+            panic!("expected key create");
+        };
+        assert_eq!(expires_at.as_deref(), Some("2025-12-31T23:59:59Z"));
+    }
+
+    #[test]
+    fn rejects_invalid_key_expires_at_timestamps() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "update",
+            "key-1",
+            "--expires-at",
+            "2025-12-31",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid expires-at input to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected ISO 8601 / RFC 3339")),
+        }
+    }
+
+    #[test]
+    fn parses_backup_start_time_hhmm() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-start-time",
+            "03:00",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::BackupConfig { command } = command else {
+            panic!("expected backup-config");
+        };
+        let BackupConfigCommands::Update {
+            backup_start_time, ..
+        } = command
+        else {
+            panic!("expected backup-config update");
+        };
+        assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn rejects_invalid_backup_start_time() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-start-time",
+            "25:00",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid backup start time to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected HH:MM")),
+        }
     }
 
     #[test]
