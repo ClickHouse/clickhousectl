@@ -652,7 +652,7 @@ pub struct UpdateServiceRequest {
     pub transparent_data_encryption_key_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<InstanceTagsPatch>>,
+    pub tags: Option<InstanceTagsPatch>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,

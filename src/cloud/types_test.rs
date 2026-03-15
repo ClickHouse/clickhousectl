@@ -641,13 +641,15 @@ fn test_update_service_request_full() {
             enabled: true,
         }]),
         transparent_data_encryption_key_id: Some("tde-key-1".to_string()),
-        tags: Some(vec![InstanceTagsPatch {
+        // The published schema currently shows an array here, but the live API
+        // expects a single patch object and rejects array payloads.
+        tags: Some(InstanceTagsPatch {
             add: Some(vec![ResourceTag {
                 key: "env".to_string(),
                 value: Some("staging".to_string()),
             }]),
             remove: None,
-        }]),
+        }),
         enable_core_dumps: Some(false),
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -660,7 +662,8 @@ fn test_update_service_request_full() {
     assert_eq!(json["releaseChannel"], "fast");
     assert_eq!(json["endpoints"][0]["protocol"], "mysql");
     assert_eq!(json["transparentDataEncryptionKeyId"], "tde-key-1");
-    assert_eq!(json["tags"][0]["add"][0]["key"], "env");
+    assert!(json["tags"].is_object());
+    assert_eq!(json["tags"]["add"][0]["key"], "env");
     assert_eq!(json["enableCoreDumps"], false);
 }
 
