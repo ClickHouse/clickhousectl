@@ -274,6 +274,7 @@ fn extract_skills_from_tarball(archive_path: &Path) -> Result<TempArtifact> {
         };
 
         let output_path = temp_dir.path.join(skill_slug).join(relative_path);
+        ensure_within(&temp_dir.path, &output_path)?;
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -293,13 +294,31 @@ fn parse_skill_archive_path(path: &Path) -> Option<(String, PathBuf)> {
         _ => return None,
     }
 
-    let skill_slug = components.next()?.as_os_str().to_str()?.to_string();
-    let relative_path = components.map(Component::as_os_str).collect::<PathBuf>();
+    let skill_slug = match components.next()? {
+        Component::Normal(part) => part.to_str()?.to_string(),
+        _ => return None,
+    };
+
+    let mut relative_path = PathBuf::new();
+    for component in components {
+        match component {
+            Component::Normal(part) => relative_path.push(part),
+            _ => return None,
+        }
+    }
+
     if relative_path.as_os_str().is_empty() {
         return None;
     }
 
     Some((skill_slug, relative_path))
+}
+
+fn ensure_within(base: &Path, candidate: &Path) -> Result<()> {
+    candidate
+        .strip_prefix(base)
+        .map(|_| ())
+        .map_err(|_| Error::Skills(format!("Refusing to write outside {}", base.display())))
 }
 
 fn installed_skill_names(skill_files: &[SkillFile]) -> Vec<String> {
@@ -576,10 +595,11 @@ fn install_into_agent(
     };
 
     for file in skill_files {
-        let output_path = root
-            .join(agent.install_dir)
+        let install_root = root.join(agent.install_dir);
+        let output_path = install_root
             .join(&file.skill_slug)
             .join(&file.relative_path);
+        ensure_within(&install_root, &output_path)?;
         let source_contents = fs::read(&file.source_path)?;
 
         if let Some(parent) = output_path.parent() {
@@ -845,6 +865,28 @@ mod tests {
                 "clickhouse-best-practices/SKILL.md",
                 "clickhouse-cli/SKILL.md"
             ]
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_skill_archive_paths() {
+        assert!(
+            parse_skill_archive_path(Path::new(
+                "agent-skills-main/skills/../clickhouse-best-practices/SKILL.md"
+            ))
+            .is_none()
+        );
+        assert!(
+            parse_skill_archive_path(Path::new(
+                "agent-skills-main/skills/clickhouse-safe/../../SKILL.md"
+            ))
+            .is_none()
+        );
+        assert!(
+            parse_skill_archive_path(Path::new(
+                "agent-skills-main/skills/clickhouse-safe/SKILL.md"
+            ))
+            .is_some()
         );
     }
 
