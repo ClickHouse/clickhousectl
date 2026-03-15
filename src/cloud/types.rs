@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -850,29 +850,8 @@ pub struct UsageCost {
     #[serde(rename = "grandTotalCHC")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grand_total_chc: Option<f64>,
-    #[serde(default, deserialize_with = "deserialize_usage_cost_records")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub costs: Option<Vec<UsageCostRecord>>,
-}
-
-fn deserialize_usage_cost_records<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<UsageCostRecord>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum UsageCostRecordsField {
-        One(UsageCostRecord),
-        Many(Vec<UsageCostRecord>),
-    }
-
-    let value = Option::<UsageCostRecordsField>::deserialize(deserializer)?;
-    Ok(value.map(|value| match value {
-        UsageCostRecordsField::One(record) => vec![record],
-        UsageCostRecordsField::Many(records) => records,
-    }))
 }
 
 /// Usage cost metrics

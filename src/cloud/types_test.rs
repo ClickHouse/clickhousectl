@@ -1423,11 +1423,11 @@ fn test_backup_type_values() {
 fn test_usage_cost_deserialize() {
     let json = serde_json::json!({
         "grandTotalCHC": 123.45,
-        "costs": {
+        "costs": [{
             "serviceId": "svc-1",
             "date": "2024-01-15",
             "totalCHC": 52.5
-        }
+        }]
     });
     let cost: UsageCost = serde_json::from_value(json).unwrap();
     assert_eq!(cost.grand_total_chc, Some(123.45));
