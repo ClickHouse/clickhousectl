@@ -595,11 +595,16 @@ pub async fn service_delete(
     client: &CloudClient,
     service_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_service(&org_id, service_id).await?;
-    println!("Service {} deletion initiated", service_id);
+    let response = client.delete_service(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Service {} deletion initiated", service_id);
+    }
     Ok(())
 }
 

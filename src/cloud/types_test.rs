@@ -9,6 +9,29 @@ use super::types::*;
 // ── Response deserialization tests ──────────────────────────────────
 
 #[test]
+fn test_status_response_deserialize() {
+    let json = serde_json::json!({
+        "status": 200,
+        "requestId": "0182edf5-8c5b-4586-a6f8-78452320e4b1"
+    });
+    let response: StatusResponse = serde_json::from_value(json).unwrap();
+    assert_eq!(response.status, 200.0);
+    assert_eq!(response.request_id, "0182edf5-8c5b-4586-a6f8-78452320e4b1");
+}
+
+#[test]
+fn test_status_response_serialize() {
+    let response = StatusResponse {
+        status: 200.0,
+        request_id: "0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string(),
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["status"], 200.0);
+    assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
+    assert!(json.get("request_id").is_none());
+}
+
+#[test]
 fn test_organization_deserialize() {
     let json = r#"{"id":"org-1","name":"My Org","createdAt":"2024-01-01T00:00:00Z"}"#;
     let org: Organization = serde_json::from_str(json).unwrap();

@@ -316,11 +316,11 @@ impl CloudClient {
             .await
     }
 
-    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<()> {
-        self.delete(&format!(
+    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<StatusResponse> {
+        self.request(self.client.delete(self.url(&format!(
             "/organizations/{}/services/{}",
             org_id, service_id
-        ))
+        ))))
         .await
     }
 
