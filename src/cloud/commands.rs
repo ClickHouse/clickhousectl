@@ -95,7 +95,7 @@ fn parse_service_endpoint_changes(
     Ok((!changes.is_empty()).then_some(changes))
 }
 
-fn parse_instance_tag_patches(add: &[String], remove: &[String]) -> Option<InstanceTagsPatch> {
+fn parse_instance_tags_patch(add: &[String], remove: &[String]) -> Option<InstanceTagsPatch> {
     let patch = InstanceTagsPatch {
         add: parse_tags(add),
         remove: parse_tags(remove),
@@ -467,7 +467,7 @@ fn build_update_service_request(
             .transpose()?,
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         transparent_data_encryption_key_id: opts.transparent_data_encryption_key_id.clone(),
-        tags: parse_instance_tag_patches(&opts.add_tags, &opts.remove_tags),
+        tags: parse_instance_tags_patch(&opts.add_tags, &opts.remove_tags),
         enable_core_dumps: opts.enable_core_dumps,
     })
 }
