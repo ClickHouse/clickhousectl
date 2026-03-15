@@ -1095,12 +1095,12 @@ pub enum ActivityCommands {
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Start date filter (ISO 8601, e.g. 2024-01-01)
-        #[arg(long)]
+        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
+        #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
 
-        /// End date filter (ISO 8601, e.g. 2024-12-31)
-        #[arg(long)]
+        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-12-31)
+        #[arg(long, value_parser = parse_date_only)]
         to_date: Option<String>,
     },
 
@@ -1408,6 +1408,74 @@ mod tests {
             "org",
             "usage",
             "org-1",
+            "--from-date",
+            "2025-02-31",
+            "--to-date",
+            "2025-03-01",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid calendar date to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn parses_activity_list_date_only_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "activity",
+            "list",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Activity { command } = args.command else {
+            panic!("expected activity command");
+        };
+        let ActivityCommands::List {
+            from_date, to_date, ..
+        } = command
+        else {
+            panic!("expected activity list");
+        };
+        assert_eq!(from_date.as_deref(), Some("2025-01-01"));
+        assert_eq!(to_date.as_deref(), Some("2025-01-31"));
+    }
+
+    #[test]
+    fn rejects_activity_list_timestamps() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "activity",
+            "list",
+            "--from-date",
+            "2025-01-01T00:00:00Z",
+            "--to-date",
+            "2025-01-31",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected timestamp input to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_activity_list_calendar_dates() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "activity",
+            "list",
             "--from-date",
             "2025-02-31",
             "--to-date",
