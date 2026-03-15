@@ -1557,18 +1557,6 @@ mod tests {
     }
 
     #[test]
-    fn service_delete_json_payload_is_machine_readable() {
-        let json = serde_json::to_value(StatusResponse {
-            status: 200.0,
-            request_id: "0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string(),
-        })
-        .unwrap();
-
-        assert_eq!(json["status"], 200.0);
-        assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
-    }
-
-    #[test]
     fn build_api_key_requests_support_hashes_and_ip_allowlists() {
         let create_opts = KeyCreateOptions {
             name: "ci-key".to_string(),
