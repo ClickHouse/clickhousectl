@@ -530,8 +530,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::service_create(&client, opts, json).await
             }
             ServiceCommands::Delete { service_id, org_id } => {
-                cloud::commands::service_delete(&client, &service_id, org_id.as_deref(), args.json)
-                    .await
+                cloud::commands::service_delete(&client, &service_id, org_id.as_deref(), json).await
             }
             ServiceCommands::Start { service_id, org_id } => {
                 cloud::commands::service_start(&client, &service_id, org_id.as_deref(), json).await
