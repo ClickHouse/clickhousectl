@@ -9,19 +9,19 @@ use super::types::*;
 // ── Response deserialization tests ──────────────────────────────────
 
 #[test]
-fn test_status_response_deserialize() {
+fn test_delete_response_deserialize() {
     let json = serde_json::json!({
         "status": 200,
         "requestId": "0182edf5-8c5b-4586-a6f8-78452320e4b1"
     });
-    let response: StatusResponse = serde_json::from_value(json).unwrap();
+    let response: DeleteResponse = serde_json::from_value(json).unwrap();
     assert_eq!(response.status, 200.0);
     assert_eq!(response.request_id, "0182edf5-8c5b-4586-a6f8-78452320e4b1");
 }
 
 #[test]
-fn test_status_response_serialize() {
-    let response = StatusResponse {
+fn test_delete_response_serialize() {
+    let response = DeleteResponse {
         status: 200.0,
         request_id: "0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string(),
     };

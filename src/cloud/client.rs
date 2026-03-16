@@ -316,12 +316,17 @@ impl CloudClient {
             .await
     }
 
-    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<StatusResponse> {
-        self.request(self.client.delete(self.url(&format!(
-            "/organizations/{}/services/{}",
-            org_id, service_id
-        ))))
-        .await
+    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<DeleteResponse> {
+        let body = self
+            .request_text(self.client.delete(self.url(&format!(
+                "/organizations/{}/services/{}",
+                org_id, service_id
+            ))))
+            .await?;
+
+        serde_json::from_str::<DeleteResponse>(&body).map_err(|e| CloudError {
+            message: format!("Failed to parse delete response: {} - Body: {}", e, body),
+        })
     }
 
     pub async fn change_service_state(
