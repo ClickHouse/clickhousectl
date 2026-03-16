@@ -172,7 +172,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         assert!(
             service_present_in_list(&listed.json, &service_id),
-            "created service {service_id} was not visible in service list"
+            "created service was not visible in service list"
         );
 
         failures.run(&ctx, StepKind::Blocking, "rename service", || {
