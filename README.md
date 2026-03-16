@@ -227,6 +227,39 @@ clickhousectl cloud --api-key KEY --api-secret SECRET ...
 
 Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables.
 
+### Cloud integration testing
+
+The repository also includes a real-cloud integration test scaffold for CI under [`tests/cloud_cli.rs`](tests/cloud_cli.rs).
+
+Required environment variables:
+
+```bash
+export CLICKHOUSE_CLOUD_API_KEY=...
+export CLICKHOUSE_CLOUD_API_SECRET=...
+export CLICKHOUSE_CLOUD_TEST_ORG_ID=...
+export CLICKHOUSE_CLOUD_TEST_PROVIDER=aws
+export CLICKHOUSE_CLOUD_TEST_REGION=us-east-1
+```
+
+Run the fast local suite as usual:
+
+```bash
+cargo test
+```
+
+Run the real-cloud integration test explicitly:
+
+```bash
+CLICKHOUSECTL_BIN=target/debug/clickhousectl \
+cargo test --test cloud_cli cloud_service_crud_lifecycle -- --ignored --nocapture --test-threads=1
+```
+
+By default, any failed check fails the run. To keep going after `non-blocking` capability failures and collect them in a summary at the end, set:
+
+```bash
+export CONTINUE_ON_NON_BLOCKING_FAILURES=1
+```
+
 ### Organizations
 
 ```bash
