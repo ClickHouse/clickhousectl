@@ -308,13 +308,24 @@ impl<'a> CliRunner<'a> {
     }
 }
 
-#[derive(Debug)]
 pub struct RawCliOutput {
     pub status_code: i32,
     pub stdout: String,
     pub stderr: String,
     pub elapsed: Duration,
     pub redacted_command: String,
+}
+
+impl fmt::Debug for RawCliOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RawCliOutput")
+            .field("status_code", &self.status_code)
+            .field("stdout", &redact_text_ids(&self.stdout))
+            .field("stderr", &redact_text_ids(&self.stderr))
+            .field("elapsed", &self.elapsed)
+            .field("redacted_command", &self.redacted_command)
+            .finish()
+    }
 }
 
 impl RawCliOutput {
@@ -324,15 +335,17 @@ impl RawCliOutput {
         redacted_command: String,
     ) -> TestResult<Self> {
         let status_code = output.status.code().unwrap_or(-1);
-        let stdout = redact_text_ids(&String::from_utf8(output.stdout)?);
-        let stderr = redact_text_ids(&String::from_utf8(output.stderr)?);
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
+        let redacted_stdout = redact_text_ids(&stdout);
+        let redacted_stderr = redact_text_ids(&stderr);
 
         if !output.status.success() {
             return Err(Box::new(CommandFailure {
                 redacted_command,
                 status_code,
-                stdout,
-                stderr,
+                stdout: redacted_stdout,
+                stderr: redacted_stderr,
                 elapsed,
                 parse_error: None,
             }));
@@ -349,7 +362,6 @@ impl RawCliOutput {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
 pub struct CliOutput {
     pub status_code: i32,
     pub stdout: String,
@@ -357,6 +369,19 @@ pub struct CliOutput {
     pub elapsed: Duration,
     pub json: Value,
     pub redacted_command: String,
+}
+
+impl fmt::Debug for CliOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CliOutput")
+            .field("status_code", &self.status_code)
+            .field("stdout", &redact_text_ids(&self.stdout))
+            .field("stderr", &redact_text_ids(&self.stderr))
+            .field("elapsed", &self.elapsed)
+            .field("json", &redact_json_ids(&self.json))
+            .field("redacted_command", &self.redacted_command)
+            .finish()
+    }
 }
 
 impl CliOutput {
@@ -793,6 +818,19 @@ fn flush_redacted_token(output: &mut String, token: &mut String) {
     token.clear();
 }
 
+fn redact_json_ids(value: &Value) -> Value {
+    match value {
+        Value::String(text) if looks_like_uuid(text) => Value::String("<redacted-id>".to_string()),
+        Value::Array(items) => Value::Array(items.iter().map(redact_json_ids).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), redact_json_ids(value)))
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
 #[derive(Debug)]
 struct CommandFailure {
     redacted_command: String,
@@ -820,3 +858,61 @@ impl fmt::Display for CommandFailure {
 }
 
 impl std::error::Error for CommandFailure {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::ExitStatus;
+
+    #[cfg(unix)]
+    fn exit_status(code: i32) -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatusExt::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn exit_status(code: i32) -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatusExt::from_raw(code as u32)
+    }
+
+    #[test]
+    fn cli_output_preserves_uuid_values_for_assertions() {
+        let raw = RawCliOutput::from_output(
+            Output {
+                status: exit_status(0),
+                stdout: br#"{"id":"5fae43a3-8a6e-49c4-b317-6e139718b9a3"}"#.to_vec(),
+                stderr: Vec::new(),
+            },
+            Duration::from_secs(1),
+            "clickhousectl cloud --json org get <redacted-id>".to_string(),
+        )
+        .expect("successful command output");
+
+        let output = CliOutput::from_raw(raw).expect("valid json");
+
+        assert_eq!(
+            json_string(&output.json, &["/id"]).expect("json id"),
+            "5fae43a3-8a6e-49c4-b317-6e139718b9a3"
+        );
+        assert!(format!("{output:?}").contains("<redacted-id>"));
+    }
+
+    #[test]
+    fn command_failure_redacts_uuid_values_in_output() {
+        let error = RawCliOutput::from_output(
+            Output {
+                status: exit_status(1),
+                stdout: br#"{"id":"5fae43a3-8a6e-49c4-b317-6e139718b9a3"}"#.to_vec(),
+                stderr: b"service 5fae43a3-8a6e-49c4-b317-6e139718b9a3 failed".to_vec(),
+            },
+            Duration::from_secs(1),
+            "clickhousectl cloud --json org get <redacted-id>".to_string(),
+        )
+        .expect_err("failing command should return an error");
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("<redacted-id>"));
+        assert!(!rendered.contains("5fae43a3-8a6e-49c4-b317-6e139718b9a3"));
+    }
+}
