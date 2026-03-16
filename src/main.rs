@@ -4,14 +4,14 @@ mod error;
 mod init;
 mod paths;
 mod server;
+mod skills;
 mod version_manager;
 
 use clap::Parser;
 use cli::{
-    ActivityCommands, BackupCommands, BackupConfigCommands,
-    CloudArgs, CloudCommands, Cli, Commands, InvitationCommands, KeyCommands, LocalCommands,
-    MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
-    ServiceCommands,
+    ActivityCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs, CloudCommands,
+    Commands, InvitationCommands, KeyCommands, LocalCommands, MemberCommands, OrgCommands,
+    PrivateEndpointCommands, QueryEndpointCommands, ServerCommands, ServiceCommands, SkillsArgs,
 };
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -33,8 +33,13 @@ async fn main() {
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Local { command } => run_local(command).await,
+        Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(args).await,
     }
+}
+
+async fn run_skills(args: SkillsArgs) -> Result<()> {
+    skills::install(args).await
 }
 
 async fn run_local(cmd: LocalCommands) -> Result<()> {
@@ -257,7 +262,10 @@ fn start_server(
 
     let (http_port, tcp_port, auto_assigned) = server::resolve_ports(http_port, tcp_port)?;
     if auto_assigned {
-        eprintln!("Note: default ports in use, auto-assigned HTTP:{} TCP:{}", http_port, tcp_port);
+        eprintln!(
+            "Note: default ports in use, auto-assigned HTTP:{} TCP:{}",
+            http_port, tcp_port
+        );
     }
     // Check if the user passed their own config in the trailing args (after --).
     // If not, we inject our managed data directory and --path flag.
@@ -449,24 +457,15 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             OrgCommands::Prometheus {
                 org_id,
                 filtered_metrics,
-            } => {
-                cloud::commands::org_prometheus(&client, &org_id, filtered_metrics, json).await
-            }
+            } => cloud::commands::org_prometheus(&client, &org_id, filtered_metrics, json).await,
             OrgCommands::Usage {
                 org_id,
                 from_date,
                 to_date,
                 filter,
             } => {
-                cloud::commands::org_usage(
-                    &client,
-                    &org_id,
-                    &from_date,
-                    &to_date,
-                    &filter,
-                    json,
-                )
-                .await
+                cloud::commands::org_usage(&client, &org_id, &from_date, &to_date, &filter, json)
+                    .await
             }
         },
         CloudCommands::Service { command } => match command {
@@ -531,7 +530,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::service_create(&client, opts, json).await
             }
             ServiceCommands::Delete { service_id, org_id } => {
-                cloud::commands::service_delete(&client, &service_id, org_id.as_deref()).await
+                cloud::commands::service_delete(&client, &service_id, org_id.as_deref(), json).await
             }
             ServiceCommands::Start { service_id, org_id } => {
                 cloud::commands::service_start(&client, &service_id, org_id.as_deref(), json).await
@@ -633,12 +632,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     cloud::commands::query_endpoint_create(&client, &service_id, opts, json).await
                 }
                 QueryEndpointCommands::Delete { service_id, org_id } => {
-                    cloud::commands::query_endpoint_delete(
-                        &client,
-                        &service_id,
-                        org_id.as_deref(),
-                    )
-                    .await
+                    cloud::commands::query_endpoint_delete(&client, &service_id, org_id.as_deref())
+                        .await
                 }
             },
             ServiceCommands::PrivateEndpoint { command } => match command {
@@ -670,7 +665,13 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             },
             ServiceCommands::BackupConfig { command } => match command {
                 BackupConfigCommands::Get { service_id, org_id } => {
-                    cloud::commands::backup_config_get(&client, &service_id, org_id.as_deref(), json).await
+                    cloud::commands::backup_config_get(
+                        &client,
+                        &service_id,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
                 }
                 BackupConfigCommands::Update {
                     service_id,
@@ -709,8 +710,13 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             MemberCommands::Get { user_id, org_id } => {
                 cloud::commands::member_get(&client, &user_id, org_id.as_deref(), json).await
             }
-            MemberCommands::Update { user_id, role_id, org_id } => {
-                cloud::commands::member_update(&client, &user_id, &role_id, org_id.as_deref(), json).await
+            MemberCommands::Update {
+                user_id,
+                role_id,
+                org_id,
+            } => {
+                cloud::commands::member_update(&client, &user_id, &role_id, org_id.as_deref(), json)
+                    .await
             }
             MemberCommands::Remove { user_id, org_id } => {
                 cloud::commands::member_remove(&client, &user_id, org_id.as_deref()).await
@@ -720,13 +726,31 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             InvitationCommands::List { org_id } => {
                 cloud::commands::invitation_list(&client, org_id.as_deref(), json).await
             }
-            InvitationCommands::Create { email, role_id, org_id } => {
-                cloud::commands::invitation_create(&client, &email, &role_id, org_id.as_deref(), json).await
+            InvitationCommands::Create {
+                email,
+                role_id,
+                org_id,
+            } => {
+                cloud::commands::invitation_create(
+                    &client,
+                    &email,
+                    &role_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
             }
-            InvitationCommands::Get { invitation_id, org_id } => {
-                cloud::commands::invitation_get(&client, &invitation_id, org_id.as_deref(), json).await
+            InvitationCommands::Get {
+                invitation_id,
+                org_id,
+            } => {
+                cloud::commands::invitation_get(&client, &invitation_id, org_id.as_deref(), json)
+                    .await
             }
-            InvitationCommands::Delete { invitation_id, org_id } => {
+            InvitationCommands::Delete {
+                invitation_id,
+                org_id,
+            } => {
                 cloud::commands::invitation_delete(&client, &invitation_id, org_id.as_deref()).await
             }
         },
@@ -785,10 +809,24 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             }
         },
         CloudCommands::Activity { command } => match command {
-            ActivityCommands::List { org_id, from_date, to_date } => {
-                cloud::commands::activity_list(&client, org_id.as_deref(), from_date.as_deref(), to_date.as_deref(), json).await
+            ActivityCommands::List {
+                org_id,
+                from_date,
+                to_date,
+            } => {
+                cloud::commands::activity_list(
+                    &client,
+                    org_id.as_deref(),
+                    from_date.as_deref(),
+                    to_date.as_deref(),
+                    json,
+                )
+                .await
             }
-            ActivityCommands::Get { activity_id, org_id } => {
+            ActivityCommands::Get {
+                activity_id,
+                org_id,
+            } => {
                 cloud::commands::activity_get(&client, &activity_id, org_id.as_deref(), json).await
             }
         },

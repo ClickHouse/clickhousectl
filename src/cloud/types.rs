@@ -73,6 +73,14 @@ pub struct ApiError {
     pub message: String,
 }
 
+/// Delete service success payload returned directly by the API without a result wrapper.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResponse {
+    pub status: f64,
+    pub request_id: String,
+}
+
 // =============================================================================
 // Shared helper types
 // =============================================================================
@@ -652,7 +660,7 @@ pub struct UpdateServiceRequest {
     pub transparent_data_encryption_key_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<InstanceTagsPatch>>,
+    pub tags: Option<InstanceTagsPatch>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
@@ -851,7 +859,7 @@ pub struct UsageCost {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grand_total_chc: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub costs: Option<UsageCostRecord>,
+    pub costs: Option<Vec<UsageCostRecord>>,
 }
 
 /// Usage cost metrics

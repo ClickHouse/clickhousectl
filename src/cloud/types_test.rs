@@ -9,6 +9,29 @@ use super::types::*;
 // ── Response deserialization tests ──────────────────────────────────
 
 #[test]
+fn test_delete_response_deserialize() {
+    let json = serde_json::json!({
+        "status": 200,
+        "requestId": "0182edf5-8c5b-4586-a6f8-78452320e4b1"
+    });
+    let response: DeleteResponse = serde_json::from_value(json).unwrap();
+    assert_eq!(response.status, 200.0);
+    assert_eq!(response.request_id, "0182edf5-8c5b-4586-a6f8-78452320e4b1");
+}
+
+#[test]
+fn test_delete_response_serialize() {
+    let response = DeleteResponse {
+        status: 200.0,
+        request_id: "0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string(),
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["status"], 200.0);
+    assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
+    assert!(json.get("request_id").is_none());
+}
+
+#[test]
 fn test_organization_deserialize() {
     let json = r#"{"id":"org-1","name":"My Org","createdAt":"2024-01-01T00:00:00Z"}"#;
     let org: Organization = serde_json::from_str(json).unwrap();
@@ -73,7 +96,10 @@ fn test_byoc_config_state_values() {
             }]
         });
         let org: Organization = serde_json::from_value(json).unwrap();
-        assert_eq!(org.byoc_config.as_ref().unwrap()[0].state.as_deref(), Some(*state));
+        assert_eq!(
+            org.byoc_config.as_ref().unwrap()[0].state.as_deref(),
+            Some(*state)
+        );
     }
 }
 
@@ -155,7 +181,10 @@ fn test_service_deserialize_full() {
     assert_eq!(svc.byoc_id.as_deref(), Some("byoc-1"));
     assert_eq!(svc.has_transparent_data_encryption, Some(false));
     assert_eq!(svc.profile.as_deref(), Some("v1-default"));
-    assert_eq!(svc.transparent_data_encryption_key_id.as_deref(), Some("tde-1"));
+    assert_eq!(
+        svc.transparent_data_encryption_key_id.as_deref(),
+        Some("tde-1")
+    );
     assert_eq!(svc.encryption_role_id.as_deref(), Some("role-1"));
     assert_eq!(svc.compliance_type.as_deref(), Some("hipaa"));
     assert_eq!(svc.tags.as_ref().unwrap()[0].key, "env");
@@ -164,7 +193,8 @@ fn test_service_deserialize_full() {
 
 #[test]
 fn test_service_deserialize_minimal() {
-    let json = r#"{"id":"svc-1","name":"svc","provider":"aws","region":"us-east-1","state":"idle"}"#;
+    let json =
+        r#"{"id":"svc-1","name":"svc","provider":"aws","region":"us-east-1","state":"idle"}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(svc.id, "svc-1");
     assert!(svc.tier.is_none());
@@ -634,23 +664,29 @@ fn test_update_service_request_full() {
             enabled: true,
         }]),
         transparent_data_encryption_key_id: Some("tde-key-1".to_string()),
-        tags: Some(vec![InstanceTagsPatch {
+        // The published schema currently shows an array here, but the live API
+        // expects a single patch object and rejects array payloads.
+        tags: Some(InstanceTagsPatch {
             add: Some(vec![ResourceTag {
                 key: "env".to_string(),
                 value: Some("staging".to_string()),
             }]),
             remove: None,
-        }]),
+        }),
         enable_core_dumps: Some(false),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "updated");
     assert_eq!(json["ipAccessList"]["add"][0]["source"], "10.0.0.0/8");
-    assert_eq!(json["privateEndpointIds"]["add"], serde_json::json!(["pe-1"]));
+    assert_eq!(
+        json["privateEndpointIds"]["add"],
+        serde_json::json!(["pe-1"])
+    );
     assert_eq!(json["releaseChannel"], "fast");
     assert_eq!(json["endpoints"][0]["protocol"], "mysql");
     assert_eq!(json["transparentDataEncryptionKeyId"], "tde-key-1");
-    assert_eq!(json["tags"][0]["add"][0]["key"], "env");
+    assert!(json["tags"].is_object());
+    assert_eq!(json["tags"]["add"][0]["key"], "env");
     assert_eq!(json["enableCoreDumps"], false);
 }
 
@@ -832,7 +868,10 @@ fn test_update_org_request_full() {
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "Updated Org");
     assert_eq!(json["privateEndpoints"]["remove"][0]["id"], "vpce-123");
-    assert_eq!(json["privateEndpoints"]["remove"][0]["cloudProvider"], "aws");
+    assert_eq!(
+        json["privateEndpoints"]["remove"][0]["cloudProvider"],
+        "aws"
+    );
     assert_eq!(json["enableCoreDumps"], true);
 }
 
@@ -1023,7 +1062,10 @@ fn test_update_member_request_with_assigned_roles() {
         assigned_role_ids: Some(vec!["role-uuid-1".to_string(), "role-uuid-2".to_string()]),
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["assignedRoleIds"], serde_json::json!(["role-uuid-1", "role-uuid-2"]));
+    assert_eq!(
+        json["assignedRoleIds"],
+        serde_json::json!(["role-uuid-1", "role-uuid-2"])
+    );
     assert!(json.get("role").is_none());
 }
 
@@ -1346,9 +1388,20 @@ fn test_update_backup_config_request_serialize() {
 #[test]
 fn test_service_state_values() {
     let states = [
-        "starting", "stopping", "terminating", "softdeleting", "awaking",
-        "partially_running", "provisioning", "running", "stopped",
-        "terminated", "softdeleted", "degraded", "failed", "idle",
+        "starting",
+        "stopping",
+        "terminating",
+        "softdeleting",
+        "awaking",
+        "partially_running",
+        "provisioning",
+        "running",
+        "stopped",
+        "terminated",
+        "softdeleted",
+        "degraded",
+        "failed",
+        "idle",
     ];
     for state in &states {
         let json = serde_json::json!({
@@ -1396,25 +1449,48 @@ fn test_backup_type_values() {
 fn test_usage_cost_deserialize() {
     let json = serde_json::json!({
         "grandTotalCHC": 123.45,
-        "costs": {
+        "costs": [{
             "serviceId": "svc-1",
             "date": "2024-01-15",
             "totalCHC": 52.5
-        }
+        }]
     });
     let cost: UsageCost = serde_json::from_value(json).unwrap();
     assert_eq!(cost.grand_total_chc, Some(123.45));
-    assert_eq!(cost.costs.as_ref().unwrap().total_chc, Some(52.5));
+    assert_eq!(cost.costs.as_ref().unwrap().len(), 1);
+    assert_eq!(cost.costs.as_ref().unwrap()[0].total_chc, Some(52.5));
+}
+
+#[test]
+fn test_usage_cost_deserialize_empty_costs_array() {
+    let json = serde_json::json!({
+        "grandTotalCHC": 0,
+        "costs": []
+    });
+    let cost: UsageCost = serde_json::from_value(json).unwrap();
+    assert_eq!(cost.grand_total_chc, Some(0.0));
+    assert!(cost.costs.as_ref().unwrap().is_empty());
 }
 
 #[test]
 fn test_usage_cost_serialize_grand_total() {
     let cost = UsageCost {
         grand_total_chc: Some(99.99),
-        costs: None,
+        costs: Some(vec![UsageCostRecord {
+            data_warehouse_id: None,
+            service_id: Some("svc-1".to_string()),
+            date: Some("2024-01-15".to_string()),
+            entity_type: None,
+            entity_id: None,
+            entity_name: Some("my-service".to_string()),
+            metrics: None,
+            total_chc: Some(99.99),
+            locked: None,
+        }]),
     };
     let json = serde_json::to_value(&cost).unwrap();
     assert_eq!(json["grandTotalCHC"], 99.99);
+    assert_eq!(json["costs"][0]["serviceId"], "svc-1");
     assert!(json.get("grandTotalChc").is_none());
 }
 
@@ -1435,7 +1511,10 @@ fn test_private_endpoint_config_deserialize() {
         "privateDnsHostname": "abc.clickhouse.cloud"
     });
     let config: PrivateEndpointConfig = serde_json::from_value(json).unwrap();
-    assert_eq!(config.endpoint_service_id, "com.amazonaws.vpce.us-east-1.vpce-svc-123");
+    assert_eq!(
+        config.endpoint_service_id,
+        "com.amazonaws.vpce.us-east-1.vpce-svc-123"
+    );
     assert_eq!(config.private_dns_hostname, "abc.clickhouse.cloud");
 }
 
@@ -1497,29 +1576,55 @@ fn test_api_key_hash_data_roundtrip() {
 #[test]
 fn test_activity_type_values() {
     let types = [
-        "create_organization", "organization_update_name",
-        "transfer_service_in", "transfer_service_out",
-        "save_payment_method", "marketplace_subscription",
-        "migrate_marketplace_billing_details_in", "migrate_marketplace_billing_details_out",
-        "organization_update_tier", "organization_invite_create",
-        "organization_invite_delete", "organization_member_join",
-        "organization_member_add", "organization_member_leave",
-        "organization_member_delete", "organization_member_update_role",
-        "organization_member_update_mfa_method", "user_login",
-        "user_login_failed", "user_logout",
-        "key_create", "key_delete", "openapi_key_update",
-        "service_create", "service_start", "service_stop",
-        "service_awaken", "service_idle", "service_running",
-        "service_partially_running", "service_delete",
-        "service_update_name", "service_update_ip_access_list",
-        "service_update_autoscaling_memory", "service_update_autoscaling_idling",
-        "service_update_password", "service_update_autoscaling_replicas",
-        "service_update_max_allowable_replicas", "service_update_backup_configuration",
-        "service_restore_backup", "service_update_release_channel",
-        "service_update_gpt_usage_consent", "service_update_private_endpoints",
-        "service_import_to_organization", "service_export_from_organization",
-        "service_maintenance_start", "service_maintenance_end",
-        "service_update_core_dump", "backup_delete",
+        "create_organization",
+        "organization_update_name",
+        "transfer_service_in",
+        "transfer_service_out",
+        "save_payment_method",
+        "marketplace_subscription",
+        "migrate_marketplace_billing_details_in",
+        "migrate_marketplace_billing_details_out",
+        "organization_update_tier",
+        "organization_invite_create",
+        "organization_invite_delete",
+        "organization_member_join",
+        "organization_member_add",
+        "organization_member_leave",
+        "organization_member_delete",
+        "organization_member_update_role",
+        "organization_member_update_mfa_method",
+        "user_login",
+        "user_login_failed",
+        "user_logout",
+        "key_create",
+        "key_delete",
+        "openapi_key_update",
+        "service_create",
+        "service_start",
+        "service_stop",
+        "service_awaken",
+        "service_idle",
+        "service_running",
+        "service_partially_running",
+        "service_delete",
+        "service_update_name",
+        "service_update_ip_access_list",
+        "service_update_autoscaling_memory",
+        "service_update_autoscaling_idling",
+        "service_update_password",
+        "service_update_autoscaling_replicas",
+        "service_update_max_allowable_replicas",
+        "service_update_backup_configuration",
+        "service_restore_backup",
+        "service_update_release_channel",
+        "service_update_gpt_usage_consent",
+        "service_update_private_endpoints",
+        "service_import_to_organization",
+        "service_export_from_organization",
+        "service_maintenance_start",
+        "service_maintenance_end",
+        "service_update_core_dump",
+        "backup_delete",
     ];
     for t in &types {
         let json = serde_json::json!({"id": "act-1", "type": t});
@@ -1531,7 +1636,8 @@ fn test_activity_type_values() {
 #[test]
 fn test_activity_actor_type_values() {
     for actor_type in &["user", "support", "system", "api"] {
-        let json = serde_json::json!({"id": "act-1", "type": "user_login", "actorType": actor_type});
+        let json =
+            serde_json::json!({"id": "act-1", "type": "user_login", "actorType": actor_type});
         let act: Activity = serde_json::from_value(json).unwrap();
         assert_eq!(act.actor_type.as_deref(), Some(*actor_type));
     }
@@ -1540,10 +1646,17 @@ fn test_activity_actor_type_values() {
 #[test]
 fn test_activity_key_update_type_values() {
     let update_types = [
-        "created", "deleted", "name-changed", "role-changed",
-        "state-changed", "date-changed", "ip-access-list-changed",
-        "org-role-changed", "default-service-role-changed",
-        "service-role-changed", "roles-v2-changed",
+        "created",
+        "deleted",
+        "name-changed",
+        "role-changed",
+        "state-changed",
+        "date-changed",
+        "ip-access-list-changed",
+        "org-role-changed",
+        "default-service-role-changed",
+        "service-role-changed",
+        "roles-v2-changed",
     ];
     for t in &update_types {
         let json = serde_json::json!({
@@ -1590,11 +1703,28 @@ fn test_service_provider_values() {
 #[test]
 fn test_service_region_values() {
     let regions = [
-        "ap-northeast-1", "ap-northeast-2", "ap-south-1", "ap-southeast-1",
-        "ap-southeast-2", "eu-central-1", "eu-west-1", "eu-west-2",
-        "il-central-1", "us-east-1", "us-east-2", "us-west-2", "us-east1",
-        "us-central1", "europe-west4", "asia-southeast1", "asia-northeast1",
-        "eastus", "eastus2", "westus3", "germanywestcentral", "centralus",
+        "ap-northeast-1",
+        "ap-northeast-2",
+        "ap-south-1",
+        "ap-southeast-1",
+        "ap-southeast-2",
+        "eu-central-1",
+        "eu-west-1",
+        "eu-west-2",
+        "il-central-1",
+        "us-east-1",
+        "us-east-2",
+        "us-west-2",
+        "us-east1",
+        "us-central1",
+        "europe-west4",
+        "asia-southeast1",
+        "asia-northeast1",
+        "eastus",
+        "eastus2",
+        "westus3",
+        "germanywestcentral",
+        "centralus",
     ];
     for region in &regions {
         let json = serde_json::json!({
@@ -1612,9 +1742,14 @@ fn test_service_region_values() {
 #[test]
 fn test_service_tier_values() {
     let tiers = [
-        "development", "production", "dedicated_high_mem", "dedicated_high_cpu",
-        "dedicated_standard", "dedicated_standard_n2d_standard_4",
-        "dedicated_standard_n2d_standard_8", "dedicated_standard_n2d_standard_32",
+        "development",
+        "production",
+        "dedicated_high_mem",
+        "dedicated_high_cpu",
+        "dedicated_standard",
+        "dedicated_standard_n2d_standard_4",
+        "dedicated_standard_n2d_standard_8",
+        "dedicated_standard_n2d_standard_32",
         "dedicated_standard_n2d_standard_128",
         "dedicated_standard_n2d_standard_32_16SSD",
         "dedicated_standard_n2d_standard_64_24SSD",
@@ -1668,8 +1803,12 @@ fn test_service_compliance_type_values() {
 #[test]
 fn test_service_profile_values() {
     let profiles = [
-        "v1-default", "v1-highmem-xs", "v1-highmem-s",
-        "v1-highmem-m", "v1-highmem-l", "v1-highmem-xl",
+        "v1-default",
+        "v1-highmem-xs",
+        "v1-highmem-s",
+        "v1-highmem-m",
+        "v1-highmem-l",
+        "v1-highmem-xl",
     ];
     for profile in &profiles {
         let json = serde_json::json!({
