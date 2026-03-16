@@ -763,15 +763,7 @@ struct TerminalUi {
 impl TerminalUi {
     fn new(stdout: &mut io::Stdout) -> Result<Self> {
         let fd = libc::STDIN_FILENO;
-        let mut original = libc::termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_cc: [0; libc::NCCS],
-            c_ispeed: 0,
-            c_ospeed: 0,
-        };
+        let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
 
         let get_attr_result = unsafe { libc::tcgetattr(fd, &mut original) };
         if get_attr_result != 0 {
