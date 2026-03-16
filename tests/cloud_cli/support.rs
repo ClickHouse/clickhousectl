@@ -1,10 +1,10 @@
 use serde_json::Value;
 use std::env;
 use std::fmt;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 
 pub type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -13,7 +13,6 @@ const DEFAULT_DELETE_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_STEADY_STATE_TIMEOUT_SECS: u64 = 1_800;
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 10;
 
-#[derive(Clone)]
 pub struct TestContext {
     pub api_key: String,
     pub api_secret: String,
@@ -21,7 +20,7 @@ pub struct TestContext {
     pub provider: String,
     pub region: String,
     pub run_id: String,
-    pub temp_home: PathBuf,
+    pub temp_home: TempDir,
     pub create_timeout: Duration,
     pub delete_timeout: Duration,
     pub steady_state_timeout: Duration,
@@ -38,7 +37,7 @@ impl fmt::Debug for TestContext {
             .field("provider", &self.provider)
             .field("region", &self.region)
             .field("run_id", &self.run_id)
-            .field("temp_home", &self.temp_home)
+            .field("temp_home", &self.temp_home.path())
             .field("create_timeout", &self.create_timeout)
             .field("delete_timeout", &self.delete_timeout)
             .field("steady_state_timeout", &self.steady_state_timeout)
@@ -63,8 +62,9 @@ impl TestContext {
             (None, None) => format!("local-{timestamp}"),
         };
 
-        let temp_home = env::temp_dir().join(format!("clickhousectl-it-{run_id}"));
-        std::fs::create_dir_all(&temp_home)?;
+        let temp_home = tempfile::Builder::new()
+            .prefix(&format!("clickhousectl-it-{run_id}-"))
+            .tempdir()?;
 
         Ok(Self {
             api_key: required_env("CLICKHOUSE_CLOUD_API_KEY")?,
@@ -98,6 +98,10 @@ impl TestContext {
 
     pub fn service_name(&self) -> String {
         format!("clickhousectl-it-{}", self.run_id)
+    }
+
+    pub fn temp_home_path(&self) -> &std::path::Path {
+        self.temp_home.path()
     }
 
     pub fn updated_service_name(&self) -> String {
@@ -221,7 +225,7 @@ impl FailureRecorder {
 
 pub struct CliRunner<'a> {
     ctx: &'a TestContext,
-    binary_path: PathBuf,
+    binary_path: std::path::PathBuf,
 }
 
 impl<'a> CliRunner<'a> {
@@ -299,7 +303,7 @@ impl<'a> CliRunner<'a> {
         let started = Instant::now();
         let output = Command::new(&self.binary_path)
             .args(&args)
-            .env("HOME", &self.ctx.temp_home)
+            .env("HOME", self.ctx.temp_home_path())
             .env("CLICKHOUSE_CLOUD_API_KEY", &self.ctx.api_key)
             .env("CLICKHOUSE_CLOUD_API_SECRET", &self.ctx.api_secret)
             .output()?;
@@ -714,19 +718,19 @@ fn first_line(text: &str) -> &str {
     text.lines().next().unwrap_or(text)
 }
 
-fn resolve_binary_path() -> PathBuf {
+fn resolve_binary_path() -> std::path::PathBuf {
     if let Ok(path) = env::var("CLICKHOUSECTL_BIN") {
-        return PathBuf::from(path);
+        return std::path::PathBuf::from(path);
     }
 
     if let Some(path) = option_env!("CARGO_BIN_EXE_clickhousectl") {
-        return PathBuf::from(path);
+        return std::path::PathBuf::from(path);
     }
 
-    PathBuf::from("target/debug/clickhousectl")
+    std::path::PathBuf::from("target/debug/clickhousectl")
 }
 
-fn redact_command(binary_path: &PathBuf, args: &[String]) -> String {
+fn redact_command(binary_path: &std::path::PathBuf, args: &[String]) -> String {
     let mut rendered = vec![binary_path.display().to_string()];
     let mut redact_next = false;
 
