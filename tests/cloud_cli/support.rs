@@ -330,8 +330,8 @@ impl RawCliOutput {
         redacted_command: String,
     ) -> TestResult<Self> {
         let status_code = output.status.code().unwrap_or(-1);
-        let stdout = String::from_utf8(output.stdout)?;
-        let stderr = String::from_utf8(output.stderr)?;
+        let stdout = redact_text_ids(&String::from_utf8(output.stdout)?);
+        let stderr = redact_text_ids(&String::from_utf8(output.stderr)?);
 
         if !output.status.success() {
             return Err(Box::new(CommandFailure {
@@ -769,6 +769,38 @@ fn looks_like_uuid(value: &str) -> bool {
         .iter()
         .zip(expected.iter())
         .all(|(part, len)| part.len() == *len && part.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+fn redact_text_ids(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut token = String::new();
+
+    for ch in input.chars() {
+        if ch.is_ascii_hexdigit() || ch == '-' {
+            token.push(ch);
+            continue;
+        }
+
+        flush_redacted_token(&mut output, &mut token);
+        output.push(ch);
+    }
+
+    flush_redacted_token(&mut output, &mut token);
+    output
+}
+
+fn flush_redacted_token(output: &mut String, token: &mut String) {
+    if token.is_empty() {
+        return;
+    }
+
+    if looks_like_uuid(token) {
+        output.push_str("<redacted-id>");
+    } else {
+        output.push_str(token);
+    }
+
+    token.clear();
 }
 
 #[derive(Debug)]
