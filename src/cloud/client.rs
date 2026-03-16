@@ -67,7 +67,6 @@ impl CloudClient {
         })
     }
 
-
     /// Send a request and parse the JSON response body.
     async fn request<T: serde::de::DeserializeOwned>(
         &self,
@@ -99,10 +98,9 @@ impl CloudClient {
             });
         }
 
-        let api_response: ApiResponse<T> =
-            serde_json::from_str(&body).map_err(|e| CloudError {
-                message: format!("Failed to parse response: {} - Body: {}", e, body),
-            })?;
+        let api_response: ApiResponse<T> = serde_json::from_str(&body).map_err(|e| CloudError {
+            message: format!("Failed to parse response: {} - Body: {}", e, body),
+        })?;
 
         api_response.result.ok_or_else(|| CloudError {
             message: "Empty response from API".into(),
@@ -199,7 +197,10 @@ impl CloudClient {
         service_id: &str,
         filtered_metrics: Option<bool>,
     ) -> String {
-        let path = format!("/organizations/{}/services/{}/prometheus", org_id, service_id);
+        let path = format!(
+            "/organizations/{}/services/{}/prometheus",
+            org_id, service_id
+        );
         match filtered_metrics {
             Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
             None => self.url(&path),
@@ -315,11 +316,11 @@ impl CloudClient {
             .await
     }
 
-    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<()> {
-        self.delete(&format!(
+    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<StatusResponse> {
+        self.request(self.client.delete(self.url(&format!(
             "/organizations/{}/services/{}",
             org_id, service_id
-        ))
+        ))))
         .await
     }
 
@@ -398,10 +399,7 @@ impl CloudClient {
         request: &ServicePasswordPatchRequest,
     ) -> Result<ServicePasswordPatchResponse> {
         self.patch(
-            &format!(
-                "/organizations/{}/services/{}/password",
-                org_id, service_id
-            ),
+            &format!("/organizations/{}/services/{}/password", org_id, service_id),
             request,
         )
         .await
@@ -480,10 +478,11 @@ impl CloudClient {
         service_id: &str,
         filtered_metrics: Option<bool>,
     ) -> Result<String> {
-        self.request_text(
-            self.client
-                .get(self.service_prometheus_url(org_id, service_id, filtered_metrics)),
-        )
+        self.request_text(self.client.get(self.service_prometheus_url(
+            org_id,
+            service_id,
+            filtered_metrics,
+        )))
         .await
     }
 
@@ -530,11 +529,8 @@ impl CloudClient {
     }
 
     pub async fn get_member(&self, org_id: &str, user_id: &str) -> Result<Member> {
-        self.get(&format!(
-            "/organizations/{}/members/{}",
-            org_id, user_id
-        ))
-        .await
+        self.get(&format!("/organizations/{}/members/{}", org_id, user_id))
+            .await
     }
 
     pub async fn update_member(
@@ -551,11 +547,8 @@ impl CloudClient {
     }
 
     pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<()> {
-        self.delete(&format!(
-            "/organizations/{}/members/{}",
-            org_id, user_id
-        ))
-        .await
+        self.delete(&format!("/organizations/{}/members/{}", org_id, user_id))
+            .await
     }
 
     // Phase 4 - Invitation endpoints
@@ -569,18 +562,11 @@ impl CloudClient {
         org_id: &str,
         request: &CreateInvitationRequest,
     ) -> Result<Invitation> {
-        self.post(
-            &format!("/organizations/{}/invitations", org_id),
-            request,
-        )
-        .await
+        self.post(&format!("/organizations/{}/invitations", org_id), request)
+            .await
     }
 
-    pub async fn get_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<Invitation> {
+    pub async fn get_invitation(&self, org_id: &str, invitation_id: &str) -> Result<Invitation> {
         self.get(&format!(
             "/organizations/{}/invitations/{}",
             org_id, invitation_id
@@ -611,11 +597,8 @@ impl CloudClient {
     }
 
     pub async fn get_api_key(&self, org_id: &str, key_id: &str) -> Result<ApiKey> {
-        self.get(&format!(
-            "/organizations/{}/keys/{}",
-            org_id, key_id
-        ))
-        .await
+        self.get(&format!("/organizations/{}/keys/{}", org_id, key_id))
+            .await
     }
 
     pub async fn update_api_key(
@@ -632,11 +615,8 @@ impl CloudClient {
     }
 
     pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<()> {
-        self.delete(&format!(
-            "/organizations/{}/keys/{}",
-            org_id, key_id
-        ))
-        .await
+        self.delete(&format!("/organizations/{}/keys/{}", org_id, key_id))
+            .await
     }
 
     // Phase 6 - Activity endpoints
@@ -646,8 +626,11 @@ impl CloudClient {
         from_date: Option<&str>,
         to_date: Option<&str>,
     ) -> Result<Vec<Activity>> {
-        self.request(self.client.get(self.activities_url(org_id, from_date, to_date)))
-            .await
+        self.request(
+            self.client
+                .get(self.activities_url(org_id, from_date, to_date)),
+        )
+        .await
     }
 
     pub async fn get_activity(&self, org_id: &str, activity_id: &str) -> Result<Activity> {
@@ -720,10 +703,7 @@ mod tests {
         let client = test_client();
         let url = client.list_services_url(
             "org-1",
-            &[
-                "tag:env=prod".to_string(),
-                "state=running".to_string(),
-            ],
+            &["tag:env=prod".to_string(), "state=running".to_string()],
         );
         assert_eq!(
             url,
@@ -744,14 +724,10 @@ mod tests {
     #[test]
     fn activities_url_includes_optional_date_filters() {
         let client = test_client();
-        let url = client.activities_url(
-            "org-1",
-            Some("2024-01-01T00:00:00Z"),
-            Some("2024-01-31T23:59:59Z"),
-        );
+        let url = client.activities_url("org-1", Some("2024-01-01"), Some("2024-01-31"));
         assert_eq!(
             url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z"
+            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01&to_date=2024-01-31"
         );
     }
 
@@ -772,7 +748,10 @@ mod tests {
             "org-1",
             "2024-01-01T00:00:00Z",
             "2024-01-31T23:59:59Z",
-            &["entityType=service".to_string(), "entityName=my svc".to_string()],
+            &[
+                "entityType=service".to_string(),
+                "entityName=my svc".to_string(),
+            ],
         );
         assert_eq!(
             url,

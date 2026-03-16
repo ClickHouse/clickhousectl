@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::version_manager::list::{list_available_versions, Channel, VersionEntry};
+use crate::version_manager::list::{Channel, VersionEntry, list_available_versions};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub fn detect_platform() -> Result<(Os, Arch)> {
             return Err(Error::UnsupportedPlatform {
                 os: other.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
-            })
+            });
         }
     };
 
@@ -52,7 +52,7 @@ pub fn detect_platform() -> Result<(Os, Arch)> {
             return Err(Error::UnsupportedPlatform {
                 os: std::env::consts::OS.to_string(),
                 arch: other.to_string(),
-            })
+            });
         }
     };
 
@@ -82,20 +82,16 @@ pub async fn resolve_version(version_spec: &str) -> Result<VersionEntry> {
     }
 
     match version_spec {
-        "stable" => {
-            available
-                .iter()
-                .find(|e| e.channel == Channel::Stable)
-                .cloned()
-                .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string()))
-        }
-        "lts" => {
-            available
-                .iter()
-                .find(|e| e.channel == Channel::Lts)
-                .cloned()
-                .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string()))
-        }
+        "stable" => available
+            .iter()
+            .find(|e| e.channel == Channel::Stable)
+            .cloned()
+            .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string())),
+        "lts" => available
+            .iter()
+            .find(|e| e.channel == Channel::Lts)
+            .cloned()
+            .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string())),
         partial => {
             // Find the latest version matching the partial spec
             let prefix = format!("{}.", partial);

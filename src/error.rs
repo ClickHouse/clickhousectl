@@ -54,6 +54,9 @@ pub enum Error {
 
     #[error("Cloud API error: {0}")]
     Cloud(String),
+
+    #[error("{0}")]
+    Skills(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
