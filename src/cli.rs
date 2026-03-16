@@ -1,4 +1,32 @@
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
 use clap::{Args, Parser, Subcommand};
+
+fn parse_date_only(value: &str) -> Result<String, String> {
+    if NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
+        return Err(format!("invalid date '{}': expected YYYY-MM-DD", value));
+    }
+
+    Ok(value.to_string())
+}
+
+fn parse_datetime(value: &str) -> Result<String, String> {
+    if DateTime::<FixedOffset>::parse_from_rfc3339(value).is_err() {
+        return Err(format!(
+            "invalid datetime '{}': expected ISO 8601 / RFC 3339",
+            value
+        ));
+    }
+
+    Ok(value.to_string())
+}
+
+fn parse_time_only(value: &str) -> Result<String, String> {
+    if NaiveTime::parse_from_str(value, "%H:%M").is_err() {
+        return Err(format!("invalid time '{}': expected HH:MM", value));
+    }
+
+    Ok(value.to_string())
+}
 
 #[derive(Parser)]
 #[command(name = "clickhousectl")]
@@ -12,13 +40,11 @@ CONTEXT FOR AGENTS:
   1. Local: Install and interact with versions of ClickHouse to develop locally.
   2. Cloud: Manage ClickHouse Cloud infrastructure and push local work to cloud.
 
-  You can install the ClickHouse Agent Skills for best practices on using ClikHouse:
+  You can install the ClickHouse Agent Skills with:
 
-  `npx skills add clickhouse/agent-skills`
+  `clickhousectl skills`
 
-  Typical local workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
-
-  Use `clickhousectl <command> --help` to get more context for specific commands.")]
+  Typical local workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -37,7 +63,7 @@ CONTEXT FOR AGENTS:
         command: LocalCommands,
     },
 
-    /// ClickHouse Cloud API commands
+    /// Work with serverless ClickHouse in ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure.
@@ -49,6 +75,15 @@ CONTEXT FOR AGENTS:
   Typical workflow: `cloud org list` → get org ID → `cloud service list` → manage services and related resources.
   Related: `clickhousectl cloud org list` to start.")]
     Cloud(CloudArgs),
+
+    /// Install ClickHouse agent skills into supported coding agents
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Installs the official ClickHouse agent skills. These skills contain knowledge on how to use
+  ClickHouse and this CLI.
+  Using any flags skips interactive mode. Project scope is the default. Universal `.agents/skills`
+  is always included.")]
+    Skills(SkillsArgs),
 }
 
 #[derive(Subcommand)]
@@ -171,6 +206,30 @@ CONTEXT FOR AGENTS:
     },
 }
 
+#[derive(Args, Debug)]
+pub struct SkillsArgs {
+    /// Install into specific agents (repeatable or comma-separated).
+    #[arg(
+        long = "agent",
+        value_name = "AGENT",
+        value_delimiter = ',',
+        long_help = "Install into specific agents (repeatable or comma-separated).\n\nValid names:\n  claude, cursor, opencode, codex\n  agent, roo, trae, windsurf\n  zencoder, neovate, pochi, adal\n  openclaw, cline, command-code\n  kiro-cli, agents"
+    )]
+    pub agents: Vec<String>,
+
+    /// Install into every supported agent in the selected scope without prompting
+    #[arg(long, conflicts_with_all = ["agents", "detected_only"])]
+    pub all: bool,
+
+    /// Install only into agents detected from your home directory without prompting
+    #[arg(long = "detected-only", conflicts_with_all = ["agents", "all"])]
+    pub detected_only: bool,
+
+    /// Install into global agent config directories in your home directory
+    #[arg(long)]
+    pub global: bool,
+}
+
 #[derive(Args)]
 pub struct CloudArgs {
     /// API key (or set CLICKHOUSE_CLOUD_API_KEY)
@@ -261,7 +320,6 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ActivityCommands,
     },
-
 }
 
 #[derive(Subcommand)]
@@ -321,12 +379,12 @@ CONTEXT FOR AGENTS:
         /// Organization ID
         org_id: String,
 
-        /// Start date filter (ISO 8601, e.g. 2024-01-01T00:00:00Z)
-        #[arg(long)]
+        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
+        #[arg(long, value_parser = parse_date_only)]
         from_date: String,
 
-        /// End date filter (ISO 8601, e.g. 2024-01-31T23:59:59Z)
-        #[arg(long)]
+        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-01-31)
+        #[arg(long, value_parser = parse_date_only)]
         to_date: String,
 
         /// Filter by entity attributes
@@ -968,8 +1026,8 @@ pub enum KeyCommands {
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiration date (ISO 8601 format)
-        #[arg(long)]
+        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
+        #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
         /// Key state (enabled or disabled)
@@ -1020,8 +1078,8 @@ pub enum KeyCommands {
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiration date (ISO 8601 format)
-        #[arg(long)]
+        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
+        #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
         /// Key state (e.g., enabled, disabled)
@@ -1056,12 +1114,12 @@ pub enum ActivityCommands {
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Start date filter (ISO 8601, e.g. 2024-01-01)
-        #[arg(long)]
+        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
+        #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
 
-        /// End date filter (ISO 8601, e.g. 2024-12-31)
-        #[arg(long)]
+        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-12-31)
+        #[arg(long, value_parser = parse_date_only)]
         to_date: Option<String>,
     },
 
@@ -1102,7 +1160,7 @@ pub enum BackupConfigCommands {
         backup_retention_period_hours: Option<u32>,
 
         /// Backup start time in UTC (HH:MM)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_time_only)]
         backup_start_time: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
@@ -1308,5 +1366,287 @@ mod tests {
         assert_eq!(backup_period_hours, Some(12));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn parses_key_expires_at_rfc3339_timestamps() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "create",
+            "--name",
+            "ci-key",
+            "--expires-at",
+            "2025-12-31T23:59:59Z",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Key { command } = args.command else {
+            panic!("expected key command");
+        };
+        let KeyCommands::Create { expires_at, .. } = command else {
+            panic!("expected key create");
+        };
+        assert_eq!(expires_at.as_deref(), Some("2025-12-31T23:59:59Z"));
+    }
+
+    #[test]
+    fn rejects_invalid_key_expires_at_timestamps() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "update",
+            "key-1",
+            "--expires-at",
+            "2025-12-31",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid expires-at input to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected ISO 8601 / RFC 3339")),
+        }
+    }
+
+    #[test]
+    fn parses_backup_start_time_hhmm() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-start-time",
+            "03:00",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::BackupConfig { command } = command else {
+            panic!("expected backup-config");
+        };
+        let BackupConfigCommands::Update {
+            backup_start_time, ..
+        } = command
+        else {
+            panic!("expected backup-config update");
+        };
+        assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn rejects_invalid_backup_start_time() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-start-time",
+            "25:00",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid backup start time to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected HH:MM")),
+        }
+    }
+
+    #[test]
+    fn parses_org_usage_date_only_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Usage {
+            from_date, to_date, ..
+        } = command
+        else {
+            panic!("expected org usage");
+        };
+        assert_eq!(from_date, "2025-01-01");
+        assert_eq!(to_date, "2025-01-31");
+    }
+
+    #[test]
+    fn rejects_org_usage_timestamps() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-01-01T00:00:00Z",
+            "--to-date",
+            "2025-01-31",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected timestamp input to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_org_usage_calendar_dates() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-02-31",
+            "--to-date",
+            "2025-03-01",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid calendar date to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn parses_activity_list_date_only_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "activity",
+            "list",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Activity { command } = args.command else {
+            panic!("expected activity command");
+        };
+        let ActivityCommands::List {
+            from_date, to_date, ..
+        } = command
+        else {
+            panic!("expected activity list");
+        };
+        assert_eq!(from_date.as_deref(), Some("2025-01-01"));
+        assert_eq!(to_date.as_deref(), Some("2025-01-31"));
+    }
+
+    #[test]
+    fn rejects_activity_list_timestamps() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "activity",
+            "list",
+            "--from-date",
+            "2025-01-01T00:00:00Z",
+            "--to-date",
+            "2025-01-31",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected timestamp input to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_activity_list_calendar_dates() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "activity",
+            "list",
+            "--from-date",
+            "2025-02-31",
+            "--to-date",
+            "2025-03-01",
+        ]);
+
+        match result {
+            Ok(_) => panic!("expected invalid calendar date to be rejected"),
+            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn parses_skills_all_and_agent_flags() {
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--all"]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(args.all);
+        assert!(args.agents.is_empty());
+        assert!(!args.detected_only);
+        assert!(!args.global);
+
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--global"]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(args.global);
+        assert!(!args.all);
+        assert!(!args.detected_only);
+        assert!(args.agents.is_empty());
+
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--detected-only"]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(args.detected_only);
+        assert!(!args.all);
+        assert!(!args.global);
+        assert!(args.agents.is_empty());
+
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "skills",
+            "--global",
+            "--agent",
+            "claude,codex",
+            "--agent",
+            "agents",
+        ])
+        .unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert!(!args.all);
+        assert!(!args.detected_only);
+        assert!(args.global);
+        assert_eq!(args.agents, vec!["claude", "codex", "agents"]);
     }
 }
