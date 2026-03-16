@@ -1,6 +1,6 @@
 use crate::support::{
-    delete_service_and_confirm_gone, CleanupRegistry, CliRunner, FailureRecorder, StepKind,
-    TestContext, TestResult, json_string, log_phase, log_run_header, poll_until,
+    CleanupRegistry, CliRunner, FailureRecorder, StepKind, TestContext, TestResult,
+    delete_service_and_confirm_gone, json_string, log_phase, log_run_header, poll_until,
     service_has_ip_access_entry, service_list_is_empty, service_name_in_list,
     service_present_in_list,
 };
@@ -35,9 +35,12 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let current_org_name = json_string(&org.json, &["/name", "/org/name"])?.to_string();
 
         let org_list = failures
-            .run(&ctx, StepKind::Blocking, "verify org list includes target org", || {
-                runner.run_cloud(["org".to_string(), "list".to_string()])
-            })?
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "verify org list includes target org",
+                || runner.run_cloud(["org".to_string(), "list".to_string()]),
+            )?
             .expect("blocking steps always return a value");
         assert!(
             org_list_contains(&org_list.json, &ctx.org_id),
@@ -55,7 +58,9 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             ])?;
             let updated_org_id = json_string(&updated.json, &["/id", "/org/id"])?;
             if updated_org_id != ctx.org_id {
-                return Err(format!("org update returned unexpected org id {}", updated_org_id).into());
+                return Err(
+                    format!("org update returned unexpected org id {}", updated_org_id).into(),
+                );
             }
             Ok(())
         })?;
@@ -78,9 +83,12 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
 
         log_phase("Provision Service");
         let list_before = failures
-            .run(&ctx, StepKind::Blocking, "check for leftover tagged services", || {
-                runner.service_list_for_run()
-            })?
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "check for leftover tagged services",
+                || runner.service_list_for_run(),
+            )?
             .expect("blocking steps always return a value");
         assert!(
             service_list_is_empty(&list_before.json),
@@ -128,22 +136,27 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         cleanup.register_service(service_id.clone());
 
         let ready = failures
-            .run(&ctx, StepKind::Blocking, "wait for service steady state", || {
-                poll_until(
-                    "service steady state",
-                    ctx.steady_state_timeout,
-                    ctx.poll_interval,
-                    || {
-                        let output = runner.service_get(&service_id)?;
-                        let state = json_string(&output.json, &["/service/state", "/state"])?;
-                        if matches!(state, "running" | "idle") {
-                            Ok(Some(output))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                )
-            })?
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "wait for service steady state",
+                || {
+                    poll_until(
+                        "service steady state",
+                        ctx.steady_state_timeout,
+                        ctx.poll_interval,
+                        || {
+                            let output = runner.service_get(&service_id)?;
+                            let state = json_string(&output.json, &["/service/state", "/state"])?;
+                            if matches!(state, "running" | "idle") {
+                                Ok(Some(output))
+                            } else {
+                                Ok(None)
+                            }
+                        },
+                    )
+                },
+            )?
             .expect("blocking steps always return a value");
         let ready_name = json_string(&ready.json, &["/service/name", "/name"])?;
         assert_eq!(ready_name, ctx.service_name());
@@ -153,11 +166,17 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             create_options_ip
         );
         assert_eq!(
-            json_u64(&ready.json, &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"]),
+            json_u64(
+                &ready.json,
+                &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"]
+            ),
             Some(base_memory_gb)
         );
         assert_eq!(
-            json_u64(&ready.json, &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"]),
+            json_u64(
+                &ready.json,
+                &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"]
+            ),
             Some(base_memory_gb)
         );
         assert_eq!(
@@ -166,9 +185,12 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         );
 
         let listed = failures
-            .run(&ctx, StepKind::Blocking, "verify service is discoverable in list", || {
-                runner.service_list_for_run()
-            })?
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "verify service is discoverable in list",
+                || runner.service_list_for_run(),
+            )?
             .expect("blocking steps always return a value");
         assert!(
             service_present_in_list(&listed.json, &service_id),
@@ -188,45 +210,55 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         })?;
 
         let updated = failures
-            .run(&ctx, StepKind::Blocking, "wait for rename visibility in get", || {
-                poll_until(
-                    "service rename visibility in get",
-                    ctx.create_timeout,
-                    ctx.poll_interval,
-                    || {
-                        let output = runner.service_get(&service_id)?;
-                        let name = json_string(&output.json, &["/service/name", "/name"])?;
-                        if name == ctx.updated_service_name() {
-                            Ok(Some(output))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                )
-            })?
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "wait for rename visibility in get",
+                || {
+                    poll_until(
+                        "service rename visibility in get",
+                        ctx.create_timeout,
+                        ctx.poll_interval,
+                        || {
+                            let output = runner.service_get(&service_id)?;
+                            let name = json_string(&output.json, &["/service/name", "/name"])?;
+                            if name == ctx.updated_service_name() {
+                                Ok(Some(output))
+                            } else {
+                                Ok(None)
+                            }
+                        },
+                    )
+                },
+            )?
             .expect("blocking steps always return a value");
         let updated_name = json_string(&updated.json, &["/service/name", "/name"])?;
         assert_eq!(updated_name, ctx.updated_service_name());
 
         let renamed_list = failures
-            .run(&ctx, StepKind::Blocking, "verify rename is visible in list", || {
-                poll_until(
-                    "service rename visibility in list",
-                    ctx.create_timeout,
-                    ctx.poll_interval,
-                    || {
-                        let output = runner.service_list_for_run()?;
-                        if service_name_in_list(&output.json, &service_id)
-                            .as_deref()
-                            .is_some_and(|name| name == ctx.updated_service_name())
-                        {
-                            Ok(Some(output))
-                        } else {
-                            Ok(None)
-                        }
-                    },
-                )
-            })?
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "verify rename is visible in list",
+                || {
+                    poll_until(
+                        "service rename visibility in list",
+                        ctx.create_timeout,
+                        ctx.poll_interval,
+                        || {
+                            let output = runner.service_list_for_run()?;
+                            if service_name_in_list(&output.json, &service_id)
+                                .as_deref()
+                                .is_some_and(|name| name == ctx.updated_service_name())
+                            {
+                                Ok(Some(output))
+                            } else {
+                                Ok(None)
+                            }
+                        },
+                    )
+                },
+            )?
             .expect("blocking steps always return a value");
         assert_eq!(
             service_name_in_list(&renamed_list.json, &service_id).as_deref(),
@@ -261,24 +293,29 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        failures.run(&ctx, StepKind::NonBlocking, "service update enable_core_dumps", || {
-            let current = runner.service_get(&service_id)?;
-            let current_value = json_bool(
-                &current.json,
-                &["/service/enableCoreDumps", "/enableCoreDumps"],
-            )
-            .unwrap_or(false);
-            runner.run_cloud([
-                "service".to_string(),
-                "update".to_string(),
-                service_id.clone(),
-                "--enable-core-dumps".to_string(),
-                current_value.to_string(),
-                "--org-id".to_string(),
-                ctx.org_id.clone(),
-            ])?;
-            Ok(())
-        })?;
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "service update enable_core_dumps",
+            || {
+                let current = runner.service_get(&service_id)?;
+                let current_value = json_bool(
+                    &current.json,
+                    &["/service/enableCoreDumps", "/enableCoreDumps"],
+                )
+                .unwrap_or(false);
+                runner.run_cloud([
+                    "service".to_string(),
+                    "update".to_string(),
+                    service_id.clone(),
+                    "--enable-core-dumps".to_string(),
+                    current_value.to_string(),
+                    "--org-id".to_string(),
+                    ctx.org_id.clone(),
+                ])?;
+                Ok(())
+            },
+        )?;
 
         failures.run(&ctx, StepKind::NonBlocking, "add service tag", || {
             runner.run_cloud([
@@ -293,43 +330,47 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
-        failures.run(&ctx, StepKind::NonBlocking, "add first ip allow entry", || {
-            mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", primary_ip)?;
-            poll_for_ip_presence(&ctx, &runner, &service_id, primary_ip, true)
-        })?;
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "add first ip allow entry",
+            || {
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", primary_ip)?;
+                poll_for_ip_presence(&ctx, &runner, &service_id, primary_ip, true)
+            },
+        )?;
 
-        failures.run(&ctx, StepKind::NonBlocking, "add second ip allow entry", || {
-            mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", secondary_ip)?;
-            poll_until(
-                "multiple ip allow visibility",
-                ctx.create_timeout,
-                ctx.poll_interval,
-                || {
-                    let output = runner.service_get(&service_id)?;
-                    if service_has_ip_access_entry(&output.json, primary_ip)
-                        && service_has_ip_access_entry(&output.json, secondary_ip)
-                    {
-                        Ok(Some(()))
-                    } else {
-                        Ok(None)
-                    }
-                },
-            )?;
-            Ok(())
-        })?;
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "add second ip allow entry",
+            || {
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", secondary_ip)?;
+                poll_until(
+                    "multiple ip allow visibility",
+                    ctx.create_timeout,
+                    ctx.poll_interval,
+                    || {
+                        let output = runner.service_get(&service_id)?;
+                        if service_has_ip_access_entry(&output.json, primary_ip)
+                            && service_has_ip_access_entry(&output.json, secondary_ip)
+                        {
+                            Ok(Some(()))
+                        } else {
+                            Ok(None)
+                        }
+                    },
+                )?;
+                Ok(())
+            },
+        )?;
 
         failures.run(
             &ctx,
             StepKind::NonBlocking,
             "remove one ip allow entry while keeping another",
             || {
-                mutate_ip_allow_entry(
-                    &ctx,
-                    &runner,
-                    &service_id,
-                    "--remove-ip-allow",
-                    primary_ip,
-                )?;
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--remove-ip-allow", primary_ip)?;
                 poll_until(
                     "partial ip allow removal",
                     ctx.create_timeout,
@@ -349,10 +390,21 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             },
         )?;
 
-        failures.run(&ctx, StepKind::NonBlocking, "remove remaining ip allow entry", || {
-            mutate_ip_allow_entry(&ctx, &runner, &service_id, "--remove-ip-allow", secondary_ip)?;
-            poll_for_ip_presence(&ctx, &runner, &service_id, secondary_ip, false)
-        })?;
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "remove remaining ip allow entry",
+            || {
+                mutate_ip_allow_entry(
+                    &ctx,
+                    &runner,
+                    &service_id,
+                    "--remove-ip-allow",
+                    secondary_ip,
+                )?;
+                poll_for_ip_presence(&ctx, &runner, &service_id, secondary_ip, false)
+            },
+        )?;
 
         log_phase("Shutdown And Delete");
         failures.run(&ctx, StepKind::Blocking, "stop service", || {
@@ -588,10 +640,14 @@ fn scale_service_and_wait(
         ctx.poll_interval,
         || {
             let output = runner.service_get(service_id)?;
-            let current_min =
-                json_u64(&output.json, &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"]);
-            let current_max =
-                json_u64(&output.json, &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"]);
+            let current_min = json_u64(
+                &output.json,
+                &["/service/minReplicaMemoryGb", "/minReplicaMemoryGb"],
+            );
+            let current_max = json_u64(
+                &output.json,
+                &["/service/maxReplicaMemoryGb", "/maxReplicaMemoryGb"],
+            );
             let current_replicas =
                 json_u64(&output.json, &["/service/numReplicas", "/numReplicas"]);
 

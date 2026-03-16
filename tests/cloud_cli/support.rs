@@ -90,9 +90,7 @@ impl TestContext {
                 "CLICKHOUSE_CLOUD_TEST_POLL_INTERVAL_SECS",
                 DEFAULT_POLL_INTERVAL_SECS,
             )?,
-            continue_on_non_blocking_failures: bool_from_env(
-                "CONTINUE_ON_NON_BLOCKING_FAILURES",
-            )?,
+            continue_on_non_blocking_failures: bool_from_env("CONTINUE_ON_NON_BLOCKING_FAILURES")?,
         })
     }
 
@@ -192,11 +190,7 @@ impl FailureRecorder {
             self.failures.len()
         );
         for failure in &self.failures {
-            eprintln!(
-                "  - [{}] {}",
-                failure.kind.label(),
-                failure.step_name
-            );
+            eprintln!("  - [{}] {}", failure.kind.label(), failure.step_name);
         }
 
         eprintln!("\n== Failure Details ==");
@@ -400,7 +394,8 @@ impl CleanupRegistry {
     }
 
     pub fn unregister_service(&mut self, service_id: &str) {
-        self.service_ids.retain(|registered| registered != service_id);
+        self.service_ids
+            .retain(|registered| registered != service_id);
     }
 
     pub fn cleanup(&mut self, runner: &CliRunner<'_>) -> Result<(), String> {
@@ -522,25 +517,20 @@ pub fn service_has_ip_access_entry(value: &Value, source: &str) -> bool {
         .pointer("/service/ipAccessList")
         .or_else(|| value.pointer("/ipAccessList"));
 
-    entries
-        .and_then(Value::as_array)
-        .is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                entry
-                    .pointer("/source")
-                    .and_then(Value::as_str)
-                    .is_some_and(|candidate| candidate == source)
-            })
+    entries.and_then(Value::as_array).is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry
+                .pointer("/source")
+                .and_then(Value::as_str)
+                .is_some_and(|candidate| candidate == source)
         })
+    })
 }
 
 // Strict deletion is used by the test body itself to verify that the explicit delete
 // command succeeded for a still-existing service. If the service is already gone here,
 // the delete behavior was not actually exercised and the test should fail.
-pub fn delete_service_and_confirm_gone(
-    runner: &CliRunner<'_>,
-    service_id: &str,
-) -> TestResult<()> {
+pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
     eprintln!("  delete: deleting service");
     request_service_deletion(runner, service_id, false)?;
     wait_for_service_to_disappear(runner, service_id)
