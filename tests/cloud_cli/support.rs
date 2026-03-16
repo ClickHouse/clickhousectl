@@ -13,7 +13,7 @@ const DEFAULT_DELETE_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_STEADY_STATE_TIMEOUT_SECS: u64 = 1_800;
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 10;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TestContext {
     pub api_key: String,
     pub api_secret: String,
@@ -27,6 +27,28 @@ pub struct TestContext {
     pub steady_state_timeout: Duration,
     pub poll_interval: Duration,
     pub continue_on_non_blocking_failures: bool,
+}
+
+impl fmt::Debug for TestContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestContext")
+            .field("api_key", &"<redacted>")
+            .field("api_secret", &"<redacted>")
+            .field("org_id", &"<redacted>")
+            .field("provider", &self.provider)
+            .field("region", &self.region)
+            .field("run_id", &self.run_id)
+            .field("temp_home", &self.temp_home)
+            .field("create_timeout", &self.create_timeout)
+            .field("delete_timeout", &self.delete_timeout)
+            .field("steady_state_timeout", &self.steady_state_timeout)
+            .field("poll_interval", &self.poll_interval)
+            .field(
+                "continue_on_non_blocking_failures",
+                &self.continue_on_non_blocking_failures,
+            )
+            .finish()
+    }
 }
 
 impl TestContext {
