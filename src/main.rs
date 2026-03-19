@@ -9,10 +9,12 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    ActivityCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs, CloudCommands,
-    Commands, InvitationCommands, KeyCommands, LocalCommands, MemberCommands, OrgCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServerCommands, ServiceCommands, SkillsArgs,
+    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
+    CloudCommands, Commands, InvitationCommands, KeyCommands, LocalCommands, MemberCommands,
+    OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands, ServiceCommands,
+    SkillsArgs,
 };
+
 use cloud::CloudClient;
 use error::{Error, Result};
 use std::os::unix::process::CommandExt;
@@ -428,16 +430,75 @@ fn run_server_commands(command: ServerCommands) -> Result<()> {
 }
 
 async fn run_cloud(args: CloudArgs) -> Result<()> {
-    if let CloudCommands::Auth = &args.command {
-        return cloud::commands::auth_interactive().map_err(|e| Error::Cloud(e.to_string()));
+    // Auth subcommands don't need a client
+    if let CloudCommands::Auth { command } = args.command {
+        return match command {
+            AuthCommands::Login => {
+                let url = args
+                    .url
+                    .as_deref()
+                    .unwrap_or("https://api.clickhouse.cloud");
+                let tokens = cloud::auth::device_auth_login(url)
+                    .await
+                    .map_err(|e| Error::Cloud(e.to_string()))?;
+                cloud::auth::save_tokens(&tokens).map_err(|e| Error::Cloud(e.to_string()))?;
+                println!("Logged in successfully.");
+                println!("Tokens saved to {}", cloud::auth::tokens_path().display());
+                Ok(())
+            }
+            AuthCommands::Logout => {
+                cloud::auth::clear_tokens();
+                println!("Logged out. OAuth tokens cleared.");
+                Ok(())
+            }
+            AuthCommands::Status => {
+                match cloud::auth::load_tokens() {
+                    Some(tokens) if cloud::auth::is_token_valid(&tokens) => {
+                        println!("OAuth: logged in (token valid, url: {})", tokens.api_url);
+                    }
+                    Some(tokens) => {
+                        println!(
+                            "OAuth: token expired, url: {} (run `clickhousectl cloud auth login` to refresh)",
+                            tokens.api_url
+                        );
+                    }
+                    None => {
+                        println!("OAuth: not logged in");
+                    }
+                }
+                let creds = cloud::credentials::load_credentials();
+                if creds.is_some() {
+                    println!(
+                        "API keys: configured ({})",
+                        cloud::credentials::credentials_path().display()
+                    );
+                } else {
+                    println!("API keys: not configured");
+                }
+                Ok(())
+            }
+            AuthCommands::Keys => {
+                cloud::commands::auth_interactive().map_err(|e| Error::Cloud(e.to_string()))
+            }
+        };
     }
 
-    let client = CloudClient::new(args.api_key.as_deref(), args.api_secret.as_deref())
+    // Refresh OAuth tokens if needed before creating the client
+    cloud::auth::ensure_fresh_tokens()
+        .await
         .map_err(|e| Error::Cloud(e.to_string()))?;
+
+    let client = CloudClient::new(
+        args.api_key.as_deref(),
+        args.api_secret.as_deref(),
+        args.url.as_deref(),
+    )
+    .map_err(|e| Error::Cloud(e.to_string()))?;
 
     let json = args.json;
 
     let result = match args.command {
+        CloudCommands::Auth { .. } => unreachable!("handled above"),
         CloudCommands::Org { command } => match command {
             OrgCommands::List => cloud::commands::org_list(&client, json).await,
             OrgCommands::Get { org_id } => cloud::commands::org_get(&client, &org_id, json).await,
@@ -861,7 +922,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::activity_get(&client, &activity_id, org_id.as_deref(), json).await
             }
         },
-        CloudCommands::Auth => unreachable!("handled above"),
         CloudCommands::Backup { command } => match command {
             BackupCommands::List { service_id, org_id } => {
                 cloud::commands::backup_list(&client, &service_id, org_id.as_deref(), json).await

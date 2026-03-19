@@ -20,9 +20,11 @@ Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release
 
 `clickhousectl` is the official ClickHouse CLI — a version manager + cloud CLI. Two top-level subcommands: `local` and `cloud`.
 
-1. **Local** (`local install|list|use|remove|which|init|client|server`) — version management in `src/version_manager/`, server management in `src/server.rs`, client/init in `main.rs`. Binaries live in `~/.clickhouse/versions/{version}/clickhouse`, default tracked in `~/.clickhouse/default`. Project data lives in `.clickhouse/`.
+1. **Local** (`local install|list|use|remove|which|init|client|server`) — version management in `src/version_manager/`, server management in `src/server.rs`, client/init in `main.rs`. Binaries live in `~/.clickhousectl/versions/{version}/clickhouse`, default tracked in `~/.clickhousectl/default`. Project data lives in `.clickhousectl/`.
 
-2. **Cloud** (`cloud org|service|backup|auth`) — handled by `src/cloud/`. `CloudClient` wraps reqwest with Basic auth. Commands go through `cloud/commands.rs`, types in `cloud/types.rs`. All cloud commands support `--json` output.
+2. **Cloud** (`cloud org|service|backup`) — handled by `src/cloud/`. `CloudClient` wraps reqwest with Basic or Bearer auth. Commands go through `cloud/commands.rs`, types in `cloud/types.rs`. All cloud commands support `--json` output.
+
+3. **Auth** (`cloud auth login|logout|status|keys`) — authentication subcommand under cloud. OAuth device flow in `src/cloud/auth.rs`, API key management in `cloud/commands.rs`. Tokens stored in `~/.clickhousectl/tokens.json`.
 
 ## Adding commands
 
@@ -61,7 +63,7 @@ cargo add rpassword                  # add latest version
 ## Key details
 
 - CLI is defined with clap derive macros in `src/cli.rs`, dispatched in `src/main.rs`
-- `src/paths.rs` handles `~/.clickhouse/` paths (global install dir); `src/init.rs` handles `.clickhouse/` paths (project-local data dir)
+- `src/paths.rs` handles `~/.clickhousectl/` paths (global install dir); `src/init.rs` handles `.clickhousectl/` paths (project-local data dir)
 - `local client` uses `exec()` (process replacement), so code after `cmd.exec()` only runs on failure
 - Error types use `thiserror` in `src/error.rs`; cloud module has its own error type wrapped as `Error::Cloud(String)`
 - Version resolution (`version_manager/resolve.rs`) handles specs like `stable`, `lts`, `25.12`, or exact `25.12.5.44` — all resolve to an exact version + channel via GitHub API
@@ -79,6 +81,6 @@ cargo add rpassword                  # add latest version
 
 ```bash
 cargo run -- local install stable
-cargo run -- local server start      # starts server in .clickhouse/servers/default/
+cargo run -- local server start      # starts server in .clickhousectl/servers/default/
 cargo run -- local client --query "SELECT 1"
 ```

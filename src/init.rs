@@ -4,7 +4,7 @@ use std::path::PathBuf;
 pub fn local_dir() -> PathBuf {
     std::env::current_dir()
         .expect("failed to get current directory")
-        .join(".clickhouse")
+        .join(".clickhousectl")
 }
 
 pub fn project_dir() -> PathBuf {

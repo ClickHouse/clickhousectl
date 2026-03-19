@@ -3,7 +3,7 @@ use base64::Engine;
 use reqwest::Client;
 use std::env;
 
-const BASE_URL: &str = "https://api.clickhouse.cloud/v1";
+const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
 pub fn user_agent() -> String {
     format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"))
@@ -24,36 +24,23 @@ impl std::error::Error for CloudError {}
 
 pub type Result<T> = std::result::Result<T, CloudError>;
 
+enum AuthMode {
+    Basic(String),
+    Bearer(String),
+}
+
 pub struct CloudClient {
     client: Client,
-    auth_header: String,
+    auth_mode: AuthMode,
+    base_url: String,
 }
 
 impl CloudClient {
-    pub fn new(api_key: Option<&str>, api_secret: Option<&str>) -> Result<Self> {
-        let file_creds = crate::cloud::credentials::load_credentials();
-
-        let key = api_key
-            .map(String::from)
-            .or_else(|| file_creds.as_ref().map(|c| c.api_key.clone()))
-            .or_else(|| env::var("CLICKHOUSE_CLOUD_API_KEY").ok())
-            .ok_or_else(|| CloudError {
-                message: "API key required. Run `clickhousectl cloud auth`, set CLICKHOUSE_CLOUD_API_KEY, or use --api-key".into(),
-            })?;
-
-        let secret = api_secret
-            .map(String::from)
-            .or_else(|| file_creds.as_ref().map(|c| c.api_secret.clone()))
-            .or_else(|| env::var("CLICKHOUSE_CLOUD_API_SECRET").ok())
-            .ok_or_else(|| CloudError {
-                message: "API secret required. Run `clickhousectl cloud auth`, set CLICKHOUSE_CLOUD_API_SECRET, or use --api-secret"
-                    .into(),
-            })?;
-
-        let credentials = format!("{}:{}", key, secret);
-        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
-        let auth_header = format!("Basic {}", encoded);
-
+    pub fn new(
+        api_key: Option<&str>,
+        api_secret: Option<&str>,
+        url_override: Option<&str>,
+    ) -> Result<Self> {
         let client = Client::builder()
             .user_agent(user_agent())
             .build()
@@ -61,10 +48,78 @@ impl CloudClient {
                 message: format!("Failed to create HTTP client: {}", e),
             })?;
 
-        Ok(Self {
-            client,
-            auth_header,
+        // Priority: CLI flags > OAuth tokens > file credentials > env vars
+        // If explicit API key flags are provided, use Basic auth
+        if api_key.is_some() || api_secret.is_some() {
+            let key = api_key.map(String::from).ok_or_else(|| CloudError {
+                message: "API key required when --api-key or --api-secret is set".into(),
+            })?;
+            let secret = api_secret.map(String::from).ok_or_else(|| CloudError {
+                message: "API secret required when --api-key or --api-secret is set".into(),
+            })?;
+            let base_url = url_override
+                .map(crate::cloud::auth::normalize_api_url)
+                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+            return Ok(Self {
+                client,
+                auth_mode: Self::basic_auth(&key, &secret),
+                base_url,
+            });
+        }
+
+        // Try OAuth tokens
+        if let Some(tokens) = crate::cloud::auth::load_tokens() {
+            if crate::cloud::auth::is_token_valid(&tokens) {
+                let base_url = url_override
+                    .map(crate::cloud::auth::normalize_api_url)
+                    .unwrap_or(tokens.api_url.clone());
+                return Ok(Self {
+                    client,
+                    auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
+                    base_url,
+                });
+            }
+        }
+
+        let base_url = url_override
+            .map(crate::cloud::auth::normalize_api_url)
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+
+        // Try file credentials
+        if let Some(creds) = crate::cloud::credentials::load_credentials() {
+            return Ok(Self {
+                client,
+                auth_mode: Self::basic_auth(&creds.api_key, &creds.api_secret),
+                base_url,
+            });
+        }
+
+        // Try env vars
+        let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
+        let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+        if let (Some(key), Some(secret)) = (env_key, env_secret) {
+            return Ok(Self {
+                client,
+                auth_mode: Self::basic_auth(&key, &secret),
+                base_url,
+            });
+        }
+
+        Err(CloudError {
+            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth), `clickhousectl cloud auth keys` (API key/secret), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret".into(),
         })
+    }
+
+    fn basic_auth(key: &str, secret: &str) -> AuthMode {
+        let credentials = format!("{}:{}", key, secret);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
+        AuthMode::Basic(format!("Basic {}", encoded))
+    }
+
+    fn auth_header_value(&self) -> &str {
+        match &self.auth_mode {
+            AuthMode::Basic(v) | AuthMode::Bearer(v) => v,
+        }
     }
 
     /// Send a request and parse the JSON response body.
@@ -73,7 +128,7 @@ impl CloudClient {
         req: reqwest::RequestBuilder,
     ) -> Result<T> {
         let response = req
-            .header("Authorization", &self.auth_header)
+            .header("Authorization", self.auth_header_value())
             .send()
             .await
             .map_err(|e| CloudError {
@@ -110,7 +165,7 @@ impl CloudClient {
     /// Send a request expecting no response body.
     async fn request_no_body(&self, req: reqwest::RequestBuilder) -> Result<()> {
         let response = req
-            .header("Authorization", &self.auth_header)
+            .header("Authorization", self.auth_header_value())
             .send()
             .await
             .map_err(|e| CloudError {
@@ -138,7 +193,7 @@ impl CloudClient {
     /// Send a request and return a plaintext response body.
     async fn request_text(&self, req: reqwest::RequestBuilder) -> Result<String> {
         let response = req
-            .header("Authorization", &self.auth_header)
+            .header("Authorization", self.auth_header_value())
             .send()
             .await
             .map_err(|e| CloudError {
@@ -167,7 +222,7 @@ impl CloudClient {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", BASE_URL, path)
+        format!("{}{}", self.base_url, path)
     }
 
     fn list_services_url(&self, org_id: &str, filters: &[String]) -> String {
@@ -699,7 +754,8 @@ mod tests {
     fn test_client() -> CloudClient {
         CloudClient {
             client: Client::builder().build().unwrap(),
-            auth_header: "Basic test".to_string(),
+            auth_mode: AuthMode::Basic("Basic test".to_string()),
+            base_url: DEFAULT_BASE_URL.to_string(),
         }
     }
 

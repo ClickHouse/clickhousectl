@@ -59,10 +59,10 @@ clickhousectl local remove 25.12.5.44
 
 #### ClickHouse binary storage
 
-ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhouse/`:
+ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhousectl/`:
 
 ```
-~/.clickhouse/
+~/.clickhousectl/
 ├── versions/
 │   └── 25.12.5.44/
 │       └── clickhouse
@@ -100,7 +100,7 @@ clickhousectl local client --host remote-host --port 9000  # Connect to a specif
 
 ### Creating and managing ClickHouse servers
 
-Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhouse/servers/<name>/data/`.
+Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhousectl/servers/<name>/data/`.
 
 ```bash
 # Start a server (runs in background by default)
@@ -127,10 +127,10 @@ clickhousectl local server remove test
 
 #### Project-local data directory
 
-All server data lives inside `.clickhouse/` in your project directory:
+All server data lives inside `.clickhousectl/` in your project directory:
 
 ```
-.clickhouse/
+.clickhousectl/
 ├── .gitignore              # auto-created, ignores everything
 ├── credentials.json        # cloud API credentials (if configured)
 └── servers/
@@ -142,18 +142,25 @@ All server data lives inside `.clickhouse/` in your project directory:
 
 Each named server has its own data directory, so servers are fully isolated from each other. Data persists between restarts — stop and start a server by name to pick up where you left off. Use `clickhousectl local server remove <name>` to permanently delete a server's data.
 
-## Cloud
+## Authentication
 
-Manage ClickHouse Cloud services via the API.
+Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys.
 
-### Authentication
+### OAuth login (recommended)
 
-The easiest way to authenticate is interactively:
 ```bash
-clickhousectl cloud auth
+clickhousectl cloud auth login
 ```
 
-This prompts for your API key and secret, and saves them to `.clickhouse/credentials.json` (project-local, git-ignored).
+This opens your browser for authentication via the OAuth device flow. Tokens are saved to `~/.clickhousectl/tokens.json` (global, 0600 permissions).
+
+### API key/secret
+
+```bash
+clickhousectl cloud auth keys
+```
+
+This prompts for your API key and secret, and saves them to `.clickhousectl/credentials.json` (project-local, git-ignored).
 
 You can also use environment variables:
 ```bash
@@ -166,7 +173,18 @@ Or pass credentials directly via flags:
 clickhousectl cloud --api-key KEY --api-secret SECRET ...
 ```
 
-Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables.
+### Auth status and logout
+
+```bash
+clickhousectl cloud auth status    # Show current auth state
+clickhousectl cloud auth logout    # Clear OAuth tokens
+```
+
+Credential resolution order: CLI flags > OAuth tokens > `.clickhousectl/credentials.json` > environment variables.
+
+## Cloud
+
+Manage ClickHouse Cloud services via the API.
 
 ### Organizations
 

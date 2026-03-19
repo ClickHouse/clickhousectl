@@ -67,12 +67,12 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure.
-  Gateway to org/service/backup/member/invitation/key/activity subcommands for ClickHouse Cloud.
-  Auth: `clickhousectl cloud auth` to save credentials interactively (stored in .clickhouse/credentials.json).
+  Gateway to auth/org/service/backup/member/invitation/key/activity subcommands for ClickHouse Cloud.
+  Auth: `clickhousectl cloud auth login` for OAuth, or `clickhousectl cloud auth keys` for API key/secret.
   Or use env vars CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or --api-key/--api-secret flags.
   Verify auth with `clickhousectl cloud org list`.
   Add --json to any cloud command for machine-readable output.
-  Typical workflow: `cloud org list` → get org ID → `cloud service list` → manage services and related resources.
+  Typical workflow: `cloud auth login` → `cloud org list` → get org ID → `cloud service list` → manage services and related resources.
   Related: `clickhousectl cloud org list` to start.")]
     Cloud(CloudArgs),
 
@@ -87,11 +87,23 @@ CONTEXT FOR AGENTS:
 }
 
 #[derive(Subcommand)]
+pub enum AuthCommands {
+    /// Log in via browser (OAuth device flow)
+    Login,
+    /// Log out (clear OAuth tokens)
+    Logout,
+    /// Show current authentication status
+    Status,
+    /// Save API key/secret interactively
+    Keys,
+}
+
+#[derive(Subcommand)]
 pub enum LocalCommands {
     /// Install a ClickHouse version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
+  Downloads a ClickHouse binary to ~/.clickhousectl/versions/{version}/.
   Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Optionally set as default with `clickhousectl local use <version>`.
   `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
@@ -129,7 +141,7 @@ CONTEXT FOR AGENTS:
     /// Remove an installed version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Removes an installed ClickHouse version from ~/.clickhouse/versions/.
+  Removes an installed ClickHouse version from ~/.clickhousectl/versions/.
   Takes an exact version string as shown by `clickhousectl local list` (e.g., \"25.12.5.44\").
   Does NOT accept keywords like \"stable\" — use the exact version number.
   Related: `clickhousectl local list` to see installed versions.")]
@@ -149,7 +161,7 @@ CONTEXT FOR AGENTS:
     /// Initialize a project-local ClickHouse configuration
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Creates a .clickhouse/ directory (runtime data, git-ignored) and a clickhouse/ project
+  Creates a .clickhousectl/ directory (runtime data, git-ignored) and a clickhouse/ project
   scaffold with subdirs: tables/, materialized_views/, queries/, seed/ (each with .gitkeep).
   The clickhouse/ directory is meant to be committed — organize your SQL files there.
   Related: `clickhousectl local server start` to start a server with project-local data.")]
@@ -197,7 +209,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Manage named ClickHouse server instances. Each server has its own data directory.
   Subcommands: start, list, stop, stop-all, remove.
-  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
+  Data is stored in .clickhousectl/servers/<name>/data/ and persists between restarts.
   Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
   Related: `clickhousectl local client` to connect to a running server.")]
     Server {
@@ -244,12 +256,31 @@ pub struct CloudArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// API base URL (default: auto-detect from OAuth tokens, or https://api.clickhouse.cloud)
+    #[cfg_attr(debug_assertions, arg(long, global = true))]
+    #[cfg_attr(not(debug_assertions), arg(long, global = true, hide = true))]
+    pub url: Option<String>,
+
     #[command(subcommand)]
     pub command: CloudCommands,
 }
 
 #[derive(Subcommand)]
 pub enum CloudCommands {
+    /// Manage authentication (OAuth login, API keys)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Manage authentication for ClickHouse Cloud.
+  `clickhousectl cloud auth login` — OAuth device flow (opens browser).
+  `clickhousectl cloud auth keys` — save API key/secret interactively.
+  `clickhousectl cloud auth status` — show current auth state.
+  `clickhousectl cloud auth logout` — clear OAuth tokens.
+  Related: `clickhousectl cloud org list` to verify credentials work.")]
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
+
     /// Organization commands
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -273,15 +304,6 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ServiceCommands,
     },
-
-    /// Save API credentials interactively
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Prompts for API key and secret, saves to .clickhouse/credentials.json (project-local).
-  Credentials are auto-loaded by subsequent cloud commands.
-  Fallback order: --api-key/--api-secret flags > credentials file > env vars.
-  Related: `clickhousectl cloud org list` to verify credentials work.")]
-    Auth,
 
     /// Backup commands
     #[command(after_help = "\
@@ -855,7 +877,7 @@ pub enum ServerCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Starts a named clickhouse-server instance with its own data directory.
-  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
+  Data is stored in .clickhousectl/servers/<name>/data/ and persists between restarts.
   Without --name, the first server is called \"default\"; if \"default\" is already running,
   a random name is generated (e.g., \"bold-crane\").
   Use --name to give a server a stable identity (e.g., --name dev, --name test).
