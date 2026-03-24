@@ -103,7 +103,7 @@ pub enum LocalCommands {
     /// Install a ClickHouse version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Downloads a ClickHouse binary to ~/.clickhousectl/versions/{version}/.
+  Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
   Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Optionally set as default with `clickhousectl local use <version>`.
   `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
@@ -141,7 +141,7 @@ CONTEXT FOR AGENTS:
     /// Remove an installed version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Removes an installed ClickHouse version from ~/.clickhousectl/versions/.
+  Removes an installed ClickHouse version from ~/.clickhouse/versions/.
   Takes an exact version string as shown by `clickhousectl local list` (e.g., \"25.12.5.44\").
   Does NOT accept keywords like \"stable\" — use the exact version number.
   Related: `clickhousectl local list` to see installed versions.")]
@@ -161,7 +161,7 @@ CONTEXT FOR AGENTS:
     /// Initialize a project-local ClickHouse configuration
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Creates a .clickhousectl/ directory (runtime data, git-ignored) and a clickhouse/ project
+  Creates a .clickhouse/ directory (runtime data, git-ignored) and a clickhouse/ project
   scaffold with subdirs: tables/, materialized_views/, queries/, seed/ (each with .gitkeep).
   The clickhouse/ directory is meant to be committed — organize your SQL files there.
   Related: `clickhousectl local server start` to start a server with project-local data.")]
@@ -209,7 +209,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Manage named ClickHouse server instances. Each server has its own data directory.
   Subcommands: start, list, stop, stop-all, remove.
-  Data is stored in .clickhousectl/servers/<name>/data/ and persists between restarts.
+  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
   Related: `clickhousectl local client` to connect to a running server.")]
     Server {
@@ -877,7 +877,7 @@ pub enum ServerCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Starts a named clickhouse-server instance with its own data directory.
-  Data is stored in .clickhousectl/servers/<name>/data/ and persists between restarts.
+  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Without --name, the first server is called \"default\"; if \"default\" is already running,
   a random name is generated (e.g., \"bold-crane\").
   Use --name to give a server a stable identity (e.g., --name dev, --name test).

@@ -35,7 +35,7 @@ pub struct ServerEntry {
     pub info: Option<ServerInfo>,
 }
 
-/// Directory where server tracking files and data live: .clickhousectl/servers/
+/// Directory where server tracking files and data live: .clickhouse/servers/
 fn servers_dir() -> PathBuf {
     init::local_dir().join("servers")
 }
@@ -44,7 +44,7 @@ fn server_meta_path(name: &str) -> PathBuf {
     servers_dir().join(format!("{}.json", name))
 }
 
-/// Data directory for a named server: .clickhousectl/servers/<name>/data/
+/// Data directory for a named server: .clickhouse/servers/<name>/data/
 pub fn server_data_dir(name: &str) -> PathBuf {
     servers_dir().join(name).join("data")
 }
@@ -54,7 +54,7 @@ pub fn ensure_server_data_dir(name: &str) -> Result<()> {
     let dir = servers_dir();
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
-        // Ensure parent .clickhousectl has gitignore
+        // Ensure parent .clickhouse has gitignore
         let local = init::local_dir();
         let gitignore = local.join(".gitignore");
         if !gitignore.exists() {
@@ -96,7 +96,7 @@ fn load_running_info(name: &str) -> Option<ServerInfo> {
 }
 
 /// List all known servers (both running and stopped).
-/// Discovers servers by scanning data directories in .clickhousectl/servers/.
+/// Discovers servers by scanning data directories in .clickhouse/servers/.
 pub fn list_all_servers() -> Vec<ServerEntry> {
     let dir = servers_dir();
     let mut entries = Vec::new();

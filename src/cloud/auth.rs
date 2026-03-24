@@ -17,21 +17,21 @@ const KNOWN_CONFIGS: &[(&str, AuthConfig)] = &[
         "api.clickhouse.cloud",
         AuthConfig {
             auth_url: "https://auth.clickhouse.cloud",
-            client_id: "9Wf1YpSocOg5sp7GOcCjtrt6DWRAJ19S",
+            client_id: "9q6XAueAs47R4X5d1d6FbjbJqjsrA2ZJ",
         },
     ),
     (
         "api.clickhouse-staging.com",
         AuthConfig {
             auth_url: "https://auth.control-plane.clickhouse-staging.com",
-            client_id: "rpEkizLMmAU5MP4JL8ERefbVXtUQSFs",
+            client_id: "ZC8AupPshQt2UNO2hEDutnKitx4PhizY",
         },
     ),
     (
         "api.clickhouse-dev.com",
         AuthConfig {
             auth_url: "https://auth.control-plane.clickhouse-dev.com",
-            client_id: "dKv0XkTAw7rghGiAa5sjPFYGQUVtjzuz",
+            client_id: "bVVcrqNw1t5dya9WFzfnM7PSsAgmfzwY",
         },
     ),
 ];
@@ -95,8 +95,7 @@ struct TokenErrorResponse {
 }
 
 pub fn tokens_path() -> PathBuf {
-    let base = crate::paths::base_dir().unwrap_or_else(|_| PathBuf::from(".clickhousectl"));
-    base.join("tokens.json")
+    crate::init::local_dir().join("tokens.json")
 }
 
 pub fn load_tokens() -> Option<TokenStore> {
@@ -410,8 +409,7 @@ mod tests {
     #[test]
     fn test_tokens_path() {
         let path = tokens_path();
-        assert!(path.ends_with("tokens.json"));
-        assert!(path.to_string_lossy().contains(".clickhousectl"));
+        assert!(path.ends_with(".clickhouse/tokens.json"));
     }
 
     #[test]
