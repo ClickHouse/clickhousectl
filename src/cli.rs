@@ -30,7 +30,7 @@ fn parse_time_only(value: &str) -> Result<String, String> {
 
 #[derive(Parser)]
 #[command(name = "clickhousectl")]
-#[command(about = "ClickHouse version manager", long_about = None)]
+#[command(about = "The official CLI for ClickHouse: local and cloud", long_about = None)]
 #[command(version)]
 #[command(after_help = "\
 CONTEXT FOR AGENTS:
