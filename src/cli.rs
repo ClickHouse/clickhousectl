@@ -268,7 +268,7 @@ CONTEXT FOR AGENTS:
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
   Use `client` to open a clickhouse-client session to a service.
-  Related: `clickhousectl cloud org list` for org IDs, `clickhousectl cloud backup list` for service backups.")]
+  Related: `clickhousectl cloud org list` for org IDs.")]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
