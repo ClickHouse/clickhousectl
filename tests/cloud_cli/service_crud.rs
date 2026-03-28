@@ -320,6 +320,27 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             },
         )?;
 
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client with generate-password",
+            || {
+                let output = runner.service_client_query_generate_password(
+                    &service_id,
+                    "SELECT 'gen_pw_ok'",
+                )?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "gen_pw_ok" {
+                    return Err(format!(
+                        "expected 'gen_pw_ok', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
+
         failures.run(&ctx, StepKind::NonBlocking, "idempotent rename", || {
             runner.run_cloud([
                 "service".to_string(),
