@@ -265,11 +265,9 @@ CONTEXT FOR AGENTS:
     /// Service commands
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud services. Subcommands: list, get, create, delete, start, stop, update,
-  scale, reset-password, client, query-endpoint, private-endpoint, backup-config, prometheus.
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
-  Add --json for machine-readable output. All write operations are immediate.
+  Use `client` to open a clickhouse-client session to a service.
   Related: `clickhousectl cloud org list` for org IDs, `clickhousectl cloud backup list` for service backups.")]
     Service {
         #[command(subcommand)]
@@ -712,13 +710,9 @@ CONTEXT FOR AGENTS:
     /// Connect to a cloud service with clickhouse-client
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Opens a clickhouse-client session to a ClickHouse Cloud service.
-  Identify the service by --name (service name) or --id (service ID).
-  Automatically downloads the matching ClickHouse version for the client.
-  Password: use --password, CLICKHOUSE_PASSWORD env var, or interactive prompt.
-  --generate-password resets the default user password via API and uses it (destructive).
-  Additional clickhouse-client args can be passed after --.
-  Related: `clickhousectl cloud service list` to find services.")]
+  Mirrors `clickhousectl local client` but for cloud services. Auto-downloads the matching
+  ClickHouse version. Use CLICKHOUSE_PASSWORD env var to avoid interactive prompts.
+  Related: `clickhousectl cloud service list` to find service names/IDs.")]
     Client {
         /// Service name to connect to
         #[arg(long)]
