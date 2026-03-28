@@ -689,6 +689,32 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     cloud::commands::backup_config_update(&client, &service_id, opts, json).await
                 }
             },
+            ServiceCommands::Client {
+                name,
+                id,
+                query,
+                queries_file,
+                user,
+                password,
+                allow_mismatched_client_version,
+                generate_password,
+                org_id,
+                args,
+            } => {
+                let opts = cloud::commands::ServiceClientOptions {
+                    name,
+                    id,
+                    query,
+                    queries_file,
+                    user,
+                    password,
+                    allow_mismatched_client_version,
+                    generate_password,
+                    org_id,
+                    args,
+                };
+                cloud::commands::service_client(&client, opts).await
+            }
             ServiceCommands::Prometheus {
                 service_id,
                 org_id,

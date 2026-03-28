@@ -15,6 +15,34 @@ async fn resolve_org_id(
     }
 }
 
+/// Resolve a service by name or ID within the given org.
+/// Exactly one of `name` or `id` must be provided.
+async fn resolve_service(
+    client: &CloudClient,
+    org_id: &str,
+    name: Option<&str>,
+    id: Option<&str>,
+) -> Result<Service, Box<dyn std::error::Error>> {
+    match (name, id) {
+        (Some(name), None) => {
+            let services = client.list_services(org_id).await?;
+            let matches: Vec<_> = services.into_iter().filter(|s| s.name == name).collect();
+            match matches.len() {
+                0 => Err(format!("no service found with name '{}'", name).into()),
+                1 => Ok(matches.into_iter().next().unwrap()),
+                n => Err(format!(
+                    "found {} services named '{}' — use --id to disambiguate",
+                    n, name
+                )
+                .into()),
+            }
+        }
+        (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
+        (Some(_), Some(_)) => Err("specify either --name or --id, not both".into()),
+        (None, None) => Err("specify --name or --id to identify the service".into()),
+    }
+}
+
 fn parse_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Error>>
 where
     T: FromStr<Err = String>,
@@ -1515,6 +1543,159 @@ fn format_bytes(bytes: f64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+pub struct ServiceClientOptions {
+    pub name: Option<String>,
+    pub id: Option<String>,
+    pub query: Option<String>,
+    pub queries_file: Option<String>,
+    pub user: String,
+    pub password: Option<String>,
+    pub allow_mismatched_client_version: bool,
+    pub generate_password: bool,
+    pub org_id: Option<String>,
+    pub args: Vec<String>,
+}
+
+pub async fn service_client(
+    client: &CloudClient,
+    opts: ServiceClientOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::{paths, version_manager};
+    use std::os::unix::process::CommandExt;
+
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+
+    // Resolve the service
+    let svc = resolve_service(
+        client,
+        &org_id,
+        opts.name.as_deref(),
+        opts.id.as_deref(),
+    )
+    .await?;
+
+    // Find the nativesecure endpoint
+    let endpoint = svc
+        .endpoints
+        .as_ref()
+        .and_then(|eps| {
+            eps.iter()
+                .find(|e| e.protocol == ServiceEndpointProtocol::NativeSecure)
+        })
+        .ok_or_else(|| {
+            format!(
+                "service '{}' has no nativesecure endpoint — is it running?",
+                svc.name
+            )
+        })?;
+
+    let host = &endpoint.host;
+    let port = endpoint.port as u16;
+
+    // Determine which client version to use
+    let service_version = svc.clickhouse_version.as_deref();
+    let version = if opts.allow_mismatched_client_version {
+        // Try to use the local default version
+        match version_manager::get_default_version() {
+            Ok(local_ver) => {
+                if let Some(svc_ver) = service_version
+                    && svc_ver != local_ver.as_str()
+                {
+                    eprintln!(
+                        "Warning: local client version ({}) does not match service version ({}). \
+                         This may cause unsupported behavior.",
+                        local_ver, svc_ver
+                    );
+                }
+                local_ver
+            }
+            Err(_) => {
+                // No local default — fall back to installing the service version
+                eprintln!("No local default version set, falling back to service version.");
+                ensure_version_installed(service_version).await?
+            }
+        }
+    } else {
+        ensure_version_installed(service_version).await?
+    };
+
+    let binary = paths::binary_path(&version)?;
+    if !binary.exists() {
+        return Err(format!("clickhouse binary not found at {}", binary.display()).into());
+    }
+
+    // Resolve password: --generate-password > --password > env var > TTY prompt
+    let password = if opts.generate_password {
+        eprintln!("Generating new password for service '{}'...", svc.name);
+        let request = ServicePasswordPatchRequest::default();
+        let resp = client.reset_password(&org_id, &svc.id, &request).await?;
+        resp.password.ok_or("API did not return a password")?
+    } else if let Some(p) = opts.password {
+        p
+    } else if let Ok(p) = std::env::var("CLICKHOUSE_PASSWORD") {
+        p
+    } else if atty::is(atty::Stream::Stdin) {
+        eprint!("Password: ");
+        rpassword::read_password()?
+    } else {
+        return Err(
+            "no password provided. Use --password, CLICKHOUSE_PASSWORD env var, or --generate-password"
+                .into(),
+        );
+    };
+
+    // Build and exec the clickhouse-client command
+    eprintln!("Connecting to {} ({}:{})...", svc.name, host, port);
+
+    let mut cmd = std::process::Command::new(&binary);
+    cmd.arg("client")
+        .arg("--host")
+        .arg(host)
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--secure")
+        .arg("--user")
+        .arg(&opts.user)
+        .arg("--password")
+        .arg(&password);
+
+    if let Some(q) = &opts.query {
+        cmd.arg("--query").arg(q);
+    }
+
+    if let Some(f) = &opts.queries_file {
+        cmd.arg("--queries-file").arg(f);
+    }
+
+    cmd.args(&opts.args);
+    let err = cmd.exec();
+    Err(format!("failed to exec clickhouse-client: {}", err).into())
+}
+
+/// Ensure a ClickHouse version is installed locally, installing it if needed.
+async fn ensure_version_installed(
+    service_version: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use crate::{paths, version_manager};
+
+    let version_spec = service_version.ok_or("service has no clickhouse_version set")?;
+
+    // Check if already installed
+    let version_dir = paths::version_dir(version_spec)?;
+    if version_dir.exists() {
+        return Ok(version_spec.to_string());
+    }
+
+    // Resolve and install
+    eprintln!(
+        "Service requires ClickHouse {} — downloading...",
+        version_spec
+    );
+    let resolved = version_manager::resolve_version(version_spec).await?;
+    version_manager::install_version(&resolved.version, resolved.channel).await?;
+    Ok(resolved.version)
 }
 
 #[cfg(test)]
