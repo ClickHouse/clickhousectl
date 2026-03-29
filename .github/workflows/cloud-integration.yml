@@ -49,7 +49,7 @@ jobs:
       - name: Run cloud integration suite
         env:
           CLICKHOUSECTL_BIN: target/debug/clickhousectl
-        run: cargo test --test cloud_cli cloud_service_crud_lifecycle -- --ignored --nocapture --test-threads=1
+        run: cargo test --test cloud_cli -- --ignored --nocapture
 
       - name: Upload debug artifacts on failure
         if: failure()
