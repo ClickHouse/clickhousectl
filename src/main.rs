@@ -433,22 +433,54 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
     // Auth subcommands don't need a client
     if let CloudCommands::Auth { command } = args.command {
         return match command {
-            AuthCommands::Login => {
-                let url = args
-                    .url
-                    .as_deref()
-                    .unwrap_or("https://api.clickhouse.cloud");
-                let tokens = cloud::auth::device_auth_login(url)
-                    .await
-                    .map_err(|e| Error::Cloud(e.to_string()))?;
-                cloud::auth::save_tokens(&tokens).map_err(|e| Error::Cloud(e.to_string()))?;
-                println!("Logged in successfully.");
-                println!("Tokens saved to {}", cloud::auth::tokens_path().display());
-                Ok(())
+            AuthCommands::Login {
+                interactive,
+                api_key,
+                api_secret,
+            } => {
+                if interactive {
+                    // Interactive prompt for API key/secret
+                    cloud::commands::auth_interactive()
+                        .map_err(|e| Error::Cloud(e.to_string()))
+                } else if api_key.is_some() || api_secret.is_some() {
+                    // Non-interactive API key login
+                    let key = api_key.ok_or_else(|| {
+                        Error::Cloud("--api-key is required when --api-secret is provided".into())
+                    })?;
+                    let secret = api_secret.ok_or_else(|| {
+                        Error::Cloud("--api-secret is required when --api-key is provided".into())
+                    })?;
+                    let creds = cloud::credentials::Credentials {
+                        api_key: key,
+                        api_secret: secret,
+                    };
+                    cloud::credentials::save_credentials(&creds)
+                        .map_err(|e| Error::Cloud(e.to_string()))?;
+                    println!(
+                        "Credentials saved to {}",
+                        cloud::credentials::credentials_path().display()
+                    );
+                    Ok(())
+                } else {
+                    // Default: OAuth device flow
+                    let url = args
+                        .url
+                        .as_deref()
+                        .unwrap_or("https://api.clickhouse.cloud");
+                    let tokens = cloud::auth::device_auth_login(url)
+                        .await
+                        .map_err(|e| Error::Cloud(e.to_string()))?;
+                    cloud::auth::save_tokens(&tokens)
+                        .map_err(|e| Error::Cloud(e.to_string()))?;
+                    println!("Logged in successfully.");
+                    println!("Tokens saved to {}", cloud::auth::tokens_path().display());
+                    Ok(())
+                }
             }
             AuthCommands::Logout => {
                 cloud::auth::clear_tokens();
-                println!("Logged out. OAuth tokens cleared.");
+                cloud::credentials::clear_credentials();
+                println!("Logged out. All saved credentials cleared.");
                 Ok(())
             }
             AuthCommands::Status => {
@@ -476,9 +508,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     println!("API keys: not configured");
                 }
                 Ok(())
-            }
-            AuthCommands::Keys => {
-                cloud::commands::auth_interactive().map_err(|e| Error::Cloud(e.to_string()))
             }
         };
     }

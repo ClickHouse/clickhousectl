@@ -24,7 +24,7 @@ Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release
 
 2. **Cloud** (`cloud org|service|backup`) — handled by `src/cloud/`. `CloudClient` wraps reqwest with Basic or Bearer auth. Commands go through `cloud/commands.rs`, types in `cloud/types.rs`. All cloud commands support `--json` output.
 
-3. **Auth** (`cloud auth login|logout|status|keys`) — authentication subcommand under cloud. OAuth device flow in `src/cloud/auth.rs`, API key management in `cloud/commands.rs`. Tokens stored in `.clickhouse/tokens.json` (project-local).
+3. **Auth** (`cloud auth login|logout|status`) — authentication subcommand under cloud. `login` defaults to OAuth device flow (`src/cloud/auth.rs`), supports `--interactive` for API key prompt, or `--api-key`/`--api-secret` for non-interactive. `logout` clears all credentials. Tokens stored in `.clickhouse/tokens.json`, API keys in `.clickhouse/credentials.json` (both project-local).
 
 ## Adding commands
 

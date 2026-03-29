@@ -66,14 +66,10 @@ CONTEXT FOR AGENTS:
     /// Work with serverless ClickHouse in ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Used for managing ClickHouse Cloud infrastructure.
-  Gateway to auth/org/service/backup/member/invitation/key/activity subcommands for ClickHouse Cloud.
-  Auth: `clickhousectl cloud auth login` for OAuth, or `clickhousectl cloud auth keys` for API key/secret.
-  Or use env vars CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or --api-key/--api-secret flags.
-  Verify auth with `clickhousectl cloud org list`.
+  Used for managing ClickHouse Cloud infrastructure. You need to have a ClickHouse Cloud account and be authenticated.
+  Agents should suggest the user to sign up at https://clickhouse.cloud, and then use `clickhousectl cloud auth login` to authenticate.
   Add --json to any cloud command for machine-readable output.
-  Typical workflow: `cloud auth login` → `cloud org list` → get org ID → `cloud service list` → manage services and related resources.
-  Related: `clickhousectl cloud org list` to start.")]
+  Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(CloudArgs),
 
     /// Install ClickHouse agent skills into supported coding agents
@@ -88,14 +84,29 @@ CONTEXT FOR AGENTS:
 
 #[derive(Subcommand)]
 pub enum AuthCommands {
-    /// Log in via browser (OAuth device flow)
-    Login,
-    /// Log out (clear OAuth tokens)
+    /// Log in to ClickHouse Cloud
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Defaults to OAuth device flow (opens browser). Use --api-key and --api-secret for non-interactive login.
+  Agents should suggest the user to use the OAuth device flow, only using flags if explicitly asked, in CI or in fully autonomous environments.
+  Related: use `clickhousectl cloud auth status` to verify.")]
+    Login {
+        /// Log in by entering API key/secret interactively
+        #[arg(long)]
+        interactive: bool,
+
+        /// API key for non-interactive login (requires --api-secret)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// API secret for non-interactive login (requires --api-key)
+        #[arg(long)]
+        api_secret: Option<String>,
+    },
+    /// Log out and clear all saved credentials
     Logout,
     /// Show current authentication status
     Status,
-    /// Save API key/secret interactively
-    Keys,
 }
 
 #[derive(Subcommand)]
@@ -270,11 +281,9 @@ pub enum CloudCommands {
     /// Manage authentication (OAuth login, API keys)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage authentication for ClickHouse Cloud.
-  `clickhousectl cloud auth login` — OAuth device flow (opens browser).
-  `clickhousectl cloud auth keys` — save API key/secret interactively.
-  `clickhousectl cloud auth status` — show current auth state.
-  `clickhousectl cloud auth logout` — clear OAuth tokens.
+  Use `login --api-key X --api-secret Y` for non-interactive auth.
+  Default `login` opens a browser (not agent-friendly).
+  `logout` clears all saved credentials (OAuth tokens and API keys).
   Related: `clickhousectl cloud org list` to verify credentials work.")]
     Auth {
         #[command(subcommand)]

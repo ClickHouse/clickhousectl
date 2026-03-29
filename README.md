@@ -152,15 +152,19 @@ Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys.
 clickhousectl cloud auth login
 ```
 
-This opens your browser for authentication via the OAuth device flow. Tokens are saved to `~/.clickhousectl/tokens.json` (global, 0600 permissions).
+This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhousectl/tokens.json` (project-local).
 
 ### API key/secret
 
 ```bash
-clickhousectl cloud auth keys
+# Non-interactive (CI-friendly)
+clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
+
+# Interactive prompt
+clickhousectl cloud auth login --interactive
 ```
 
-This prompts for your API key and secret, and saves them to `.clickhousectl/credentials.json` (project-local, git-ignored).
+Credentials are saved to `.clickhousectl/credentials.json` (project-local).
 
 You can also use environment variables:
 ```bash
@@ -168,7 +172,7 @@ export CLICKHOUSE_CLOUD_API_KEY=your-key
 export CLICKHOUSE_CLOUD_API_SECRET=your-secret
 ```
 
-Or pass credentials directly via flags:
+Or pass credentials directly via flags on any command:
 ```bash
 clickhousectl cloud --api-key KEY --api-secret SECRET ...
 ```
@@ -177,7 +181,7 @@ clickhousectl cloud --api-key KEY --api-secret SECRET ...
 
 ```bash
 clickhousectl cloud auth status    # Show current auth state
-clickhousectl cloud auth logout    # Clear OAuth tokens
+clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
 Credential resolution order: CLI flags > OAuth tokens > `.clickhousectl/credentials.json` > environment variables.
