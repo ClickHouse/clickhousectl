@@ -1682,18 +1682,20 @@ async fn ensure_version_installed(
 
     let version_spec = service_version.ok_or("service has no clickhouse_version set")?;
 
+    // Resolve the spec to an exact version first (e.g. "25.12" -> "25.12.9.61")
+    let resolved = version_manager::resolve_version(version_spec).await?;
+
     // Check if already installed
-    let version_dir = paths::version_dir(version_spec)?;
+    let version_dir = paths::version_dir(&resolved.version)?;
     if version_dir.exists() {
-        return Ok(version_spec.to_string());
+        return Ok(resolved.version);
     }
 
-    // Resolve and install
+    // Install
     eprintln!(
         "Service requires ClickHouse {} — downloading...",
-        version_spec
+        resolved.version
     );
-    let resolved = version_manager::resolve_version(version_spec).await?;
     version_manager::install_version(&resolved.version, resolved.channel).await?;
     Ok(resolved.version)
 }
