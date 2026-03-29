@@ -620,10 +620,40 @@ pub async fn service_create(
 pub async fn service_delete(
     client: &CloudClient,
     service_id: &str,
+    force: bool,
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
+
+    if force {
+        let svc = client.get_service(&org_id, service_id).await?;
+        let state = svc.state.to_string();
+        if matches!(state.as_str(), "running" | "idle" | "starting") {
+            eprintln!("Stopping service {} before deletion...", service_id);
+            client
+                .change_service_state(&org_id, service_id, ServiceStateCommand::Stop)
+                .await?;
+
+            // Poll until the service is stopped
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let svc = client.get_service(&org_id, service_id).await?;
+                let state = svc.state.to_string();
+                eprintln!("  state: {}", state);
+                if matches!(state.as_str(), "stopped" | "idle") {
+                    break;
+                }
+                if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
+                    return Err(format!(
+                        "service entered unexpected state '{}' while waiting for stop",
+                        state
+                    )
+                    .into());
+                }
+            }
+        }
+    }
 
     let response = client.delete_service(&org_id, service_id).await?;
     if json {
