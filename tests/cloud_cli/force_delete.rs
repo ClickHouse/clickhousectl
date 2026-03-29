@@ -27,6 +27,10 @@ fn cloud_service_force_delete() -> TestResult<()> {
             ctx.region.clone(),
             "--num-replicas".to_string(),
             "1".to_string(),
+            "--min-replica-memory-gb".to_string(),
+            "8".to_string(),
+            "--max-replica-memory-gb".to_string(),
+            "8".to_string(),
             "--org-id".to_string(),
             ctx.org_id.clone(),
         ];
