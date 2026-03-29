@@ -1631,7 +1631,11 @@ pub async fn service_client(
         eprintln!("Generating new password for service '{}'...", svc.name);
         let request = ServicePasswordPatchRequest::default();
         let resp = client.reset_password(&org_id, &svc.id, &request).await?;
-        resp.password.ok_or("API did not return a password")?
+        let new_password = resp.password.ok_or("API did not return a password")?;
+        // Wait in case of any delay in password propagation
+        eprintln!("Waiting for password to propagate...");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        new_password
     } else if let Some(p) = opts.password {
         p
     } else if let Ok(p) = std::env::var("CLICKHOUSE_PASSWORD") {
