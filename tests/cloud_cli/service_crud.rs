@@ -280,6 +280,17 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
+        let open_ip = "0.0.0.0/0";
+        failures.run(
+            &ctx,
+            StepKind::Blocking,
+            "open ip access for client tests",
+            || {
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", open_ip)?;
+                poll_for_ip_presence(&ctx, &runner, &service_id, open_ip, true)
+            },
+        )?;
+
         failures.run(
             &ctx,
             StepKind::NonBlocking,
@@ -338,6 +349,16 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     .into());
                 }
                 Ok(())
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "close ip access after client tests",
+            || {
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--remove-ip-allow", open_ip)?;
+                poll_for_ip_presence(&ctx, &runner, &service_id, open_ip, false)
             },
         )?;
 

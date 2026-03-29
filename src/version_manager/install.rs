@@ -21,14 +21,14 @@ pub async fn install_version(version: &str, channel: Channel) -> Result<()> {
 
     let binary_path = version_dir.join("clickhouse");
 
-    println!("Downloading ClickHouse {}...", version);
+    eprintln!("Downloading ClickHouse {}...", version);
 
     if is_tarball_download()? {
         // Linux: download tarball, extract, move binary
         let tarball_path = version_dir.join("clickhouse.tgz");
         download_version(version, channel, &tarball_path).await?;
 
-        println!("Extracting...");
+        eprintln!("Extracting...");
         extract_tarball(&tarball_path, &version_dir, version)?;
     } else {
         // macOS: download binary directly
@@ -40,7 +40,7 @@ pub async fn install_version(version: &str, channel: Channel) -> Result<()> {
     perms.set_mode(0o755);
     std::fs::set_permissions(&binary_path, perms)?;
 
-    println!("ClickHouse {} installed successfully", version);
+    eprintln!("ClickHouse {} installed successfully", version);
     Ok(())
 }
 
