@@ -74,6 +74,25 @@ fn cloud_service_force_delete() -> TestResult<()> {
             .expect("blocking steps always return a value");
 
         log_phase("Force Delete Running Service");
+        failures.run(
+            &ctx,
+            StepKind::Blocking,
+            "delete without --force fails on running service",
+            || {
+                let result = runner.run_cloud_raw([
+                    "service".to_string(),
+                    "delete".to_string(),
+                    service_id.clone(),
+                    "--org-id".to_string(),
+                    ctx.org_id.clone(),
+                ]);
+                match result {
+                    Err(_) => Ok(()),
+                    Ok(_) => Err("expected delete without --force to fail on a running service".into()),
+                }
+            },
+        )?;
+
         failures.run(&ctx, StepKind::Blocking, "force delete service", || {
             runner.run_cloud([
                 "service".to_string(),
