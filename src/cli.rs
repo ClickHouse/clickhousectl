@@ -265,12 +265,10 @@ CONTEXT FOR AGENTS:
     /// Service commands
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud services. Subcommands: list, get, create, delete, start, stop, update,
-  scale, reset-password, query-endpoint, private-endpoint, backup-config, prometheus.
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
-  Add --json for machine-readable output. All write operations are immediate.
-  Related: `clickhousectl cloud org list` for org IDs, `clickhousectl cloud backup list` for service backups.")]
+  Use `client` to open a clickhouse-client session to a service.
+  Related: `clickhousectl cloud org list` for org IDs.")]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
@@ -710,6 +708,54 @@ CONTEXT FOR AGENTS:
     BackupConfig {
         #[command(subcommand)]
         command: BackupConfigCommands,
+    },
+
+    /// Connect to a cloud service with clickhouse-client
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Mirrors `clickhousectl local client` but for cloud services. Auto-downloads the matching
+  ClickHouse version. Use CLICKHOUSE_PASSWORD env var to avoid interactive prompts.
+  Related: `clickhousectl cloud service list` to find service names/IDs.")]
+    Client {
+        /// Service name to connect to
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Service ID to connect to
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Execute a SQL query
+        #[arg(long, short)]
+        query: Option<String>,
+
+        /// Execute queries from a SQL file
+        #[arg(long)]
+        queries_file: Option<String>,
+
+        /// Database user (default: "default")
+        #[arg(long, default_value = "default")]
+        user: String,
+
+        /// Database password (or set CLICKHOUSE_PASSWORD env var)
+        #[arg(long)]
+        password: Option<String>,
+
+        /// Use current local default version instead of the service's version
+        #[arg(long)]
+        allow_mismatched_client_version: bool,
+
+        /// Reset the service password via API and use it for this connection (destructive)
+        #[arg(long, hide = true)]
+        generate_password: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Additional arguments to pass to clickhouse-client
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 
     /// Get service Prometheus metrics

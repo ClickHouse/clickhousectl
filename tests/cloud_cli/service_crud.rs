@@ -131,7 +131,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })?
             .expect("blocking steps always return a value");
         let service_id = json_string(&created.json, &["/service/id", "/id"])?.to_string();
-        let _password = json_string(&created.json, &["/password", "/service/password"])?;
+        let password = json_string(&created.json, &["/password", "/service/password"])?.to_string();
         eprintln!("service_id: <redacted>");
         cleanup.register_service(service_id.clone());
 
@@ -279,6 +279,88 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             }
             Ok(())
         })?;
+
+        let open_ip = "0.0.0.0/0";
+        failures.run(
+            &ctx,
+            StepKind::Blocking,
+            "open ip access for client tests",
+            || {
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", open_ip)?;
+                poll_for_ip_presence(&ctx, &runner, &service_id, open_ip, true)
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client query by id",
+            || {
+                let output = runner.service_client_query(&service_id, &password, "SELECT 1")?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "1" {
+                    return Err(format!(
+                        "expected SELECT 1 to return '1', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client query by name",
+            || {
+                let output = runner.service_client_query_by_name(
+                    &ctx.updated_service_name(),
+                    &password,
+                    "SELECT 'cloud_client_ok'",
+                )?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "cloud_client_ok" {
+                    return Err(format!(
+                        "expected 'cloud_client_ok', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client with generate-password",
+            || {
+                let output = runner.service_client_query_generate_password(
+                    &service_id,
+                    "SELECT 'gen_pw_ok'",
+                )?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "gen_pw_ok" {
+                    return Err(format!(
+                        "expected 'gen_pw_ok', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "close ip access after client tests",
+            || {
+                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--remove-ip-allow", open_ip)?;
+                poll_for_ip_presence(&ctx, &runner, &service_id, open_ip, false)
+            },
+        )?;
 
         failures.run(&ctx, StepKind::NonBlocking, "idempotent rename", || {
             runner.run_cloud([

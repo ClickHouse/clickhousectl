@@ -276,6 +276,70 @@ impl<'a> CliRunner<'a> {
         self.run_cloud(args)
     }
 
+    pub fn service_client_query(
+        &self,
+        service_id: &str,
+        password: &str,
+        query: &str,
+    ) -> TestResult<RawCliOutput> {
+        let args = vec![
+            "cloud".to_string(),
+            "service".to_string(),
+            "client".to_string(),
+            "--id".to_string(),
+            service_id.to_string(),
+            "--password".to_string(),
+            password.to_string(),
+            "--org-id".to_string(),
+            self.ctx.org_id.clone(),
+            "-q".to_string(),
+            query.to_string(),
+        ];
+        self.run_raw(args)
+    }
+
+    pub fn service_client_query_by_name(
+        &self,
+        service_name: &str,
+        password: &str,
+        query: &str,
+    ) -> TestResult<RawCliOutput> {
+        let args = vec![
+            "cloud".to_string(),
+            "service".to_string(),
+            "client".to_string(),
+            "--name".to_string(),
+            service_name.to_string(),
+            "--password".to_string(),
+            password.to_string(),
+            "--org-id".to_string(),
+            self.ctx.org_id.clone(),
+            "-q".to_string(),
+            query.to_string(),
+        ];
+        self.run_raw(args)
+    }
+
+    pub fn service_client_query_generate_password(
+        &self,
+        service_id: &str,
+        query: &str,
+    ) -> TestResult<RawCliOutput> {
+        let args = vec![
+            "cloud".to_string(),
+            "service".to_string(),
+            "client".to_string(),
+            "--id".to_string(),
+            service_id.to_string(),
+            "--generate-password".to_string(),
+            "--org-id".to_string(),
+            self.ctx.org_id.clone(),
+            "-q".to_string(),
+            query.to_string(),
+        ];
+        self.run_raw(args)
+    }
+
     pub fn service_stop(&self, service_id: &str) -> TestResult<CliOutput> {
         self.run_cloud([
             "service".to_string(),
@@ -756,7 +820,7 @@ fn redact_command(binary_path: &std::path::PathBuf, args: &[String]) -> String {
             continue;
         }
 
-        if arg == "--org-id" {
+        if arg == "--org-id" || arg == "--password" {
             rendered.push(arg.clone());
             redact_next = true;
             continue;
@@ -914,5 +978,24 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("<redacted-id>"));
         assert!(!rendered.contains("5fae43a3-8a6e-49c4-b317-6e139718b9a3"));
+    }
+
+    #[test]
+    fn redact_command_hides_password_values() {
+        let binary = std::path::PathBuf::from("clickhousectl");
+        let args = vec![
+            "cloud".to_string(),
+            "service".to_string(),
+            "client".to_string(),
+            "--password".to_string(),
+            "super-secret-123".to_string(),
+            "--org-id".to_string(),
+            "my-org-id".to_string(),
+            "-q".to_string(),
+            "SELECT 1".to_string(),
+        ];
+        let redacted = redact_command(&binary, &args);
+        assert!(!redacted.contains("super-secret-123"), "password was not redacted: {redacted}");
+        assert!(redacted.contains("--password <redacted>"), "missing redacted placeholder: {redacted}");
     }
 }
