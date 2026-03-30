@@ -225,6 +225,16 @@ clickhousectl cloud service create --name my-service \
 clickhousectl cloud service start <service-id>
 clickhousectl cloud service stop <service-id>
 
+# Connect to a cloud service with clickhouse-client
+clickhousectl cloud service client --name my-service --password secret
+clickhousectl cloud service client --id <service-id> -q "SELECT 1" --password secret
+
+# Use CLICKHOUSE_PASSWORD env var (recommended for scripts/agents)
+CLICKHOUSE_PASSWORD=secret clickhousectl cloud service client --name my-service -q "SELECT count() FROM system.tables"
+
+# Use a local client version instead of auto-downloading the matching one
+clickhousectl cloud service client --name my-service --allow-mismatched-client-version
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
@@ -275,8 +285,11 @@ clickhousectl cloud service backup-config update <service-id> \
 # Service Prometheus configuration
 clickhousectl cloud service prometheus <service-id> --filtered-metrics true
 
-# Delete a service
+# Delete a service (must be stopped first)
 clickhousectl cloud service delete <service-id>
+
+# Force delete: stops a running service then deletes
+clickhousectl cloud service delete <service-id> --force
 ```
 
 **Service Create Options:**
