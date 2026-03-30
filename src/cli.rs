@@ -538,12 +538,15 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Permanently deletes a ClickHouse Cloud service. This action is irreversible.
-  Takes a service ID — get it from `clickhousectl cloud service list`.
-  Add --json for machine-readable output.
+  Use --force to stop a running service before deleting it in one step.
   Related: `clickhousectl cloud service stop <id>` to idle instead of delete.")]
     Delete {
         /// Service ID
         service_id: String,
+
+        /// Stop the service first if it is running, then delete
+        #[arg(long)]
+        force: bool,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
