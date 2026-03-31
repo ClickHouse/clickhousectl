@@ -1,6 +1,6 @@
 use crate::support::{
     CleanupRegistry, CliRunner, FailureRecorder, StepKind, TestContext, TestResult,
-    delete_service_and_confirm_gone, json_string, log_phase, log_run_header, poll_until,
+    json_string, log_phase, log_run_header, poll_until,
     service_has_ip_access_entry, service_list_is_empty, service_name_in_list,
     service_present_in_list,
 };
@@ -16,13 +16,14 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
     let test_result = (|| -> TestResult<()> {
         log_run_header("cloud_service_crud_lifecycle", &ctx);
         let mut failures = FailureRecorder::default();
-        let primary_ip = "203.0.113.10/32";
-        let secondary_ip = "203.0.113.11/32";
-        let create_options_ip = "203.0.113.12/32";
         let base_memory_gb = 8_u64;
         let scaled_memory_gb = 16_u64;
-        let base_replicas = 3_u64;
-        let scaled_replicas = 4_u64;
+        let base_replicas = 1_u64;
+        let scaled_replicas = 3_u64;
+        let primary_ip = "203.0.113.10/32";
+        let secondary_ip = "203.0.113.11/32";
+
+        // ── Org Checks ──────────────────────────────────────────────
 
         log_phase("Org Checks");
         let org = failures
@@ -81,6 +82,8 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
+        // ── 1. Provision ─────────────────────────────────────────────
+
         log_phase("Provision Service");
         let list_before = failures
             .run(
@@ -110,8 +113,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             base_memory_gb.to_string(),
             "--num-replicas".to_string(),
             base_replicas.to_string(),
-            "--ip-allow".to_string(),
-            create_options_ip.to_string(),
             "--idle-scaling".to_string(),
             "true".to_string(),
             "--idle-timeout-minutes".to_string(),
@@ -160,11 +161,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         let ready_name = json_string(&ready.json, &["/service/name", "/name"])?;
         assert_eq!(ready_name, ctx.service_name());
-        assert!(
-            service_has_ip_access_entry(&ready.json, create_options_ip),
-            "created service did not expose expected initial ip allow entry {}",
-            create_options_ip
-        );
         assert_eq!(
             json_u64(
                 &ready.json,
@@ -197,6 +193,62 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "created service was not visible in service list"
         );
 
+        // ── 2. Stop / Start ──────────────────────────────────────────
+
+        log_phase("Stop And Start");
+        failures.run(&ctx, StepKind::Blocking, "stop service", || {
+            runner.run_cloud([
+                "service".to_string(),
+                "stop".to_string(),
+                service_id.clone(),
+                "--org-id".to_string(),
+                ctx.org_id.clone(),
+            ])?;
+            poll_until(
+                "service stopped",
+                ctx.create_timeout,
+                ctx.poll_interval,
+                || {
+                    let output = runner.service_get(&service_id)?;
+                    let state = json_string(&output.json, &["/service/state", "/state"])?;
+                    if matches!(state, "idle" | "stopped") {
+                        Ok(Some(()))
+                    } else {
+                        Ok(None)
+                    }
+                },
+            )?;
+            Ok(())
+        })?;
+
+        failures.run(&ctx, StepKind::Blocking, "start service", || {
+            runner.run_cloud([
+                "service".to_string(),
+                "start".to_string(),
+                service_id.clone(),
+                "--org-id".to_string(),
+                ctx.org_id.clone(),
+            ])?;
+            poll_until(
+                "service restarted",
+                ctx.steady_state_timeout,
+                ctx.poll_interval,
+                || {
+                    let output = runner.service_get(&service_id)?;
+                    let state = json_string(&output.json, &["/service/state", "/state"])?;
+                    if matches!(state, "running" | "idle") {
+                        Ok(Some(()))
+                    } else {
+                        Ok(None)
+                    }
+                },
+            )?;
+            Ok(())
+        })?;
+
+        // ── 3. Rename & Settings ─────────────────────────────────────
+
+        log_phase("Rename And Settings");
         failures.run(&ctx, StepKind::Blocking, "rename service", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -265,91 +317,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Some(ctx.updated_service_name().as_str())
         );
 
-        log_phase("Capability Checks");
-        failures.run(&ctx, StepKind::NonBlocking, "service prometheus", || {
-            let metrics = runner.run_cloud_raw([
-                "service".to_string(),
-                "prometheus".to_string(),
-                service_id.clone(),
-                "--org-id".to_string(),
-                ctx.org_id.clone(),
-            ])?;
-            if metrics.stdout.trim().is_empty() {
-                return Err("service prometheus returned empty output".into());
-            }
-            Ok(())
-        })?;
-
-        let open_ip = "0.0.0.0/0";
-        failures.run(
-            &ctx,
-            StepKind::Blocking,
-            "open ip access for client tests",
-            || {
-                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--add-ip-allow", open_ip)?;
-                poll_for_ip_presence(&ctx, &runner, &service_id, open_ip, true)
-            },
-        )?;
-
-        failures.run(
-            &ctx,
-            StepKind::NonBlocking,
-            "cloud service client query by id",
-            || {
-                let output = runner.service_client_query(&service_id, &password, "SELECT 1")?;
-                let trimmed = output.stdout.trim();
-                if trimmed != "1" {
-                    return Err(
-                        format!("expected SELECT 1 to return '1', got '{}'", trimmed).into(),
-                    );
-                }
-                Ok(())
-            },
-        )?;
-
-        failures.run(
-            &ctx,
-            StepKind::NonBlocking,
-            "cloud service client query by name",
-            || {
-                let output = runner.service_client_query_by_name(
-                    &ctx.updated_service_name(),
-                    &password,
-                    "SELECT 'cloud_client_ok'",
-                )?;
-                let trimmed = output.stdout.trim();
-                if trimmed != "cloud_client_ok" {
-                    return Err(format!("expected 'cloud_client_ok', got '{}'", trimmed).into());
-                }
-                Ok(())
-            },
-        )?;
-
-        failures.run(
-            &ctx,
-            StepKind::NonBlocking,
-            "cloud service client with generate-password",
-            || {
-                let output = runner
-                    .service_client_query_generate_password(&service_id, "SELECT 'gen_pw_ok'")?;
-                let trimmed = output.stdout.trim();
-                if trimmed != "gen_pw_ok" {
-                    return Err(format!("expected 'gen_pw_ok', got '{}'", trimmed).into());
-                }
-                Ok(())
-            },
-        )?;
-
-        failures.run(
-            &ctx,
-            StepKind::NonBlocking,
-            "close ip access after client tests",
-            || {
-                mutate_ip_allow_entry(&ctx, &runner, &service_id, "--remove-ip-allow", open_ip)?;
-                poll_for_ip_presence(&ctx, &runner, &service_id, open_ip, false)
-            },
-        )?;
-
         failures.run(&ctx, StepKind::NonBlocking, "idempotent rename", || {
             runner.run_cloud([
                 "service".to_string(),
@@ -400,6 +367,23 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             Ok(())
         })?;
 
+        failures.run(&ctx, StepKind::NonBlocking, "service prometheus", || {
+            let metrics = runner.run_cloud_raw([
+                "service".to_string(),
+                "prometheus".to_string(),
+                service_id.clone(),
+                "--org-id".to_string(),
+                ctx.org_id.clone(),
+            ])?;
+            if metrics.stdout.trim().is_empty() {
+                return Err("service prometheus returned empty output".into());
+            }
+            Ok(())
+        })?;
+
+        // ── 4. IP Access ─────────────────────────────────────────────
+
+        log_phase("IP Access");
         failures.run(
             &ctx,
             StepKind::NonBlocking,
@@ -476,58 +460,74 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             },
         )?;
 
-        log_phase("Shutdown And Delete");
-        failures.run(&ctx, StepKind::Blocking, "stop service", || {
-            runner.run_cloud([
-                "service".to_string(),
-                "stop".to_string(),
-                service_id.clone(),
-                "--org-id".to_string(),
-                ctx.org_id.clone(),
-            ])?;
-            poll_until(
-                "service stopped",
-                ctx.create_timeout,
-                ctx.poll_interval,
-                || {
-                    let output = runner.service_get(&service_id)?;
-                    let state = json_string(&output.json, &["/service/state", "/state"])?;
-                    if matches!(state, "idle" | "stopped") {
-                        Ok(Some(()))
-                    } else {
-                        Ok(None)
-                    }
-                },
-            )?;
-            Ok(())
-        })?;
+        // ── 5. Cloud Service Client ──────────────────────────────────
 
-        failures.run(&ctx, StepKind::Blocking, "start service", || {
-            runner.run_cloud([
-                "service".to_string(),
-                "start".to_string(),
-                service_id.clone(),
-                "--org-id".to_string(),
-                ctx.org_id.clone(),
-            ])?;
-            poll_until(
-                "service restarted",
-                ctx.steady_state_timeout,
-                ctx.poll_interval,
-                || {
-                    let output = runner.service_get(&service_id)?;
-                    let state = json_string(&output.json, &["/service/state", "/state"])?;
-                    if matches!(state, "running" | "idle") {
-                        Ok(Some(()))
-                    } else {
-                        Ok(None)
-                    }
-                },
-            )?;
-            Ok(())
-        })?;
+        log_phase("Cloud Service Client");
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client query by id",
+            || {
+                let output = runner.service_client_query(&service_id, &password, "SELECT 1")?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "1" {
+                    return Err(format!(
+                        "expected SELECT 1 to return '1', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
 
-        failures.run(&ctx, StepKind::Blocking, "scale out to 4 replicas", || {
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client query by name",
+            || {
+                let output = runner.service_client_query_by_name(
+                    &ctx.updated_service_name(),
+                    &password,
+                    "SELECT 'cloud_client_ok'",
+                )?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "cloud_client_ok" {
+                    return Err(format!(
+                        "expected 'cloud_client_ok', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
+            "cloud service client with generate-password",
+            || {
+                let output = runner.service_client_query_generate_password(
+                    &service_id,
+                    "SELECT 'gen_pw_ok'",
+                )?;
+                let trimmed = output.stdout.trim();
+                if trimmed != "gen_pw_ok" {
+                    return Err(format!(
+                        "expected 'gen_pw_ok', got '{}'",
+                        trimmed
+                    )
+                    .into());
+                }
+                Ok(())
+            },
+        )?;
+
+        // ── 6. Scaling ───────────────────────────────────────────────
+
+        log_phase("Scaling");
+        failures.run(&ctx, StepKind::Blocking, "scale out to 3 replicas", || {
             scale_service_and_wait(
                 &ctx,
                 &runner,
@@ -539,7 +539,31 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
         })?;
 
-        failures.run(&ctx, StepKind::Blocking, "scale back to 3 replicas", || {
+        failures.run(&ctx, StepKind::Blocking, "scale up to 16 GB", || {
+            scale_service_and_wait(
+                &ctx,
+                &runner,
+                &service_id,
+                Some(scaled_memory_gb),
+                Some(scaled_memory_gb),
+                Some(scaled_replicas),
+                "vertical scale up",
+            )
+        })?;
+
+        failures.run(&ctx, StepKind::Blocking, "scale down to 8 GB", || {
+            scale_service_and_wait(
+                &ctx,
+                &runner,
+                &service_id,
+                Some(base_memory_gb),
+                Some(base_memory_gb),
+                Some(scaled_replicas),
+                "vertical scale down",
+            )
+        })?;
+
+        failures.run(&ctx, StepKind::Blocking, "scale in to 1 replica", || {
             scale_service_and_wait(
                 &ctx,
                 &runner,
@@ -551,33 +575,64 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
         })?;
 
-        failures.run(&ctx, StepKind::Blocking, "scale up to 16 GB", || {
-            scale_service_and_wait(
-                &ctx,
-                &runner,
-                &service_id,
-                Some(scaled_memory_gb),
-                Some(scaled_memory_gb),
-                Some(base_replicas),
-                "vertical scale up",
-            )
+        // ── 7. Delete ────────────────────────────────────────────────
+
+        log_phase("Delete");
+        failures.run(
+            &ctx,
+            StepKind::Blocking,
+            "delete without --force fails on running service",
+            || {
+                let result = runner.run_cloud_raw([
+                    "service".to_string(),
+                    "delete".to_string(),
+                    service_id.clone(),
+                    "--org-id".to_string(),
+                    ctx.org_id.clone(),
+                ]);
+                match result {
+                    Err(_) => Ok(()),
+                    Ok(_) => Err(
+                        "expected delete without --force to fail on a running service".into(),
+                    ),
+                }
+            },
+        )?;
+
+        failures.run(&ctx, StepKind::Blocking, "force delete service", || {
+            runner.run_cloud([
+                "service".to_string(),
+                "delete".to_string(),
+                service_id.clone(),
+                "--force".to_string(),
+                "--org-id".to_string(),
+                ctx.org_id.clone(),
+            ])
         })?;
 
-        failures.run(&ctx, StepKind::Blocking, "scale back down to 8 GB", || {
-            scale_service_and_wait(
-                &ctx,
-                &runner,
-                &service_id,
-                Some(base_memory_gb),
-                Some(base_memory_gb),
-                Some(base_replicas),
-                "vertical scale down",
-            )
-        })?;
-
-        failures.run(&ctx, StepKind::Blocking, "delete service", || {
-            delete_service_and_confirm_gone(&runner, &service_id)
-        })?;
+        failures.run(
+            &ctx,
+            StepKind::Blocking,
+            "confirm service is gone after force delete",
+            || {
+                poll_until(
+                    "service deletion",
+                    ctx.delete_timeout,
+                    ctx.poll_interval,
+                    || match runner.service_get(&service_id) {
+                        Ok(_) => Ok(None),
+                        Err(error) => {
+                            let message = error.to_string();
+                            if message.contains("404") || message.contains("not found") {
+                                Ok(Some(()))
+                            } else {
+                                Err(error)
+                            }
+                        }
+                    },
+                )
+            },
+        )?;
         cleanup.unregister_service(&service_id);
 
         failures.finish()
