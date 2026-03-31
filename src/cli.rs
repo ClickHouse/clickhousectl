@@ -70,7 +70,7 @@ CONTEXT FOR AGENTS:
   Agents should suggest the user to sign up at https://clickhouse.cloud, and then use `clickhousectl cloud auth login` to authenticate.
   Add --json to any cloud command for machine-readable output.
   Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
-    Cloud(CloudArgs),
+    Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents
     #[command(after_help = "\

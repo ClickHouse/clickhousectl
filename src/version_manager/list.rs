@@ -40,15 +40,14 @@ pub fn list_installed_versions() -> Result<Vec<String>> {
     let mut versions = Vec::new();
     for entry in std::fs::read_dir(&versions_dir)? {
         let entry = entry?;
-        if entry.path().is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
+        if entry.path().is_dir()
+            && let Some(name) = entry.file_name().to_str() {
                 // Only include if it has a clickhouse binary
                 let binary = entry.path().join("clickhouse");
                 if binary.exists() {
                     versions.push(name.to_string());
                 }
             }
-        }
     }
 
     // Sort versions in descending order (newest first)
@@ -85,8 +84,8 @@ pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     for release in releases {
         // Tag format: v25.12.5.44-stable or v24.8.10.6-lts
         let tag = &release.tag_name;
-        if let Some(version) = tag.strip_prefix('v') {
-            if let Some(dash_pos) = version.rfind('-') {
+        if let Some(version) = tag.strip_prefix('v')
+            && let Some(dash_pos) = version.rfind('-') {
                 let v = &version[..dash_pos];
                 let suffix = &version[dash_pos + 1..];
                 if let Some(channel) = Channel::from_tag_suffix(suffix) {
@@ -96,7 +95,6 @@ pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
                     });
                 }
             }
-        }
     }
 
     // Sort versions in descending order (newest first)

@@ -36,7 +36,7 @@ async fn run(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Local { command } => run_local(command).await,
         Commands::Skills(args) => run_skills(args).await,
-        Commands::Cloud(args) => run_cloud(args).await,
+        Commands::Cloud(args) => run_cloud(*args).await,
     }
 }
 
@@ -156,12 +156,11 @@ fn remove(version: &str) -> Result<()> {
     }
 
     // Check if this is the default version
-    if let Ok(default) = version_manager::get_default_version() {
-        if default == version {
+    if let Ok(default) = version_manager::get_default_version()
+        && default == version {
             let default_file = paths::default_file()?;
             let _ = std::fs::remove_file(default_file);
         }
-    }
 
     std::fs::remove_dir_all(&version_dir)?;
     println!("Removed version {}", version);
@@ -682,12 +681,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::service_scale(
                     &client,
                     &service_id,
-                    min_replica_memory_gb,
-                    max_replica_memory_gb,
-                    num_replicas,
-                    idle_scaling,
-                    idle_timeout_minutes,
-                    org_id.as_deref(),
+                    cloud::commands::ServiceScaleOptions {
+                        min_replica_memory_gb,
+                        max_replica_memory_gb,
+                        num_replicas,
+                        idle_scaling,
+                        idle_timeout_minutes,
+                        org_id,
+                    },
                     json,
                 )
                 .await
