@@ -129,7 +129,9 @@ async fn list_available() -> Result<()> {
     for v in &versions {
         // Check if any installed version matches this minor
         let prefix = format!("{}.", v);
-        let is_installed = installed.iter().any(|iv| iv.starts_with(&prefix) || iv == v);
+        let is_installed = installed
+            .iter()
+            .any(|iv| iv.starts_with(&prefix) || iv == v);
         if is_installed {
             println!("  {} (installed)", v);
         } else {
@@ -178,10 +180,11 @@ fn remove(version: &str) -> Result<()> {
 
     // Check if this is the default version
     if let Ok(default) = version_manager::get_default_version()
-        && default == version {
-            let default_file = paths::default_file()?;
-            let _ = std::fs::remove_file(default_file);
-        }
+        && default == version
+    {
+        let default_file = paths::default_file()?;
+        let _ = std::fs::remove_file(default_file);
+    }
 
     std::fs::remove_dir_all(&version_dir)?;
     println!("Removed version {}", version);

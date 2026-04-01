@@ -69,11 +69,7 @@ async fn resolve_channel(channel: Channel, platform: &Platform) -> Result<Resolv
     }
 
     // Fallback: use packages (Linux) or GitHub (macOS)
-    Ok(fallback_source(
-        &entry.version,
-        entry.channel,
-        platform,
-    ))
+    Ok(fallback_source(&entry.version, entry.channel, platform))
 }
 
 /// `install 25` — probe builds for highest 25.x minor
@@ -112,11 +108,7 @@ async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersio
     for minor in (1..=12).rev() {
         let prefix = format!("{}.{}", major, minor);
         if let Ok(entry) = find_version_by_refs(&prefix).await {
-            return Ok(fallback_source(
-                &entry.version,
-                entry.channel,
-                platform,
-            ));
+            return Ok(fallback_source(&entry.version, entry.channel, platform));
         }
     }
 
@@ -143,11 +135,7 @@ async fn resolve_minor(major: u32, minor: u32, platform: &Platform) -> Result<Re
     // Fallback: targeted GH API call to find exact version for this minor
     let entry = find_version_by_refs(&version_path).await?;
 
-    Ok(fallback_source(
-        &entry.version,
-        entry.channel,
-        platform,
-    ))
+    Ok(fallback_source(&entry.version, entry.channel, platform))
 }
 
 /// `install 25.12.9.61` — exact version, needs channel from GH API
@@ -164,7 +152,9 @@ async fn find_exact_channel(version: &str) -> Result<Channel> {
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}-",
         version
     );
-    let client = reqwest::Client::builder().user_agent(crate::user_agent::user_agent()).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(crate::user_agent::user_agent())
+        .build()?;
 
     let response = client
         .get(&url)
@@ -246,7 +236,9 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
         prefix
     );
-    let client = reqwest::Client::builder().user_agent(crate::user_agent::user_agent()).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(crate::user_agent::user_agent())
+        .build()?;
 
     let response = client
         .get(&url)

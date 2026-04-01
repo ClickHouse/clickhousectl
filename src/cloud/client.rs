@@ -68,17 +68,17 @@ impl CloudClient {
         }
 
         // Try OAuth tokens
-        if let Some(tokens) = crate::cloud::auth::load_tokens() {
-            if crate::cloud::auth::is_token_valid(&tokens) {
-                let base_url = url_override
-                    .map(crate::cloud::auth::normalize_api_url)
-                    .unwrap_or(tokens.api_url.clone());
-                return Ok(Self {
-                    client,
-                    auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
-                    base_url,
-                });
-            }
+        if let Some(tokens) = crate::cloud::auth::load_tokens()
+            && crate::cloud::auth::is_token_valid(&tokens)
+        {
+            let base_url = url_override
+                .map(crate::cloud::auth::normalize_api_url)
+                .unwrap_or(tokens.api_url.clone());
+            return Ok(Self {
+                client,
+                auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
+                base_url,
+            });
         }
 
         let base_url = url_override
@@ -142,11 +142,12 @@ impl CloudClient {
 
         if !status.is_success() {
             if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
-                && let Some(err) = api_resp.error {
-                    return Err(CloudError {
-                        message: err.message,
-                    });
-                }
+                && let Some(err) = api_resp.error
+            {
+                return Err(CloudError {
+                    message: err.message,
+                });
+            }
             return Err(CloudError {
                 message: format!("API error ({}): {}", status, body),
             });
@@ -175,11 +176,12 @@ impl CloudClient {
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
-                && let Some(err) = api_resp.error {
-                    return Err(CloudError {
-                        message: err.message,
-                    });
-                }
+                && let Some(err) = api_resp.error
+            {
+                return Err(CloudError {
+                    message: err.message,
+                });
+            }
             return Err(CloudError {
                 message: format!("API error ({}): {}", status, body),
             });
@@ -205,11 +207,12 @@ impl CloudClient {
 
         if !status.is_success() {
             if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
-                && let Some(err) = api_resp.error {
-                    return Err(CloudError {
-                        message: err.message,
-                    });
-                }
+                && let Some(err) = api_resp.error
+            {
+                return Err(CloudError {
+                    message: err.message,
+                });
+            }
             return Err(CloudError {
                 message: format!("API error ({}): {}", status, body),
             });

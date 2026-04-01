@@ -42,13 +42,14 @@ pub fn list_installed_versions() -> Result<Vec<String>> {
     for entry in std::fs::read_dir(&versions_dir)? {
         let entry = entry?;
         if entry.path().is_dir()
-            && let Some(name) = entry.file_name().to_str() {
-                // Only include if it has a clickhouse binary
-                let binary = entry.path().join("clickhouse");
-                if binary.exists() {
-                    versions.push(name.to_string());
-                }
+            && let Some(name) = entry.file_name().to_str()
+        {
+            // Only include if it has a clickhouse binary
+            let binary = entry.path().join("clickhouse");
+            if binary.exists() {
+                versions.push(name.to_string());
             }
+        }
     }
 
     // Sort versions in descending order (newest first)
@@ -71,7 +72,9 @@ pub struct VersionEntry {
 /// Fetches available versions from GitHub releases
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = reqwest::Client::builder().user_agent(crate::user_agent::user_agent()).build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(crate::user_agent::user_agent())
+        .build()?;
 
     let response = client
         .get(url)
@@ -86,16 +89,17 @@ pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
         // Tag format: v25.12.5.44-stable or v24.8.10.6-lts
         let tag = &release.tag_name;
         if let Some(version) = tag.strip_prefix('v')
-            && let Some(dash_pos) = version.rfind('-') {
-                let v = &version[..dash_pos];
-                let suffix = &version[dash_pos + 1..];
-                if let Some(channel) = Channel::from_tag_suffix(suffix) {
-                    versions.push(VersionEntry {
-                        version: v.to_string(),
-                        channel,
-                    });
-                }
+            && let Some(dash_pos) = version.rfind('-')
+        {
+            let v = &version[..dash_pos];
+            let suffix = &version[dash_pos + 1..];
+            if let Some(channel) = Channel::from_tag_suffix(suffix) {
+                versions.push(VersionEntry {
+                    version: v.to_string(),
+                    channel,
+                });
             }
+        }
     }
 
     // Sort versions in descending order (newest first)

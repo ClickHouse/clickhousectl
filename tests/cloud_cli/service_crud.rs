@@ -1,8 +1,7 @@
 use crate::support::{
-    CleanupRegistry, CliRunner, FailureRecorder, StepKind, TestContext, TestResult,
-    json_string, log_phase, log_run_header, poll_until,
-    service_has_ip_access_entry, service_list_is_empty, service_name_in_list,
-    service_present_in_list,
+    CleanupRegistry, CliRunner, FailureRecorder, StepKind, TestContext, TestResult, json_string,
+    log_phase, log_run_header, poll_until, service_has_ip_access_entry, service_list_is_empty,
+    service_name_in_list, service_present_in_list,
 };
 use serde_json::Value;
 
@@ -471,11 +470,9 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 let output = runner.service_client_query(&service_id, &password, "SELECT 1")?;
                 let trimmed = output.stdout.trim();
                 if trimmed != "1" {
-                    return Err(format!(
-                        "expected SELECT 1 to return '1', got '{}'",
-                        trimmed
-                    )
-                    .into());
+                    return Err(
+                        format!("expected SELECT 1 to return '1', got '{}'", trimmed).into(),
+                    );
                 }
                 Ok(())
             },
@@ -493,11 +490,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 )?;
                 let trimmed = output.stdout.trim();
                 if trimmed != "cloud_client_ok" {
-                    return Err(format!(
-                        "expected 'cloud_client_ok', got '{}'",
-                        trimmed
-                    )
-                    .into());
+                    return Err(format!("expected 'cloud_client_ok', got '{}'", trimmed).into());
                 }
                 Ok(())
             },
@@ -508,17 +501,11 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             StepKind::NonBlocking,
             "cloud service client with generate-password",
             || {
-                let output = runner.service_client_query_generate_password(
-                    &service_id,
-                    "SELECT 'gen_pw_ok'",
-                )?;
+                let output = runner
+                    .service_client_query_generate_password(&service_id, "SELECT 'gen_pw_ok'")?;
                 let trimmed = output.stdout.trim();
                 if trimmed != "gen_pw_ok" {
-                    return Err(format!(
-                        "expected 'gen_pw_ok', got '{}'",
-                        trimmed
-                    )
-                    .into());
+                    return Err(format!("expected 'gen_pw_ok', got '{}'", trimmed).into());
                 }
                 Ok(())
             },
@@ -592,9 +579,9 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 ]);
                 match result {
                     Err(_) => Ok(()),
-                    Ok(_) => Err(
-                        "expected delete without --force to fail on a running service".into(),
-                    ),
+                    Ok(_) => {
+                        Err("expected delete without --force to fail on a running service".into())
+                    }
                 }
             },
         )?;
