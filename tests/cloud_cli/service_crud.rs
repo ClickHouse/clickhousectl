@@ -315,6 +315,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "verify client-only binary was used on linux",
             || {
                 let clients_dir = ctx.temp_home_path().join(".clickhouse").join("clients");
+                let versions_dir = ctx.temp_home_path().join(".clickhouse").join("versions");
                 if cfg!(target_os = "linux") {
                     if !clients_dir.exists() {
                         return Err(
@@ -331,8 +332,6 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 .into(),
                         );
                     }
-                    // Verify no full binary was downloaded (versions dir should be empty or absent)
-                    let versions_dir = ctx.temp_home_path().join(".clickhouse").join("versions");
                     let has_full_binary = versions_dir.exists()
                         && std::fs::read_dir(&versions_dir)?
                             .filter_map(|e| e.ok())
@@ -344,7 +343,17 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     }
                     eprintln!("  verified: client-only binary used (not full binary)");
                 } else {
-                    eprintln!("  skipped: client-only verification only applies to linux");
+                    // macOS: no client-only package available, should use full binary
+                    let has_full_binary = versions_dir.exists()
+                        && std::fs::read_dir(&versions_dir)?
+                            .filter_map(|e| e.ok())
+                            .any(|e| e.path().join("clickhouse").exists());
+                    if !has_full_binary {
+                        return Err(
+                            "expected full binary in ~/.clickhouse/versions/*/ on macOS".into(),
+                        );
+                    }
+                    eprintln!("  verified: full binary used (no client-only on macOS)");
                 }
                 Ok(())
             },
