@@ -116,6 +116,11 @@ pub enum DownloadSource {
         version: String,
         channel: Channel,
     },
+    /// packages.clickhouse.com client-only tarball (Linux only, ~36KB)
+    PackagesClient {
+        channel: Channel,
+        version: String,
+    },
 }
 
 impl DownloadSource {
@@ -161,15 +166,25 @@ impl DownloadSource {
                     }
                 }
             }
+            DownloadSource::PackagesClient { channel, version } => {
+                let arch = platform
+                    .packages_arch()
+                    .expect("PackagesClient source should only be used for Linux");
+                format!(
+                    "https://packages.clickhouse.com/tgz/{}/clickhouse-client-{}-{}.tgz",
+                    channel, version, arch
+                )
+            }
         }
     }
 
     /// Whether this source downloads a tarball that needs extraction
     pub fn is_tarball(&self, platform: &Platform) -> bool {
         match self {
-            DownloadSource::Builds { .. } => false, // Always a single binary
-            DownloadSource::Packages { .. } => true, // Always a tgz
-            DownloadSource::GitHub { .. } => platform.os == Os::Linux, // tgz on Linux, binary on macOS
+            DownloadSource::Builds { .. } => false,
+            DownloadSource::Packages { .. } => true,
+            DownloadSource::GitHub { .. } => platform.os == Os::Linux,
+            DownloadSource::PackagesClient { .. } => true,
         }
     }
 }
@@ -379,6 +394,44 @@ mod tests {
         };
         assert!(src.is_tarball(&linux));
         assert!(!src.is_tarball(&macos));
+    }
+
+    // -- URL construction: packages client-only --
+
+    #[test]
+    fn test_packages_client_url_stable_linux_amd64() {
+        let p = Platform { os: Os::Linux, arch: Arch::X86_64 };
+        let src = DownloadSource::PackagesClient {
+            channel: Channel::Stable,
+            version: "25.3.2.39".to_string(),
+        };
+        assert_eq!(
+            src.url(&p),
+            "https://packages.clickhouse.com/tgz/stable/clickhouse-client-25.3.2.39-amd64.tgz"
+        );
+    }
+
+    #[test]
+    fn test_packages_client_url_lts_linux_arm64() {
+        let p = Platform { os: Os::Linux, arch: Arch::Aarch64 };
+        let src = DownloadSource::PackagesClient {
+            channel: Channel::Lts,
+            version: "24.8.6.70".to_string(),
+        };
+        assert_eq!(
+            src.url(&p),
+            "https://packages.clickhouse.com/tgz/lts/clickhouse-client-24.8.6.70-arm64.tgz"
+        );
+    }
+
+    #[test]
+    fn test_packages_client_always_tarball() {
+        let linux = Platform { os: Os::Linux, arch: Arch::X86_64 };
+        let src = DownloadSource::PackagesClient {
+            channel: Channel::Stable,
+            version: "25.3.2.39".to_string(),
+        };
+        assert!(src.is_tarball(&linux));
     }
 
     // -- Probe URL --

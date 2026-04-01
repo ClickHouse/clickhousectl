@@ -102,6 +102,85 @@ pub async fn install_resolved(
     Ok(exact_version)
 }
 
+/// Installs a client-only binary from packages.clickhouse.com.
+/// Downloads ~36KB tarball and extracts clickhouse-client to ~/.clickhouse/clients/{version}/
+pub async fn install_client(
+    source: &DownloadSource,
+    platform: &Platform,
+    version: &str,
+) -> Result<std::path::PathBuf> {
+    paths::ensure_dirs()?;
+
+    let client_dir = paths::client_dir(version)?;
+
+    // Already installed?
+    let binary_path = client_dir.join("clickhouse-client");
+    if binary_path.exists() {
+        return Ok(binary_path);
+    }
+
+    std::fs::create_dir_all(&client_dir)?;
+
+    eprintln!("Downloading ClickHouse client {}...", version);
+
+    let tarball_path = client_dir.join("clickhouse-client.tgz");
+    download_from_source(source, platform, &tarball_path).await?;
+
+    eprintln!("Extracting...");
+    extract_client_tarball(&tarball_path, &client_dir)?;
+
+    // Make executable
+    let mut perms = std::fs::metadata(&binary_path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&binary_path, perms)?;
+
+    eprintln!("Installed ClickHouse client {}", version);
+    Ok(binary_path)
+}
+
+/// Extract client tarball — binary is at clickhouse-client-{version}/usr/bin/clickhouse-client
+fn extract_client_tarball(
+    tarball_path: &std::path::Path,
+    dest_dir: &std::path::Path,
+) -> Result<()> {
+    let status = std::process::Command::new("tar")
+        .args(["xzf", &tarball_path.to_string_lossy()])
+        .current_dir(dest_dir)
+        .status()
+        .map_err(|e| Error::Extract(format!("Failed to run tar: {}", e)))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(tarball_path);
+        return Err(Error::Extract("tar extraction failed".to_string()));
+    }
+
+    let final_binary = dest_dir.join("clickhouse-client");
+
+    // Search extracted directories for clickhouse-client
+    for entry in std::fs::read_dir(dest_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let candidate = path.join("usr/bin/clickhouse-client");
+            if candidate.exists() {
+                std::fs::rename(&candidate, &final_binary)?;
+                let _ = std::fs::remove_file(tarball_path);
+                let _ = std::fs::remove_dir_all(&path);
+                return Ok(());
+            }
+        }
+    }
+
+    let _ = std::fs::remove_file(tarball_path);
+    if final_binary.exists() {
+        return Ok(());
+    }
+
+    Err(Error::Extract(
+        "Could not find clickhouse-client binary in extracted tarball".to_string(),
+    ))
+}
+
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`
 fn detect_binary_version(binary_path: &std::path::Path) -> Result<String> {
     let output = std::process::Command::new(binary_path)

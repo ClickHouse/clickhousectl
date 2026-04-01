@@ -27,6 +27,21 @@ pub fn binary_path(version: &str) -> Result<PathBuf> {
     Ok(version_dir(version)?.join("clickhouse"))
 }
 
+/// Returns the clients directory (~/.clickhouse/clients/)
+pub fn clients_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("clients"))
+}
+
+/// Returns the directory for a specific client version (~/.clickhouse/clients/<version>/)
+pub fn client_dir(version: &str) -> Result<PathBuf> {
+    Ok(clients_dir()?.join(version))
+}
+
+/// Returns the path to the client-only binary for a specific version
+pub fn client_binary_path(version: &str) -> Result<PathBuf> {
+    Ok(client_dir(version)?.join("clickhouse-client"))
+}
+
 /// Returns the path to the default version file (~/.clickhouse/default)
 pub fn default_file() -> Result<PathBuf> {
     Ok(base_dir()?.join("default"))
@@ -35,6 +50,8 @@ pub fn default_file() -> Result<PathBuf> {
 /// Ensures all necessary directories exist
 pub fn ensure_dirs() -> Result<()> {
     let versions = versions_dir()?;
-    std::fs::create_dir_all(&versions).map_err(|_| Error::CreateDir(versions))?;
+    std::fs::create_dir_all(&versions).map_err(|_| Error::CreateDir(versions.clone()))?;
+    let clients = clients_dir()?;
+    std::fs::create_dir_all(&clients).map_err(|_| Error::CreateDir(clients))?;
     Ok(())
 }

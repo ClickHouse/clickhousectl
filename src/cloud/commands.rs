@@ -1624,9 +1624,9 @@ pub async fn service_client(
     let host = &endpoint.host;
     let port = endpoint.port as u16;
 
-    // Determine which client version to use
+    // Determine which client binary to use
     let service_version = svc.clickhouse_version.as_deref();
-    let version = if opts.allow_mismatched_client_version {
+    let client_binary = if opts.allow_mismatched_client_version {
         // Try to use the local default version
         match version_manager::get_default_version() {
             Ok(local_ver) => {
@@ -1639,21 +1639,27 @@ pub async fn service_client(
                         local_ver, svc_ver
                     );
                 }
-                local_ver
+                ClientBinary {
+                    path: paths::binary_path(&local_ver)?,
+                    needs_client_arg: true,
+                }
             }
             Err(_) => {
-                // No local default — fall back to installing the service version
+                // No local default — fall back to service version
                 eprintln!("No local default version set, falling back to service version.");
-                ensure_version_installed(service_version).await?
+                ensure_client_binary(service_version).await?
             }
         }
     } else {
-        ensure_version_installed(service_version).await?
+        ensure_client_binary(service_version).await?
     };
 
-    let binary = paths::binary_path(&version)?;
-    if !binary.exists() {
-        return Err(format!("clickhouse binary not found at {}", binary.display()).into());
+    if !client_binary.path.exists() {
+        return Err(format!(
+            "clickhouse binary not found at {}",
+            client_binary.path.display()
+        )
+        .into());
     }
 
     // Resolve password: --generate-password > --password > env var > TTY prompt
@@ -1683,9 +1689,12 @@ pub async fn service_client(
     // Build and exec the clickhouse-client command
     eprintln!("Connecting to {} ({}:{})...", svc.name, host, port);
 
-    let mut cmd = std::process::Command::new(&binary);
-    cmd.arg("client")
-        .arg("--host")
+    let mut cmd = std::process::Command::new(&client_binary.path);
+    // Full binary needs "client" subcommand; standalone clickhouse-client does not
+    if client_binary.needs_client_arg {
+        cmd.arg("client");
+    }
+    cmd.arg("--host")
         .arg(host)
         .arg("--port")
         .arg(port.to_string())
@@ -1708,38 +1717,124 @@ pub async fn service_client(
     Err(format!("failed to exec clickhouse-client: {}", err).into())
 }
 
-/// Ensure a ClickHouse version is installed locally, installing it if needed.
-async fn ensure_version_installed(
+/// A resolved client binary — either the full clickhouse binary or standalone clickhouse-client
+struct ClientBinary {
+    path: std::path::PathBuf,
+    /// True for full binary (needs `client` subcommand), false for standalone clickhouse-client
+    needs_client_arg: bool,
+}
+
+/// Extract a minor version from a cloud API version string.
+/// Cloud API returns 3-part versions like "24.3.1" — we extract "24.3".
+fn cloud_version_to_minor(version: &str) -> &str {
+    // Find the second dot and take everything before it
+    let mut dots = 0;
+    for (i, c) in version.char_indices() {
+        if c == '.' {
+            dots += 1;
+            if dots == 2 {
+                return &version[..i];
+            }
+        }
+    }
+    // If fewer than 2 dots, return as-is (e.g., "25.12" stays "25.12")
+    version
+}
+
+/// Ensure a client binary is available for connecting to a cloud service.
+/// Prefers: full binary already installed > client-only binary > download client-only (Linux) or full (macOS)
+async fn ensure_client_binary(
     service_version: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<ClientBinary, Box<dyn std::error::Error>> {
     use crate::{paths, version_manager};
 
-    let version_spec = service_version.ok_or("service has no clickhouse_version set")?;
+    let cloud_version = service_version.ok_or("service has no clickhouse_version set")?;
+    let minor = cloud_version_to_minor(cloud_version);
 
-    let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
-    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
 
-    // If exact version is known, check if already installed
-    if let Some(ref version) = resolved.exact_version {
-        let version_dir = paths::version_dir(version)?;
-        if version_dir.exists() {
-            return Ok(version.clone());
+    // 1. Check if a full binary matching this minor is already installed
+    let minor_prefix = format!("{}.", minor);
+    if let Ok(installed) = version_manager::list_installed_versions() {
+        if let Some(existing) = installed.iter().find(|v| v.starts_with(&minor_prefix)) {
+            let binary = paths::binary_path(existing)?;
+            if binary.exists() {
+                return Ok(ClientBinary {
+                    path: binary,
+                    needs_client_arg: true,
+                });
+            }
         }
     }
 
+    // 2. Check if client-only binary exists for this minor
+    //    We use the minor version as the client dir name
+    let client_binary = paths::client_binary_path(minor)?;
+    if client_binary.exists() {
+        return Ok(ClientBinary {
+            path: client_binary,
+            needs_client_arg: false,
+        });
+    }
+
+    // 3. Need to download — resolve the minor version to get exact version + channel
+    let spec = version_manager::parse_version_spec(minor)?;
+    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
+
+    // On Linux: download client-only from packages.clickhouse.com (~36KB)
+    if platform.packages_arch().is_some() {
+        if let Some(ref exact_version) = resolved.exact_version {
+            let channel = resolved
+                .channel
+                .unwrap_or(version_manager::list::Channel::Stable);
+            let source = version_manager::platform::DownloadSource::PackagesClient {
+                channel,
+                version: exact_version.clone(),
+            };
+            let path = version_manager::install::install_client(
+                &source, &platform, minor,
+            )
+            .await?;
+            return Ok(ClientBinary {
+                path,
+                needs_client_arg: false,
+            });
+        }
+    }
+
+    // On macOS (or if packages resolution failed): download full binary
     eprintln!(
-        "Service requires ClickHouse {} — downloading...",
+        "Service requires ClickHouse {} — downloading full binary...",
         resolved.display_version
     );
     let version =
         version_manager::install::install_resolved(&resolved, &platform, false).await?;
-    Ok(version)
+    let binary = paths::binary_path(&version)?;
+    Ok(ClientBinary {
+        path: binary,
+        needs_client_arg: true,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_version_3part_to_minor() {
+        assert_eq!(cloud_version_to_minor("24.3.1"), "24.3");
+        assert_eq!(cloud_version_to_minor("25.12.5"), "25.12");
+    }
+
+    #[test]
+    fn cloud_version_2part_unchanged() {
+        assert_eq!(cloud_version_to_minor("25.12"), "25.12");
+    }
+
+    #[test]
+    fn cloud_version_4part_to_minor() {
+        assert_eq!(cloud_version_to_minor("25.12.9.61"), "25.12");
+    }
 
     #[test]
     fn parse_tag_rejects_empty_keys() {
