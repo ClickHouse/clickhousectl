@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::paths;
+use chrono::Datelike;
 use serde::Deserialize;
 use std::fmt;
 
@@ -102,6 +103,41 @@ pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     // Sort versions in descending order (newest first)
     versions.sort_by(|a, b| compare_versions(&b.version, &a.version));
     Ok(versions)
+}
+
+/// Lists available minor versions by probing builds.clickhouse.com with HEAD requests.
+/// Scans from current year back to 2020, checking each YY.{1..12} pattern.
+/// Returns minor version strings sorted newest-first (e.g., ["26.3", "26.2", ...]).
+pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
+    use crate::version_manager::platform::{Platform, builds_probe_url};
+
+    let platform = Platform::detect()?;
+    let client = reqwest::Client::builder()
+        .user_agent("clickhousectl")
+        .build()
+        .map_err(|e| Error::Download(e.to_string()))?;
+
+    let current_year = chrono::Utc::now().year() as u32;
+    // ClickHouse uses YY.MM versioning — scan from current year down to 20 (2020)
+    // Use two-digit year format
+    let start_yy = current_year % 100;
+
+    let mut available = Vec::new();
+
+    for yy in (20..=start_yy).rev() {
+        for mm in (1..=12).rev() {
+            let version_path = format!("{}.{}", yy, mm);
+            let url = builds_probe_url(&version_path, &platform);
+            match client.head(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    available.push(version_path);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(available)
 }
 
 /// Gets the current default version

@@ -92,20 +92,24 @@ pub enum LocalCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
-  Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
-  Optionally set as default with `clickhousectl local use <version>`.
-  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
+  Accepts version specs: \"latest\", \"stable\", \"lts\", major like \"25\", minor like \"25.12\", or exact like \"25.12.9.61\".
+  Primary source: builds.clickhouse.com. Falls back to packages.clickhouse.com or GitHub releases for exact/older versions.
+  Use --force to re-download an already-installed version.
   Related: `clickhousectl local list --remote` to see downloadable versions.")]
     Install {
-        /// Version to install (e.g., 25.1.2.3, 25.1, stable, lts)
+        /// Version to install (e.g., latest, stable, lts, 25, 25.12, 25.12.9.61)
         version: String,
+
+        /// Force re-install even if version is already installed
+        #[arg(long)]
+        force: bool,
     },
 
     /// List installed versions
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Without flags: shows locally installed versions (exact version strings).
-  With --remote: shows versions available for download from GitHub releases.
+  With --remote: shows versions available for download from builds.clickhouse.com.
   Use the exact version strings from this output with `clickhousectl local remove` or `clickhousectl local use`.
   Related: `clickhousectl local install <version>` to install, `clickhousectl local which` to see current default.")]
     List {
