@@ -37,9 +37,11 @@ const KNOWN_CONFIGS: &[(&str, AuthConfig)] = &[
 ];
 
 fn auth_config_for_url(api_url: &str) -> Option<&'static AuthConfig> {
+    let parsed = url::Url::parse(api_url).ok()?;
+    let host = parsed.host_str()?;
     KNOWN_CONFIGS
         .iter()
-        .find(|(host, _)| api_url.contains(host))
+        .find(|(known_host, _)| host == *known_host)
         .map(|(_, config)| config)
 }
 
@@ -426,6 +428,11 @@ mod tests {
         assert_ne!(prod.client_id, staging.client_id);
         assert_ne!(prod.client_id, dev.client_id);
         assert_ne!(staging.client_id, dev.client_id);
+
+        // Must not match on substring — these are hostile URLs that embed a known host
+        assert!(auth_config_for_url("https://api.clickhouse.cloud.evil.com/v1").is_none());
+        assert!(auth_config_for_url("https://evil-api.clickhouse.cloud.attacker.com/v1").is_none());
+        assert!(auth_config_for_url("https://not-api.clickhouse-staging.com.bad.com/v1").is_none());
     }
 
     #[test]
