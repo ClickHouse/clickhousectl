@@ -18,7 +18,7 @@ With `clickhousectl` you can:
 ### Quick install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ClickHouse/clickhousectl/main/install.sh | sh
+curl https://clickhouse.com/cli | sh
 ```
 
 The install script will download the correct version for your OS and install to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
