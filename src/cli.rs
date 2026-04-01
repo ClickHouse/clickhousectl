@@ -92,10 +92,7 @@ pub enum LocalCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
-  Accepts version specs: \"latest\", \"stable\", \"lts\", major like \"25\", minor like \"25.12\", or exact like \"25.12.9.61\".
-  Primary source: builds.clickhouse.com. Falls back to packages.clickhouse.com or GitHub releases for exact/older versions.
-  Use --force to re-download an already-installed version.
-  Related: `clickhousectl local list --remote` to see downloadable versions.")]
+  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
     Install {
         /// Version to install (e.g., latest, stable, lts, 25, 25.12, 25.12.9.61)
         version: String,
