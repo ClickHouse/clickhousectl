@@ -318,6 +318,7 @@ string_enum! {
 }
 
 string_enum! {
+    #[allow(clippy::enum_variant_names)]
     pub enum ByocConfigState {
         InfraReady => "infra-ready",
         InfraProvisioning => "infra-provisioning",
@@ -325,12 +326,14 @@ string_enum! {
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for CloudProvider {
     fn default() -> Self {
         Self::Aws
     }
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for CloudRegion {
     fn default() -> Self {
         Self::UsEast1
@@ -1101,6 +1104,7 @@ pub struct Activity {
 /// Backup
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "bucketProvider")]
+#[allow(clippy::upper_case_acronyms)]
 pub enum BackupBucket {
     #[serde(rename = "AWS")]
     AWS {

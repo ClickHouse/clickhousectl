@@ -141,13 +141,12 @@ impl CloudClient {
         })?;
 
         if !status.is_success() {
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body) {
-                if let Some(err) = api_resp.error {
+            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
+                && let Some(err) = api_resp.error {
                     return Err(CloudError {
                         message: err.message,
                     });
                 }
-            }
             return Err(CloudError {
                 message: format!("API error ({}): {}", status, body),
             });
@@ -175,13 +174,12 @@ impl CloudClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body) {
-                if let Some(err) = api_resp.error {
+            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
+                && let Some(err) = api_resp.error {
                     return Err(CloudError {
                         message: err.message,
                     });
                 }
-            }
             return Err(CloudError {
                 message: format!("API error ({}): {}", status, body),
             });
@@ -206,13 +204,12 @@ impl CloudClient {
         })?;
 
         if !status.is_success() {
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body) {
-                if let Some(err) = api_resp.error {
+            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
+                && let Some(err) = api_resp.error {
                     return Err(CloudError {
                         message: err.message,
                     });
                 }
-            }
             return Err(CloudError {
                 message: format!("API error ({}): {}", status, body),
             });
@@ -304,7 +301,7 @@ impl CloudClient {
     }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.request(self.client.get(&self.url(path))).await
+        self.request(self.client.get(self.url(path))).await
     }
 
     async fn post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
@@ -312,7 +309,7 @@ impl CloudClient {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        self.request(self.client.post(&self.url(path)).json(body))
+        self.request(self.client.post(self.url(path)).json(body))
             .await
     }
 
@@ -321,12 +318,12 @@ impl CloudClient {
         path: &str,
         body: &B,
     ) -> Result<T> {
-        self.request(self.client.patch(&self.url(path)).json(body))
+        self.request(self.client.patch(self.url(path)).json(body))
             .await
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
-        self.request_no_body(self.client.delete(&self.url(path)))
+        self.request_no_body(self.client.delete(self.url(path)))
             .await
     }
 

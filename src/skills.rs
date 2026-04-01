@@ -392,9 +392,9 @@ fn collect_skill_files_recursive(
     Ok(())
 }
 
-fn resolve_selection<'a>(
+fn resolve_selection(
     _install_root: &Path,
-    detected: &'a [&'static AgentSpec],
+    detected: &[&'static AgentSpec],
     args: &SkillsArgs,
 ) -> Result<Vec<&'static AgentSpec>> {
     if args.all {

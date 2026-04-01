@@ -631,12 +631,11 @@ pub async fn service_create(
         if let Some(max_mem) = response.service.max_replica_memory_gb {
             println!("  Max Memory/Replica: {} GB", max_mem);
         }
-        if let Some(endpoints) = &response.service.endpoints {
-            if let Some(ep) = endpoints.first() {
+        if let Some(endpoints) = &response.service.endpoints
+            && let Some(ep) = endpoints.first() {
                 println!("  Host: {}", ep.host);
                 println!("  Port: {}", ep.port);
             }
-        }
         println!();
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
@@ -753,7 +752,7 @@ pub async fn backup_list(
         for backup in backups {
             let size = backup
                 .size_in_bytes
-                .map(|s| format_bytes(s))
+                .map(format_bytes)
                 .unwrap_or_else(|| "-".to_string());
             let created = backup.started_at.as_deref().unwrap_or("-");
             println!("  {} - {} ({}) {}", backup.id, backup.status, size, created);
@@ -844,25 +843,29 @@ pub async fn service_update(
     Ok(())
 }
 
+pub struct ServiceScaleOptions {
+    pub min_replica_memory_gb: Option<u32>,
+    pub max_replica_memory_gb: Option<u32>,
+    pub num_replicas: Option<u32>,
+    pub idle_scaling: Option<bool>,
+    pub idle_timeout_minutes: Option<u32>,
+    pub org_id: Option<String>,
+}
+
 pub async fn service_scale(
     client: &CloudClient,
     service_id: &str,
-    min_replica_memory_gb: Option<u32>,
-    max_replica_memory_gb: Option<u32>,
-    num_replicas: Option<u32>,
-    idle_scaling: Option<bool>,
-    idle_timeout_minutes: Option<u32>,
-    org_id: Option<&str>,
+    opts: ServiceScaleOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let request = ReplicaScalingRequest {
-        min_replica_memory_gb: min_replica_memory_gb.map(f64::from),
-        max_replica_memory_gb: max_replica_memory_gb.map(f64::from),
-        num_replicas: num_replicas.map(f64::from),
-        idle_scaling,
-        idle_timeout_minutes: idle_timeout_minutes.map(f64::from),
+        min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
+        max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
+        num_replicas: opts.num_replicas.map(f64::from),
+        idle_scaling: opts.idle_scaling,
+        idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
     };
 
     let svc = client
