@@ -241,7 +241,7 @@ struct GitRef {
 /// Find the latest release version matching a prefix using GitHub's matching-refs API.
 /// This is a single targeted API call that works regardless of how old the version is.
 /// prefix should be like "25.2" or "24.8" — we search for tags matching `v{prefix}.`
-async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
+pub async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
     let url = format!(
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
         prefix

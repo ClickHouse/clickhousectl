@@ -1777,19 +1777,14 @@ async fn ensure_client_binary(
         });
     }
 
-    // 3. Need to download — resolve the minor version to get exact version + channel
-    let spec = version_manager::parse_version_spec(minor)?;
-    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
-
+    // 3. Need to download
     // On Linux: download client-only from packages.clickhouse.com (~36KB)
+    // This requires an exact version, so use matching-refs API to find it
     if platform.packages_arch().is_some() {
-        if let Some(ref exact_version) = resolved.exact_version {
-            let channel = resolved
-                .channel
-                .unwrap_or(version_manager::list::Channel::Stable);
+        if let Ok(entry) = version_manager::resolve::find_version_by_refs(minor).await {
             let source = version_manager::platform::DownloadSource::PackagesClient {
-                channel,
-                version: exact_version.clone(),
+                channel: entry.channel,
+                version: entry.version.clone(),
             };
             let path = version_manager::install::install_client(
                 &source, &platform, minor,
@@ -1802,7 +1797,9 @@ async fn ensure_client_binary(
         }
     }
 
-    // On macOS (or if packages resolution failed): download full binary
+    // On macOS (or if refs lookup failed): download full binary
+    let spec = version_manager::parse_version_spec(minor)?;
+    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
     eprintln!(
         "Service requires ClickHouse {} — downloading full binary...",
         resolved.display_version
