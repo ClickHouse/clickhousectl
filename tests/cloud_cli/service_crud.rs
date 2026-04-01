@@ -312,6 +312,47 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
         failures.run(
             &ctx,
             StepKind::NonBlocking,
+            "verify client-only binary was used on linux",
+            || {
+                let clients_dir = ctx.temp_home_path().join(".clickhouse").join("clients");
+                if cfg!(target_os = "linux") {
+                    if !clients_dir.exists() {
+                        return Err(
+                            "expected ~/.clickhouse/clients/ to exist on linux after cloud service client query"
+                                .into(),
+                        );
+                    }
+                    let has_client_binary = std::fs::read_dir(&clients_dir)?
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.path().join("clickhouse-client").exists());
+                    if !has_client_binary {
+                        return Err(
+                            "expected a clickhouse-client binary in ~/.clickhouse/clients/*/"
+                                .into(),
+                        );
+                    }
+                    // Verify no full binary was downloaded (versions dir should be empty or absent)
+                    let versions_dir = ctx.temp_home_path().join(".clickhouse").join("versions");
+                    let has_full_binary = versions_dir.exists()
+                        && std::fs::read_dir(&versions_dir)?
+                            .filter_map(|e| e.ok())
+                            .any(|e| e.path().join("clickhouse").exists());
+                    if has_full_binary {
+                        return Err(
+                            "full binary was downloaded instead of client-only on linux".into(),
+                        );
+                    }
+                    eprintln!("  verified: client-only binary used (not full binary)");
+                } else {
+                    eprintln!("  skipped: client-only verification only applies to linux");
+                }
+                Ok(())
+            },
+        )?;
+
+        failures.run(
+            &ctx,
+            StepKind::NonBlocking,
             "cloud service client query by name",
             || {
                 let output = runner.service_client_query_by_name(
