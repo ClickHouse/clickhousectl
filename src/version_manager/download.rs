@@ -18,7 +18,7 @@ pub async fn download_from_source(
 /// Downloads a file from a URL to the specified path, with progress bar
 pub async fn download_url(url: &str, dest_path: &Path) -> Result<()> {
     let client = reqwest::Client::builder()
-        .user_agent("clickhousectl")
+        .user_agent(crate::user_agent::user_agent())
         .build()?;
 
     let response = client

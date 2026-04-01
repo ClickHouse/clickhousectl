@@ -632,10 +632,11 @@ pub async fn service_create(
             println!("  Max Memory/Replica: {} GB", max_mem);
         }
         if let Some(endpoints) = &response.service.endpoints
-            && let Some(ep) = endpoints.first() {
-                println!("  Host: {}", ep.host);
-                println!("  Port: {}", ep.port);
-            }
+            && let Some(ep) = endpoints.first()
+        {
+            println!("  Host: {}", ep.host);
+            println!("  Port: {}", ep.port);
+        }
         println!();
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
@@ -1729,8 +1730,7 @@ async fn ensure_version_installed(
         "Service requires ClickHouse {} — downloading...",
         resolved.display_version
     );
-    let version =
-        version_manager::install::install_resolved(&resolved, &platform, false).await?;
+    let version = version_manager::install::install_resolved(&resolved, &platform, false).await?;
     Ok(version)
 }
 

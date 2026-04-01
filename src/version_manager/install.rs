@@ -25,21 +25,20 @@ pub async fn install_resolved(
 
     // For builds source (minor versions like "25.12"), check if we already have
     // an installed version matching that minor — avoids re-downloading ~150MB
-    if !force {
-        if let DownloadSource::Builds { ref version_path } = resolved.source {
-            if version_path != "master" {
-                let prefix = format!("{}.", version_path);
-                if let Ok(installed) = list_installed_versions() {
-                    if let Some(existing) = installed.iter().find(|v| v.starts_with(&prefix)) {
-                        eprintln!(
-                            "ClickHouse {} is already installed as {}",
-                            version_path, existing
-                        );
-                        eprintln!("Use --force to re-download the latest build");
-                        return Ok(existing.clone());
-                    }
-                }
-            }
+    if !force
+        && let DownloadSource::Builds { ref version_path } = resolved.source
+        && version_path != "master"
+    {
+        let prefix = format!("{}.", version_path);
+        if let Ok(installed) = list_installed_versions()
+            && let Some(existing) = installed.iter().find(|v| v.starts_with(&prefix))
+        {
+            eprintln!(
+                "ClickHouse {} is already installed as {}",
+                version_path, existing
+            );
+            eprintln!("Use --force to re-download the latest build");
+            return Ok(existing.clone());
         }
     }
 
@@ -140,10 +139,7 @@ fn parse_version_output(output: &str) -> Result<String> {
 /// Extract a tarball, finding the clickhouse binary automatically.
 /// Handles both packages.clickhouse.com layout (usr/bin/clickhouse inside subdir)
 /// and GitHub releases layout (same structure).
-fn extract_tarball_auto(
-    tarball_path: &std::path::Path,
-    dest_dir: &std::path::Path,
-) -> Result<()> {
+fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Path) -> Result<()> {
     let status = std::process::Command::new("tar")
         .args(["xzf", &tarball_path.to_string_lossy()])
         .current_dir(dest_dir)
