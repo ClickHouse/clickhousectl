@@ -616,15 +616,6 @@ pub fn service_has_ip_access_entry(value: &Value, source: &str) -> bool {
     })
 }
 
-// Strict deletion is used by the test body itself to verify that the explicit delete
-// command succeeded for a still-existing service. If the service is already gone here,
-// the delete behavior was not actually exercised and the test should fail.
-pub fn delete_service_and_confirm_gone(runner: &CliRunner<'_>, service_id: &str) -> TestResult<()> {
-    eprintln!("  delete: deleting service");
-    request_service_deletion(runner, service_id, false)?;
-    wait_for_service_to_disappear(runner, service_id)
-}
-
 // Cleanup teardown has different semantics from the strict test assertion above:
 // its job is only to ensure that no cloud resources are left behind. "Already gone"
 // is therefore a successful end state and should not cause cleanup to fail.
