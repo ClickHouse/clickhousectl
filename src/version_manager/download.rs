@@ -1,18 +1,28 @@
 use crate::error::{Error, Result};
-use crate::version_manager::list::Channel;
-use crate::version_manager::resolve::build_download_url;
+use crate::version_manager::platform::{DownloadSource, Platform};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
-/// Downloads a ClickHouse version to the specified path
-pub async fn download_version(version: &str, channel: Channel, dest_path: &Path) -> Result<()> {
-    let url = build_download_url(version, channel)?;
+/// Downloads from a DownloadSource to the specified path
+pub async fn download_from_source(
+    source: &DownloadSource,
+    platform: &Platform,
+    dest_path: &Path,
+) -> Result<()> {
+    let url = source.url(platform);
+    download_url(&url, dest_path).await
+}
 
-    let client = reqwest::Client::new();
+/// Downloads a file from a URL to the specified path, with progress bar
+pub async fn download_url(url: &str, dest_path: &Path) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .user_agent("clickhousectl")
+        .build()?;
+
     let response = client
-        .get(&url)
+        .get(url)
         .send()
         .await?
         .error_for_status()

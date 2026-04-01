@@ -46,7 +46,7 @@ async fn run_skills(args: SkillsArgs) -> Result<()> {
 
 async fn run_local(cmd: LocalCommands) -> Result<()> {
     match cmd {
-        LocalCommands::Install { version } => install(&version).await,
+        LocalCommands::Install { version, force } => install(&version, force).await,
         LocalCommands::List { remote } => {
             if remote {
                 list_available().await
@@ -73,12 +73,21 @@ async fn run_local(cmd: LocalCommands) -> Result<()> {
     }
 }
 
-async fn install(version_spec: &str) -> Result<()> {
-    println!("Resolving version {}...", version_spec);
-    let entry = version_manager::resolve_version(version_spec).await?;
-    println!("Resolved to version {} ({})", entry.version, entry.channel);
+async fn install(version_spec: &str, force: bool) -> Result<()> {
+    let spec = version_manager::parse_version_spec(version_spec)?;
+    let platform = version_manager::platform::Platform::detect()?;
 
-    version_manager::install_version(&entry.version, entry.channel).await?;
+    eprintln!("Resolving {}...", spec);
+    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
+
+    let version = version_manager::install::install_resolved(&resolved, &platform, force).await?;
+
+    // If this is the first installed version, set it as default
+    if version_manager::get_default_version().is_err() {
+        version_manager::set_default_version(&version)?;
+        eprintln!("Set as default version");
+    }
+
     Ok(())
 }
 
@@ -105,8 +114,8 @@ fn list_installed() -> Result<()> {
 }
 
 async fn list_available() -> Result<()> {
-    println!("Fetching available versions...");
-    let versions = version_manager::list_available_versions().await?;
+    eprintln!("Checking available versions on builds.clickhouse.com...");
+    let versions = version_manager::list_available_versions_from_builds().await?;
 
     if versions.is_empty() {
         println!("No versions available");
@@ -115,36 +124,47 @@ async fn list_available() -> Result<()> {
 
     let installed = version_manager::list_installed_versions().unwrap_or_default();
 
-    println!("Available versions:");
-    for entry in versions.iter().take(20) {
-        if installed.contains(&entry.version) {
-            println!("  {} [{}] (installed)", entry.version, entry.channel);
+    println!("Available versions (builds.clickhouse.com):");
+    for v in &versions {
+        // Check if any installed version matches this minor
+        let prefix = format!("{}.", v);
+        let is_installed = installed.iter().any(|iv| iv.starts_with(&prefix) || iv == v);
+        if is_installed {
+            println!("  {} (installed)", v);
         } else {
-            println!("  {} [{}]", entry.version, entry.channel);
+            println!("  {}", v);
         }
     }
-
-    if versions.len() > 20 {
-        println!("  ... and {} more", versions.len() - 20);
-    }
+    println!();
+    println!("Install with: clickhousectl local install <version>");
+    println!("For exact patch versions, use: clickhousectl local install 25.12.9.61");
 
     Ok(())
 }
 
 async fn use_version(version_spec: &str) -> Result<()> {
-    println!("Resolving version {}...", version_spec);
-    let entry = version_manager::resolve_version(version_spec).await?;
-    let version = &entry.version;
+    let spec = version_manager::parse_version_spec(version_spec)?;
+    let platform = version_manager::platform::Platform::detect()?;
 
-    // Install if not already installed
-    let installed = version_manager::list_installed_versions()?;
-    if !installed.contains(version) {
-        println!("Version {} not installed, installing...", version);
-        version_manager::install_version(version, entry.channel).await?;
-    }
+    eprintln!("Resolving {}...", spec);
+    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
 
-    version_manager::set_default_version(version)?;
-    println!("Default version set to {}", version);
+    // If exact version is known, check if already installed
+    let version = if let Some(ref v) = resolved.exact_version {
+        let installed = version_manager::list_installed_versions()?;
+        if installed.contains(v) {
+            v.clone()
+        } else {
+            eprintln!("Version {} not installed, installing...", v);
+            version_manager::install::install_resolved(&resolved, &platform, false).await?
+        }
+    } else {
+        // Version not known upfront (builds source) — install will detect it
+        version_manager::install::install_resolved(&resolved, &platform, false).await?
+    };
+
+    version_manager::set_default_version(&version)?;
+    eprintln!("Default version set to {}", version);
     Ok(())
 }
 

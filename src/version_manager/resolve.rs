@@ -1,192 +1,335 @@
 use crate::error::{Error, Result};
 use crate::version_manager::list::{Channel, VersionEntry, list_available_versions};
-use std::fmt;
+use crate::version_manager::platform::{DownloadSource, Platform, builds_probe_url};
+use crate::version_manager::spec::VersionSpec;
+use serde::Deserialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Os {
-    MacOS,
-    Linux,
+/// Result of resolving a version spec — contains everything needed to download
+#[derive(Debug, Clone)]
+pub struct ResolvedVersion {
+    /// The download source to use
+    pub source: DownloadSource,
+    /// Human-readable description of what was resolved (for display)
+    pub display_version: String,
+    /// Whether the exact version is known before download
+    /// (false for builds.clickhouse.com where we detect version post-download)
+    pub exact_version_known: bool,
+    /// The exact version string, if known
+    pub exact_version: Option<String>,
+    /// Channel, if known
+    pub channel: Option<Channel>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Arch {
-    X86_64,
-    Aarch64,
-}
-
-impl fmt::Display for Os {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Os::MacOS => write!(f, "macos"),
-            Os::Linux => write!(f, "linux"),
-        }
+/// Resolve a VersionSpec into a concrete download source
+pub async fn resolve(spec: &VersionSpec, platform: &Platform) -> Result<ResolvedVersion> {
+    match spec {
+        VersionSpec::Latest => resolve_latest(platform).await,
+        VersionSpec::Channel(channel) => resolve_channel(*channel, platform).await,
+        VersionSpec::Major(major) => resolve_major(*major, platform).await,
+        VersionSpec::Minor(major, minor) => resolve_minor(*major, *minor, platform).await,
+        VersionSpec::Exact(version) => resolve_exact(version, platform).await,
     }
 }
 
-impl fmt::Display for Arch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Arch::X86_64 => write!(f, "x86_64"),
-            Arch::Aarch64 => write!(f, "aarch64"),
-        }
-    }
+/// `install latest` — always from builds.clickhouse.com/master
+async fn resolve_latest(_platform: &Platform) -> Result<ResolvedVersion> {
+    Ok(ResolvedVersion {
+        source: DownloadSource::Builds {
+            version_path: "master".to_string(),
+        },
+        display_version: "latest".to_string(),
+        exact_version_known: false,
+        exact_version: None,
+        channel: None,
+    })
 }
 
-/// Detects the current platform
-pub fn detect_platform() -> Result<(Os, Arch)> {
-    let os = match std::env::consts::OS {
-        "macos" => Os::MacOS,
-        "linux" => Os::Linux,
-        other => {
-            return Err(Error::UnsupportedPlatform {
-                os: other.to_string(),
-                arch: std::env::consts::ARCH.to_string(),
-            });
-        }
-    };
-
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => Arch::X86_64,
-        "aarch64" => Arch::Aarch64,
-        other => {
-            return Err(Error::UnsupportedPlatform {
-                os: std::env::consts::OS.to_string(),
-                arch: other.to_string(),
-            });
-        }
-    };
-
-    Ok((os, arch))
-}
-
-/// Resolves a version specifier to an exact version and its channel
-/// Supports:
-/// - Exact: "25.1.2.3" -> ("25.1.2.3", "stable") (assumes stable for exact versions)
-/// - Partial: "25.1" -> latest matching "25.1.x.x" with its actual channel
-/// - Channel: "stable" -> latest stable, "lts" -> latest lts
-pub async fn resolve_version(version_spec: &str) -> Result<VersionEntry> {
-    // For all specifiers, fetch available versions to get accurate channel info
+/// `install stable` / `install lts` — GH API to find minor, then builds
+async fn resolve_channel(channel: Channel, platform: &Platform) -> Result<ResolvedVersion> {
     let available = list_available_versions().await?;
+    let entry = available
+        .iter()
+        .find(|e| e.channel == channel)
+        .ok_or_else(|| Error::NoMatchingVersion(channel.to_string()))?;
 
-    // If it looks like an exact version (e.g. 25.12.5.44), find its channel from the list
-    if version_spec.matches('.').count() == 3 {
-        let channel = available
-            .iter()
-            .find(|e| e.version == version_spec)
-            .map(|e| e.channel)
-            .unwrap_or(Channel::Stable);
-        return Ok(VersionEntry {
-            version: version_spec.to_string(),
-            channel,
+    // Extract minor version (e.g., "25.12" from "25.12.9.61")
+    let minor = extract_minor(&entry.version)?;
+
+    // Try builds first
+    if probe_builds(&minor, platform).await {
+        return Ok(ResolvedVersion {
+            source: DownloadSource::Builds {
+                version_path: minor.clone(),
+            },
+            display_version: format!("{} ({})", minor, channel),
+            exact_version_known: false,
+            exact_version: None,
+            channel: Some(channel),
         });
     }
 
-    match version_spec {
-        "stable" => available
-            .iter()
-            .find(|e| e.channel == Channel::Stable)
-            .cloned()
-            .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string())),
-        "lts" => available
-            .iter()
-            .find(|e| e.channel == Channel::Lts)
-            .cloned()
-            .ok_or_else(|| Error::NoMatchingVersion(version_spec.to_string())),
-        partial => {
-            // Find the latest version matching the partial spec
-            let prefix = format!("{}.", partial);
-            available
-                .iter()
-                .find(|e| e.version.starts_with(&prefix) || e.version == partial)
-                .cloned()
-                .ok_or_else(|| Error::NoMatchingVersion(partial.to_string()))
+    // Fallback: use packages (Linux) or GitHub (macOS)
+    Ok(fallback_source(
+        &entry.version,
+        entry.channel,
+        platform,
+    ))
+}
+
+/// `install 25` — probe builds for highest 25.x minor
+async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersion> {
+    // Probe builds.clickhouse.com for all possible minors in this major (1..12)
+    let mut highest_available: Option<u32> = None;
+    let client = reqwest::Client::builder()
+        .user_agent("clickhousectl")
+        .build()
+        .map_err(|e| Error::Download(e.to_string()))?;
+
+    for minor in 1..=12 {
+        let url = builds_probe_url(&format!("{}.{}", major, minor), platform);
+        match client.head(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                highest_available = Some(minor);
+            }
+            _ => {}
         }
+    }
+
+    if let Some(minor) = highest_available {
+        let version_path = format!("{}.{}", major, minor);
+        return Ok(ResolvedVersion {
+            source: DownloadSource::Builds {
+                version_path: version_path.clone(),
+            },
+            display_version: version_path,
+            exact_version_known: false,
+            exact_version: None,
+            channel: None,
+        });
+    }
+
+    // Fallback: try GH matching-refs API for each minor, highest first
+    for minor in (1..=12).rev() {
+        let prefix = format!("{}.{}", major, minor);
+        if let Ok(entry) = find_version_by_refs(&prefix).await {
+            return Ok(fallback_source(
+                &entry.version,
+                entry.channel,
+                platform,
+            ));
+        }
+    }
+
+    Err(Error::NoMatchingVersion(major.to_string()))
+}
+
+/// `install 25.12` — try builds, fallback to packages/GH
+async fn resolve_minor(major: u32, minor: u32, platform: &Platform) -> Result<ResolvedVersion> {
+    let version_path = format!("{}.{}", major, minor);
+
+    // Try builds first
+    if probe_builds(&version_path, platform).await {
+        return Ok(ResolvedVersion {
+            source: DownloadSource::Builds {
+                version_path: version_path.clone(),
+            },
+            display_version: version_path,
+            exact_version_known: false,
+            exact_version: None,
+            channel: None,
+        });
+    }
+
+    // Fallback: targeted GH API call to find exact version for this minor
+    let entry = find_version_by_refs(&version_path).await?;
+
+    Ok(fallback_source(
+        &entry.version,
+        entry.channel,
+        platform,
+    ))
+}
+
+/// `install 25.12.9.61` — exact version, needs channel from GH API
+async fn resolve_exact(version: &str, platform: &Platform) -> Result<ResolvedVersion> {
+    // Use matching-refs to find the exact tag and its channel
+    // For "25.12.9.61", search refs matching "v25.12.9.61" — should return the exact tag
+    let channel = find_exact_channel(version).await.unwrap_or(Channel::Stable);
+    Ok(fallback_source(version, channel, platform))
+}
+
+/// Look up the channel for an exact version via GitHub's matching-refs API
+async fn find_exact_channel(version: &str) -> Result<Channel> {
+    let url = format!(
+        "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}-",
+        version
+    );
+    let client = reqwest::Client::builder().user_agent("clickhousectl").build()?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
+
+    let refs: Vec<GitRef> = response.json().await?;
+
+    for git_ref in &refs {
+        let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
+            continue;
+        };
+        if let Some(dash_pos) = tag.rfind('-') {
+            let suffix = &tag[dash_pos + 1..];
+            if let Some(channel) = Channel::from_tag_suffix(suffix) {
+                return Ok(channel);
+            }
+        }
+    }
+
+    Err(Error::NoMatchingVersion(version.to_string()))
+}
+
+/// Build a fallback download source: packages for Linux, GitHub for macOS
+fn fallback_source(version: &str, channel: Channel, platform: &Platform) -> ResolvedVersion {
+    let source = if platform.packages_arch().is_some() {
+        // Linux: use packages.clickhouse.com
+        DownloadSource::Packages {
+            channel,
+            version: version.to_string(),
+        }
+    } else {
+        // macOS: use GitHub releases
+        DownloadSource::GitHub {
+            version: version.to_string(),
+            channel,
+        }
+    };
+
+    ResolvedVersion {
+        source,
+        display_version: version.to_string(),
+        exact_version_known: true,
+        exact_version: Some(version.to_string()),
+        channel: Some(channel),
     }
 }
 
-/// Returns whether the current platform downloads a tarball (Linux) vs a bare binary (macOS)
-pub fn is_tarball_download() -> Result<bool> {
-    let (os, _) = detect_platform()?;
-    Ok(os == Os::Linux)
+/// Probe builds.clickhouse.com with a HEAD request to check if a version exists
+async fn probe_builds(version_path: &str, platform: &Platform) -> bool {
+    let url = builds_probe_url(version_path, platform);
+    let client = match reqwest::Client::builder()
+        .user_agent("clickhousectl")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    match client.head(&url).send().await {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
+    }
 }
 
-/// Builds the download URL for a specific version from GitHub releases
-/// macOS: .../clickhouse-macos-{arch}
-/// Linux: .../clickhouse-common-static-{version}-{arch}.tgz
-pub fn build_download_url(version: &str, channel: Channel) -> Result<String> {
-    let (os, arch) = detect_platform()?;
-    let base = format!(
-        "https://github.com/ClickHouse/ClickHouse/releases/download/v{}-{}",
-        version, channel
+#[derive(Deserialize)]
+struct GitRef {
+    #[serde(rename = "ref")]
+    ref_name: String,
+}
+
+/// Find the latest release version matching a prefix using GitHub's matching-refs API.
+/// This is a single targeted API call that works regardless of how old the version is.
+/// prefix should be like "25.2" or "24.8" — we search for tags matching `v{prefix}.`
+async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
+    let url = format!(
+        "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
+        prefix
     );
-    match os {
-        Os::Linux => {
-            let linux_arch = match arch {
-                Arch::X86_64 => "amd64",
-                Arch::Aarch64 => "arm64",
-            };
-            Ok(format!(
-                "{}/clickhouse-common-static-{}-{}.tgz",
-                base, version, linux_arch
-            ))
+    let client = reqwest::Client::builder().user_agent("clickhousectl").build()?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
+
+    let refs: Vec<GitRef> = response.json().await?;
+
+    // Parse refs like "refs/tags/v25.2.2.39-stable" into VersionEntry
+    // Filter for stable/lts only, take the latest (last in sorted order)
+    let mut best: Option<VersionEntry> = None;
+    for git_ref in &refs {
+        let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
+            continue;
+        };
+        if let Some(dash_pos) = tag.rfind('-') {
+            let version = &tag[..dash_pos];
+            let suffix = &tag[dash_pos + 1..];
+            if let Some(channel) = Channel::from_tag_suffix(suffix) {
+                best = Some(VersionEntry {
+                    version: version.to_string(),
+                    channel,
+                });
+            }
         }
-        Os::MacOS => Ok(format!("{}/clickhouse-{}-{}", base, os, arch)),
+    }
+
+    best.ok_or_else(|| Error::NoMatchingVersion(prefix.to_string()))
+}
+
+/// Extract the minor version from a full version string (e.g., "25.12.9.61" -> "25.12")
+fn extract_minor(version: &str) -> Result<String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    if parts.len() >= 2 {
+        Ok(format!("{}.{}", parts[0], parts[1]))
+    } else {
+        Err(Error::NoMatchingVersion(format!(
+            "cannot extract minor version from '{}'",
+            version
+        )))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version_manager::platform::Os;
 
     #[test]
-    fn test_detect_platform() {
-        let result = detect_platform();
-        assert!(result.is_ok());
-        let (os, arch) = result.unwrap();
-        assert!(os == Os::MacOS || os == Os::Linux);
-        assert!(arch == Arch::X86_64 || arch == Arch::Aarch64);
+    fn test_extract_minor() {
+        assert_eq!(extract_minor("25.12.9.61").unwrap(), "25.12");
+        assert_eq!(extract_minor("24.8.6.70").unwrap(), "24.8");
+        assert_eq!(extract_minor("25.12").unwrap(), "25.12");
     }
 
     #[test]
-    fn test_build_download_url_stable() {
-        let url = build_download_url("25.12.5.44", Channel::Stable).unwrap();
-        assert!(url.starts_with("https://github.com/ClickHouse/ClickHouse/releases/download/"));
-        assert!(url.contains("v25.12.5.44-stable"));
+    fn test_extract_minor_invalid() {
+        assert!(extract_minor("25").is_err());
     }
 
     #[test]
-    fn test_build_download_url_lts() {
-        let url = build_download_url("25.8.16.34", Channel::Lts).unwrap();
-        assert!(url.starts_with("https://github.com/ClickHouse/ClickHouse/releases/download/"));
-        assert!(url.contains("v25.8.16.34-lts"));
+    fn test_fallback_source_linux() {
+        let platform = Platform {
+            os: Os::Linux,
+            arch: crate::version_manager::platform::Arch::X86_64,
+        };
+        let resolved = fallback_source("25.12.9.61", Channel::Stable, &platform);
+        assert!(matches!(resolved.source, DownloadSource::Packages { .. }));
+        assert_eq!(resolved.exact_version, Some("25.12.9.61".to_string()));
+        assert!(resolved.exact_version_known);
     }
 
     #[test]
-    fn test_build_download_url_platform_specific() {
-        let url = build_download_url("25.12.5.44", Channel::Stable).unwrap();
-        let (os, arch) = detect_platform().unwrap();
-        match os {
-            Os::MacOS => {
-                assert!(url.contains(&format!("clickhouse-macos-{}", arch)));
-                assert!(!url.ends_with(".tgz"));
-            }
-            Os::Linux => {
-                let expected_arch = match arch {
-                    Arch::X86_64 => "amd64",
-                    Arch::Aarch64 => "arm64",
-                };
-                assert!(url.contains(&format!(
-                    "clickhouse-common-static-25.12.5.44-{}.tgz",
-                    expected_arch
-                )));
-            }
-        }
-    }
-
-    #[test]
-    fn test_is_tarball_download() {
-        let is_tarball = is_tarball_download().unwrap();
-        let (os, _) = detect_platform().unwrap();
-        assert_eq!(is_tarball, os == Os::Linux);
+    fn test_fallback_source_macos() {
+        let platform = Platform {
+            os: Os::MacOS,
+            arch: crate::version_manager::platform::Arch::Aarch64,
+        };
+        let resolved = fallback_source("25.12.9.61", Channel::Stable, &platform);
+        assert!(matches!(resolved.source, DownloadSource::GitHub { .. }));
+        assert_eq!(resolved.exact_version, Some("25.12.9.61".to_string()));
+        assert!(resolved.exact_version_known);
     }
 }
