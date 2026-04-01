@@ -88,6 +88,22 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     Ok(())
                 }
             }
+            AuthCommands::Signup => {
+                let api_url = args
+                    .url
+                    .as_deref()
+                    .unwrap_or("https://api.clickhouse.cloud");
+                let parsed = url::Url::parse(api_url)
+                    .map_err(|e| Error::Cloud(format!("Invalid URL: {}", e)))?;
+                let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
+                let base_host = host.strip_prefix("api.").unwrap_or(host);
+                let url = format!("https://console.{}/signUp", base_host);
+                println!("Opening ClickHouse Cloud sign-up page...");
+                if open::that(&url).is_err() {
+                    println!("Could not open browser. Please visit: {}", url);
+                }
+                Ok(())
+            }
             AuthCommands::Logout { oauth, api_keys } => {
                 match (oauth, api_keys) {
                     (true, false) => {

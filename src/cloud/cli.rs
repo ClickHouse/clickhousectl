@@ -65,6 +65,8 @@ CONTEXT FOR AGENTS:
     },
     /// Show current authentication status
     Status,
+    /// Open the ClickHouse Cloud sign-up page in your browser
+    Signup,
 }
 
 #[derive(Args)]
