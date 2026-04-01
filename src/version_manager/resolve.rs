@@ -81,7 +81,7 @@ async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersio
     // Probe builds.clickhouse.com for all possible minors in this major (1..12)
     let mut highest_available: Option<u32> = None;
     let client = reqwest::Client::builder()
-        .user_agent("clickhousectl")
+        .user_agent(crate::user_agent::user_agent())
         .build()
         .map_err(|e| Error::Download(e.to_string()))?;
 
@@ -164,7 +164,7 @@ async fn find_exact_channel(version: &str) -> Result<Channel> {
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}-",
         version
     );
-    let client = reqwest::Client::builder().user_agent("clickhousectl").build()?;
+    let client = reqwest::Client::builder().user_agent(crate::user_agent::user_agent()).build()?;
 
     let response = client
         .get(&url)
@@ -219,7 +219,7 @@ fn fallback_source(version: &str, channel: Channel, platform: &Platform) -> Reso
 async fn probe_builds(version_path: &str, platform: &Platform) -> bool {
     let url = builds_probe_url(version_path, platform);
     let client = match reqwest::Client::builder()
-        .user_agent("clickhousectl")
+        .user_agent(crate::user_agent::user_agent())
         .build()
     {
         Ok(c) => c,
@@ -246,7 +246,7 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
         prefix
     );
-    let client = reqwest::Client::builder().user_agent("clickhousectl").build()?;
+    let client = reqwest::Client::builder().user_agent(crate::user_agent::user_agent()).build()?;
 
     let response = client
         .get(&url)

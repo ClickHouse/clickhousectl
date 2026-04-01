@@ -71,7 +71,7 @@ pub struct VersionEntry {
 /// Fetches available versions from GitHub releases
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = reqwest::Client::builder().user_agent("ch-cli").build()?;
+    let client = reqwest::Client::builder().user_agent(crate::user_agent::user_agent()).build()?;
 
     let response = client
         .get(url)
@@ -111,7 +111,7 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
 
     let platform = Platform::detect()?;
     let client = reqwest::Client::builder()
-        .user_agent("clickhousectl")
+        .user_agent(crate::user_agent::user_agent())
         .build()
         .map_err(|e| Error::Download(e.to_string()))?;
 

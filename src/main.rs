@@ -5,6 +5,7 @@ mod init;
 mod paths;
 mod server;
 mod skills;
+mod user_agent;
 mod version_manager;
 
 use clap::Parser;

@@ -6,7 +6,7 @@ use std::env;
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
 pub fn user_agent() -> String {
-    format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"))
+    crate::user_agent::user_agent()
 }
 
 #[derive(Debug)]
