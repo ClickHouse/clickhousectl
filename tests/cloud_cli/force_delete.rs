@@ -88,7 +88,9 @@ fn cloud_service_force_delete() -> TestResult<()> {
                 ]);
                 match result {
                     Err(_) => Ok(()),
-                    Ok(_) => Err("expected delete without --force to fail on a running service".into()),
+                    Ok(_) => {
+                        Err("expected delete without --force to fail on a running service".into())
+                    }
                 }
             },
         )?;
@@ -105,37 +107,31 @@ fn cloud_service_force_delete() -> TestResult<()> {
         })?;
         cleanup.unregister_service(&service_id);
 
-        failures.run(
-            &ctx,
-            StepKind::Blocking,
-            "confirm service is gone",
-            || {
-                poll_until(
-                    "service deletion",
-                    ctx.delete_timeout,
-                    ctx.poll_interval,
-                    || match runner.service_get(&service_id) {
-                        Ok(output) => {
-                            let state =
-                                json_string(&output.json, &["/service/state", "/state"])?;
-                            if matches!(state, "deleted" | "deleting") {
-                                Ok(None)
-                            } else {
-                                Ok(None)
-                            }
+        failures.run(&ctx, StepKind::Blocking, "confirm service is gone", || {
+            poll_until(
+                "service deletion",
+                ctx.delete_timeout,
+                ctx.poll_interval,
+                || match runner.service_get(&service_id) {
+                    Ok(output) => {
+                        let state = json_string(&output.json, &["/service/state", "/state"])?;
+                        if matches!(state, "deleted" | "deleting") {
+                            Ok(None)
+                        } else {
+                            Ok(None)
                         }
-                        Err(error) => {
-                            let message = error.to_string();
-                            if message.contains("404") || message.contains("not found") {
-                                Ok(Some(()))
-                            } else {
-                                Err(error)
-                            }
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        if message.contains("404") || message.contains("not found") {
+                            Ok(Some(()))
+                        } else {
+                            Err(error)
                         }
-                    },
-                )
-            },
-        )?;
+                    }
+                },
+            )
+        })?;
 
         failures.finish()
     })();

@@ -18,6 +18,11 @@ pub fn load_credentials() -> Option<Credentials> {
     serde_json::from_str(&data).ok()
 }
 
+pub fn clear_credentials() {
+    let path = credentials_path();
+    let _ = std::fs::remove_file(path);
+}
+
 pub fn save_credentials(creds: &Credentials) -> Result<(), Box<dyn std::error::Error>> {
     let dir = init::local_dir();
     if !dir.exists() {
