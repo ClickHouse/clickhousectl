@@ -299,11 +299,9 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 let output = runner.service_client_query(&service_id, &password, "SELECT 1")?;
                 let trimmed = output.stdout.trim();
                 if trimmed != "1" {
-                    return Err(format!(
-                        "expected SELECT 1 to return '1', got '{}'",
-                        trimmed
-                    )
-                    .into());
+                    return Err(
+                        format!("expected SELECT 1 to return '1', got '{}'", trimmed).into(),
+                    );
                 }
                 Ok(())
             },
@@ -321,11 +319,7 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 )?;
                 let trimmed = output.stdout.trim();
                 if trimmed != "cloud_client_ok" {
-                    return Err(format!(
-                        "expected 'cloud_client_ok', got '{}'",
-                        trimmed
-                    )
-                    .into());
+                    return Err(format!("expected 'cloud_client_ok', got '{}'", trimmed).into());
                 }
                 Ok(())
             },
@@ -336,17 +330,11 @@ fn cloud_service_crud_lifecycle() -> TestResult<()> {
             StepKind::NonBlocking,
             "cloud service client with generate-password",
             || {
-                let output = runner.service_client_query_generate_password(
-                    &service_id,
-                    "SELECT 'gen_pw_ok'",
-                )?;
+                let output = runner
+                    .service_client_query_generate_password(&service_id, "SELECT 'gen_pw_ok'")?;
                 let trimmed = output.stdout.trim();
                 if trimmed != "gen_pw_ok" {
-                    return Err(format!(
-                        "expected 'gen_pw_ok', got '{}'",
-                        trimmed
-                    )
-                    .into());
+                    return Err(format!("expected 'gen_pw_ok', got '{}'", trimmed).into());
                 }
                 Ok(())
             },

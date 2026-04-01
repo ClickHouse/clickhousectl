@@ -440,8 +440,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             } => {
                 if interactive {
                     // Interactive prompt for API key/secret
-                    cloud::commands::auth_interactive()
-                        .map_err(|e| Error::Cloud(e.to_string()))
+                    cloud::commands::auth_interactive().map_err(|e| Error::Cloud(e.to_string()))
                 } else if api_key.is_some() || api_secret.is_some() {
                     // Non-interactive API key login
                     let key = api_key.ok_or_else(|| {
@@ -470,8 +469,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     let tokens = cloud::auth::device_auth_login(url)
                         .await
                         .map_err(|e| Error::Cloud(e.to_string()))?;
-                    cloud::auth::save_tokens(&tokens)
-                        .map_err(|e| Error::Cloud(e.to_string()))?;
+                    cloud::auth::save_tokens(&tokens).map_err(|e| Error::Cloud(e.to_string()))?;
                     println!("Logged in successfully.");
                     println!("Tokens saved to {}", cloud::auth::tokens_path().display());
                     Ok(())
@@ -624,8 +622,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 force,
                 org_id,
             } => {
-                cloud::commands::service_delete(&client, &service_id, force, org_id.as_deref(), json)
-                    .await
+                cloud::commands::service_delete(
+                    &client,
+                    &service_id,
+                    force,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
             }
             ServiceCommands::Start { service_id, org_id } => {
                 cloud::commands::service_start(&client, &service_id, org_id.as_deref(), json).await

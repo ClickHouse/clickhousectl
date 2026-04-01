@@ -1598,13 +1598,7 @@ pub async fn service_client(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     // Resolve the service
-    let svc = resolve_service(
-        client,
-        &org_id,
-        opts.name.as_deref(),
-        opts.id.as_deref(),
-    )
-    .await?;
+    let svc = resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref()).await?;
 
     // Find the nativesecure endpoint
     let endpoint = svc

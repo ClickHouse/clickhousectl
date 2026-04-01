@@ -995,7 +995,13 @@ mod tests {
             "SELECT 1".to_string(),
         ];
         let redacted = redact_command(&binary, &args);
-        assert!(!redacted.contains("super-secret-123"), "password was not redacted: {redacted}");
-        assert!(redacted.contains("--password <redacted>"), "missing redacted placeholder: {redacted}");
+        assert!(
+            !redacted.contains("super-secret-123"),
+            "password was not redacted: {redacted}"
+        );
+        assert!(
+            redacted.contains("--password <redacted>"),
+            "missing redacted placeholder: {redacted}"
+        );
     }
 }

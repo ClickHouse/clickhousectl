@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const AUDIENCE: &str = "openapi";
+const AUDIENCE: &str = "clickhousectl";
 const SCOPE: &str = "openid profile email offline_access";
 
 const DEFAULT_API_URL: &str = "https://api.clickhouse.cloud/v1";
