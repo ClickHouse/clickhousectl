@@ -111,12 +111,9 @@ jobs:
           ./target/debug/clickhousectl local use 25.12
           ./target/debug/clickhousectl local which | grep "25.12"
 
-      - name: Test already installed (expect error)
+      - name: Test already installed (skips download)
         run: |
-          if ./target/debug/clickhousectl local install 25.12 2>&1; then
-            echo "Should have errored for already-installed version"
-            exit 1
-          fi
+          ./target/debug/clickhousectl local install 25.12 2>&1 | grep "already installed"
 
       - name: Test force re-install
         run: |
