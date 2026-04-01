@@ -149,7 +149,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
     })?;
 
     let client = reqwest::Client::builder()
-        .user_agent(super::client::user_agent())
+        .user_agent(crate::user_agent::user_agent())
         .build()?;
 
     // Step 1: Request device code
@@ -267,7 +267,7 @@ pub async fn refresh_access_token(
         .ok_or_else(|| format!("Cannot refresh: unknown API host in '{}'", tokens.api_url))?;
 
     let client = reqwest::Client::builder()
-        .user_agent(super::client::user_agent())
+        .user_agent(crate::user_agent::user_agent())
         .build()?;
 
     let form_body = format!(

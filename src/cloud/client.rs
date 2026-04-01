@@ -5,10 +5,6 @@ use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
-pub fn user_agent() -> String {
-    crate::user_agent::user_agent()
-}
-
 #[derive(Debug)]
 pub struct CloudError {
     pub message: String,
@@ -42,7 +38,7 @@ impl CloudClient {
         url_override: Option<&str>,
     ) -> Result<Self> {
         let client = Client::builder()
-            .user_agent(user_agent())
+            .user_agent(crate::user_agent::user_agent())
             .build()
             .map_err(|e| CloudError {
                 message: format!("Failed to create HTTP client: {}", e),
