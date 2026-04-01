@@ -1,7 +1,8 @@
 use crate::error::{Error, Result};
-use crate::version_manager::list::{Channel, list_available_versions};
+use crate::version_manager::list::{Channel, VersionEntry, list_available_versions};
 use crate::version_manager::platform::{DownloadSource, Platform, builds_probe_url};
 use crate::version_manager::spec::VersionSpec;
+use serde::Deserialize;
 
 /// Result of resolving a version spec — contains everything needed to download
 #[derive(Debug, Clone)]
@@ -107,19 +108,19 @@ async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersio
         });
     }
 
-    // Fallback: try GH API
-    let available = list_available_versions().await?;
-    let prefix = format!("{}.", major);
-    let entry = available
-        .iter()
-        .find(|e| e.version.starts_with(&prefix))
-        .ok_or_else(|| Error::NoMatchingVersion(major.to_string()))?;
+    // Fallback: try GH matching-refs API for each minor, highest first
+    for minor in (1..=12).rev() {
+        let prefix = format!("{}.{}", major, minor);
+        if let Ok(entry) = find_version_by_refs(&prefix).await {
+            return Ok(fallback_source(
+                &entry.version,
+                entry.channel,
+                platform,
+            ));
+        }
+    }
 
-    Ok(fallback_source(
-        &entry.version,
-        entry.channel,
-        platform,
-    ))
+    Err(Error::NoMatchingVersion(major.to_string()))
 }
 
 /// `install 25.12` — try builds, fallback to packages/GH
@@ -139,13 +140,8 @@ async fn resolve_minor(major: u32, minor: u32, platform: &Platform) -> Result<Re
         });
     }
 
-    // Fallback: GH API to find exact version for this minor
-    let available = list_available_versions().await?;
-    let prefix = format!("{}.", version_path);
-    let entry = available
-        .iter()
-        .find(|e| e.version.starts_with(&prefix) || e.version == version_path)
-        .ok_or_else(|| Error::NoMatchingVersion(version_path))?;
+    // Fallback: targeted GH API call to find exact version for this minor
+    let entry = find_version_by_refs(&version_path).await?;
 
     Ok(fallback_source(
         &entry.version,
@@ -156,15 +152,42 @@ async fn resolve_minor(major: u32, minor: u32, platform: &Platform) -> Result<Re
 
 /// `install 25.12.9.61` — exact version, needs channel from GH API
 async fn resolve_exact(version: &str, platform: &Platform) -> Result<ResolvedVersion> {
-    // Look up channel from GH API
-    let available = list_available_versions().await?;
-    let channel = available
-        .iter()
-        .find(|e| e.version == version)
-        .map(|e| e.channel)
-        .unwrap_or(Channel::Stable); // Default to stable if not found
-
+    // Use matching-refs to find the exact tag and its channel
+    // For "25.12.9.61", search refs matching "v25.12.9.61" — should return the exact tag
+    let channel = find_exact_channel(version).await.unwrap_or(Channel::Stable);
     Ok(fallback_source(version, channel, platform))
+}
+
+/// Look up the channel for an exact version via GitHub's matching-refs API
+async fn find_exact_channel(version: &str) -> Result<Channel> {
+    let url = format!(
+        "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}-",
+        version
+    );
+    let client = reqwest::Client::builder().user_agent("clickhousectl").build()?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
+
+    let refs: Vec<GitRef> = response.json().await?;
+
+    for git_ref in &refs {
+        let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
+            continue;
+        };
+        if let Some(dash_pos) = tag.rfind('-') {
+            let suffix = &tag[dash_pos + 1..];
+            if let Some(channel) = Channel::from_tag_suffix(suffix) {
+                return Ok(channel);
+            }
+        }
+    }
+
+    Err(Error::NoMatchingVersion(version.to_string()))
 }
 
 /// Build a fallback download source: packages for Linux, GitHub for macOS
@@ -207,6 +230,53 @@ async fn probe_builds(version_path: &str, platform: &Platform) -> bool {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }
+}
+
+#[derive(Deserialize)]
+struct GitRef {
+    #[serde(rename = "ref")]
+    ref_name: String,
+}
+
+/// Find the latest release version matching a prefix using GitHub's matching-refs API.
+/// This is a single targeted API call that works regardless of how old the version is.
+/// prefix should be like "25.2" or "24.8" — we search for tags matching `v{prefix}.`
+async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
+    let url = format!(
+        "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
+        prefix
+    );
+    let client = reqwest::Client::builder().user_agent("clickhousectl").build()?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
+
+    let refs: Vec<GitRef> = response.json().await?;
+
+    // Parse refs like "refs/tags/v25.2.2.39-stable" into VersionEntry
+    // Filter for stable/lts only, take the latest (last in sorted order)
+    let mut best: Option<VersionEntry> = None;
+    for git_ref in &refs {
+        let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
+            continue;
+        };
+        if let Some(dash_pos) = tag.rfind('-') {
+            let version = &tag[..dash_pos];
+            let suffix = &tag[dash_pos + 1..];
+            if let Some(channel) = Channel::from_tag_suffix(suffix) {
+                best = Some(VersionEntry {
+                    version: version.to_string(),
+                    channel,
+                });
+            }
+        }
+    }
+
+    best.ok_or_else(|| Error::NoMatchingVersion(prefix.to_string()))
 }
 
 /// Extract the minor version from a full version string (e.g., "25.12.9.61" -> "25.12")
