@@ -91,7 +91,6 @@ pub enum LocalCommands {
     /// Install a ClickHouse version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Downloads a ClickHouse binary to ~/.clickhouse/versions/{version}/.
   `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
     Install {
         /// Version to install (e.g., latest, stable, lts, 25, 25.12, 25.12.9.61)
