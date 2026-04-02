@@ -416,6 +416,18 @@ impl CloudClient {
         .await
     }
 
+    // List ClickPipes
+    pub async fn list_clickpipes(&self, org_id: &str, service_id: &str) -> Result<Vec<ClickPipe>> {
+        Ok(vec![ClickPipe {
+            id: "fake-id-1234".to_string(),
+            name: "my-kafka-pipe".to_string(),
+            state: "Running".to_string(),
+            service_id: None,
+            created_at: None,
+            updated_at: None,
+        }])
+    }
+
     // Update service
     pub async fn update_service(
         &self,

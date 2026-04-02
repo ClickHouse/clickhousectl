@@ -195,7 +195,7 @@ fn parse_org_private_endpoint_remove(
                     "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
                     key
                 )
-                .into())
+                    .into())
             }
         }
     }
@@ -728,6 +728,31 @@ pub async fn service_stop(
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
         println!("Service {} stopping (state: {})", svc.name, svc.state);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_list(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    let clickpipes = client.list_clickpipes(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipes)?);
+    } else {
+        if clickpipes.is_empty() {
+            println!("No ClickPipes found");
+            return Ok(());
+        }
+        println!("ClickPipes:");
+        for cp in clickpipes {
+            println!("  {} ({}) - {}", cp.name, cp.id, cp.state);
+        }
     }
     Ok(())
 }

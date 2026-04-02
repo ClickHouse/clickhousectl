@@ -326,6 +326,16 @@ CONTEXT FOR AGENTS:
         command: BackupCommands,
     },
 
+    // Clickpipe commands
+    #[command(name = "clickpipe", after_help = "\
+CONTEXT FOR AGENTS:
+    Manage ClickPipes for ingesting data into ClickHouse Cloud. Subcommands: list, get.
+    Requires a service ID — get it from `clickhousectl cloud service list`.")]
+    ClickPipe {
+        #[command(subcommand)]
+        command: ClickPipeCommands,
+    },
+
     /// Manage organization members
     Member {
         #[command(subcommand)]
@@ -991,6 +1001,18 @@ CONTEXT FOR AGENTS:
 
         /// Backup ID
         backup_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+#[derive(Subcommand)]
+pub enum ClickPipeCommands {
+    /// List ClickPipes
+    List {
+        /// Service ID
+        service_id: String,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]

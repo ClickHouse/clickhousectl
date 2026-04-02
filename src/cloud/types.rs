@@ -1185,3 +1185,18 @@ pub struct UpdateBackupConfigRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_start_time: Option<String>,
 }
+
+/// ClickPipe
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipe {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}

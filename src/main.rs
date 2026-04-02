@@ -10,10 +10,10 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
-    CloudCommands, Commands, InvitationCommands, KeyCommands, LocalCommands, MemberCommands,
-    OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands, ServiceCommands,
-    SkillsArgs,
+    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, ClickPipeCommands,
+    CloudArgs, CloudCommands, Commands, InvitationCommands, KeyCommands, LocalCommands,
+    MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
+    ServiceCommands, SkillsArgs,
 };
 
 use cloud::CloudClient;
@@ -997,6 +997,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     json,
                 )
                 .await
+            }
+        },
+        CloudCommands::ClickPipe { command } => match command {
+            ClickPipeCommands::List { service_id, org_id } => {
+                cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json).await
             }
         },
     };
