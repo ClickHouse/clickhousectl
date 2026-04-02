@@ -1200,3 +1200,82 @@ pub struct ClickPipe {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
 }
+
+/// Create ClickPipe request
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateClickPipeRequest {
+    pub name: String,
+    pub source: CreateClickPipeSource,
+    pub destination: ClickPipeDestination,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateClickPipeSource {
+    pub object_storage: ObjectStorageSource,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectStorageSource {
+    #[serde(rename = "type")]
+    pub storage_type: String,
+    pub format: String,
+    pub url: String,
+    pub compression: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_continuous: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key: Option<ObjectStorageAccessKey>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectStorageAccessKey {
+    pub access_key_id: String,
+    pub secret_key: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeDestination {
+    pub database: String,
+    pub table: String,
+    pub managed_table: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_definition: Option<ClickPipeTableDefinition>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickPipeDestinationColumn>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeTableDefinition {
+    pub engine: ClickPipeTableEngine,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sorting_key: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeTableEngine {
+    #[serde(rename = "type")]
+    pub engine_type: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeDestinationColumn {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub column_type: String,
+}

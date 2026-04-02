@@ -1018,6 +1018,64 @@ pub enum ClickPipeCommands {
         #[arg(long)]
         org_id: Option<String>,
     },
+
+    /// Create a ClickPipe
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Source type: s3, gcs, azureblobstorage
+        #[arg(long)]
+        source: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Source URL (e.g., https://bucket.s3.region.amazonaws.com/path/*.json)
+        #[arg(long)]
+        source_url: String,
+
+        /// Data format: JSONEachRow, CSV, CSVWithNames, Parquet, Avro, etc.
+        #[arg(long)]
+        format: String,
+
+        /// Destination database
+        #[arg(long)]
+        database: String,
+
+        /// Destination table
+        #[arg(long)]
+        table: String,
+
+        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
+        #[arg(long = "column")]
+        columns: Vec<String>,
+
+        /// Compression: auto, gzip, brotli, xz, zstd, none
+        #[arg(long, default_value = "auto")]
+        compression: String,
+
+        /// Enable continuous ingestion
+        #[arg(long)]
+        continuous: bool,
+
+        /// IAM role ARN for authentication
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// Access key ID for authentication
+        #[arg(long, requires = "secret_key")]
+        access_key_id: Option<String>,
+
+        /// Secret key for authentication
+        #[arg(long, requires = "access_key_id")]
+        secret_key: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

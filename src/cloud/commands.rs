@@ -757,6 +757,95 @@ pub async fn clickpipe_list(
     Ok(())
 }
 
+pub async fn clickpipe_create(
+    client: &CloudClient,
+    service_id: &str,
+    source: &str,
+    name: &str,
+    url: &str,
+    format: &str,
+    database: &str,
+    table: &str,
+    columns: &[String],
+    compression: &str,
+    continuous: bool,
+    iam_role: Option<&str>,
+    access_key_id: Option<&str>,
+    secret_key: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    let parsed_columns: Vec<crate::cloud::types::ClickPipeDestinationColumn> = columns
+        .iter()
+        .map(|col| {
+            let (name, col_type) = col.split_once(':').ok_or_else(|| {
+                format!("Invalid column format '{}': expected name:type", col)
+            })?;
+            Ok(crate::cloud::types::ClickPipeDestinationColumn {
+                name: name.to_string(),
+                column_type: col_type.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let (authentication, iam_role_val, access_key) = match (iam_role, access_key_id, secret_key) {
+        (Some(role), _, _) => (Some("IAM_ROLE".to_string()), Some(role.to_string()), None),
+        (_, Some(key_id), Some(secret)) => (
+            Some("IAM_USER".to_string()),
+            None,
+            Some(crate::cloud::types::ObjectStorageAccessKey {
+                access_key_id: key_id.to_string(),
+                secret_key: secret.to_string(),
+            }),
+        ),
+        _ => (None, None, None),
+    };
+
+    let request = crate::cloud::types::CreateClickPipeRequest {
+        name: name.to_string(),
+        source: crate::cloud::types::CreateClickPipeSource {
+            object_storage: crate::cloud::types::ObjectStorageSource {
+                storage_type: source.to_string(),
+                format: format.to_string(),
+                url: url.to_string(),
+                compression: compression.to_string(),
+                is_continuous: if continuous { Some(true) } else { None },
+                authentication,
+                iam_role: iam_role_val,
+                access_key,
+            },
+        },
+        destination: crate::cloud::types::ClickPipeDestination {
+            database: database.to_string(),
+            table: table.to_string(),
+            managed_table: true,
+            table_definition: Some(crate::cloud::types::ClickPipeTableDefinition {
+                engine: crate::cloud::types::ClickPipeTableEngine {
+                    engine_type: "MergeTree".to_string(),
+                },
+                sorting_key: None,
+                partition_by: None,
+                primary_key: None,
+            }),
+            columns: if parsed_columns.is_empty() { None } else { Some(parsed_columns) },
+        },
+    };
+
+    let clickpipe = client.create_clickpipe(&org_id, service_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
 pub async fn backup_list(
     client: &CloudClient,
     service_id: &str,
