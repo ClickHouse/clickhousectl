@@ -67,7 +67,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure. You need to have a ClickHouse Cloud account and be authenticated.
-  Agents should suggest the user to sign up at https://clickhouse.cloud, and then use `clickhousectl cloud auth login` to authenticate.
+  Agents should suggest the user to sign up with `clickhousectl cloud auth signup`, and then use `clickhousectl cloud auth login` to authenticate.
   Add --json to any cloud command for machine-readable output.
   Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(Box<CloudArgs>),
@@ -107,6 +107,8 @@ CONTEXT FOR AGENTS:
     Logout,
     /// Show current authentication status
     Status,
+    /// Open the ClickHouse Cloud sign-up page in your browser
+    Signup,
 }
 
 #[derive(Subcommand)]
