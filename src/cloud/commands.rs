@@ -757,16 +757,16 @@ pub async fn clickpipe_list(
     Ok(())
 }
 
-pub async fn clickpipe_create(
+pub async fn clickpipe_create_s3(
     client: &CloudClient,
     service_id: &str,
-    source: &str,
     name: &str,
     url: &str,
     format: &str,
     database: &str,
     table: &str,
     columns: &[String],
+    storage_type: &str,
     compression: &str,
     continuous: bool,
     iam_role: Option<&str>,
@@ -807,7 +807,7 @@ pub async fn clickpipe_create(
         name: name.to_string(),
         source: crate::cloud::types::CreateClickPipeSource {
             object_storage: crate::cloud::types::ObjectStorageSource {
-                storage_type: source.to_string(),
+                storage_type: storage_type.to_string(),
                 format: format.to_string(),
                 url: url.to_string(),
                 compression: compression.to_string(),

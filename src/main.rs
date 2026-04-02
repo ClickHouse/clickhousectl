@@ -10,8 +10,9 @@ mod version_manager;
 
 use clap::Parser;
 use cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, ClickPipeCommands,
-    CloudArgs, CloudCommands, Commands, InvitationCommands, KeyCommands, LocalCommands,
+    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli,
+    ClickPipeCommands, ClickPipeCreateCommands, CloudArgs, CloudCommands, Commands,
+    InvitationCommands, KeyCommands, LocalCommands,
     MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
     ServiceCommands, SkillsArgs,
 };
@@ -1004,41 +1005,43 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json)
                     .await
             }
-            ClickPipeCommands::Create {
-                service_id,
-                source,
-                name,
-                source_url,
-                format,
-                database,
-                table,
-                columns,
-                compression,
-                continuous,
-                iam_role,
-                access_key_id,
-                secret_key,
-                org_id,
-            } => {
-                cloud::commands::clickpipe_create(
-                    &client,
-                    &service_id,
-                    &source,
-                    &name,
-                    &source_url,
-                    &format,
-                    &database,
-                    &table,
-                    &columns,
-                    &compression,
+            ClickPipeCommands::Create { command } => match command {
+                ClickPipeCreateCommands::S3 {
+                    service_id,
+                    name,
+                    source_url,
+                    format,
+                    database,
+                    table,
+                    columns,
+                    storage_type,
+                    compression,
                     continuous,
-                    iam_role.as_deref(),
-                    access_key_id.as_deref(),
-                    secret_key.as_deref(),
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+                    iam_role,
+                    access_key_id,
+                    secret_key,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_s3(
+                        &client,
+                        &service_id,
+                        &name,
+                        &source_url,
+                        &format,
+                        &database,
+                        &table,
+                        &columns,
+                        &storage_type,
+                        &compression,
+                        continuous,
+                        iam_role.as_deref(),
+                        access_key_id.as_deref(),
+                        secret_key.as_deref(),
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
             }
         },
     };

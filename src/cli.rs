@@ -1021,12 +1021,17 @@ pub enum ClickPipeCommands {
 
     /// Create a ClickPipe
     Create {
+        #[command(subcommand)]
+        command: ClickPipeCreateCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeCreateCommands {
+    /// Create a ClickPipe from S3 or other object storage
+    S3 {
         /// Service ID
         service_id: String,
-
-        /// Source type: s3, gcs, azureblobstorage
-        #[arg(long)]
-        source: String,
 
         /// ClickPipe name
         #[arg(long)]
@@ -1051,6 +1056,10 @@ pub enum ClickPipeCommands {
         /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
         #[arg(long = "column")]
         columns: Vec<String>,
+
+        /// Storage type: s3 (default), gcs, azureblobstorage, dospaces, cloudflarer2, ovhobjectstorage
+        #[arg(long, default_value = "s3")]
+        storage_type: String,
 
         /// Compression: auto, gzip, brotli, xz, zstd, none
         #[arg(long, default_value = "auto")]
