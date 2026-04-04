@@ -241,6 +241,10 @@ async fn start_server(
     args: Vec<String>,
     json: bool,
 ) -> Result<()> {
+    if json && foreground {
+        return Err(Error::JsonForegroundConflict);
+    }
+
     // Resolve server name and check for collisions before any downloads
     let server_name = server::resolve_name(name.as_deref());
 

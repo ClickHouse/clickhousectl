@@ -57,6 +57,9 @@ pub enum Error {
 
     #[error("{0}")]
     Skills(String),
+
+    #[error("--json and --foreground cannot be used together")]
+    JsonForegroundConflict,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
