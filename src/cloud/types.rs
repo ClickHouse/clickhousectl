@@ -1217,6 +1217,8 @@ pub struct CreateClickPipeSource {
     pub object_storage: Option<ObjectStorageSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kafka: Option<KafkaSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kinesis: Option<KinesisSource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1332,4 +1334,23 @@ pub struct KafkaSchemaRegistry {
     pub authentication: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<KafkaCredentials>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KinesisSource {
+    pub format: String,
+    pub stream_name: String,
+    pub region: String,
+    pub authentication: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key: Option<ObjectStorageAccessKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_enhanced_fan_out: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iterator_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
 }

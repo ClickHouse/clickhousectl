@@ -1179,6 +1179,72 @@ pub enum ClickPipeCreateCommands {
         #[arg(long)]
         org_id: Option<String>,
     },
+
+    /// Create a ClickPipe from Amazon Kinesis
+    Kinesis {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Kinesis stream name
+        #[arg(long)]
+        stream_name: String,
+
+        /// AWS region (e.g., us-east-1)
+        #[arg(long)]
+        region: String,
+
+        /// Data format: JSONEachRow, Avro, AvroConfluent
+        #[arg(long)]
+        format: String,
+
+        /// Destination database
+        #[arg(long)]
+        database: String,
+
+        /// Destination table
+        #[arg(long)]
+        table: String,
+
+        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+        #[arg(long = "column")]
+        columns: Vec<String>,
+
+        /// Authentication: IAM_ROLE (default), IAM_USER
+        #[arg(long, default_value = "IAM_ROLE")]
+        auth: String,
+
+        /// IAM role ARN
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// Access key ID for IAM_USER authentication
+        #[arg(long, requires = "secret_key")]
+        access_key_id: Option<String>,
+
+        /// Secret key for IAM_USER authentication
+        #[arg(long, requires = "access_key_id")]
+        secret_key: Option<String>,
+
+        /// Iterator type: TRIM_HORIZON (default), LATEST, AT_TIMESTAMP
+        #[arg(long, default_value = "TRIM_HORIZON")]
+        iterator_type: String,
+
+        /// Unix timestamp for AT_TIMESTAMP iterator type
+        #[arg(long)]
+        iterator_timestamp: Option<u64>,
+
+        /// Enable enhanced fan-out
+        #[arg(long)]
+        enhanced_fan_out: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

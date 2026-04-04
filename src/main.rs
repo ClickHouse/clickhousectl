@@ -1096,6 +1096,46 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     )
                     .await
                 }
+                ClickPipeCreateCommands::Kinesis {
+                    service_id,
+                    name,
+                    stream_name,
+                    region,
+                    format,
+                    database,
+                    table,
+                    columns,
+                    auth,
+                    iam_role,
+                    access_key_id,
+                    secret_key,
+                    iterator_type,
+                    iterator_timestamp,
+                    enhanced_fan_out,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_kinesis(
+                        &client,
+                        &service_id,
+                        &name,
+                        &stream_name,
+                        &region,
+                        &format,
+                        &database,
+                        &table,
+                        &columns,
+                        &auth,
+                        iam_role.as_deref(),
+                        access_key_id.as_deref(),
+                        secret_key.as_deref(),
+                        &iterator_type,
+                        iterator_timestamp,
+                        enhanced_fan_out,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
             }
         },
     };
