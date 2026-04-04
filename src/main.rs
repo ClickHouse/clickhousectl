@@ -2,6 +2,7 @@ mod cli;
 mod cloud;
 mod error;
 mod init;
+mod local_output;
 mod paths;
 mod server;
 mod skills;
