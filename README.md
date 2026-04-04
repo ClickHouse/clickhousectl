@@ -106,6 +106,7 @@ Start and manage ClickHouse server instances. Each server gets its own isolated 
 # Start a server (runs in background by default)
 clickhousectl local server start                          # Named "default"
 clickhousectl local server start --name dev               # Named "dev"
+clickhousectl local server start --version stable         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start -- --config-file=/path/to/config.xml

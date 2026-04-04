@@ -38,7 +38,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             queries_file,
             args,
         } => run_client(name, host, port, query, queries_file, args),
-        LocalCommands::Server { command } => run_server_commands(command, json),
+        LocalCommands::Server { command } => run_server_commands(command, json).await,
     }
 }
 
@@ -232,15 +232,24 @@ fn run_client(
     Err(Error::Exec(err.to_string()))
 }
 
-fn start_server(
+async fn start_server(
     name: Option<String>,
+    version_spec: Option<String>,
     http_port: Option<u16>,
     tcp_port: Option<u16>,
     foreground: bool,
     args: Vec<String>,
     json: bool,
 ) -> Result<()> {
-    let version = version_manager::get_default_version()?;
+    let version = if let Some(spec_str) = &version_spec {
+        let spec = version_manager::parse_version_spec(spec_str)?;
+        let platform = version_manager::platform::Platform::detect()?;
+        eprintln!("Resolving {}...", spec);
+        let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
+        version_manager::install::install_resolved(&resolved, &platform, false).await?
+    } else {
+        version_manager::get_default_version()?
+    };
     let binary = paths::binary_path(&version)?;
 
     if !binary.exists() {
@@ -356,15 +365,16 @@ fn start_server(
     }
 }
 
-fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> {
+async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> {
     match command {
         ServerCommands::Start {
             name,
+            version,
             http_port,
             tcp_port,
             foreground,
             args,
-        } => start_server(name, http_port, tcp_port, foreground, args, json),
+        } => start_server(name, version, http_port, tcp_port, foreground, args, json).await,
         ServerCommands::List => {
             let entries = server::list_all_servers();
             let running_count = entries.iter().filter(|e| e.running).count();

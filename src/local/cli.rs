@@ -140,6 +140,8 @@ CONTEXT FOR AGENTS:
   Without --name, the first server is called \"default\"; if \"default\" is already running,
   a random name is generated (e.g., \"bold-crane\").
   Use --name to give a server a stable identity (e.g., --name dev, --name test).
+  Use --version (-v) to run a specific ClickHouse version without changing the default.
+  Accepts same specs as install/use: stable, lts, latest, 25.12, etc. Installs if needed.
   Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
   Use --http-port and --tcp-port to set explicit ports.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
@@ -150,6 +152,10 @@ CONTEXT FOR AGENTS:
         /// Server name (default: \"default\", or random if default is already running)
         #[arg(long)]
         name: Option<String>,
+
+        /// ClickHouse version to use (e.g. stable, lts, latest, 25.12). Installs if needed. Does not change the default version.
+        #[arg(long, short = 'v')]
+        version: Option<String>,
 
         /// HTTP port (default: 8123, auto-assigns a free port if in use)
         #[arg(long)]
