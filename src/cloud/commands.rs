@@ -3,6 +3,7 @@ use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
 use std::io::Write;
 use std::str::FromStr;
+use tabled::{Table, Tabled, settings::Style};
 
 /// Resolve org ID from explicit arg or auto-detect
 async fn resolve_org_id(
@@ -249,10 +250,21 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
             println!("No organizations found");
             return Ok(());
         }
-        println!("Organizations:");
-        for org in orgs {
-            println!("  {} ({})", org.name, org.id);
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
         }
+        let rows: Vec<Row> = orgs
+            .into_iter()
+            .map(|o| Row {
+                name: o.name,
+                id: o.id,
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -297,19 +309,41 @@ pub async fn service_list(
             println!("No services found");
             return Ok(());
         }
-        println!("Services:");
-        for svc in services {
-            let endpoint = svc
-                .endpoints
-                .as_ref()
-                .and_then(|eps| eps.first())
-                .map(|e| format!("{}:{}", e.host, e.port))
-                .unwrap_or_else(|| "-".to_string());
-            println!(
-                "  {} ({}) - {} [{}/{}] {}",
-                svc.name, svc.id, svc.state, svc.provider, svc.region, endpoint
-            );
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "State")]
+            state: String,
+            #[tabled(rename = "Provider")]
+            provider: String,
+            #[tabled(rename = "Region")]
+            region: String,
+            #[tabled(rename = "Endpoint")]
+            endpoint: String,
         }
+        let rows: Vec<Row> = services
+            .into_iter()
+            .map(|svc| {
+                let endpoint = svc
+                    .endpoints
+                    .as_ref()
+                    .and_then(|eps| eps.first())
+                    .map(|e| format!("{}:{}", e.host, e.port))
+                    .unwrap_or_else(|| "-".to_string());
+                Row {
+                    name: svc.name,
+                    id: svc.id,
+                    state: svc.state.to_string(),
+                    provider: svc.provider.to_string(),
+                    region: svc.region.to_string(),
+                    endpoint,
+                }
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -749,15 +783,29 @@ pub async fn backup_list(
             println!("No backups found");
             return Ok(());
         }
-        println!("Backups:");
-        for backup in backups {
-            let size = backup
-                .size_in_bytes
-                .map(format_bytes)
-                .unwrap_or_else(|| "-".to_string());
-            let created = backup.started_at.as_deref().unwrap_or("-");
-            println!("  {} - {} ({}) {}", backup.id, backup.status, size, created);
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Status")]
+            status: String,
+            #[tabled(rename = "Size")]
+            size: String,
+            #[tabled(rename = "Created")]
+            created: String,
         }
+        let rows: Vec<Row> = backups
+            .into_iter()
+            .map(|b| Row {
+                id: b.id,
+                status: b.status.to_string(),
+                size: b.size_in_bytes
+                    .map(format_bytes)
+                    .unwrap_or_else(|| "-".to_string()),
+                created: b.started_at.unwrap_or_else(|| "-".to_string()),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -1107,16 +1155,31 @@ pub async fn org_usage(
                 return Ok(());
             }
 
-            println!("Usage costs:");
-            for cost in costs {
-                let entity = cost.entity_name.as_deref().unwrap_or("-");
-                let date = cost.date.as_deref().unwrap_or("-");
-                let total = cost
-                    .total_chc
-                    .map(|v| format!("{:.2}", v))
-                    .unwrap_or_else(|| "-".to_string());
-                println!("  {} - {} ({} CHC)", entity, date, total);
+            #[derive(Tabled)]
+            struct Row {
+                #[tabled(rename = "Entity")]
+                entity: String,
+                #[tabled(rename = "Date")]
+                date: String,
+                #[tabled(rename = "Total (CHC)")]
+                total: String,
             }
+            let rows: Vec<Row> = costs
+                .iter()
+                .map(|cost| Row {
+                    entity: cost
+                        .entity_name
+                        .as_deref()
+                        .unwrap_or("-")
+                        .to_string(),
+                    date: cost.date.as_deref().unwrap_or("-").to_string(),
+                    total: cost
+                        .total_chc
+                        .map(|v| format!("{:.2}", v))
+                        .unwrap_or_else(|| "-".to_string()),
+                })
+                .collect();
+            println!("{}", Table::new(rows).with(Style::rounded()));
         } else {
             println!("No usage cost records found");
         }
@@ -1144,12 +1207,27 @@ pub async fn member_list(
             println!("No members found");
             return Ok(());
         }
-        println!("Members:");
-        for m in members {
-            let name = m.name.as_deref().unwrap_or("");
-            let role = m.role.as_deref().unwrap_or("-");
-            println!("  {} ({}) - {} [{}]", m.email, m.user_id, role, name);
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Email")]
+            email: String,
+            #[tabled(rename = "User ID")]
+            user_id: String,
+            #[tabled(rename = "Role")]
+            role: String,
+            #[tabled(rename = "Name")]
+            name: String,
         }
+        let rows: Vec<Row> = members
+            .into_iter()
+            .map(|m| Row {
+                email: m.email,
+                user_id: m.user_id,
+                role: m.role.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string()),
+                name: m.name.unwrap_or_default(),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -1239,15 +1317,27 @@ pub async fn invitation_list(
             println!("No invitations found");
             return Ok(());
         }
-        println!("Invitations:");
-        for inv in invitations {
-            let expires = inv.expire_at.as_deref().unwrap_or("-");
-            let role = inv.role.as_deref().unwrap_or("-");
-            println!(
-                "  {} ({}) - {} [expires: {}]",
-                inv.email, inv.id, role, expires
-            );
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Email")]
+            email: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Role")]
+            role: String,
+            #[tabled(rename = "Expires")]
+            expires: String,
         }
+        let rows: Vec<Row> = invitations
+            .into_iter()
+            .map(|inv| Row {
+                email: inv.email,
+                id: inv.id,
+                role: inv.role.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string()),
+                expires: inv.expire_at.unwrap_or_else(|| "-".to_string()),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -1338,14 +1428,27 @@ pub async fn key_list(
             println!("No API keys found");
             return Ok(());
         }
-        println!("API Keys:");
-        for key in keys {
-            let expires = key.expire_at.as_deref().unwrap_or("never");
-            println!(
-                "  {} ({}) - {} [expires: {}]",
-                key.name, key.id, key.state, expires
-            );
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "State")]
+            state: String,
+            #[tabled(rename = "Expires")]
+            expires: String,
         }
+        let rows: Vec<Row> = keys
+            .into_iter()
+            .map(|k| Row {
+                name: k.name,
+                id: k.id,
+                state: k.state.to_string(),
+                expires: k.expire_at.unwrap_or_else(|| "never".to_string()),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -1465,11 +1568,24 @@ pub async fn activity_list(
             println!("No activities found");
             return Ok(());
         }
-        println!("Activities:");
-        for a in activities {
-            let created = a.created_at.as_deref().unwrap_or("-");
-            println!("  {} - {} {}", a.id, a.activity_type, created);
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Type")]
+            activity_type: String,
+            #[tabled(rename = "Created")]
+            created: String,
         }
+        let rows: Vec<Row> = activities
+            .into_iter()
+            .map(|a| Row {
+                id: a.id,
+                activity_type: a.activity_type.to_string(),
+                created: a.created_at.unwrap_or_else(|| "-".to_string()),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
