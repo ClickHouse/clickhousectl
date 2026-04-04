@@ -5,6 +5,7 @@
 
 use serde::Serialize;
 use std::fmt;
+use tabled::{Table, Tabled, settings::Style};
 
 // ── list (installed) ────────────────────────────────────────────────────────
 
@@ -19,6 +20,14 @@ pub struct ListInstalledOutput {
     pub versions: Vec<InstalledVersion>,
 }
 
+#[derive(Tabled)]
+struct InstalledVersionRow {
+    #[tabled(rename = "Version")]
+    version: String,
+    #[tabled(rename = "Default")]
+    default: String,
+}
+
 impl fmt::Display for ListInstalledOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.versions.is_empty() {
@@ -26,18 +35,20 @@ impl fmt::Display for ListInstalledOutput {
             write!(f, "Run: clickhousectl local install stable")?;
             return Ok(());
         }
-        writeln!(f, "Installed versions:")?;
-        for (i, v) in self.versions.iter().enumerate() {
-            if v.default {
-                write!(f, "  {} (default)", v.version)?;
-            } else {
-                write!(f, "  {}", v.version)?;
-            }
-            if i < self.versions.len() - 1 {
-                writeln!(f)?;
-            }
-        }
-        Ok(())
+        let rows: Vec<InstalledVersionRow> = self
+            .versions
+            .iter()
+            .map(|v| InstalledVersionRow {
+                version: v.version.clone(),
+                default: if v.default {
+                    "yes".to_string()
+                } else {
+                    String::new()
+                },
+            })
+            .collect();
+        let table = Table::new(rows).with(Style::rounded()).to_string();
+        write!(f, "{table}")
     }
 }
 
@@ -54,27 +65,40 @@ pub struct ListAvailableOutput {
     pub versions: Vec<AvailableVersion>,
 }
 
+#[derive(Tabled)]
+struct AvailableVersionRow {
+    #[tabled(rename = "Version")]
+    version: String,
+    #[tabled(rename = "Installed")]
+    installed: String,
+}
+
 impl fmt::Display for ListAvailableOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.versions.is_empty() {
             write!(f, "No versions available")?;
             return Ok(());
         }
-        writeln!(f, "Available versions (builds.clickhouse.com):")?;
-        for v in &self.versions {
-            if v.installed {
-                writeln!(f, "  {} (installed)", v.version)?;
-            } else {
-                writeln!(f, "  {}", v.version)?;
-            }
-        }
+        let rows: Vec<AvailableVersionRow> = self
+            .versions
+            .iter()
+            .map(|v| AvailableVersionRow {
+                version: v.version.clone(),
+                installed: if v.installed {
+                    "yes".to_string()
+                } else {
+                    String::new()
+                },
+            })
+            .collect();
+        let table = Table::new(rows).with(Style::rounded()).to_string();
+        writeln!(f, "{table}")?;
         writeln!(f)?;
         writeln!(f, "Install with: clickhousectl local install <version>")?;
         write!(
             f,
             "For exact patch versions, use: clickhousectl local install 25.12.9.61"
-        )?;
-        Ok(())
+        )
     }
 }
 
@@ -196,28 +220,46 @@ pub struct ServerListOutput {
     pub total_running_servers: usize,
 }
 
+#[derive(Tabled)]
+struct ServerListRow {
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "PID")]
+    pid: String,
+    #[tabled(rename = "Version")]
+    version: String,
+    #[tabled(rename = "HTTP Port")]
+    http_port: String,
+    #[tabled(rename = "TCP Port")]
+    tcp_port: String,
+}
+
 impl fmt::Display for ServerListOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.servers.is_empty() {
             write!(f, "No servers")?;
             return Ok(());
         }
-        writeln!(f, "Servers:")?;
-        for e in &self.servers {
-            if e.running {
-                writeln!(
-                    f,
-                    "  {} [running] PID {} v{} HTTP:{} TCP:{}",
-                    e.name,
-                    e.pid.unwrap_or(0),
-                    e.version.as_deref().unwrap_or("?"),
-                    e.http_port.unwrap_or(0),
-                    e.tcp_port.unwrap_or(0),
-                )?;
-            } else {
-                writeln!(f, "  {} [stopped]", e.name)?;
-            }
-        }
+        let rows: Vec<ServerListRow> = self
+            .servers
+            .iter()
+            .map(|e| ServerListRow {
+                name: e.name.clone(),
+                status: if e.running {
+                    "running".to_string()
+                } else {
+                    "stopped".to_string()
+                },
+                pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
+                version: e.version.clone().unwrap_or_default(),
+                http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
+                tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+            })
+            .collect();
+        let table = Table::new(rows).with(Style::rounded()).to_string();
+        writeln!(f, "{table}")?;
         write!(
             f,
             "\n{} server{}, {} running",
@@ -582,10 +624,11 @@ mod tests {
             ],
         };
         let text = output.to_string();
-        assert!(text.contains("Installed versions:"));
-        assert!(text.contains("  25.12.5.44 (default)"));
-        assert!(text.contains("  25.11.3.22"));
-        assert!(!text.contains("25.11.3.22 (default)"));
+        assert!(text.contains("Version"));
+        assert!(text.contains("Default"));
+        assert!(text.contains("25.12.5.44"));
+        assert!(text.contains("yes"));
+        assert!(text.contains("25.11.3.22"));
     }
 
     #[test]
@@ -613,9 +656,11 @@ mod tests {
             ],
         };
         let text = output.to_string();
-        assert!(text.contains("Available versions (builds.clickhouse.com):"));
-        assert!(text.contains("  25.12 (installed)"));
-        assert!(text.contains("  25.11\n"));
+        assert!(text.contains("Version"));
+        assert!(text.contains("Installed"));
+        assert!(text.contains("25.12"));
+        assert!(text.contains("yes"));
+        assert!(text.contains("25.11"));
         assert!(text.contains("Install with: clickhousectl local install <version>"));
     }
 
@@ -725,9 +770,19 @@ mod tests {
             total_running_servers: 1,
         };
         let text = output.to_string();
-        assert!(text.contains("Servers:"));
-        assert!(text.contains("  default [running] PID 12345 v25.12.5.44 HTTP:8123 TCP:9000"));
-        assert!(text.contains("  test [stopped]"));
+        assert!(text.contains("Name"));
+        assert!(text.contains("Status"));
+        assert!(text.contains("PID"));
+        assert!(text.contains("HTTP Port"));
+        assert!(text.contains("TCP Port"));
+        assert!(text.contains("default"));
+        assert!(text.contains("running"));
+        assert!(text.contains("12345"));
+        assert!(text.contains("25.12.5.44"));
+        assert!(text.contains("8123"));
+        assert!(text.contains("9000"));
+        assert!(text.contains("test"));
+        assert!(text.contains("stopped"));
         assert!(text.contains("2 servers, 1 running"));
     }
 

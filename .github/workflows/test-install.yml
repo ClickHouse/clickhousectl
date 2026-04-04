@@ -99,7 +99,7 @@ jobs:
         run: |
           ./target/debug/clickhousectl local install latest
           # Verify a version was installed
-          ./target/debug/clickhousectl local list | grep -E "^  [0-9]"
+          ./target/debug/clickhousectl local list | grep -E "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"
 
       - name: Test install minor version
         run: |
