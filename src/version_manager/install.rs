@@ -101,6 +101,34 @@ pub async fn install_resolved(
     Ok(exact_version)
 }
 
+/// Like `install_resolved`, but returns the existing version instead of erroring
+/// when already installed. Intended for cases like `server start --version` where
+/// the goal is "make sure this version is available" rather than "install this".
+pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -> Result<String> {
+    // If we know the exact version upfront, return it if already installed
+    if let Some(ref version) = resolved.exact_version {
+        let version_dir = paths::version_dir(version)?;
+        if version_dir.exists() {
+            return Ok(version.clone());
+        }
+    }
+
+    // For builds source (minor versions), check if a matching minor is installed
+    if let DownloadSource::Builds { ref version_path } = resolved.source
+        && version_path != "master"
+    {
+        let prefix = format!("{}.", version_path);
+        if let Ok(installed) = list_installed_versions()
+            && let Some(existing) = installed.iter().find(|v| v.starts_with(&prefix))
+        {
+            return Ok(existing.clone());
+        }
+    }
+
+    // Not installed — delegate to install_resolved
+    install_resolved(resolved, platform, false).await
+}
+
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`
 fn detect_binary_version(binary_path: &std::path::Path) -> Result<String> {
     let output = std::process::Command::new(binary_path)

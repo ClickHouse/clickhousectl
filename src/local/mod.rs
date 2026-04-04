@@ -241,12 +241,19 @@ async fn start_server(
     args: Vec<String>,
     json: bool,
 ) -> Result<()> {
+    // Resolve server name and check for collisions before any downloads
+    let server_name = server::resolve_name(name.as_deref());
+
+    if name.is_some() && server::is_server_running(&server_name) {
+        return Err(Error::ServerAlreadyRunning(server_name));
+    }
+
     let version = if let Some(spec_str) = &version_spec {
         let spec = version_manager::parse_version_spec(spec_str)?;
         let platform = version_manager::platform::Platform::detect()?;
         eprintln!("Resolving {}...", spec);
         let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
-        version_manager::install::install_resolved(&resolved, &platform, false).await?
+        version_manager::install::ensure_installed(&resolved, &platform).await?
     } else {
         version_manager::get_default_version()?
     };
@@ -254,14 +261,6 @@ async fn start_server(
 
     if !binary.exists() {
         return Err(Error::VersionNotFound(version));
-    }
-
-    // Resolve server name
-    let server_name = server::resolve_name(name.as_deref());
-
-    // If an explicit name was given and it's already running, error
-    if name.is_some() && server::is_server_running(&server_name) {
-        return Err(Error::ServerAlreadyRunning(server_name));
     }
 
     // Show running server count
