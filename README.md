@@ -59,10 +59,10 @@ clickhousectl local remove 25.12.5.44
 
 #### ClickHouse binary storage
 
-ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhousectl/`:
+ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhouse/`:
 
 ```
-~/.clickhousectl/
+~/.clickhouse/
 ├── versions/
 │   └── 25.12.5.44/
 │       └── clickhouse
@@ -100,7 +100,7 @@ clickhousectl local client --host remote-host --port 9000  # Connect to a specif
 
 ### Creating and managing ClickHouse servers
 
-Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhousectl/servers/<name>/data/`.
+Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhouse/servers/<name>/data/`.
 
 ```bash
 # Start a server (runs in background by default)
@@ -128,10 +128,10 @@ clickhousectl local server remove test
 
 #### Project-local data directory
 
-All server data lives inside `.clickhousectl/` in your project directory:
+All server data lives inside `.clickhouse/` in your project directory:
 
 ```
-.clickhousectl/
+.clickhouse/
 ├── .gitignore              # auto-created, ignores everything
 ├── credentials.json        # cloud API credentials (if configured)
 └── servers/
@@ -153,7 +153,7 @@ Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys.
 clickhousectl cloud auth login
 ```
 
-This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhousectl/tokens.json` (project-local).
+This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhouse/tokens.json` (project-local).
 
 ### API key/secret
 
@@ -165,7 +165,7 @@ clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
 clickhousectl cloud auth login --interactive
 ```
 
-Credentials are saved to `.clickhousectl/credentials.json` (project-local).
+Credentials are saved to `.clickhouse/credentials.json` (project-local).
 
 You can also use environment variables:
 ```bash
@@ -185,7 +185,7 @@ clickhousectl cloud auth status    # Show current auth state
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: CLI flags > OAuth tokens > `.clickhousectl/credentials.json` > environment variables.
+Credential resolution order: CLI flags > OAuth tokens > `.clickhouse/credentials.json` > environment variables.
 
 ## Cloud
 
