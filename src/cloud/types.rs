@@ -1213,7 +1213,10 @@ pub struct CreateClickPipeRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateClickPipeSource {
-    pub object_storage: ObjectStorageSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage: Option<ObjectStorageSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kafka: Option<KafkaSource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1278,4 +1281,55 @@ pub struct ClickPipeDestinationColumn {
     pub name: String,
     #[serde(rename = "type")]
     pub column_type: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaSource {
+    #[serde(rename = "type")]
+    pub kafka_type: String,
+    pub format: String,
+    pub brokers: String,
+    pub topics: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consumer_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<KafkaCredentials>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_key: Option<ObjectStorageAccessKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<KafkaOffset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<KafkaSchemaRegistry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaOffset {
+    pub strategy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaSchemaRegistry {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<KafkaCredentials>,
 }

@@ -1085,6 +1085,100 @@ pub enum ClickPipeCreateCommands {
         #[arg(long)]
         org_id: Option<String>,
     },
+
+    /// Create a ClickPipe from Kafka or Kafka-compatible source
+    Kafka {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Kafka broker(s) (e.g., "broker1:9092,broker2:9092")
+        #[arg(long)]
+        brokers: String,
+
+        /// Topic(s) to consume from
+        #[arg(long)]
+        topics: String,
+
+        /// Data format: JSONEachRow, Avro, AvroConfluent, Protobuf
+        #[arg(long)]
+        format: String,
+
+        /// Destination database
+        #[arg(long)]
+        database: String,
+
+        /// Destination table
+        #[arg(long)]
+        table: String,
+
+        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+        #[arg(long = "column")]
+        columns: Vec<String>,
+
+        /// Kafka type: kafka (default), redpanda, msk, confluent, warpstream, azureeventhub, dokafka
+        #[arg(long, default_value = "kafka")]
+        kafka_type: String,
+
+        /// Consumer group name
+        #[arg(long)]
+        consumer_group: Option<String>,
+
+        /// Authentication: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS
+        #[arg(long)]
+        auth: Option<String>,
+
+        /// Username for PLAIN/SCRAM authentication
+        #[arg(long, requires = "password")]
+        username: Option<String>,
+
+        /// Password for PLAIN/SCRAM authentication
+        #[arg(long, requires = "username")]
+        password: Option<String>,
+
+        /// IAM role ARN for MSK IAM authentication
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// Access key ID for IAM_USER authentication
+        #[arg(long, requires = "secret_key")]
+        access_key_id: Option<String>,
+
+        /// Secret key for IAM_USER authentication
+        #[arg(long, requires = "access_key_id")]
+        secret_key: Option<String>,
+
+        /// Offset strategy: from_beginning (default), from_latest, from_timestamp
+        #[arg(long, default_value = "from_beginning")]
+        offset: String,
+
+        /// Timestamp for from_timestamp offset (e.g., "2021-01-01T00:00")
+        #[arg(long)]
+        offset_timestamp: Option<String>,
+
+        /// Schema registry URL (for Avro/Protobuf formats)
+        #[arg(long)]
+        schema_registry_url: Option<String>,
+
+        /// Schema registry username
+        #[arg(long)]
+        schema_registry_username: Option<String>,
+
+        /// Schema registry password
+        #[arg(long)]
+        schema_registry_password: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

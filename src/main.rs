@@ -1042,6 +1042,60 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     )
                     .await
                 }
+                ClickPipeCreateCommands::Kafka {
+                    service_id,
+                    name,
+                    brokers,
+                    topics,
+                    format,
+                    database,
+                    table,
+                    columns,
+                    kafka_type,
+                    consumer_group,
+                    auth,
+                    username,
+                    password,
+                    iam_role,
+                    access_key_id,
+                    secret_key,
+                    offset,
+                    offset_timestamp,
+                    schema_registry_url,
+                    schema_registry_username,
+                    schema_registry_password,
+                    ca_certificate,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_kafka(
+                        &client,
+                        &service_id,
+                        &name,
+                        &brokers,
+                        &topics,
+                        &format,
+                        &database,
+                        &table,
+                        &columns,
+                        &kafka_type,
+                        consumer_group.as_deref(),
+                        auth.as_deref(),
+                        username.as_deref(),
+                        password.as_deref(),
+                        iam_role.as_deref(),
+                        access_key_id.as_deref(),
+                        secret_key.as_deref(),
+                        &offset,
+                        offset_timestamp.as_deref(),
+                        schema_registry_url.as_deref(),
+                        schema_registry_username.as_deref(),
+                        schema_registry_password.as_deref(),
+                        ca_certificate.as_deref(),
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
             }
         },
     };

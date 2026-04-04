@@ -806,7 +806,8 @@ pub async fn clickpipe_create_s3(
     let request = crate::cloud::types::CreateClickPipeRequest {
         name: name.to_string(),
         source: crate::cloud::types::CreateClickPipeSource {
-            object_storage: crate::cloud::types::ObjectStorageSource {
+            kafka: None,
+            object_storage: Some(crate::cloud::types::ObjectStorageSource {
                 storage_type: storage_type.to_string(),
                 format: format.to_string(),
                 url: url.to_string(),
@@ -815,7 +816,140 @@ pub async fn clickpipe_create_s3(
                 authentication,
                 iam_role: iam_role_val,
                 access_key,
+            }),
+        },
+        destination: crate::cloud::types::ClickPipeDestination {
+            database: database.to_string(),
+            table: table.to_string(),
+            managed_table: true,
+            table_definition: Some(crate::cloud::types::ClickPipeTableDefinition {
+                engine: crate::cloud::types::ClickPipeTableEngine {
+                    engine_type: "MergeTree".to_string(),
+                },
+                sorting_key: None,
+                partition_by: None,
+                primary_key: None,
+            }),
+            columns: if parsed_columns.is_empty() { None } else { Some(parsed_columns) },
+        },
+    };
+
+    let clickpipe = client.create_clickpipe(&org_id, service_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_create_kafka(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    brokers: &str,
+    topics: &str,
+    format: &str,
+    database: &str,
+    table: &str,
+    columns: &[String],
+    kafka_type: &str,
+    consumer_group: Option<&str>,
+    auth: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+    iam_role: Option<&str>,
+    access_key_id: Option<&str>,
+    secret_key: Option<&str>,
+    offset: &str,
+    offset_timestamp: Option<&str>,
+    schema_registry_url: Option<&str>,
+    schema_registry_username: Option<&str>,
+    schema_registry_password: Option<&str>,
+    ca_certificate: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    let parsed_columns: Vec<crate::cloud::types::ClickPipeDestinationColumn> = columns
+        .iter()
+        .map(|col| {
+            let (name, col_type) = col.split_once(':').ok_or_else(|| {
+                format!("Invalid column format '{}': expected name:type", col)
+            })?;
+            Ok(crate::cloud::types::ClickPipeDestinationColumn {
+                name: name.to_string(),
+                column_type: col_type.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let credentials = match (username, password) {
+        (Some(u), Some(p)) => Some(crate::cloud::types::KafkaCredentials {
+            username: u.to_string(),
+            password: p.to_string(),
+        }),
+        _ => None,
+    };
+
+    let access_key = match (access_key_id, secret_key) {
+        (Some(key_id), Some(secret)) => Some(crate::cloud::types::ObjectStorageAccessKey {
+            access_key_id: key_id.to_string(),
+            secret_key: secret.to_string(),
+        }),
+        _ => None,
+    };
+
+    let schema_registry = schema_registry_url.map(|url| {
+        let sr_credentials = match (schema_registry_username, schema_registry_password) {
+            (Some(u), Some(p)) => Some(crate::cloud::types::KafkaCredentials {
+                username: u.to_string(),
+                password: p.to_string(),
+            }),
+            _ => None,
+        };
+        crate::cloud::types::KafkaSchemaRegistry {
+            url: url.to_string(),
+            authentication: if sr_credentials.is_some() {
+                Some("PLAIN".to_string())
+            } else {
+                None
             },
+            credentials: sr_credentials,
+        }
+    });
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let request = crate::cloud::types::CreateClickPipeRequest {
+        name: name.to_string(),
+        source: crate::cloud::types::CreateClickPipeSource {
+            object_storage: None,
+            kafka: Some(crate::cloud::types::KafkaSource {
+                kafka_type: kafka_type.to_string(),
+                format: format.to_string(),
+                brokers: brokers.to_string(),
+                topics: topics.to_string(),
+                consumer_group: consumer_group.map(|s| s.to_string()),
+                authentication: auth.map(|s| s.to_string()),
+                credentials,
+                iam_role: iam_role.map(|s| s.to_string()),
+                access_key,
+                offset: Some(crate::cloud::types::KafkaOffset {
+                    strategy: offset.to_string(),
+                    timestamp: offset_timestamp.map(|s| s.to_string()),
+                }),
+                schema_registry,
+                ca_certificate: ca_cert_contents,
+            }),
         },
         destination: crate::cloud::types::ClickPipeDestination {
             database: database.to_string(),
