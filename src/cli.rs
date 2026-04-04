@@ -58,10 +58,7 @@ CONTEXT FOR AGENTS:
   Manage local ClickHouse installations: install versions, run queries, manage servers.
   Typical workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
   Use `clickhousectl local <command> --help` for details on each subcommand.")]
-    Local {
-        #[command(subcommand)]
-        command: LocalCommands,
-    },
+    Local(LocalArgs),
 
     /// Work with serverless ClickHouse in ClickHouse Cloud
     #[command(after_help = "\
@@ -107,6 +104,16 @@ CONTEXT FOR AGENTS:
     Logout,
     /// Show current authentication status
     Status,
+}
+
+#[derive(Args)]
+pub struct LocalArgs {
+    /// Output as JSON
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: LocalCommands,
 }
 
 #[derive(Subcommand)]

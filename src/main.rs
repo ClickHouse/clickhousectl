@@ -12,9 +12,9 @@ mod version_manager;
 use clap::Parser;
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
-    CloudCommands, Commands, InvitationCommands, KeyCommands, LocalCommands, MemberCommands,
-    OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands, ServiceCommands,
-    SkillsArgs,
+    CloudCommands, Commands, InvitationCommands, KeyCommands, LocalCommands,
+    MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
+    ServiceCommands, SkillsArgs,
 };
 
 use cloud::CloudClient;
@@ -36,7 +36,7 @@ async fn main() {
 
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
-        Commands::Local { command } => run_local(command).await,
+        Commands::Local(args) => run_local(args.command, args.json).await,
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
     }
@@ -46,21 +46,25 @@ async fn run_skills(args: SkillsArgs) -> Result<()> {
     skills::install(args).await
 }
 
-async fn run_local(cmd: LocalCommands) -> Result<()> {
+async fn run_local(cmd: LocalCommands, json: bool) -> Result<()> {
     match cmd {
-        LocalCommands::Install { version, force } => install(&version, force).await,
+        LocalCommands::Install { version, force } => install(&version, force, json).await,
         LocalCommands::List { remote } => {
             if remote {
-                list_available().await
+                list_available(json).await
             } else {
-                list_installed()
+                list_installed(json)
             }
         }
-        LocalCommands::Use { version } => use_version(&version).await,
-        LocalCommands::Remove { version } => remove(&version),
-        LocalCommands::Which => which(),
+        LocalCommands::Use { version } => use_version(&version, json).await,
+        LocalCommands::Remove { version } => remove(&version, json),
+        LocalCommands::Which => which(json),
         LocalCommands::Init => {
             init::init()?;
+            let output = local_output::InitOutput {
+                path: ".clickhouse/".to_string(),
+            };
+            local_output::print_output(&output, json);
             Ok(())
         }
         LocalCommands::Client {
@@ -71,11 +75,11 @@ async fn run_local(cmd: LocalCommands) -> Result<()> {
             queries_file,
             args,
         } => run_client(name, host, port, query, queries_file, args),
-        LocalCommands::Server { command } => run_server_commands(command),
+        LocalCommands::Server { command } => run_server_commands(command, json),
     }
 }
 
-async fn install(version_spec: &str, force: bool) -> Result<()> {
+async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
@@ -85,68 +89,71 @@ async fn install(version_spec: &str, force: bool) -> Result<()> {
     let version = version_manager::install::install_resolved(&resolved, &platform, force).await?;
 
     // If this is the first installed version, set it as default
-    if version_manager::get_default_version().is_err() {
+    let set_as_default = version_manager::get_default_version().is_err();
+    if set_as_default {
         version_manager::set_default_version(&version)?;
-        eprintln!("Set as default version");
+        if !json {
+            eprintln!("Set as default version");
+        }
     }
+
+    let output = local_output::InstallOutput {
+        version,
+        set_as_default,
+    };
+    local_output::print_output(&output, json);
 
     Ok(())
 }
 
-fn list_installed() -> Result<()> {
+fn list_installed(json: bool) -> Result<()> {
     let versions = version_manager::list_installed_versions()?;
     let default = version_manager::get_default_version().ok();
 
-    if versions.is_empty() {
-        println!("No versions installed");
-        println!("Run: clickhousectl local install stable");
-        return Ok(());
-    }
-
-    println!("Installed versions:");
-    for v in versions {
-        if Some(&v) == default.as_ref() {
-            println!("  {} (default)", v);
-        } else {
-            println!("  {}", v);
-        }
-    }
+    let output = local_output::ListInstalledOutput {
+        versions: versions
+            .into_iter()
+            .map(|v| {
+                let is_default = Some(&v) == default.as_ref();
+                local_output::InstalledVersion {
+                    version: v,
+                    default: is_default,
+                }
+            })
+            .collect(),
+    };
+    local_output::print_output(&output, json);
 
     Ok(())
 }
 
-async fn list_available() -> Result<()> {
+async fn list_available(json: bool) -> Result<()> {
     eprintln!("Checking available versions on builds.clickhouse.com...");
     let versions = version_manager::list_available_versions_from_builds().await?;
 
-    if versions.is_empty() {
-        println!("No versions available");
-        return Ok(());
-    }
-
     let installed = version_manager::list_installed_versions().unwrap_or_default();
 
-    println!("Available versions (builds.clickhouse.com):");
-    for v in &versions {
-        // Check if any installed version matches this minor
-        let prefix = format!("{}.", v);
-        let is_installed = installed
-            .iter()
-            .any(|iv| iv.starts_with(&prefix) || iv == v);
-        if is_installed {
-            println!("  {} (installed)", v);
-        } else {
-            println!("  {}", v);
-        }
-    }
-    println!();
-    println!("Install with: clickhousectl local install <version>");
-    println!("For exact patch versions, use: clickhousectl local install 25.12.9.61");
+    let output = local_output::ListAvailableOutput {
+        versions: versions
+            .into_iter()
+            .map(|v| {
+                let prefix = format!("{}.", v);
+                let is_installed = installed
+                    .iter()
+                    .any(|iv| iv.starts_with(&prefix) || iv == &v);
+                local_output::AvailableVersion {
+                    version: v,
+                    installed: is_installed,
+                }
+            })
+            .collect(),
+    };
+    local_output::print_output(&output, json);
 
     Ok(())
 }
 
-async fn use_version(version_spec: &str) -> Result<()> {
+async fn use_version(version_spec: &str, json: bool) -> Result<()> {
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
@@ -168,11 +175,12 @@ async fn use_version(version_spec: &str) -> Result<()> {
     };
 
     version_manager::set_default_version(&version)?;
-    eprintln!("Default version set to {}", version);
+    let output = local_output::UseOutput { version };
+    local_output::print_output(&output, json);
     Ok(())
 }
 
-fn remove(version: &str) -> Result<()> {
+fn remove(version: &str, json: bool) -> Result<()> {
     let version_dir = paths::version_dir(version)?;
 
     if !version_dir.exists() {
@@ -188,14 +196,21 @@ fn remove(version: &str) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&version_dir)?;
-    println!("Removed version {}", version);
+    let output = local_output::RemoveOutput {
+        version: version.to_string(),
+    };
+    local_output::print_output(&output, json);
     Ok(())
 }
 
-fn which() -> Result<()> {
+fn which(json: bool) -> Result<()> {
     let version = version_manager::get_default_version()?;
     let binary = paths::binary_path(&version)?;
-    println!("{} ({})", version, binary.display());
+    let output = local_output::WhichOutput {
+        version,
+        binary_path: binary.display().to_string(),
+    };
+    local_output::print_output(&output, json);
     Ok(())
 }
 
@@ -260,6 +275,7 @@ fn start_server(
     tcp_port: Option<u16>,
     foreground: bool,
     args: Vec<String>,
+    json: bool,
 ) -> Result<()> {
     let version = version_manager::get_default_version()?;
     let binary = paths::binary_path(&version)?;
@@ -336,13 +352,14 @@ fn start_server(
         // Check that it actually started
         server::check_spawn_health(pid, &server_name)?;
 
-        println!(
-            "Server '{}' started in background (PID: {})",
-            server_name, pid
-        );
-        println!("  HTTP port: {}", http_port);
-        println!("  TCP port:  {}", tcp_port);
-        println!("  Version:   {}", version);
+        let output = local_output::ServerStartOutput {
+            name: server_name,
+            pid,
+            http_port,
+            tcp_port,
+            version,
+        };
+        local_output::print_output(&output, json);
         Ok(())
     } else {
         let mut child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
@@ -376,7 +393,7 @@ fn start_server(
     }
 }
 
-fn run_server_commands(command: ServerCommands) -> Result<()> {
+fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> {
     match command {
         ServerCommands::Start {
             name,
@@ -384,55 +401,90 @@ fn run_server_commands(command: ServerCommands) -> Result<()> {
             tcp_port,
             foreground,
             args,
-        } => start_server(name, http_port, tcp_port, foreground, args),
+        } => start_server(name, http_port, tcp_port, foreground, args, json),
         ServerCommands::List => {
             let entries = server::list_all_servers();
-            if entries.is_empty() {
-                println!("No servers");
-                return Ok(());
-            }
-            println!("Servers:");
-            let mut running_count = 0;
-            for e in &entries {
-                if e.running {
-                    running_count += 1;
-                    let info = e.info.as_ref().unwrap();
-                    println!(
-                        "  {} [running] PID {} v{} HTTP:{} TCP:{}",
-                        e.name, info.pid, info.version, info.http_port, info.tcp_port
-                    );
-                } else {
-                    println!("  {} [stopped]", e.name);
-                }
-            }
-            println!(
-                "\n{} server{}, {} running",
-                entries.len(),
-                if entries.len() == 1 { "" } else { "s" },
-                running_count
-            );
+            let running_count = entries.iter().filter(|e| e.running).count();
+            let total = entries.len();
+
+            let output = local_output::ServerListOutput {
+                servers: entries
+                    .into_iter()
+                    .map(|e| {
+                        let (pid, version, http_port, tcp_port) = match e.info {
+                            Some(info) => (
+                                Some(info.pid),
+                                Some(info.version),
+                                Some(info.http_port),
+                                Some(info.tcp_port),
+                            ),
+                            None => (None, None, None, None),
+                        };
+                        local_output::ServerListEntry {
+                            name: e.name,
+                            running: e.running,
+                            pid,
+                            version,
+                            http_port,
+                            tcp_port,
+                        }
+                    })
+                    .collect(),
+                total_servers: total,
+                total_running_servers: running_count,
+            };
+            local_output::print_output(&output, json);
             Ok(())
         }
         ServerCommands::Stop { name } => {
-            println!("Stopping server '{}'...", name);
+            if !json {
+                println!("Stopping server '{}'...", name);
+            }
             server::kill_server(&name)?;
-            println!("Server '{}' stopped", name);
+            let output = local_output::ServerStopOutput { name };
+            local_output::print_output(&output, json);
             Ok(())
         }
         ServerCommands::StopAll => {
             let servers = server::list_running_servers();
-            if servers.is_empty() {
-                println!("No running servers");
-                return Ok(());
-            }
+            let mut stop_entries = Vec::new();
             for s in &servers {
-                print!("Stopping '{}'...", s.name);
+                if !json {
+                    print!("Stopping '{}'...", s.name);
+                }
                 match server::kill_server(&s.name) {
-                    Ok(()) => println!(" stopped"),
-                    Err(e) => println!(" error: {}", e),
+                    Ok(()) => {
+                        if !json {
+                            println!(" stopped");
+                        }
+                        stop_entries.push(local_output::ServerStopEntry {
+                            name: s.name.clone(),
+                            stopped: true,
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        if !json {
+                            println!(" error: {}", e);
+                        }
+                        stop_entries.push(local_output::ServerStopEntry {
+                            name: s.name.clone(),
+                            stopped: false,
+                            error: Some(e.to_string()),
+                        });
+                    }
                 }
             }
-            println!("Done");
+            if json {
+                let output = local_output::ServerStopAllOutput {
+                    servers: stop_entries,
+                };
+                local_output::print_output(&output, json);
+            } else if servers.is_empty() {
+                println!("No running servers");
+            } else {
+                println!("Done");
+            }
             Ok(())
         }
         ServerCommands::Remove { name } => {
@@ -447,7 +499,8 @@ fn run_server_commands(command: ServerCommands) -> Result<()> {
             let server_dir = data_dir.parent().unwrap();
             std::fs::remove_dir_all(server_dir)?;
             server::remove_server_info(&name);
-            println!("Server '{}' removed", name);
+            let output = local_output::ServerRemoveOutput { name };
+            local_output::print_output(&output, json);
             Ok(())
         }
     }
