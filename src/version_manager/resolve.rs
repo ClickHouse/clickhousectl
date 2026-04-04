@@ -250,8 +250,9 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
     let refs: Vec<GitRef> = response.json().await?;
 
     // Parse refs like "refs/tags/v25.2.2.39-stable" into VersionEntry
-    // Filter for stable/lts only, take the latest (last in sorted order)
+    // Prefer stable/lts, but fall back to any tagged version (e.g. "-new")
     let mut best: Option<VersionEntry> = None;
+    let mut any: Option<VersionEntry> = None;
     for git_ref in &refs {
         let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
             continue;
@@ -264,11 +265,17 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
                     version: version.to_string(),
                     channel,
                 });
+            } else {
+                any = Some(VersionEntry {
+                    version: version.to_string(),
+                    channel: Channel::Stable,
+                });
             }
         }
     }
 
-    best.ok_or_else(|| Error::NoMatchingVersion(prefix.to_string()))
+    best.or(any)
+        .ok_or_else(|| Error::NoMatchingVersion(prefix.to_string()))
 }
 
 /// Extract the minor version from a full version string (e.g., "25.12.9.61" -> "25.12")
