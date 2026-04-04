@@ -481,3 +481,18 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_server_start_rejects_json_with_foreground() {
+        let result = start_server(None, None, None, None, true, vec![], true).await;
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Error::JsonForegroundConflict),
+            "expected JsonForegroundConflict, got: {err}"
+        );
+    }
+}
