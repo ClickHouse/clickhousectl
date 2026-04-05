@@ -164,8 +164,13 @@ async fn find_exact_channel(version: &str) -> Result<Channel> {
         .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
 
     let refs: Vec<GitRef> = response.json().await?;
+    parse_exact_channel(&refs, version)
+}
 
-    for git_ref in &refs {
+/// Parse the channel from a list of git refs for an exact version.
+/// Looks for tags like "refs/tags/v26.4.1.562-stable" and extracts the channel suffix.
+fn parse_exact_channel(refs: &[GitRef], version: &str) -> Result<Channel> {
+    for git_ref in refs {
         let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
             continue;
         };
@@ -248,11 +253,16 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
         .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
 
     let refs: Vec<GitRef> = response.json().await?;
+    parse_version_refs(&refs, prefix)
+}
 
-    // Parse refs like "refs/tags/v25.2.2.39-stable" into VersionEntry
-    // Filter for stable/lts only, take the latest (last in sorted order)
+/// Parse a list of git refs into the best matching VersionEntry.
+/// Prefers stable/lts tags, but falls back to any tagged version (e.g. "-new")
+/// so that pre-release or newly-tagged versions can still be resolved.
+fn parse_version_refs(refs: &[GitRef], prefix: &str) -> Result<VersionEntry> {
     let mut best: Option<VersionEntry> = None;
-    for git_ref in &refs {
+    let mut any: Option<VersionEntry> = None;
+    for git_ref in refs {
         let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
             continue;
         };
@@ -264,11 +274,17 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
                     version: version.to_string(),
                     channel,
                 });
+            } else {
+                any = Some(VersionEntry {
+                    version: version.to_string(),
+                    channel: Channel::Stable,
+                });
             }
         }
     }
 
-    best.ok_or_else(|| Error::NoMatchingVersion(prefix.to_string()))
+    best.or(any)
+        .ok_or_else(|| Error::NoMatchingVersion(prefix.to_string()))
 }
 
 /// Extract the minor version from a full version string (e.g., "25.12.9.61" -> "25.12")
@@ -288,6 +304,12 @@ fn extract_minor(version: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::version_manager::platform::Os;
+
+    fn make_ref(name: &str) -> GitRef {
+        GitRef {
+            ref_name: name.to_string(),
+        }
+    }
 
     #[test]
     fn test_extract_minor() {
@@ -323,5 +345,122 @@ mod tests {
         assert!(matches!(resolved.source, DownloadSource::GitHub { .. }));
         assert_eq!(resolved.exact_version, Some("25.12.9.61".to_string()));
         assert!(resolved.exact_version_known);
+    }
+
+    // -- parse_version_refs tests --
+
+    #[test]
+    fn test_parse_version_refs_stable_tag() {
+        let refs = vec![make_ref("refs/tags/v25.12.9.61-stable")];
+        let entry = parse_version_refs(&refs, "25.12").unwrap();
+        assert_eq!(entry.version, "25.12.9.61");
+        assert_eq!(entry.channel, Channel::Stable);
+    }
+
+    #[test]
+    fn test_parse_version_refs_lts_tag() {
+        let refs = vec![make_ref("refs/tags/v24.8.10.6-lts")];
+        let entry = parse_version_refs(&refs, "24.8").unwrap();
+        assert_eq!(entry.version, "24.8.10.6");
+        assert_eq!(entry.channel, Channel::Lts);
+    }
+
+    #[test]
+    fn test_parse_version_refs_prefers_stable_over_unknown() {
+        let refs = vec![
+            make_ref("refs/tags/v26.4.1.1-new"),
+            make_ref("refs/tags/v26.4.2.5-stable"),
+        ];
+        let entry = parse_version_refs(&refs, "26.4").unwrap();
+        assert_eq!(entry.version, "26.4.2.5");
+        assert_eq!(entry.channel, Channel::Stable);
+    }
+
+    #[test]
+    fn test_parse_version_refs_falls_back_to_unknown_suffix() {
+        let refs = vec![make_ref("refs/tags/v26.4.1.1-new")];
+        let entry = parse_version_refs(&refs, "26.4").unwrap();
+        assert_eq!(entry.version, "26.4.1.1");
+        assert_eq!(entry.channel, Channel::Stable);
+    }
+
+    #[test]
+    fn test_parse_version_refs_empty_refs() {
+        let refs: Vec<GitRef> = vec![];
+        assert!(parse_version_refs(&refs, "99.99").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_refs_no_matching_tags() {
+        let refs = vec![
+            make_ref("refs/heads/main"),
+            make_ref("something/else"),
+        ];
+        assert!(parse_version_refs(&refs, "25.12").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_refs_no_dash_in_tag() {
+        // A tag without a channel suffix at all should be skipped
+        let refs = vec![make_ref("refs/tags/v25.12.9.61")];
+        assert!(parse_version_refs(&refs, "25.12").is_err());
+    }
+
+    #[test]
+    fn test_parse_version_refs_takes_last_stable() {
+        // Multiple stable tags — takes the last one (highest in sorted GH response)
+        let refs = vec![
+            make_ref("refs/tags/v25.12.1.10-stable"),
+            make_ref("refs/tags/v25.12.9.61-stable"),
+        ];
+        let entry = parse_version_refs(&refs, "25.12").unwrap();
+        assert_eq!(entry.version, "25.12.9.61");
+    }
+
+    #[test]
+    fn test_parse_version_refs_stable_beats_later_unknown() {
+        // Even if an unknown-suffix tag appears after a stable one, stable wins
+        let refs = vec![
+            make_ref("refs/tags/v26.4.2.5-stable"),
+            make_ref("refs/tags/v26.4.3.1-beta"),
+        ];
+        let entry = parse_version_refs(&refs, "26.4").unwrap();
+        // stable is overwritten by the second stable-eligible tag, but "beta" is not stable
+        // so the last stable still wins
+        assert_eq!(entry.version, "26.4.2.5");
+        assert_eq!(entry.channel, Channel::Stable);
+    }
+
+    // -- parse_exact_channel tests --
+
+    #[test]
+    fn test_parse_exact_channel_stable() {
+        let refs = vec![make_ref("refs/tags/v25.12.9.61-stable")];
+        assert_eq!(
+            parse_exact_channel(&refs, "25.12.9.61").unwrap(),
+            Channel::Stable
+        );
+    }
+
+    #[test]
+    fn test_parse_exact_channel_lts() {
+        let refs = vec![make_ref("refs/tags/v24.8.10.6-lts")];
+        assert_eq!(
+            parse_exact_channel(&refs, "24.8.10.6").unwrap(),
+            Channel::Lts
+        );
+    }
+
+    #[test]
+    fn test_parse_exact_channel_unknown_suffix_errors() {
+        // parse_exact_channel does NOT fall back to unknown suffixes
+        let refs = vec![make_ref("refs/tags/v26.4.1.1-new")];
+        assert!(parse_exact_channel(&refs, "26.4.1.1").is_err());
+    }
+
+    #[test]
+    fn test_parse_exact_channel_empty_refs() {
+        let refs: Vec<GitRef> = vec![];
+        assert!(parse_exact_channel(&refs, "25.12.9.61").is_err());
     }
 }
