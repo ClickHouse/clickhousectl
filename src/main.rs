@@ -1006,7 +1006,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .await
             }
             ClickPipeCommands::Create { command } => match command {
-                ClickPipeCreateCommands::S3 {
+                ClickPipeCreateCommands::ObjectStorage {
                     service_id,
                     name,
                     source_url,
@@ -1017,9 +1017,15 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     storage_type,
                     compression,
                     continuous,
+                    queue_url,
+                    delimiter,
                     iam_role,
                     access_key_id,
                     secret_key,
+                    connection_string,
+                    azure_container_name,
+                    path,
+                    service_account_key,
                     org_id,
                 } => {
                     cloud::commands::clickpipe_create_s3(
@@ -1034,9 +1040,15 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         &storage_type,
                         &compression,
                         continuous,
+                        queue_url.as_deref(),
+                        delimiter.as_deref(),
                         iam_role.as_deref(),
                         access_key_id.as_deref(),
                         secret_key.as_deref(),
+                        connection_string.as_deref(),
+                        azure_container_name.as_deref(),
+                        path.as_deref(),
+                        service_account_key.as_deref(),
                         org_id.as_deref(),
                         json,
                     )
@@ -1065,6 +1077,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     schema_registry_username,
                     schema_registry_password,
                     ca_certificate,
+                    client_certificate,
+                    client_key,
+                    schema_registry_ca_certificate,
+                    reverse_private_endpoint_ids,
                     org_id,
                 } => {
                     cloud::commands::clickpipe_create_kafka(
@@ -1091,6 +1107,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         schema_registry_username.as_deref(),
                         schema_registry_password.as_deref(),
                         ca_certificate.as_deref(),
+                        client_certificate.as_deref(),
+                        client_key.as_deref(),
+                        schema_registry_ca_certificate.as_deref(),
+                        &reverse_private_endpoint_ids,
                         org_id.as_deref(),
                         json,
                     )
@@ -1131,6 +1151,142 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         &iterator_type,
                         iterator_timestamp,
                         enhanced_fan_out,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+                ClickPipeCreateCommands::Postgres {
+                    service_id,
+                    name,
+                    host,
+                    port,
+                    pg_database,
+                    username,
+                    password,
+                    table_mappings,
+                    postgres_type,
+                    replication_mode,
+                    auth,
+                    iam_role,
+                    tls_host,
+                    ca_certificate,
+                    publication_name,
+                    replication_slot_name,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_postgres(
+                        &client,
+                        &service_id,
+                        &name,
+                        &host,
+                        port,
+                        &pg_database,
+                        &username,
+                        &password,
+                        &table_mappings,
+                        &postgres_type,
+                        &replication_mode,
+                        &auth,
+                        iam_role.as_deref(),
+                        tls_host.as_deref(),
+                        ca_certificate.as_deref(),
+                        publication_name.as_deref(),
+                        replication_slot_name.as_deref(),
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+                ClickPipeCreateCommands::MySQL {
+                    service_id,
+                    name,
+                    host,
+                    port,
+                    username,
+                    password,
+                    table_mappings,
+                    mysql_type,
+                    replication_mode,
+                    replication_mechanism,
+                    auth,
+                    iam_role,
+                    tls_host,
+                    ca_certificate,
+                    disable_tls,
+                    skip_cert_verification,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_mysql(
+                        &client,
+                        &service_id,
+                        &name,
+                        &host,
+                        port,
+                        &username,
+                        &password,
+                        &table_mappings,
+                        &mysql_type,
+                        &replication_mode,
+                        &replication_mechanism,
+                        &auth,
+                        iam_role.as_deref(),
+                        tls_host.as_deref(),
+                        ca_certificate.as_deref(),
+                        disable_tls,
+                        skip_cert_verification,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+                ClickPipeCreateCommands::MongoDB {
+                    service_id,
+                    name,
+                    uri,
+                    username,
+                    password,
+                    table_mappings,
+                    replication_mode,
+                    read_preference,
+                    tls_host,
+                    ca_certificate,
+                    disable_tls,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_mongodb(
+                        &client,
+                        &service_id,
+                        &name,
+                        &uri,
+                        &username,
+                        &password,
+                        &table_mappings,
+                        &replication_mode,
+                        &read_preference,
+                        tls_host.as_deref(),
+                        ca_certificate.as_deref(),
+                        disable_tls,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+                ClickPipeCreateCommands::BigQuery {
+                    service_id,
+                    name,
+                    service_account_file,
+                    staging_path,
+                    table_mappings,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_create_bigquery(
+                        &client,
+                        &service_id,
+                        &name,
+                        &service_account_file,
+                        &staging_path,
+                        &table_mappings,
                         org_id.as_deref(),
                         json,
                     )

@@ -1028,8 +1028,9 @@ pub enum ClickPipeCommands {
 
 #[derive(Subcommand)]
 pub enum ClickPipeCreateCommands {
-    /// Create a ClickPipe from S3 or other object storage
-    S3 {
+    /// Create a ClickPipe from S3, GCS, Azure Blob, or other object storage
+    #[command(name = "object-storage")]
+    ObjectStorage {
         /// Service ID
         service_id: String,
 
@@ -1069,6 +1070,14 @@ pub enum ClickPipeCreateCommands {
         #[arg(long)]
         continuous: bool,
 
+        /// SQS queue URL for continuous ingestion notifications
+        #[arg(long)]
+        queue_url: Option<String>,
+
+        /// CSV delimiter character (e.g., ",")
+        #[arg(long)]
+        delimiter: Option<String>,
+
         /// IAM role ARN for authentication
         #[arg(long)]
         iam_role: Option<String>,
@@ -1080,6 +1089,22 @@ pub enum ClickPipeCreateCommands {
         /// Secret key for authentication
         #[arg(long, requires = "access_key_id")]
         secret_key: Option<String>,
+
+        /// Azure connection string for authentication
+        #[arg(long)]
+        connection_string: Option<String>,
+
+        /// Azure container name
+        #[arg(long)]
+        azure_container_name: Option<String>,
+
+        /// Object storage path (for Azure)
+        #[arg(long)]
+        path: Option<String>,
+
+        /// GCP service account key (base64-encoded JSON key file)
+        #[arg(long)]
+        service_account_key: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -1171,9 +1196,25 @@ pub enum ClickPipeCreateCommands {
         #[arg(long)]
         schema_registry_password: Option<String>,
 
-        /// Path to CA certificate file
+        /// Path to broker CA certificate file
         #[arg(long)]
         ca_certificate: Option<String>,
+
+        /// Path to client certificate file (for MUTUAL_TLS auth)
+        #[arg(long)]
+        client_certificate: Option<String>,
+
+        /// Path to client private key file (for MUTUAL_TLS auth)
+        #[arg(long)]
+        client_key: Option<String>,
+
+        /// Path to schema registry CA certificate file
+        #[arg(long)]
+        schema_registry_ca_certificate: Option<String>,
+
+        /// Reverse private endpoint IDs (repeatable)
+        #[arg(long = "reverse-private-endpoint-id")]
+        reverse_private_endpoint_ids: Vec<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -1240,6 +1281,225 @@ pub enum ClickPipeCreateCommands {
         /// Enable enhanced fan-out
         #[arg(long)]
         enhanced_fan_out: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from PostgreSQL
+    Postgres {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// PostgreSQL host
+        #[arg(long)]
+        host: String,
+
+        /// PostgreSQL port
+        #[arg(long, default_value = "5432")]
+        port: u16,
+
+        /// Source database name
+        #[arg(long)]
+        pg_database: String,
+
+        /// Username
+        #[arg(long)]
+        username: String,
+
+        /// Password
+        #[arg(long)]
+        password: String,
+
+        /// Table mappings as schema.table:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
+
+        /// Postgres type: postgres (default), supabase, neon, alloydb, rdspostgres, aurorapostgres, cloudsqlpostgres, azurepostgres, crunchybridge, tigerdata
+        #[arg(long, default_value = "postgres")]
+        postgres_type: String,
+
+        /// Replication mode: cdc (default), snapshot, cdc_only
+        #[arg(long, default_value = "cdc")]
+        replication_mode: String,
+
+        /// Authentication: basic (default), IAM_ROLE
+        #[arg(long, default_value = "basic")]
+        auth: String,
+
+        /// IAM role ARN
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// TLS hostname
+        #[arg(long)]
+        tls_host: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Postgres publication name
+        #[arg(long)]
+        publication_name: Option<String>,
+
+        /// Replication slot name
+        #[arg(long)]
+        replication_slot_name: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from MySQL
+    #[command(name = "mysql")]
+    MySQL {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// MySQL host
+        #[arg(long)]
+        host: String,
+
+        /// MySQL port
+        #[arg(long, default_value = "3306")]
+        port: u16,
+
+        /// Username
+        #[arg(long)]
+        username: String,
+
+        /// Password
+        #[arg(long)]
+        password: String,
+
+        /// Table mappings as schema.table:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
+
+        /// MySQL type: mysql (default), rdsmysql, auroramysql, mariadb, rdsmariadb
+        #[arg(long, default_value = "mysql")]
+        mysql_type: String,
+
+        /// Replication mode: cdc (default), snapshot, cdc_only
+        #[arg(long, default_value = "cdc")]
+        replication_mode: String,
+
+        /// Replication mechanism: GTID (default), FILE_POS
+        #[arg(long, default_value = "GTID")]
+        replication_mechanism: String,
+
+        /// Authentication: basic (default), IAM_ROLE
+        #[arg(long, default_value = "basic")]
+        auth: String,
+
+        /// IAM role ARN
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// TLS hostname
+        #[arg(long)]
+        tls_host: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Disable TLS
+        #[arg(long)]
+        disable_tls: bool,
+
+        /// Skip certificate verification
+        #[arg(long)]
+        skip_cert_verification: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from MongoDB
+    #[command(name = "mongodb")]
+    MongoDB {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// MongoDB connection URI (e.g., mongodb+srv://cluster0.example.mongodb.net/mydb)
+        #[arg(long)]
+        uri: String,
+
+        /// Username
+        #[arg(long)]
+        username: String,
+
+        /// Password
+        #[arg(long)]
+        password: String,
+
+        /// Table mappings as database.collection:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
+
+        /// Replication mode: cdc (default), snapshot, cdc_only
+        #[arg(long, default_value = "cdc")]
+        replication_mode: String,
+
+        /// Read preference: secondaryPreferred (default), primary, primaryPreferred, secondary, nearest
+        #[arg(long, default_value = "secondaryPreferred")]
+        read_preference: String,
+
+        /// TLS hostname
+        #[arg(long)]
+        tls_host: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Disable TLS
+        #[arg(long)]
+        disable_tls: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from BigQuery
+    #[command(name = "bigquery")]
+    BigQuery {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Path to GCP service account JSON key file
+        #[arg(long)]
+        service_account_file: String,
+
+        /// GCS staging path for snapshot data
+        #[arg(long)]
+        staging_path: String,
+
+        /// Table mappings as dataset.table:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]

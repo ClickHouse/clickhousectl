@@ -1219,6 +1219,14 @@ pub struct CreateClickPipeSource {
     pub kafka: Option<KafkaSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kinesis: Option<KinesisSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postgres: Option<PostgresSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mysql: Option<MySQLSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mongodb: Option<MongoDBSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bigquery: Option<BigQuerySource>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1232,11 +1240,23 @@ pub struct ObjectStorageSource {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_continuous: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delimiter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_key: Option<ObjectStorageAccessKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_account_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1309,6 +1329,12 @@ pub struct KafkaSource {
     pub schema_registry: Option<KafkaSchemaRegistry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reverse_private_endpoint_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1334,6 +1360,8 @@ pub struct KafkaSchemaRegistry {
     pub authentication: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<KafkaCredentials>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1353,4 +1381,145 @@ pub struct KinesisSource {
     pub iterator_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresSource {
+    #[serde(rename = "type")]
+    pub postgres_type: String,
+    pub credentials: DbCredentials,
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub authentication: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
+    pub settings: PostgresSettings,
+    pub table_mappings: Vec<DbTableMapping>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostgresSettings {
+    pub replication_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replication_slot_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MySQLSource {
+    #[serde(rename = "type")]
+    pub mysql_type: String,
+    pub credentials: DbCredentials,
+    pub host: String,
+    pub port: u16,
+    pub authentication: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_tls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_cert_verification: Option<bool>,
+    pub settings: MySQLSettings,
+    pub table_mappings: Vec<DbTableMapping>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MySQLSettings {
+    pub replication_mode: String,
+    pub replication_mechanism: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoDBSource {
+    pub credentials: DbCredentials,
+    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_preference: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disable_tls: Option<bool>,
+    pub settings: MongoDBSettings,
+    pub table_mappings: Vec<MongoDBTableMapping>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoDBSettings {
+    pub replication_mode: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MongoDBTableMapping {
+    pub source_database_name: String,
+    pub source_collection: String,
+    pub target_table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigQuerySource {
+    pub credentials: BigQueryCredentials,
+    pub snapshot_staging_path: String,
+    pub settings: BigQuerySettings,
+    pub table_mappings: Vec<BigQueryTableMapping>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigQueryCredentials {
+    pub service_account_file: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigQuerySettings {
+    pub replication_mode: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigQueryTableMapping {
+    pub source_dataset_name: String,
+    pub source_table: String,
+    pub target_table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbTableMapping {
+    pub source_schema_name: String,
+    pub source_table: String,
+    pub target_table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<String>,
 }

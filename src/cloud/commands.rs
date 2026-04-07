@@ -769,9 +769,15 @@ pub async fn clickpipe_create_s3(
     storage_type: &str,
     compression: &str,
     continuous: bool,
+    queue_url: Option<&str>,
+    delimiter: Option<&str>,
     iam_role: Option<&str>,
     access_key_id: Option<&str>,
     secret_key: Option<&str>,
+    connection_string: Option<&str>,
+    azure_container_name: Option<&str>,
+    path: Option<&str>,
+    service_account_key: Option<&str>,
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -803,20 +809,34 @@ pub async fn clickpipe_create_s3(
         _ => (None, None, None),
     };
 
+    let authentication = authentication
+        .or_else(|| connection_string.map(|_| "CONNECTION_STRING".to_string()))
+        .or_else(|| service_account_key.map(|_| "SERVICE_ACCOUNT".to_string()));
+
     let request = crate::cloud::types::CreateClickPipeRequest {
         name: name.to_string(),
         source: crate::cloud::types::CreateClickPipeSource {
             kafka: None,
             kinesis: None,
+            postgres: None,
+            mysql: None,
+            mongodb: None,
+            bigquery: None,
             object_storage: Some(crate::cloud::types::ObjectStorageSource {
                 storage_type: storage_type.to_string(),
                 format: format.to_string(),
                 url: url.to_string(),
                 compression: compression.to_string(),
                 is_continuous: if continuous { Some(true) } else { None },
+                queue_url: queue_url.map(|s| s.to_string()),
+                delimiter: delimiter.map(|s| s.to_string()),
                 authentication,
                 iam_role: iam_role_val,
                 access_key,
+                connection_string: connection_string.map(|s| s.to_string()),
+                azure_container_name: azure_container_name.map(|s| s.to_string()),
+                path: path.map(|s| s.to_string()),
+                service_account_key: service_account_key.map(|s| s.to_string()),
             }),
         },
         destination: crate::cloud::types::ClickPipeDestination {
@@ -872,6 +892,10 @@ pub async fn clickpipe_create_kafka(
     schema_registry_username: Option<&str>,
     schema_registry_password: Option<&str>,
     ca_certificate: Option<&str>,
+    client_certificate: Option<&str>,
+    client_key: Option<&str>,
+    schema_registry_ca_certificate: Option<&str>,
+    reverse_private_endpoint_ids: &[String],
     org_id: Option<&str>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -914,6 +938,10 @@ pub async fn clickpipe_create_kafka(
             }),
             _ => None,
         };
+        let sr_ca_cert = match schema_registry_ca_certificate {
+            Some(path) => Some(std::fs::read_to_string(path).unwrap_or_default()),
+            None => None,
+        };
         crate::cloud::types::KafkaSchemaRegistry {
             url: url.to_string(),
             authentication: if sr_credentials.is_some() {
@@ -922,10 +950,21 @@ pub async fn clickpipe_create_kafka(
                 None
             },
             credentials: sr_credentials,
+            ca_certificate: sr_ca_cert,
         }
     });
 
     let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let client_cert_contents = match client_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let client_key_contents = match client_key {
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
@@ -935,6 +974,10 @@ pub async fn clickpipe_create_kafka(
         source: crate::cloud::types::CreateClickPipeSource {
             object_storage: None,
             kinesis: None,
+            postgres: None,
+            mysql: None,
+            mongodb: None,
+            bigquery: None,
             kafka: Some(crate::cloud::types::KafkaSource {
                 kafka_type: kafka_type.to_string(),
                 format: format.to_string(),
@@ -951,6 +994,9 @@ pub async fn clickpipe_create_kafka(
                 }),
                 schema_registry,
                 ca_certificate: ca_cert_contents,
+                certificate: client_cert_contents,
+                private_key: client_key_contents,
+                reverse_private_endpoint_ids: reverse_private_endpoint_ids.to_vec(),
             }),
         },
         destination: crate::cloud::types::ClickPipeDestination {
@@ -1030,6 +1076,10 @@ pub async fn clickpipe_create_kinesis(
         source: crate::cloud::types::CreateClickPipeSource {
             object_storage: None,
             kafka: None,
+            postgres: None,
+            mysql: None,
+            mongodb: None,
+            bigquery: None,
             kinesis: Some(crate::cloud::types::KinesisSource {
                 format: format.to_string(),
                 stream_name: stream_name.to_string(),
@@ -1055,6 +1105,348 @@ pub async fn clickpipe_create_kinesis(
                 primary_key: None,
             }),
             columns: if parsed_columns.is_empty() { None } else { Some(parsed_columns) },
+        },
+    };
+
+    let clickpipe = client.create_clickpipe(&org_id, service_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
+fn parse_db_table_mappings(
+    mappings: &[String],
+) -> Result<Vec<crate::cloud::types::DbTableMapping>, String> {
+    mappings
+        .iter()
+        .map(|m| {
+            let (source, target) = m.split_once(':').ok_or_else(|| {
+                format!("Invalid table mapping '{}': expected schema.table:target_table", m)
+            })?;
+            let (schema, table) = source.split_once('.').ok_or_else(|| {
+                format!("Invalid source '{}': expected schema.table", source)
+            })?;
+            Ok(crate::cloud::types::DbTableMapping {
+                source_schema_name: schema.to_string(),
+                source_table: table.to_string(),
+                target_table: target.to_string(),
+                table_engine: Some("ReplacingMergeTree".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn empty_source() -> crate::cloud::types::CreateClickPipeSource {
+    crate::cloud::types::CreateClickPipeSource {
+        object_storage: None,
+        kafka: None,
+        kinesis: None,
+        postgres: None,
+        mysql: None,
+        mongodb: None,
+        bigquery: None,
+    }
+}
+
+pub async fn clickpipe_create_postgres(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    host: &str,
+    port: u16,
+    pg_database: &str,
+    username: &str,
+    password: &str,
+    table_mappings: &[String],
+    postgres_type: &str,
+    replication_mode: &str,
+    auth: &str,
+    iam_role: Option<&str>,
+    tls_host: Option<&str>,
+    ca_certificate: Option<&str>,
+    publication_name: Option<&str>,
+    replication_slot_name: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let mappings = parse_db_table_mappings(table_mappings)?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let mut source = empty_source();
+    source.postgres = Some(crate::cloud::types::PostgresSource {
+        postgres_type: postgres_type.to_string(),
+        credentials: crate::cloud::types::DbCredentials {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+        host: host.to_string(),
+        port,
+        database: pg_database.to_string(),
+        authentication: auth.to_string(),
+        iam_role: iam_role.map(|s| s.to_string()),
+        tls_host: tls_host.map(|s| s.to_string()),
+        ca_certificate: ca_cert_contents,
+        settings: crate::cloud::types::PostgresSettings {
+            replication_mode: replication_mode.to_string(),
+            publication_name: publication_name.map(|s| s.to_string()),
+            replication_slot_name: replication_slot_name.map(|s| s.to_string()),
+        },
+        table_mappings: mappings,
+    });
+
+    let request = crate::cloud::types::CreateClickPipeRequest {
+        name: name.to_string(),
+        source,
+        destination: crate::cloud::types::ClickPipeDestination {
+            database: "default".to_string(),
+            table: "".to_string(),
+            managed_table: false,
+            table_definition: None,
+            columns: None,
+        },
+    };
+
+    let clickpipe = client.create_clickpipe(&org_id, service_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_create_mysql(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    table_mappings: &[String],
+    mysql_type: &str,
+    replication_mode: &str,
+    replication_mechanism: &str,
+    auth: &str,
+    iam_role: Option<&str>,
+    tls_host: Option<&str>,
+    ca_certificate: Option<&str>,
+    disable_tls: bool,
+    skip_cert_verification: bool,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let mappings = parse_db_table_mappings(table_mappings)?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let mut source = empty_source();
+    source.mysql = Some(crate::cloud::types::MySQLSource {
+        mysql_type: mysql_type.to_string(),
+        credentials: crate::cloud::types::DbCredentials {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+        host: host.to_string(),
+        port,
+        authentication: auth.to_string(),
+        iam_role: iam_role.map(|s| s.to_string()),
+        tls_host: tls_host.map(|s| s.to_string()),
+        ca_certificate: ca_cert_contents,
+        disable_tls: if disable_tls { Some(true) } else { None },
+        skip_cert_verification: if skip_cert_verification { Some(true) } else { None },
+        settings: crate::cloud::types::MySQLSettings {
+            replication_mode: replication_mode.to_string(),
+            replication_mechanism: replication_mechanism.to_string(),
+        },
+        table_mappings: mappings,
+    });
+
+    let request = crate::cloud::types::CreateClickPipeRequest {
+        name: name.to_string(),
+        source,
+        destination: crate::cloud::types::ClickPipeDestination {
+            database: "default".to_string(),
+            table: "".to_string(),
+            managed_table: false,
+            table_definition: None,
+            columns: None,
+        },
+    };
+
+    let clickpipe = client.create_clickpipe(&org_id, service_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_create_mongodb(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    uri: &str,
+    username: &str,
+    password: &str,
+    table_mappings: &[String],
+    replication_mode: &str,
+    read_preference: &str,
+    tls_host: Option<&str>,
+    ca_certificate: Option<&str>,
+    disable_tls: bool,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    let mongo_mappings: Vec<crate::cloud::types::MongoDBTableMapping> = table_mappings
+        .iter()
+        .map(|m| {
+            let (source, target) = m.split_once(':').ok_or_else(|| {
+                format!("Invalid table mapping '{}': expected database.collection:target_table", m)
+            })?;
+            let (db, collection) = source.split_once('.').ok_or_else(|| {
+                format!("Invalid source '{}': expected database.collection", source)
+            })?;
+            Ok(crate::cloud::types::MongoDBTableMapping {
+                source_database_name: db.to_string(),
+                source_collection: collection.to_string(),
+                target_table: target.to_string(),
+                table_engine: Some("ReplacingMergeTree".to_string()),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let mut source = empty_source();
+    source.mongodb = Some(crate::cloud::types::MongoDBSource {
+        credentials: crate::cloud::types::DbCredentials {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+        uri: uri.to_string(),
+        read_preference: Some(read_preference.to_string()),
+        tls_host: tls_host.map(|s| s.to_string()),
+        ca_certificate: ca_cert_contents,
+        disable_tls: if disable_tls { Some(true) } else { None },
+        settings: crate::cloud::types::MongoDBSettings {
+            replication_mode: replication_mode.to_string(),
+        },
+        table_mappings: mongo_mappings,
+    });
+
+    let request = crate::cloud::types::CreateClickPipeRequest {
+        name: name.to_string(),
+        source,
+        destination: crate::cloud::types::ClickPipeDestination {
+            database: "default".to_string(),
+            table: "".to_string(),
+            managed_table: false,
+            table_definition: None,
+            columns: None,
+        },
+    };
+
+    let clickpipe = client.create_clickpipe(&org_id, service_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_create_bigquery(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    service_account_file: &str,
+    staging_path: &str,
+    table_mappings: &[String],
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    let sa_contents = std::fs::read_to_string(service_account_file)?;
+    let sa_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        sa_contents.as_bytes(),
+    );
+
+    let bq_mappings: Vec<crate::cloud::types::BigQueryTableMapping> = table_mappings
+        .iter()
+        .map(|m| {
+            let (source, target) = m.split_once(':').ok_or_else(|| {
+                format!("Invalid table mapping '{}': expected dataset.table:target_table", m)
+            })?;
+            let (dataset, table) = source.split_once('.').ok_or_else(|| {
+                format!("Invalid source '{}': expected dataset.table", source)
+            })?;
+            Ok(crate::cloud::types::BigQueryTableMapping {
+                source_dataset_name: dataset.to_string(),
+                source_table: table.to_string(),
+                target_table: target.to_string(),
+                table_engine: Some("ReplacingMergeTree".to_string()),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let mut source = empty_source();
+    source.bigquery = Some(crate::cloud::types::BigQuerySource {
+        credentials: crate::cloud::types::BigQueryCredentials {
+            service_account_file: sa_b64,
+        },
+        snapshot_staging_path: staging_path.to_string(),
+        settings: crate::cloud::types::BigQuerySettings {
+            replication_mode: "snapshot".to_string(),
+        },
+        table_mappings: bq_mappings,
+    });
+
+    let request = crate::cloud::types::CreateClickPipeRequest {
+        name: name.to_string(),
+        source,
+        destination: crate::cloud::types::ClickPipeDestination {
+            database: "default".to_string(),
+            table: "".to_string(),
+            managed_table: false,
+            table_definition: None,
+            columns: None,
         },
     };
 
