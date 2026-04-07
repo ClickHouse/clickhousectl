@@ -39,7 +39,7 @@ jobs:
 
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --tag v0.2.5
+        run: cargo install cross --version 0.2.5
 
       - name: Build
         run: |
