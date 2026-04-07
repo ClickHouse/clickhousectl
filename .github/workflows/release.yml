@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -55,9 +56,11 @@ jobs:
           binary="target/${{ matrix.target }}/release/clickhousectl"
           echo "--- file output ---"
           file "$binary"
-          file "$binary" | grep -q "statically linked"
+          file "$binary" | grep -qE "statically linked|static-pie linked"
           echo "--- ldd output ---"
-          ! ldd "$binary" 2>&1 || ldd "$binary" 2>&1 | grep -q "not a dynamic executable"
+          ldd_output=$(ldd "$binary" 2>&1 || true)
+          echo "$ldd_output"
+          echo "$ldd_output" | grep -qE "not a dynamic executable|statically linked"
           echo "Static linking verified."
 
       - name: Rename binary
