@@ -1,7 +1,7 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::str::FromStr;
 use tabled::{Table, Tabled, settings::Style};
 
@@ -1784,7 +1784,7 @@ pub async fn service_client(
         p
     } else if let Ok(p) = std::env::var("CLICKHOUSE_PASSWORD") {
         p
-    } else if atty::is(atty::Stream::Stdin) {
+    } else if std::io::stdin().is_terminal() {
         eprint!("Password: ");
         rpassword::read_password()?
     } else {
