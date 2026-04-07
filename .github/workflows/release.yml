@@ -16,10 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            cross: false
-          - target: aarch64-unknown-linux-gnu
+            cross: true
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
           - target: x86_64-apple-darwin
@@ -39,7 +39,7 @@ jobs:
 
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --version 0.2.5
 
       - name: Build
         run: |
@@ -48,6 +48,17 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }}
           fi
+
+      - name: Verify static linking
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          binary="target/${{ matrix.target }}/release/clickhousectl"
+          echo "--- file output ---"
+          file "$binary"
+          file "$binary" | grep -q "statically linked"
+          echo "--- ldd output ---"
+          ! ldd "$binary" 2>&1 || ldd "$binary" 2>&1 | grep -q "not a dynamic executable"
+          echo "Static linking verified."
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release/clickhousectl clickhousectl-${{ matrix.target }}
@@ -58,9 +69,47 @@ jobs:
           name: clickhousectl-${{ matrix.target }}
           path: clickhousectl-${{ matrix.target }}
 
+  smoke-test:
+    name: Smoke test (${{ matrix.distro }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu:20.04
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: ubuntu:22.04
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: ubuntu:24.04
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: debian:bullseye
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: debian:bookworm
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: centos:7
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: amazonlinux:2
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+          - distro: alpine:3.18
+            artifact: clickhousectl-x86_64-unknown-linux-musl
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+
+      - name: Run smoke test in ${{ matrix.distro }}
+        run: |
+          chmod +x ${{ matrix.artifact }}
+          docker run --rm \
+            -v "$PWD/${{ matrix.artifact }}:/usr/local/bin/clickhousectl:ro" \
+            ${{ matrix.distro }} \
+            sh -c 'clickhousectl --version && clickhousectl --help'
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, smoke-test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
