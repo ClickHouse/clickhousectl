@@ -2801,4 +2801,44 @@ mod tests {
         assert_eq!(query_json["openApiKeys"][0], "key-1");
         assert_eq!(query_json["allowedOrigins"], "https://example.com");
     }
+
+    #[test]
+    fn parse_db_table_mappings_valid() {
+        let mappings = vec![
+            "public.users:public_users".to_string(),
+            "schema1.orders:schema1_orders".to_string(),
+        ];
+        let result = super::parse_db_table_mappings(&mappings).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].source_schema_name, "public");
+        assert_eq!(result[0].source_table, "users");
+        assert_eq!(result[0].target_table, "public_users");
+        assert_eq!(result[0].table_engine, Some("ReplacingMergeTree".to_string()));
+        assert_eq!(result[1].source_schema_name, "schema1");
+        assert_eq!(result[1].source_table, "orders");
+        assert_eq!(result[1].target_table, "schema1_orders");
+    }
+
+    #[test]
+    fn parse_db_table_mappings_missing_colon() {
+        let mappings = vec!["public.users".to_string()];
+        let result = super::parse_db_table_mappings(&mappings);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected schema.table:target_table"));
+    }
+
+    #[test]
+    fn parse_db_table_mappings_missing_dot() {
+        let mappings = vec!["users:target".to_string()];
+        let result = super::parse_db_table_mappings(&mappings);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected schema.table"));
+    }
+
+    #[test]
+    fn parse_db_table_mappings_empty() {
+        let mappings: Vec<String> = vec![];
+        let result = super::parse_db_table_mappings(&mappings).unwrap();
+        assert!(result.is_empty());
+    }
 }

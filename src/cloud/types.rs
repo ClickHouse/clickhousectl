@@ -1523,3 +1523,375 @@ pub struct DbTableMapping {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clickpipe_deserializes_from_api_response() {
+        let json = r#"{
+            "id": "abc-123",
+            "name": "test-pipe",
+            "state": "Running",
+            "serviceId": "svc-456",
+            "createdAt": "2026-04-07T10:00:00Z",
+            "updatedAt": "2026-04-07T10:05:00Z"
+        }"#;
+        let cp: ClickPipe = serde_json::from_str(json).unwrap();
+        assert_eq!(cp.id, "abc-123");
+        assert_eq!(cp.name, "test-pipe");
+        assert_eq!(cp.state, "Running");
+        assert_eq!(cp.service_id.unwrap(), "svc-456");
+    }
+
+    #[test]
+    fn clickpipe_deserializes_with_unknown_fields() {
+        let json = r#"{
+            "id": "abc-123",
+            "name": "test-pipe",
+            "state": "Running",
+            "source": {"kafka": {"brokers": "localhost:9092"}},
+            "destination": {"database": "default"},
+            "fieldMappings": [],
+            "scaling": {"replicas": 1}
+        }"#;
+        let cp: ClickPipe = serde_json::from_str(json).unwrap();
+        assert_eq!(cp.id, "abc-123");
+        assert_eq!(cp.state, "Running");
+    }
+
+    #[test]
+    fn object_storage_source_serializes_to_camel_case() {
+        let source = ObjectStorageSource {
+            storage_type: "s3".to_string(),
+            format: "JSONEachRow".to_string(),
+            url: "https://bucket.s3.amazonaws.com/data/**".to_string(),
+            compression: "auto".to_string(),
+            is_continuous: Some(true),
+            queue_url: Some("https://sqs.us-east-1.amazonaws.com/123/queue".to_string()),
+            delimiter: None,
+            authentication: Some("IAM_USER".to_string()),
+            iam_role: None,
+            access_key: Some(ObjectStorageAccessKey {
+                access_key_id: "AKIA123".to_string(),
+                secret_key: "secret".to_string(),
+            }),
+            connection_string: None,
+            azure_container_name: None,
+            path: None,
+            service_account_key: None,
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "s3");
+        assert_eq!(json["isContinuous"], true);
+        assert_eq!(json["queueUrl"], "https://sqs.us-east-1.amazonaws.com/123/queue");
+        assert_eq!(json["accessKey"]["accessKeyId"], "AKIA123");
+        assert!(json.get("delimiter").is_none());
+        assert!(json.get("connectionString").is_none());
+    }
+
+    #[test]
+    fn object_storage_source_skips_none_fields() {
+        let source = ObjectStorageSource {
+            storage_type: "s3".to_string(),
+            format: "Parquet".to_string(),
+            url: "https://bucket.s3.amazonaws.com/data.parquet".to_string(),
+            compression: "none".to_string(),
+            is_continuous: None,
+            queue_url: None,
+            delimiter: None,
+            authentication: None,
+            iam_role: None,
+            access_key: None,
+            connection_string: None,
+            azure_container_name: None,
+            path: None,
+            service_account_key: None,
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert!(json.get("isContinuous").is_none());
+        assert!(json.get("authentication").is_none());
+        assert!(json.get("iamRole").is_none());
+        assert!(json.get("accessKey").is_none());
+    }
+
+    #[test]
+    fn kafka_source_serializes_correctly() {
+        let source = KafkaSource {
+            kafka_type: "redpanda".to_string(),
+            format: "JSONEachRow".to_string(),
+            brokers: "broker1:9092,broker2:9092".to_string(),
+            topics: "events".to_string(),
+            consumer_group: Some("my-group".to_string()),
+            authentication: Some("SCRAM-SHA-256".to_string()),
+            credentials: Some(KafkaCredentials {
+                username: "user".to_string(),
+                password: "pass".to_string(),
+            }),
+            iam_role: None,
+            access_key: None,
+            offset: Some(KafkaOffset {
+                strategy: "from_beginning".to_string(),
+                timestamp: None,
+            }),
+            schema_registry: None,
+            ca_certificate: Some("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----".to_string()),
+            certificate: None,
+            private_key: None,
+            reverse_private_endpoint_ids: vec![],
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "redpanda");
+        assert_eq!(json["consumerGroup"], "my-group");
+        assert_eq!(json["credentials"]["username"], "user");
+        assert_eq!(json["offset"]["strategy"], "from_beginning");
+        assert!(json.get("offset").unwrap().get("timestamp").is_none());
+        assert!(json.get("iamRole").is_none());
+        assert!(json.get("reversePrivateEndpointIds").is_none()); // empty vec skipped
+    }
+
+    #[test]
+    fn kafka_source_includes_reverse_private_endpoints() {
+        let source = KafkaSource {
+            kafka_type: "kafka".to_string(),
+            format: "Avro".to_string(),
+            brokers: "broker:9092".to_string(),
+            topics: "topic".to_string(),
+            consumer_group: None,
+            authentication: None,
+            credentials: None,
+            iam_role: None,
+            access_key: None,
+            offset: None,
+            schema_registry: None,
+            ca_certificate: None,
+            certificate: None,
+            private_key: None,
+            reverse_private_endpoint_ids: vec!["rpe-123".to_string(), "rpe-456".to_string()],
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        let rpe_ids = json["reversePrivateEndpointIds"].as_array().unwrap();
+        assert_eq!(rpe_ids.len(), 2);
+        assert_eq!(rpe_ids[0], "rpe-123");
+    }
+
+    #[test]
+    fn kinesis_source_serializes_correctly() {
+        let source = KinesisSource {
+            format: "JSONEachRow".to_string(),
+            stream_name: "my-stream".to_string(),
+            region: "us-east-1".to_string(),
+            authentication: "IAM_USER".to_string(),
+            iam_role: None,
+            access_key: Some(ObjectStorageAccessKey {
+                access_key_id: "AKIA123".to_string(),
+                secret_key: "secret".to_string(),
+            }),
+            use_enhanced_fan_out: Some(true),
+            iterator_type: Some("TRIM_HORIZON".to_string()),
+            timestamp: None,
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["streamName"], "my-stream");
+        assert_eq!(json["useEnhancedFanOut"], true);
+        assert_eq!(json["iteratorType"], "TRIM_HORIZON");
+        assert!(json.get("timestamp").is_none());
+    }
+
+    #[test]
+    fn postgres_source_serializes_correctly() {
+        let source = PostgresSource {
+            postgres_type: "postgres".to_string(),
+            credentials: DbCredentials {
+                username: "pguser".to_string(),
+                password: "pgpass".to_string(),
+            },
+            host: "db.example.com".to_string(),
+            port: 5432,
+            database: "mydb".to_string(),
+            authentication: "basic".to_string(),
+            iam_role: None,
+            tls_host: Some("db.example.com".to_string()),
+            ca_certificate: None,
+            settings: PostgresSettings {
+                replication_mode: "cdc".to_string(),
+                publication_name: Some("my_pub".to_string()),
+                replication_slot_name: None,
+            },
+            table_mappings: vec![DbTableMapping {
+                source_schema_name: "public".to_string(),
+                source_table: "users".to_string(),
+                target_table: "public_users".to_string(),
+                table_engine: Some("ReplacingMergeTree".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "postgres");
+        assert_eq!(json["credentials"]["username"], "pguser");
+        assert_eq!(json["port"], 5432);
+        assert_eq!(json["settings"]["replicationMode"], "cdc");
+        assert_eq!(json["settings"]["publicationName"], "my_pub");
+        assert!(json["settings"].get("replicationSlotName").is_none());
+        assert_eq!(json["tableMappings"][0]["sourceSchemaName"], "public");
+        assert_eq!(json["tableMappings"][0]["sourceTable"], "users");
+        assert_eq!(json["tableMappings"][0]["targetTable"], "public_users");
+    }
+
+    #[test]
+    fn mysql_source_serializes_correctly() {
+        let source = MySQLSource {
+            mysql_type: "mysql".to_string(),
+            credentials: DbCredentials {
+                username: "root".to_string(),
+                password: "pass".to_string(),
+            },
+            host: "mysql.example.com".to_string(),
+            port: 3306,
+            authentication: "basic".to_string(),
+            iam_role: None,
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: Some(true),
+            skip_cert_verification: None,
+            settings: MySQLSettings {
+                replication_mode: "cdc".to_string(),
+                replication_mechanism: "GTID".to_string(),
+            },
+            table_mappings: vec![],
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["type"], "mysql");
+        assert_eq!(json["disableTls"], true);
+        assert!(json.get("skipCertVerification").is_none());
+        assert_eq!(json["settings"]["replicationMechanism"], "GTID");
+    }
+
+    #[test]
+    fn mongodb_source_serializes_correctly() {
+        let source = MongoDBSource {
+            credentials: DbCredentials {
+                username: "mongouser".to_string(),
+                password: "mongopass".to_string(),
+            },
+            uri: "mongodb+srv://cluster.example.net/mydb".to_string(),
+            read_preference: Some("secondaryPreferred".to_string()),
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: None,
+            settings: MongoDBSettings {
+                replication_mode: "cdc".to_string(),
+            },
+            table_mappings: vec![MongoDBTableMapping {
+                source_database_name: "mydb".to_string(),
+                source_collection: "users".to_string(),
+                target_table: "mydb_users".to_string(),
+                table_engine: Some("ReplacingMergeTree".to_string()),
+            }],
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["uri"], "mongodb+srv://cluster.example.net/mydb");
+        assert_eq!(json["readPreference"], "secondaryPreferred");
+        assert_eq!(json["tableMappings"][0]["sourceCollection"], "users");
+        assert_eq!(json["tableMappings"][0]["sourceDatabaseName"], "mydb");
+    }
+
+    #[test]
+    fn bigquery_source_serializes_correctly() {
+        let source = BigQuerySource {
+            credentials: BigQueryCredentials {
+                service_account_file: "base64encodedkey".to_string(),
+            },
+            snapshot_staging_path: "gs://bucket/staging".to_string(),
+            settings: BigQuerySettings {
+                replication_mode: "snapshot".to_string(),
+            },
+            table_mappings: vec![BigQueryTableMapping {
+                source_dataset_name: "my_dataset".to_string(),
+                source_table: "my_table".to_string(),
+                target_table: "my_dataset_my_table".to_string(),
+                table_engine: None,
+            }],
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert_eq!(json["snapshotStagingPath"], "gs://bucket/staging");
+        assert_eq!(json["credentials"]["serviceAccountFile"], "base64encodedkey");
+        assert_eq!(json["tableMappings"][0]["sourceDatasetName"], "my_dataset");
+        assert!(json["tableMappings"][0].get("tableEngine").is_none());
+    }
+
+    #[test]
+    fn create_request_serializes_full_s3_request() {
+        let request = CreateClickPipeRequest {
+            name: "my-pipe".to_string(),
+            source: CreateClickPipeSource {
+                object_storage: Some(ObjectStorageSource {
+                    storage_type: "s3".to_string(),
+                    format: "JSONEachRow".to_string(),
+                    url: "https://bucket.s3.amazonaws.com/**".to_string(),
+                    compression: "auto".to_string(),
+                    is_continuous: None,
+                    queue_url: None,
+                    delimiter: None,
+                    authentication: None,
+                    iam_role: None,
+                    access_key: None,
+                    connection_string: None,
+                    azure_container_name: None,
+                    path: None,
+                    service_account_key: None,
+                }),
+                kafka: None,
+                kinesis: None,
+                postgres: None,
+                mysql: None,
+                mongodb: None,
+                bigquery: None,
+            },
+            destination: ClickPipeDestination {
+                database: "default".to_string(),
+                table: "events".to_string(),
+                managed_table: true,
+                table_definition: Some(ClickPipeTableDefinition {
+                    engine: ClickPipeTableEngine {
+                        engine_type: "MergeTree".to_string(),
+                    },
+                    sorting_key: None,
+                    partition_by: None,
+                    primary_key: None,
+                }),
+                columns: Some(vec![
+                    ClickPipeDestinationColumn {
+                        name: "id".to_string(),
+                        column_type: "Int64".to_string(),
+                    },
+                ]),
+            },
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["name"], "my-pipe");
+        assert!(json["source"]["objectStorage"].is_object());
+        assert!(json["source"].get("kafka").is_none());
+        assert!(json["source"].get("kinesis").is_none());
+        assert!(json["source"].get("postgres").is_none());
+        assert_eq!(json["destination"]["managedTable"], true);
+        assert_eq!(json["destination"]["tableDefinition"]["engine"]["type"], "MergeTree");
+        assert_eq!(json["destination"]["columns"][0]["name"], "id");
+        assert_eq!(json["destination"]["columns"][0]["type"], "Int64");
+    }
+
+    #[test]
+    fn destination_skips_none_fields() {
+        let dest = ClickPipeDestination {
+            database: "default".to_string(),
+            table: "".to_string(),
+            managed_table: false,
+            table_definition: None,
+            columns: None,
+        };
+        let json = serde_json::to_value(&dest).unwrap();
+        assert!(json.get("tableDefinition").is_none());
+        assert!(json.get("columns").is_none());
+        assert_eq!(json["managedTable"], false);
+    }
+}
