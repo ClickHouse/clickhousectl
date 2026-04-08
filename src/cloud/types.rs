@@ -1186,19 +1186,79 @@ pub struct UpdateBackupConfigRequest {
     pub backup_start_time: Option<String>,
 }
 
+string_enum! {
+    pub enum ClickPipeState {
+        Unknown => "Unknown",
+        Provisioning => "Provisioning",
+        Running => "Running",
+        Stopping => "Stopping",
+        Stopped => "Stopped",
+        Failed => "Failed",
+        Completed => "Completed",
+        InternalError => "InternalError",
+        Setup => "Setup",
+        Snapshot => "Snapshot",
+        Paused => "Paused",
+        Pausing => "Pausing",
+        Modifying => "Modifying",
+        Resync => "Resync",
+    }
+}
+
 /// ClickPipe
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickPipe {
     pub id: String,
     pub name: String,
-    pub state: String,
+    pub state: ClickPipeState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination: Option<ClickPipeGetDestination>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scaling: Option<ClickPipeGetScaling>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_mappings: Option<Vec<ClickPipeFieldMapping>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeGetDestination {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_table: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickPipeDestinationColumn>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeGetScaling {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replica_cpu_millicores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeFieldMapping {
+    pub source_field: String,
+    pub destination_field: String,
 }
 
 /// Create ClickPipe request
@@ -1297,7 +1357,7 @@ pub struct ClickPipeTableEngine {
     pub engine_type: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickPipeDestinationColumn {
     pub name: String,

@@ -1140,6 +1140,37 @@ pub async fn clickpipe_get(
         if let Some(sid) = &clickpipe.service_id {
             println!("  Service ID: {}", sid);
         }
+        if let Some(scaling) = &clickpipe.scaling {
+            println!("  Scaling:");
+            if let Some(r) = scaling.replicas {
+                println!("    Replicas: {}", r);
+            }
+            if let Some(cpu) = scaling.replica_cpu_millicores {
+                println!("    CPU: {}m", cpu);
+            }
+            if let Some(mem) = scaling.replica_memory_gb {
+                println!("    Memory: {} GB", mem);
+            }
+        }
+        if let Some(source) = &clickpipe.source {
+            // Determine source type from which key is present
+            if let Some(obj) = source.as_object() {
+                for (source_type, _config) in obj {
+                    println!("  Source: {}", source_type);
+                }
+            }
+        }
+        if let Some(dest) = &clickpipe.destination {
+            if let Some(db) = &dest.database {
+                println!("  Destination: {}.{}", db, dest.table.as_deref().unwrap_or("-"));
+            }
+            if let Some(cols) = &dest.columns {
+                println!("  Columns:");
+                for col in cols {
+                    println!("    {} ({})", col.name, col.column_type);
+                }
+            }
+        }
         if let Some(created) = &clickpipe.created_at {
             println!("  Created: {}", created);
         }
