@@ -1005,6 +1005,79 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json)
                     .await
             }
+            ClickPipeCommands::Get {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_get(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Delete {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_delete(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Start {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_state(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    "start",
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Stop {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_state(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    "stop",
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Resync {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_state(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    "resync",
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
             ClickPipeCommands::Create { command } => match command {
                 ClickPipeCreateCommands::ObjectStorage {
                     service_id,

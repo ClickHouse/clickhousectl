@@ -441,6 +441,49 @@ impl CloudClient {
         .await
     }
 
+    pub async fn get_clickpipe(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+    ) -> Result<ClickPipe> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/clickpipes/{}",
+            org_id, service_id, clickpipe_id
+        ))
+        .await
+    }
+
+    pub async fn delete_clickpipe(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+    ) -> Result<()> {
+        self.delete(&format!(
+            "/organizations/{}/services/{}/clickpipes/{}",
+            org_id, service_id, clickpipe_id
+        ))
+        .await
+    }
+
+    pub async fn change_clickpipe_state(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        command: &str,
+    ) -> Result<ClickPipe> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/clickpipes/{}/state",
+                org_id, service_id, clickpipe_id
+            ),
+            &serde_json::json!({ "command": command }),
+        )
+        .await
+    }
+
     // Update service
     pub async fn update_service(
         &self,

@@ -1121,6 +1121,72 @@ pub async fn clickpipe_create_kinesis(
     Ok(())
 }
 
+pub async fn clickpipe_get(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let clickpipe = client.get_clickpipe(&org_id, service_id, clickpipe_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+        if let Some(sid) = &clickpipe.service_id {
+            println!("  Service ID: {}", sid);
+        }
+        if let Some(created) = &clickpipe.created_at {
+            println!("  Created: {}", created);
+        }
+        if let Some(updated) = &clickpipe.updated_at {
+            println!("  Updated: {}", updated);
+        }
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_delete(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    client.delete_clickpipe(&org_id, service_id, clickpipe_id).await?;
+
+    if json {
+        println!("{}", serde_json::json!({ "deleted": clickpipe_id }));
+    } else {
+        println!("ClickPipe {} deleted", clickpipe_id);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_state(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    command: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let clickpipe = client.change_clickpipe_state(&org_id, service_id, clickpipe_id, command).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe {} {} (state: {})", clickpipe.name, command, clickpipe.state);
+    }
+    Ok(())
+}
+
 fn parse_db_table_mappings(
     mappings: &[String],
 ) -> Result<Vec<crate::cloud::types::DbTableMapping>, String> {

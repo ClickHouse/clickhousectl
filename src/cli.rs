@@ -1019,6 +1019,71 @@ pub enum ClickPipeCommands {
         org_id: Option<String>,
     },
 
+    /// Get ClickPipe details
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a ClickPipe
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Start a ClickPipe
+    Start {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Stop a ClickPipe
+    Stop {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Resync a ClickPipe (CDC pipes only)
+    Resync {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
     /// Create a ClickPipe
     Create {
         #[command(subcommand)]
