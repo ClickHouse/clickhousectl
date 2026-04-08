@@ -1,5 +1,7 @@
 # clickhousectl
 
+> **Beta:** `clickhousectl` is currently in beta. Features and behavior may change.
+
 `clickhousectl` is the CLI for ClickHouse: local and cloud.
 
 With `clickhousectl` you can:
@@ -148,6 +150,8 @@ Each named server has its own data directory, so servers are fully isolated from
 Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys.
 
 ### OAuth login (recommended)
+
+> **Note:** Cloud OAuth requires a feature flag for your ClickHouse Cloud organization. Please reach out to support to request OAuth device flow auth for `clickhousectl`. You do not need this to use API keys generated from the SQL Console.
 
 ```bash
 clickhousectl cloud auth login
