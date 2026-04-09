@@ -321,6 +321,15 @@ impl CloudClient {
             .await
     }
 
+    async fn put<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        self.request(self.client.put(self.url(path)).json(body))
+            .await
+    }
+
     async fn delete(&self, path: &str) -> Result<()> {
         self.request_no_body(self.client.delete(self.url(path)))
             .await
@@ -480,6 +489,53 @@ impl CloudClient {
                 org_id, service_id, clickpipe_id
             ),
             &serde_json::json!({ "command": command }),
+        )
+        .await
+    }
+
+    pub async fn update_clickpipe_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        request: &ClickPipeScalingPatchRequest,
+    ) -> Result<ClickPipe> {
+        self.patch(
+            &format!(
+                "/organizations/{}/services/{}/clickpipes/{}/scaling",
+                org_id, service_id, clickpipe_id
+            ),
+            request,
+        )
+        .await
+    }
+
+    pub async fn get_clickpipe_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+    ) -> Result<ClickPipeSettingsRequest> {
+        self.get(&format!(
+            "/organizations/{}/services/{}/clickpipes/{}/settings",
+            org_id, service_id, clickpipe_id
+        ))
+        .await
+    }
+
+    pub async fn update_clickpipe_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        request: &ClickPipeSettingsRequest,
+    ) -> Result<ClickPipeSettingsRequest> {
+        self.put(
+            &format!(
+                "/organizations/{}/services/{}/clickpipes/{}/settings",
+                org_id, service_id, clickpipe_id
+            ),
+            request,
         )
         .await
     }

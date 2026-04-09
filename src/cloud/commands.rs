@@ -1218,6 +1218,104 @@ pub async fn clickpipe_state(
     Ok(())
 }
 
+pub async fn clickpipe_scale(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    replicas: Option<u32>,
+    cpu_millicores: Option<u32>,
+    memory_gb: Option<f64>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    let request = crate::cloud::types::ClickPipeScalingPatchRequest {
+        replicas,
+        replica_cpu_millicores: cpu_millicores,
+        replica_memory_gb: memory_gb,
+    };
+
+    let clickpipe = client
+        .update_clickpipe_scaling(&org_id, service_id, clickpipe_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe {} scaling updated", clickpipe.name);
+        if let Some(scaling) = &clickpipe.scaling {
+            if let Some(r) = scaling.replicas {
+                println!("  Replicas: {}", r);
+            }
+            if let Some(cpu) = scaling.replica_cpu_millicores {
+                println!("  CPU: {}m", cpu);
+            }
+            if let Some(mem) = scaling.replica_memory_gb {
+                println!("  Memory: {} GB", mem);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_settings_get(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let settings = client
+        .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+    } else {
+        println!("ClickPipe Settings:");
+        let value = serde_json::to_value(&settings)?;
+        if let Some(obj) = value.as_object() {
+            for (key, val) in obj {
+                if !val.is_null() {
+                    println!("  {}: {}", key, val);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_settings_update(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    request: &crate::cloud::types::ClickPipeSettingsRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let settings = client
+        .update_clickpipe_settings(&org_id, service_id, clickpipe_id, request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+    } else {
+        println!("ClickPipe settings updated");
+        let value = serde_json::to_value(&settings)?;
+        if let Some(obj) = value.as_object() {
+            for (key, val) in obj {
+                if !val.is_null() {
+                    println!("  {}: {}", key, val);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse_db_table_mappings(
     mappings: &[String],
 ) -> Result<Vec<crate::cloud::types::DbTableMapping>, String> {

@@ -1084,10 +1084,106 @@ pub enum ClickPipeCommands {
         org_id: Option<String>,
     },
 
+    /// Update scaling configuration
+    Scale {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Number of replicas (1-40)
+        #[arg(long)]
+        replicas: Option<u32>,
+
+        /// CPU millicores per replica (125-2000, streaming pipes)
+        #[arg(long)]
+        cpu_millicores: Option<u32>,
+
+        /// Memory GB per replica (0.5-8, streaming pipes)
+        #[arg(long)]
+        memory_gb: Option<f64>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Manage ClickPipe settings
+    Settings {
+        #[command(subcommand)]
+        command: ClickPipeSettingsCommands,
+    },
+
     /// Create a ClickPipe
     Create {
         #[command(subcommand)]
         command: ClickPipeCreateCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeSettingsCommands {
+    /// Get ClickPipe settings
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update ClickPipe settings
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Max wait before inserting data (ms, 500-60000)
+        #[arg(long)]
+        streaming_max_insert_wait_ms: Option<u32>,
+
+        /// Concurrent file processing threads (1-35)
+        #[arg(long)]
+        object_storage_concurrency: Option<u32>,
+
+        /// Polling interval for continuous ingest (ms, 100-3600000)
+        #[arg(long)]
+        object_storage_polling_interval_ms: Option<u32>,
+
+        /// Bytes per insert batch
+        #[arg(long)]
+        object_storage_max_insert_bytes: Option<u64>,
+
+        /// Max files per insert batch (1-10000)
+        #[arg(long)]
+        object_storage_max_file_count: Option<u32>,
+
+        /// Max concurrent threads for file processing (0-64)
+        #[arg(long)]
+        clickhouse_max_threads: Option<u32>,
+
+        /// Max concurrent insert threads (0-16)
+        #[arg(long)]
+        clickhouse_max_insert_threads: Option<u32>,
+
+        /// Use ClickHouse cluster function
+        #[arg(long)]
+        object_storage_use_cluster_function: Option<bool>,
+
+        /// Push to attached views concurrently
+        #[arg(long)]
+        clickhouse_parallel_view_processing: Option<bool>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
     },
 }
 

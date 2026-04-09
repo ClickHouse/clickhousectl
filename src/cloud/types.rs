@@ -1261,6 +1261,42 @@ pub struct ClickPipeFieldMapping {
     pub destination_field: String,
 }
 
+/// Update ClickPipe scaling request
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickPipeScalingPatchRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replica_cpu_millicores: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+}
+
+/// Update ClickPipe settings request
+/// Note: settings fields use snake_case in the API, not camelCase
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClickPipeSettingsRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming_max_insert_wait_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_concurrency: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_polling_interval_ms: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_insert_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_file_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_max_threads: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_max_insert_threads: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_use_cluster_function: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_parallel_view_processing: Option<bool>,
+}
+
 /// Create ClickPipe request
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

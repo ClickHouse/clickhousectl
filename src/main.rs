@@ -11,7 +11,8 @@ mod version_manager;
 use clap::Parser;
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli,
-    ClickPipeCommands, ClickPipeCreateCommands, CloudArgs, CloudCommands, Commands,
+    ClickPipeCommands, ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs,
+    CloudCommands, Commands,
     InvitationCommands, KeyCommands, LocalCommands,
     MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands, ServerCommands,
     ServiceCommands, SkillsArgs,
@@ -1077,6 +1078,77 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     json,
                 )
                 .await
+            }
+            ClickPipeCommands::Scale {
+                service_id,
+                clickpipe_id,
+                replicas,
+                cpu_millicores,
+                memory_gb,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_scale(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    replicas,
+                    cpu_millicores,
+                    memory_gb,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Settings { command } => match command {
+                ClickPipeSettingsCommands::Get {
+                    service_id,
+                    clickpipe_id,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_settings_get(
+                        &client,
+                        &service_id,
+                        &clickpipe_id,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+                ClickPipeSettingsCommands::Update {
+                    service_id,
+                    clickpipe_id,
+                    streaming_max_insert_wait_ms,
+                    object_storage_concurrency,
+                    object_storage_polling_interval_ms,
+                    object_storage_max_insert_bytes,
+                    object_storage_max_file_count,
+                    clickhouse_max_threads,
+                    clickhouse_max_insert_threads,
+                    object_storage_use_cluster_function,
+                    clickhouse_parallel_view_processing,
+                    org_id,
+                } => {
+                    let request = cloud::types::ClickPipeSettingsRequest {
+                        streaming_max_insert_wait_ms,
+                        object_storage_concurrency,
+                        object_storage_polling_interval_ms,
+                        object_storage_max_insert_bytes,
+                        object_storage_max_file_count,
+                        clickhouse_max_threads,
+                        clickhouse_max_insert_threads,
+                        object_storage_use_cluster_function,
+                        clickhouse_parallel_view_processing,
+                    };
+                    cloud::commands::clickpipe_settings_update(
+                        &client,
+                        &service_id,
+                        &clickpipe_id,
+                        &request,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
             }
             ClickPipeCommands::Create { command } => match command {
                 ClickPipeCreateCommands::ObjectStorage {
