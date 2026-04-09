@@ -49,6 +49,7 @@ CONTEXT FOR AGENTS:
   OAuth login (`cloud auth login`) is read-only — it can list and inspect resources but cannot create, modify, or delete.
   For write operations, authenticate with API keys:
     clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
+  If the user doesn't have an account, suggest `clickhousectl cloud auth signup` first.
   Add --json to any cloud command for machine-readable output.
   Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(Box<CloudArgs>),
