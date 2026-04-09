@@ -66,6 +66,10 @@ CONTEXT FOR AGENTS:
     /// Show current authentication status
     Status,
     /// Open the ClickHouse Cloud sign-up page in your browser
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Opens the ClickHouse Cloud sign-up page in the user's browser. This is an interactive flow —
+  it requires a human to complete sign-up in the browser. Do not use in fully autonomous or CI environments.")]
     Signup,
 }
 
