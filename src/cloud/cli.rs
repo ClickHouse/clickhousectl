@@ -70,9 +70,8 @@ pub struct CloudArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// API base URL (default: auto-detect from OAuth tokens, or https://api.clickhouse.cloud)
-    #[cfg_attr(debug_assertions, arg(long, global = true))]
-    #[cfg_attr(not(debug_assertions), arg(long, global = true, hide = true))]
+    /// API base URL override (internal use only)
+    #[arg(long, global = true, hide = true)]
     pub url: Option<String>,
 
     #[command(subcommand)]
