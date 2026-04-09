@@ -147,11 +147,9 @@ Each named server has its own data directory, so servers are fully isolated from
 
 ## Authentication
 
-Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys.
+Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys. OAuth provides **read-only** access; API keys provide full **read/write** access.
 
-### OAuth login (recommended)
-
-> **Note:** Cloud OAuth requires a feature flag for your ClickHouse Cloud organization. Please reach out to support to request OAuth device flow auth for `clickhousectl`. You do not need this to use API keys generated from the SQL Console.
+### OAuth login (read-only)
 
 ```bash
 clickhousectl cloud auth login
@@ -159,7 +157,9 @@ clickhousectl cloud auth login
 
 This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhouse/tokens.json` (project-local).
 
-### API key/secret
+> **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication.
+
+### API key/secret (required for write operations)
 
 ```bash
 # Non-interactive (CI-friendly)
@@ -182,14 +182,16 @@ Or pass credentials directly via flags on any command:
 clickhousectl cloud --api-key KEY --api-secret SECRET ...
 ```
 
+Learn how to [create API keys](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl).
+
 ### Auth status and logout
 
 ```bash
-clickhousectl cloud auth status    # Show current auth state
+clickhousectl cloud auth status    # Show current auth state (including read-only/read-write labels)
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: CLI flags > OAuth tokens > `.clickhouse/credentials.json` > environment variables.
+Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables > OAuth tokens.
 
 ## Cloud
 

@@ -44,8 +44,8 @@ impl CloudClient {
                 message: format!("Failed to create HTTP client: {}", e),
             })?;
 
-        // Priority: CLI flags > OAuth tokens > file credentials > env vars
-        // If explicit API key flags are provided, use Basic auth
+        // Priority: CLI flags > file credentials > env vars > OAuth tokens
+        // API keys are project-scoped (read/write); OAuth is user-scoped (read-only).
         if api_key.is_some() || api_secret.is_some() {
             let key = api_key.map(String::from).ok_or_else(|| CloudError {
                 message: "API key required when --api-key or --api-secret is set".into(),
@@ -59,20 +59,6 @@ impl CloudClient {
             return Ok(Self {
                 client,
                 auth_mode: Self::basic_auth(&key, &secret),
-                base_url,
-            });
-        }
-
-        // Try OAuth tokens
-        if let Some(tokens) = crate::cloud::auth::load_tokens()
-            && crate::cloud::auth::is_token_valid(&tokens)
-        {
-            let base_url = url_override
-                .map(crate::cloud::auth::normalize_api_url)
-                .unwrap_or(tokens.api_url.clone());
-            return Ok(Self {
-                client,
-                auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
                 base_url,
             });
         }
@@ -101,8 +87,22 @@ impl CloudClient {
             });
         }
 
+        // Fall back to OAuth tokens (read-only)
+        if let Some(tokens) = crate::cloud::auth::load_tokens()
+            && crate::cloud::auth::is_token_valid(&tokens)
+        {
+            let base_url = url_override
+                .map(crate::cloud::auth::normalize_api_url)
+                .unwrap_or(tokens.api_url.clone());
+            return Ok(Self {
+                client,
+                auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
+                base_url,
+            });
+        }
+
         Err(CloudError {
-            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth), `clickhousectl cloud auth keys` (API key/secret), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret".into(),
+            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
         })
     }
 
@@ -112,9 +112,28 @@ impl CloudClient {
         AuthMode::Basic(format!("Basic {}", encoded))
     }
 
+    /// Returns true if the client is using OAuth Bearer token authentication.
+    /// Bearer auth is read-only and cannot perform write operations.
+    pub fn is_bearer_auth(&self) -> bool {
+        matches!(self.auth_mode, AuthMode::Bearer(_))
+    }
+
     fn auth_header_value(&self) -> &str {
         match &self.auth_mode {
             AuthMode::Basic(v) | AuthMode::Bearer(v) => v,
+        }
+    }
+
+    /// If using OAuth and the response is 403, append a hint about API key auth.
+    fn maybe_append_oauth_hint(&self, message: &mut String, status: reqwest::StatusCode) {
+        if status == reqwest::StatusCode::FORBIDDEN && self.is_bearer_auth() {
+            message.push_str(
+                "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
+                 Use API key authentication for write operations:\n  \
+                 clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
+                 Learn how to create API keys:\n  \
+                 https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
+            );
         }
     }
 
@@ -137,16 +156,15 @@ impl CloudClient {
         })?;
 
         if !status.is_success() {
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
+            let mut message = if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
                 && let Some(err) = api_resp.error
             {
-                return Err(CloudError {
-                    message: err.message,
-                });
-            }
-            return Err(CloudError {
-                message: format!("API error ({}): {}", status, body),
-            });
+                err.message
+            } else {
+                format!("API error ({}): {}", status, body)
+            };
+            self.maybe_append_oauth_hint(&mut message, status);
+            return Err(CloudError { message });
         }
 
         let api_response: ApiResponse<T> = serde_json::from_str(&body).map_err(|e| CloudError {
@@ -171,16 +189,15 @@ impl CloudClient {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
+            let mut message = if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
                 && let Some(err) = api_resp.error
             {
-                return Err(CloudError {
-                    message: err.message,
-                });
-            }
-            return Err(CloudError {
-                message: format!("API error ({}): {}", status, body),
-            });
+                err.message
+            } else {
+                format!("API error ({}): {}", status, body)
+            };
+            self.maybe_append_oauth_hint(&mut message, status);
+            return Err(CloudError { message });
         }
 
         Ok(())
@@ -202,16 +219,15 @@ impl CloudClient {
         })?;
 
         if !status.is_success() {
-            if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
+            let mut message = if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
                 && let Some(err) = api_resp.error
             {
-                return Err(CloudError {
-                    message: err.message,
-                });
-            }
-            return Err(CloudError {
-                message: format!("API error ({}): {}", status, body),
-            });
+                err.message
+            } else {
+                format!("API error ({}): {}", status, body)
+            };
+            self.maybe_append_oauth_hint(&mut message, status);
+            return Err(CloudError { message });
         }
 
         Ok(body)
@@ -864,5 +880,21 @@ mod tests {
             url,
             "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus"
         );
+    }
+
+    #[test]
+    fn is_bearer_auth_returns_true_for_bearer() {
+        let client = CloudClient {
+            client: Client::builder().build().unwrap(),
+            auth_mode: AuthMode::Bearer("Bearer test".to_string()),
+            base_url: DEFAULT_BASE_URL.to_string(),
+        };
+        assert!(client.is_bearer_auth());
+    }
+
+    #[test]
+    fn is_bearer_auth_returns_false_for_basic() {
+        let client = test_client();
+        assert!(!client.is_bearer_auth());
     }
 }

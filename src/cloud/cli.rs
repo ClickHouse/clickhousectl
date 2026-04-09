@@ -32,8 +32,10 @@ pub enum AuthCommands {
     /// Log in to ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Defaults to OAuth device flow (opens browser). Use --api-key and --api-secret for non-interactive login.
-  Agents should suggest the user to use the OAuth device flow, only using flags if explicitly asked, in CI or in fully autonomous environments.
+  Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY — they can list and
+  inspect resources but cannot create, modify, or delete.
+  For write operations (create, update, delete services, etc.), use --api-key and --api-secret.
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   Related: use `clickhousectl cloud auth status` to verify.")]
     Login {
         /// Log in by entering API key/secret interactively
@@ -48,10 +50,27 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         api_secret: Option<String>,
     },
-    /// Log out and clear all saved credentials
-    Logout,
+    /// Log out and clear saved credentials
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  With no flags, clears everything. Use --oauth to keep API keys, or --api-keys to keep OAuth tokens.")]
+    Logout {
+        /// Clear only OAuth tokens (keep API keys)
+        #[arg(long, conflicts_with = "api_keys")]
+        oauth: bool,
+
+        /// Clear only API keys (keep OAuth tokens)
+        #[arg(long, conflicts_with = "oauth")]
+        api_keys: bool,
+    },
     /// Show current authentication status
     Status,
+    /// Open the ClickHouse Cloud sign-up page in your browser
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Opens the ClickHouse Cloud sign-up page in the user's browser. This is an interactive flow —
+  it requires a human to complete sign-up in the browser. Do not use in fully autonomous or CI environments.")]
+    Signup,
 }
 
 #[derive(Args)]
@@ -82,8 +101,9 @@ pub enum CloudCommands {
     /// Manage authentication (OAuth login, API keys)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Use `login --api-key X --api-secret Y` for non-interactive auth.
-  Default `login` opens a browser (not agent-friendly).
+  Use `login --api-key X --api-secret Y` for full read/write access.
+  Default `login` opens a browser for OAuth (read-only access only — cannot create, modify, or delete resources).
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   `logout` clears all saved credentials (OAuth tokens and API keys).
   Related: `clickhousectl cloud org list` to verify credentials work.")]
     Auth {
@@ -108,6 +128,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
+  Write commands (create, delete, start, stop, update, scale) require API key auth — OAuth is read-only.
   Use `client` to open a clickhouse-client session to a service.
   Related: `clickhousectl cloud org list` for org IDs.")]
     Service {
@@ -150,6 +171,80 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ActivityCommands,
     },
+}
+
+impl CloudCommands {
+    /// Returns true if this command performs a write/mutating operation.
+    /// OAuth (Bearer) auth is read-only and cannot execute write commands.
+    ///
+    /// Every variant is explicitly matched — no wildcards — so the compiler
+    /// will error when a new command is added, forcing the developer to
+    /// classify it as read or write.
+    pub fn is_write_command(&self) -> bool {
+        match self {
+            CloudCommands::Auth { .. } => false,
+            CloudCommands::Org { command } => match command {
+                OrgCommands::List => false,
+                OrgCommands::Get { .. } => false,
+                OrgCommands::Prometheus { .. } => false,
+                OrgCommands::Usage { .. } => false,
+                OrgCommands::Update { .. } => true,
+            },
+            CloudCommands::Service { command } => match command {
+                ServiceCommands::List { .. } => false,
+                ServiceCommands::Get { .. } => false,
+                ServiceCommands::Client { .. } => false,
+                ServiceCommands::Prometheus { .. } => false,
+                ServiceCommands::Create { .. } => true,
+                ServiceCommands::Delete { .. } => true,
+                ServiceCommands::Start { .. } => true,
+                ServiceCommands::Stop { .. } => true,
+                ServiceCommands::Update { .. } => true,
+                ServiceCommands::Scale { .. } => true,
+                ServiceCommands::ResetPassword { .. } => true,
+                ServiceCommands::QueryEndpoint { command } => match command {
+                    QueryEndpointCommands::Get { .. } => false,
+                    QueryEndpointCommands::Create { .. } => true,
+                    QueryEndpointCommands::Delete { .. } => true,
+                },
+                ServiceCommands::PrivateEndpoint { command } => match command {
+                    PrivateEndpointCommands::Create { .. } => true,
+                    PrivateEndpointCommands::GetConfig { .. } => false,
+                },
+                ServiceCommands::BackupConfig { command } => match command {
+                    BackupConfigCommands::Get { .. } => false,
+                    BackupConfigCommands::Update { .. } => true,
+                },
+            },
+            CloudCommands::Backup { command } => match command {
+                BackupCommands::List { .. } => false,
+                BackupCommands::Get { .. } => false,
+            },
+            CloudCommands::Member { command } => match command {
+                MemberCommands::List { .. } => false,
+                MemberCommands::Get { .. } => false,
+                MemberCommands::Update { .. } => true,
+                MemberCommands::Remove { .. } => true,
+            },
+            CloudCommands::Invitation { command } => match command {
+                InvitationCommands::List { .. } => false,
+                InvitationCommands::Get { .. } => false,
+                InvitationCommands::Create { .. } => true,
+                InvitationCommands::Delete { .. } => true,
+            },
+            CloudCommands::Key { command } => match command {
+                KeyCommands::List { .. } => false,
+                KeyCommands::Get { .. } => false,
+                KeyCommands::Create { .. } => true,
+                KeyCommands::Update { .. } => true,
+                KeyCommands::Delete { .. } => true,
+            },
+            CloudCommands::Activity { command } => match command {
+                ActivityCommands::List { .. } => false,
+                ActivityCommands::Get { .. } => false,
+            },
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -1404,5 +1499,101 @@ mod tests {
             Ok(_) => panic!("expected invalid calendar date to be rejected"),
             Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
         }
+    }
+
+    /// Helper to assert a command parsed from CLI args is classified correctly.
+    fn assert_write(args: &[&str], expected: bool) {
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Commands::Cloud(cloud_args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        assert_eq!(
+            cloud_args.command.is_write_command(),
+            expected,
+            "wrong classification for: {}",
+            args.join(" ")
+        );
+    }
+
+    #[test]
+    fn is_write_command_read_only_commands() {
+        // Org reads
+        assert_write(&["clickhousectl", "cloud", "org", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "prometheus", "org-1"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "usage", "org-1", "--from-date", "2025-01-01", "--to-date", "2025-01-31"], false);
+
+        // Service reads
+        assert_write(&["clickhousectl", "cloud", "service", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "client", "--id", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
+
+        // Backup reads
+        assert_write(&["clickhousectl", "cloud", "backup", "list", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"], false);
+
+        // Backup config read
+        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "get", "svc-1"], false);
+
+        // Member reads
+        assert_write(&["clickhousectl", "cloud", "member", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "member", "get", "usr-1"], false);
+
+        // Invitation reads
+        assert_write(&["clickhousectl", "cloud", "invitation", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "invitation", "get", "inv-1"], false);
+
+        // Key reads
+        assert_write(&["clickhousectl", "cloud", "key", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "key", "get", "key-1"], false);
+
+        // Activity reads
+        assert_write(&["clickhousectl", "cloud", "activity", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "activity", "get", "act-1"], false);
+
+        // Query endpoint read
+        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "get", "svc-1"], false);
+
+        // Private endpoint read
+        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);
+    }
+
+    #[test]
+    fn is_write_command_destructive_commands() {
+        // Org write
+        assert_write(&["clickhousectl", "cloud", "org", "update", "org-1", "--name", "new"], true);
+
+        // Service writes
+        assert_write(&["clickhousectl", "cloud", "service", "create", "--name", "s", "--provider", "aws", "--region", "us-east-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "delete", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "start", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "stop", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "update", "svc-1", "--name", "new"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "scale", "svc-1", "--num-replicas", "2"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "reset-password", "svc-1"], true);
+
+        // Backup config write
+        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "update", "svc-1", "--backup-period-hours", "12"], true);
+
+        // Member writes
+        assert_write(&["clickhousectl", "cloud", "member", "update", "usr-1", "--role-id", "r1"], true);
+        assert_write(&["clickhousectl", "cloud", "member", "remove", "usr-1"], true);
+
+        // Invitation writes
+        assert_write(&["clickhousectl", "cloud", "invitation", "create", "--email", "a@b.com", "--role-id", "r1"], true);
+        assert_write(&["clickhousectl", "cloud", "invitation", "delete", "inv-1"], true);
+
+        // Key writes
+        assert_write(&["clickhousectl", "cloud", "key", "create", "--name", "k"], true);
+        assert_write(&["clickhousectl", "cloud", "key", "update", "key-1", "--name", "new"], true);
+        assert_write(&["clickhousectl", "cloud", "key", "delete", "key-1"], true);
+
+        // Query endpoint writes
+        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "create", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "delete", "svc-1"], true);
+
+        // Private endpoint write
+        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "create", "svc-1", "--endpoint-id", "ep-1"], true);
     }
 }
