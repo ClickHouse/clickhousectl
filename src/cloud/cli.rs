@@ -35,7 +35,6 @@ CONTEXT FOR AGENTS:
   Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY — they can list and
   inspect resources but cannot create, modify, or delete.
   For write operations (create, update, delete services, etc.), use --api-key and --api-secret.
-  Agents: use API key auth for any mutating operations. OAuth is only suitable for read-only exploration.
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   Related: use `clickhousectl cloud auth status` to verify.")]
     Login {
