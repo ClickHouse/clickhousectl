@@ -123,31 +123,64 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 Ok(())
             }
             AuthCommands::Status => {
+                use serde::Serialize;
+                use tabled::{Table, Tabled, settings::Style};
+
+                #[derive(Serialize, Tabled)]
+                struct AuthRow {
+                    #[tabled(rename = "Type")]
+                    #[serde(rename = "type")]
+                    auth_type: String,
+                    #[tabled(rename = "Status")]
+                    status: String,
+                    #[tabled(rename = "Scope")]
+                    scope: String,
+                }
+
+                let mut rows = Vec::new();
+
                 match cloud::auth::load_tokens() {
                     Some(tokens) if cloud::auth::is_token_valid(&tokens) => {
-                        println!(
-                            "OAuth: logged in (token valid, url: {}) [read-only]",
-                            tokens.api_url
-                        );
+                        rows.push(AuthRow {
+                            auth_type: "OAuth".into(),
+                            status: "Active".into(),
+                            scope: "read-only".into(),
+                        });
                     }
-                    Some(tokens) => {
-                        println!(
-                            "OAuth: token expired, url: {} (run `clickhousectl cloud auth login` to refresh)",
-                            tokens.api_url
-                        );
+                    Some(_) => {
+                        rows.push(AuthRow {
+                            auth_type: "OAuth".into(),
+                            status: "Expired".into(),
+                            scope: "read-only".into(),
+                        });
                     }
                     None => {
-                        println!("OAuth: not logged in");
+                        rows.push(AuthRow {
+                            auth_type: "OAuth".into(),
+                            status: "Not configured".into(),
+                            scope: "-".into(),
+                        });
                     }
                 }
-                let creds = cloud::credentials::load_credentials();
-                if creds.is_some() {
-                    println!(
-                        "API keys: configured ({}) [read/write]",
-                        cloud::credentials::credentials_path().display()
-                    );
+
+                if cloud::credentials::load_credentials().is_some() {
+                    rows.push(AuthRow {
+                        auth_type: "API key".into(),
+                        status: "Active".into(),
+                        scope: "read/write".into(),
+                    });
                 } else {
-                    println!("API keys: not configured");
+                    rows.push(AuthRow {
+                        auth_type: "API key".into(),
+                        status: "Not configured".into(),
+                        scope: "-".into(),
+                    });
+                }
+
+                if args.json {
+                    println!("{}", serde_json::to_string_pretty(&rows)?);
+                } else {
+                    println!("{}", Table::new(rows).with(Style::rounded()));
                 }
                 Ok(())
             }
