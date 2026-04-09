@@ -1483,108 +1483,99 @@ mod tests {
         }
     }
 
-    #[test]
-    fn is_write_command_classifies_read_commands() {
-        let read_commands = vec![
-            CloudCommands::Org {
-                command: OrgCommands::List,
-            },
-            CloudCommands::Org {
-                command: OrgCommands::Get {
-                    org_id: "o".into(),
-                },
-            },
-            CloudCommands::Service {
-                command: ServiceCommands::List {
-                    org_id: None,
-                    filter: vec![],
-                },
-            },
-            CloudCommands::Service {
-                command: ServiceCommands::Get {
-                    service_id: "s".into(),
-                    org_id: None,
-                },
-            },
-            CloudCommands::Backup {
-                command: BackupCommands::List {
-                    service_id: "s".into(),
-                    org_id: None,
-                },
-            },
-            CloudCommands::Activity {
-                command: ActivityCommands::List {
-                    org_id: None,
-                    from_date: None,
-                    to_date: None,
-                },
-            },
-            CloudCommands::Member {
-                command: MemberCommands::List { org_id: None },
-            },
-            CloudCommands::Key {
-                command: KeyCommands::List { org_id: None },
-            },
-        ];
-        for cmd in &read_commands {
-            assert!(
-                !cmd.is_write_command(),
-                "expected read-only: {:?}",
-                std::mem::discriminant(cmd)
-            );
-        }
+    /// Helper to assert a command parsed from CLI args is classified correctly.
+    fn assert_write(args: &[&str], expected: bool) {
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Commands::Cloud(cloud_args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        assert_eq!(
+            cloud_args.command.is_write_command(),
+            expected,
+            "wrong classification for: {}",
+            args.join(" ")
+        );
     }
 
     #[test]
-    fn is_write_command_classifies_write_commands() {
-        let write_commands = vec![
-            CloudCommands::Org {
-                command: OrgCommands::Update {
-                    org_id: "o".into(),
-                    name: None,
-                    remove_private_endpoint: vec![],
-                    enable_core_dumps: None,
-                },
-            },
-            CloudCommands::Service {
-                command: ServiceCommands::Delete {
-                    service_id: "s".into(),
-                    force: false,
-                    org_id: None,
-                },
-            },
-            CloudCommands::Service {
-                command: ServiceCommands::Start {
-                    service_id: "s".into(),
-                    org_id: None,
-                },
-            },
-            CloudCommands::Member {
-                command: MemberCommands::Remove {
-                    user_id: "u".into(),
-                    org_id: None,
-                },
-            },
-            CloudCommands::Key {
-                command: KeyCommands::Delete {
-                    key_id: "k".into(),
-                    org_id: None,
-                },
-            },
-            CloudCommands::Invitation {
-                command: InvitationCommands::Create {
-                    email: "a@b.com".into(),
-                    role_id: vec![],
-                    org_id: None,
-                },
-            },
-        ];
-        for cmd in &write_commands {
-            assert!(
-                cmd.is_write_command(),
-                "expected write: {:?}",
-                std::mem::discriminant(cmd)
-            );
-        }
+    fn is_write_command_read_only_commands() {
+        // Org reads
+        assert_write(&["clickhousectl", "cloud", "org", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "prometheus", "org-1"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "usage", "org-1", "--from-date", "2025-01-01", "--to-date", "2025-01-31"], false);
+
+        // Service reads
+        assert_write(&["clickhousectl", "cloud", "service", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "client", "--id", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
+
+        // Backup reads
+        assert_write(&["clickhousectl", "cloud", "backup", "list", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"], false);
+
+        // Backup config read
+        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "get", "svc-1"], false);
+
+        // Member reads
+        assert_write(&["clickhousectl", "cloud", "member", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "member", "get", "usr-1"], false);
+
+        // Invitation reads
+        assert_write(&["clickhousectl", "cloud", "invitation", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "invitation", "get", "inv-1"], false);
+
+        // Key reads
+        assert_write(&["clickhousectl", "cloud", "key", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "key", "get", "key-1"], false);
+
+        // Activity reads
+        assert_write(&["clickhousectl", "cloud", "activity", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "activity", "get", "act-1"], false);
+
+        // Query endpoint read
+        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "get", "svc-1"], false);
+
+        // Private endpoint read
+        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);
+    }
+
+    #[test]
+    fn is_write_command_destructive_commands() {
+        // Org write
+        assert_write(&["clickhousectl", "cloud", "org", "update", "org-1", "--name", "new"], true);
+
+        // Service writes
+        assert_write(&["clickhousectl", "cloud", "service", "create", "--name", "s", "--provider", "aws", "--region", "us-east-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "delete", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "start", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "stop", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "update", "svc-1", "--name", "new"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "scale", "svc-1", "--num-replicas", "2"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "reset-password", "svc-1"], true);
+
+        // Backup config write
+        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "update", "svc-1", "--backup-period-hours", "12"], true);
+
+        // Member writes
+        assert_write(&["clickhousectl", "cloud", "member", "update", "usr-1", "--role-id", "r1"], true);
+        assert_write(&["clickhousectl", "cloud", "member", "remove", "usr-1"], true);
+
+        // Invitation writes
+        assert_write(&["clickhousectl", "cloud", "invitation", "create", "--email", "a@b.com", "--role-id", "r1"], true);
+        assert_write(&["clickhousectl", "cloud", "invitation", "delete", "inv-1"], true);
+
+        // Key writes
+        assert_write(&["clickhousectl", "cloud", "key", "create", "--name", "k"], true);
+        assert_write(&["clickhousectl", "cloud", "key", "update", "key-1", "--name", "new"], true);
+        assert_write(&["clickhousectl", "cloud", "key", "delete", "key-1"], true);
+
+        // Query endpoint writes
+        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "create", "svc-1"], true);
+        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "delete", "svc-1"], true);
+
+        // Private endpoint write
+        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "create", "svc-1", "--endpoint-id", "ep-1"], true);
     }
 }
