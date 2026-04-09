@@ -36,6 +36,7 @@ CONTEXT FOR AGENTS:
   inspect resources but cannot create, modify, or delete.
   For write operations (create, update, delete services, etc.), use --api-key and --api-secret.
   Agents: use API key auth for any mutating operations. OAuth is only suitable for read-only exploration.
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   Related: use `clickhousectl cloud auth status` to verify.")]
     Login {
         /// Log in by entering API key/secret interactively
@@ -96,6 +97,7 @@ pub enum CloudCommands {
 CONTEXT FOR AGENTS:
   Use `login --api-key X --api-secret Y` for full read/write access.
   Default `login` opens a browser for OAuth (read-only access only — cannot create, modify, or delete resources).
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   `logout` clears all saved credentials (OAuth tokens and API keys).
   Related: `clickhousectl cloud org list` to verify credentials work.")]
     Auth {
