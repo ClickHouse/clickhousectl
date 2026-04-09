@@ -50,8 +50,16 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         api_secret: Option<String>,
     },
-    /// Log out and clear all saved credentials
-    Logout,
+    /// Log out and clear saved credentials
+    Logout {
+        /// Clear only OAuth tokens (keep API keys)
+        #[arg(long, conflicts_with = "api_keys")]
+        oauth: bool,
+
+        /// Clear only API keys (keep OAuth tokens)
+        #[arg(long, conflicts_with = "oauth")]
+        api_keys: bool,
+    },
     /// Show current authentication status
     Status,
 }

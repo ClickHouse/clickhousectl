@@ -88,10 +88,22 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     Ok(())
                 }
             }
-            AuthCommands::Logout => {
-                cloud::auth::clear_tokens();
-                cloud::credentials::clear_credentials();
-                println!("Logged out. All saved credentials cleared.");
+            AuthCommands::Logout { oauth, api_keys } => {
+                match (oauth, api_keys) {
+                    (true, false) => {
+                        cloud::auth::clear_tokens();
+                        println!("OAuth tokens cleared. API keys unchanged.");
+                    }
+                    (false, true) => {
+                        cloud::credentials::clear_credentials();
+                        println!("API keys cleared. OAuth tokens unchanged.");
+                    }
+                    _ => {
+                        cloud::auth::clear_tokens();
+                        cloud::credentials::clear_credentials();
+                        println!("Logged out. All saved credentials cleared.");
+                    }
+                }
                 Ok(())
             }
             AuthCommands::Status => {
