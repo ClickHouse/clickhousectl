@@ -149,9 +149,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
              Or set environment variables:\n  \
              export CLICKHOUSE_CLOUD_API_KEY=your-key\n  \
              export CLICKHOUSE_CLOUD_API_SECRET=your-secret\n\n\
-             Create API keys in the ClickHouse Cloud console:\n  \
-             https://console.clickhouse.cloud\n  \
-             Navigate to your organization > API Keys."
+             Learn how to create API keys:\n  \
+             https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl"
                 .into(),
         ));
     }

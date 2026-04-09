@@ -182,7 +182,7 @@ Or pass credentials directly via flags on any command:
 clickhousectl cloud --api-key KEY --api-secret SECRET ...
 ```
 
-Create API keys in the [ClickHouse Cloud console](https://console.clickhouse.cloud) under your organization's API Keys settings.
+Learn how to [create API keys](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl).
 
 ### Auth status and logout
 

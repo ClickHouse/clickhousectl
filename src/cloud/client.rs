@@ -102,7 +102,7 @@ impl CloudClient {
         }
 
         Err(CloudError {
-            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret".into(),
+            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
         })
     }
 
@@ -130,7 +130,9 @@ impl CloudClient {
             message.push_str(
                 "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
                  Use API key authentication for write operations:\n  \
-                 clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET",
+                 clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
+                 Learn how to create API keys:\n  \
+                 https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
             );
         }
     }
