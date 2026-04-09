@@ -1990,4 +1990,104 @@ mod tests {
         assert!(json.get("columns").is_none());
         assert_eq!(json["managedTable"], false);
     }
+
+    #[test]
+    fn clickpipe_state_roundtrips_every_variant() {
+        let cases = [
+            (ClickPipeState::Unknown, "Unknown"),
+            (ClickPipeState::Provisioning, "Provisioning"),
+            (ClickPipeState::Running, "Running"),
+            (ClickPipeState::Stopping, "Stopping"),
+            (ClickPipeState::Stopped, "Stopped"),
+            (ClickPipeState::Failed, "Failed"),
+            (ClickPipeState::Completed, "Completed"),
+            (ClickPipeState::InternalError, "InternalError"),
+            (ClickPipeState::Setup, "Setup"),
+            (ClickPipeState::Snapshot, "Snapshot"),
+            (ClickPipeState::Paused, "Paused"),
+            (ClickPipeState::Pausing, "Pausing"),
+            (ClickPipeState::Modifying, "Modifying"),
+            (ClickPipeState::Resync, "Resync"),
+        ];
+        for (variant, wire) in cases {
+            let encoded = serde_json::to_string(&variant).unwrap();
+            assert_eq!(encoded, format!("\"{wire}\""));
+            let decoded: ClickPipeState = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded, variant);
+        }
+    }
+
+    #[test]
+    fn clickpipe_state_rejects_unknown_wire_value() {
+        let err = serde_json::from_str::<ClickPipeState>("\"NotAState\"");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn scaling_patch_serializes_camel_case_and_skips_none() {
+        let only_replicas = ClickPipeScalingPatchRequest {
+            replicas: Some(4),
+            replica_cpu_millicores: None,
+            replica_memory_gb: None,
+        };
+        let json = serde_json::to_value(&only_replicas).unwrap();
+        assert_eq!(json["replicas"], 4);
+        assert!(json.get("replicaCpuMillicores").is_none());
+        assert!(json.get("replicaMemoryGb").is_none());
+
+        let full = ClickPipeScalingPatchRequest {
+            replicas: Some(2),
+            replica_cpu_millicores: Some(500),
+            replica_memory_gb: Some(2.0),
+        };
+        let json = serde_json::to_value(&full).unwrap();
+        assert_eq!(json["replicaCpuMillicores"], 500);
+        assert_eq!(json["replicaMemoryGb"], 2.0);
+    }
+
+    #[test]
+    fn settings_request_serializes_snake_case_not_camel_case() {
+        let settings = ClickPipeSettingsRequest {
+            streaming_max_insert_wait_ms: Some(5000),
+            object_storage_concurrency: Some(10),
+            object_storage_polling_interval_ms: Some(30_000),
+            object_storage_max_insert_bytes: Some(10_737_418_240),
+            object_storage_max_file_count: Some(500),
+            clickhouse_max_threads: Some(16),
+            clickhouse_max_insert_threads: Some(8),
+            object_storage_use_cluster_function: Some(true),
+            clickhouse_parallel_view_processing: Some(false),
+        };
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["streaming_max_insert_wait_ms"], 5000);
+        assert_eq!(json["object_storage_concurrency"], 10);
+        assert_eq!(json["object_storage_polling_interval_ms"], 30_000);
+        assert_eq!(json["object_storage_max_insert_bytes"], 10_737_418_240u64);
+        assert_eq!(json["object_storage_max_file_count"], 500);
+        assert_eq!(json["clickhouse_max_threads"], 16);
+        assert_eq!(json["clickhouse_max_insert_threads"], 8);
+        assert_eq!(json["object_storage_use_cluster_function"], true);
+        assert_eq!(json["clickhouse_parallel_view_processing"], false);
+        assert!(json.get("streamingMaxInsertWaitMs").is_none());
+        assert!(json.get("clickhouseMaxThreads").is_none());
+    }
+
+    #[test]
+    fn settings_request_skips_none_fields() {
+        let settings = ClickPipeSettingsRequest {
+            streaming_max_insert_wait_ms: None,
+            object_storage_concurrency: Some(10),
+            object_storage_polling_interval_ms: None,
+            object_storage_max_insert_bytes: None,
+            object_storage_max_file_count: None,
+            clickhouse_max_threads: None,
+            clickhouse_max_insert_threads: None,
+            object_storage_use_cluster_function: None,
+            clickhouse_parallel_view_processing: None,
+        };
+        let json = serde_json::to_value(&settings).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 1);
+        assert_eq!(obj["object_storage_concurrency"], 10);
+    }
 }
