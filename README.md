@@ -191,7 +191,7 @@ clickhousectl cloud auth status    # Show current auth state (including read-onl
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: CLI flags > OAuth tokens > `.clickhouse/credentials.json` > environment variables.
+Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables > OAuth tokens.
 
 ## Cloud
 

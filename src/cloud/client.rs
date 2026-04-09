@@ -44,8 +44,8 @@ impl CloudClient {
                 message: format!("Failed to create HTTP client: {}", e),
             })?;
 
-        // Priority: CLI flags > OAuth tokens > file credentials > env vars
-        // If explicit API key flags are provided, use Basic auth
+        // Priority: CLI flags > file credentials > env vars > OAuth tokens
+        // API keys are project-scoped (read/write); OAuth is user-scoped (read-only).
         if api_key.is_some() || api_secret.is_some() {
             let key = api_key.map(String::from).ok_or_else(|| CloudError {
                 message: "API key required when --api-key or --api-secret is set".into(),
@@ -59,20 +59,6 @@ impl CloudClient {
             return Ok(Self {
                 client,
                 auth_mode: Self::basic_auth(&key, &secret),
-                base_url,
-            });
-        }
-
-        // Try OAuth tokens
-        if let Some(tokens) = crate::cloud::auth::load_tokens()
-            && crate::cloud::auth::is_token_valid(&tokens)
-        {
-            let base_url = url_override
-                .map(crate::cloud::auth::normalize_api_url)
-                .unwrap_or(tokens.api_url.clone());
-            return Ok(Self {
-                client,
-                auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
                 base_url,
             });
         }
@@ -97,6 +83,20 @@ impl CloudClient {
             return Ok(Self {
                 client,
                 auth_mode: Self::basic_auth(&key, &secret),
+                base_url,
+            });
+        }
+
+        // Fall back to OAuth tokens (read-only)
+        if let Some(tokens) = crate::cloud::auth::load_tokens()
+            && crate::cloud::auth::is_token_valid(&tokens)
+        {
+            let base_url = url_override
+                .map(crate::cloud::auth::normalize_api_url)
+                .unwrap_or(tokens.api_url.clone());
+            return Ok(Self {
+                client,
+                auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
                 base_url,
             });
         }
