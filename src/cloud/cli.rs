@@ -52,8 +52,8 @@ CONTEXT FOR AGENTS:
     },
     /// Log out and clear saved credentials
     #[command(after_help = "\
-By default, clears ALL credentials (OAuth tokens and API keys).
-Use --oauth or --api-keys to clear only one type.")]
+CONTEXT FOR AGENTS:
+  With no flags, clears everything. Use --oauth to keep API keys, or --api-keys to keep OAuth tokens.")]
     Logout {
         /// Clear only OAuth tokens (keep API keys)
         #[arg(long, conflicts_with = "api_keys")]
