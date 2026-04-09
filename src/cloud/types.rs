@@ -3,6 +3,8 @@ use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
 
+/// Strict string enum — rejects unknown values during deserialization.
+/// Use for enums that represent user input or CLI-only values.
 macro_rules! string_enum {
     ($(#[$meta:meta])* pub enum $name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
         $(#[$meta])*
@@ -58,6 +60,83 @@ macro_rules! string_enum {
     };
 }
 
+/// Flexible string enum — accepts unknown values from API responses.
+/// Use for enums that appear in API response types where the server may
+/// return new values the CLI doesn't know about yet.
+macro_rules! flexible_string_enum {
+    ($(#[$meta:meta])* pub enum $name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum $name {
+            $($variant,)+
+            /// Unknown value returned by the API that this CLI version doesn't recognize.
+            Other(String),
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                match self {
+                    $(Self::$variant => serializer.serialize_str($value),)+
+                    Self::Other(s) => serializer.serialize_str(s),
+                }
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let s = String::deserialize(deserializer)?;
+                Ok(match s.as_str() {
+                    $($value => Self::$variant,)+
+                    _ => Self::Other(s),
+                })
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                match self {
+                    $(Self::$variant => f.write_str($value),)+
+                    Self::Other(s) => f.write_str(s),
+                }
+            }
+        }
+
+        impl Deref for $name {
+            type Target = str;
+
+            fn deref(&self) -> &Self::Target {
+                match self {
+                    $(Self::$variant => $value,)+
+                    Self::Other(s) => s.as_str(),
+                }
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(match s {
+                    $($value => Self::$variant,)+
+                    other => Self::Other(other.to_string()),
+                })
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.deref() == *other
+            }
+        }
+
+        impl PartialEq<$name> for &str {
+            fn eq(&self, other: &$name) -> bool {
+                *self == other.deref()
+            }
+        }
+    };
+}
+
 /// Standard API response wrapper
 #[derive(Debug, Deserialize)]
 pub struct ApiResponse<T> {
@@ -85,7 +164,7 @@ pub struct DeleteResponse {
 // Shared helper types
 // =============================================================================
 
-string_enum! {
+flexible_string_enum! {
     pub enum CloudProvider {
         Aws => "aws",
         Gcp => "gcp",
@@ -93,7 +172,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum CloudRegion {
         ApNortheast1 => "ap-northeast-1",
         ApNortheast2 => "ap-northeast-2",
@@ -120,7 +199,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ServiceEndpointProtocol {
         Https => "https",
         NativeSecure => "nativesecure",
@@ -134,21 +213,21 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum AssignedRoleType {
         System => "system",
         Custom => "custom",
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum OrganizationRole {
         Admin => "admin",
         Developer => "developer",
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ServiceTier {
         Development => "development",
         Production => "production",
@@ -164,7 +243,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ServiceState {
         Starting => "starting",
         Stopping => "stopping",
@@ -183,7 +262,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ReleaseChannel {
         Slow => "slow",
         Default => "default",
@@ -191,7 +270,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ServiceProfile {
         V1Default => "v1-default",
         V1HighmemXs => "v1-highmem-xs",
@@ -202,7 +281,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ComplianceType {
         Hipaa => "hipaa",
         Pci => "pci",
@@ -216,14 +295,14 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ApiKeyState {
         Enabled => "enabled",
         Disabled => "disabled",
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ActivityType {
         CreateOrganization => "create_organization",
         OrganizationUpdateName => "organization_update_name",
@@ -277,7 +356,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ActivityActorType {
         User => "user",
         Support => "support",
@@ -286,7 +365,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum ActivityKeyUpdateType {
         Created => "created",
         Deleted => "deleted",
@@ -302,7 +381,7 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum BackupStatus {
         Done => "done",
         Error => "error",
@@ -310,14 +389,14 @@ string_enum! {
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     pub enum BackupType {
         Full => "full",
         Incremental => "incremental",
     }
 }
 
-string_enum! {
+flexible_string_enum! {
     #[allow(clippy::enum_variant_names)]
     pub enum ByocConfigState {
         InfraReady => "infra-ready",
