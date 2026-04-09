@@ -102,7 +102,7 @@ impl CloudClient {
         }
 
         Err(CloudError {
-            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth), `clickhousectl cloud auth keys` (API key/secret), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret".into(),
+            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret".into(),
         })
     }
 
