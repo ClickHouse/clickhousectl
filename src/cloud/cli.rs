@@ -32,8 +32,10 @@ pub enum AuthCommands {
     /// Log in to ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Defaults to OAuth device flow (opens browser). Use --api-key and --api-secret for non-interactive login.
-  Agents should suggest the user to use the OAuth device flow, only using flags if explicitly asked, in CI or in fully autonomous environments.
+  Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY — they can list and
+  inspect resources but cannot create, modify, or delete.
+  For write operations (create, update, delete services, etc.), use --api-key and --api-secret.
+  Agents: use API key auth for any mutating operations. OAuth is only suitable for read-only exploration.
   Related: use `clickhousectl cloud auth status` to verify.")]
     Login {
         /// Log in by entering API key/secret interactively
@@ -82,8 +84,8 @@ pub enum CloudCommands {
     /// Manage authentication (OAuth login, API keys)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Use `login --api-key X --api-secret Y` for non-interactive auth.
-  Default `login` opens a browser (not agent-friendly).
+  Use `login --api-key X --api-secret Y` for full read/write access.
+  Default `login` opens a browser for OAuth (read-only access only — cannot create, modify, or delete resources).
   `logout` clears all saved credentials (OAuth tokens and API keys).
   Related: `clickhousectl cloud org list` to verify credentials work.")]
     Auth {
@@ -108,6 +110,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
+  Write commands (create, delete, start, stop, update, scale) require API key auth — OAuth is read-only.
   Use `client` to open a clickhouse-client session to a service.
   Related: `clickhousectl cloud org list` for org IDs.")]
     Service {
@@ -150,6 +153,80 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ActivityCommands,
     },
+}
+
+impl CloudCommands {
+    /// Returns true if this command performs a write/mutating operation.
+    /// OAuth (Bearer) auth is read-only and cannot execute write commands.
+    ///
+    /// Every variant is explicitly matched — no wildcards — so the compiler
+    /// will error when a new command is added, forcing the developer to
+    /// classify it as read or write.
+    pub fn is_write_command(&self) -> bool {
+        match self {
+            CloudCommands::Auth { .. } => false,
+            CloudCommands::Org { command } => match command {
+                OrgCommands::List => false,
+                OrgCommands::Get { .. } => false,
+                OrgCommands::Prometheus { .. } => false,
+                OrgCommands::Usage { .. } => false,
+                OrgCommands::Update { .. } => true,
+            },
+            CloudCommands::Service { command } => match command {
+                ServiceCommands::List { .. } => false,
+                ServiceCommands::Get { .. } => false,
+                ServiceCommands::Client { .. } => false,
+                ServiceCommands::Prometheus { .. } => false,
+                ServiceCommands::Create { .. } => true,
+                ServiceCommands::Delete { .. } => true,
+                ServiceCommands::Start { .. } => true,
+                ServiceCommands::Stop { .. } => true,
+                ServiceCommands::Update { .. } => true,
+                ServiceCommands::Scale { .. } => true,
+                ServiceCommands::ResetPassword { .. } => true,
+                ServiceCommands::QueryEndpoint { command } => match command {
+                    QueryEndpointCommands::Get { .. } => false,
+                    QueryEndpointCommands::Create { .. } => true,
+                    QueryEndpointCommands::Delete { .. } => true,
+                },
+                ServiceCommands::PrivateEndpoint { command } => match command {
+                    PrivateEndpointCommands::Create { .. } => true,
+                    PrivateEndpointCommands::GetConfig { .. } => false,
+                },
+                ServiceCommands::BackupConfig { command } => match command {
+                    BackupConfigCommands::Get { .. } => false,
+                    BackupConfigCommands::Update { .. } => true,
+                },
+            },
+            CloudCommands::Backup { command } => match command {
+                BackupCommands::List { .. } => false,
+                BackupCommands::Get { .. } => false,
+            },
+            CloudCommands::Member { command } => match command {
+                MemberCommands::List { .. } => false,
+                MemberCommands::Get { .. } => false,
+                MemberCommands::Update { .. } => true,
+                MemberCommands::Remove { .. } => true,
+            },
+            CloudCommands::Invitation { command } => match command {
+                InvitationCommands::List { .. } => false,
+                InvitationCommands::Get { .. } => false,
+                InvitationCommands::Create { .. } => true,
+                InvitationCommands::Delete { .. } => true,
+            },
+            CloudCommands::Key { command } => match command {
+                KeyCommands::List { .. } => false,
+                KeyCommands::Get { .. } => false,
+                KeyCommands::Create { .. } => true,
+                KeyCommands::Update { .. } => true,
+                KeyCommands::Delete { .. } => true,
+            },
+            CloudCommands::Activity { command } => match command {
+                ActivityCommands::List { .. } => false,
+                ActivityCommands::Get { .. } => false,
+            },
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -1403,6 +1480,111 @@ mod tests {
         match result {
             Ok(_) => panic!("expected invalid calendar date to be rejected"),
             Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
+        }
+    }
+
+    #[test]
+    fn is_write_command_classifies_read_commands() {
+        let read_commands = vec![
+            CloudCommands::Org {
+                command: OrgCommands::List,
+            },
+            CloudCommands::Org {
+                command: OrgCommands::Get {
+                    org_id: "o".into(),
+                },
+            },
+            CloudCommands::Service {
+                command: ServiceCommands::List {
+                    org_id: None,
+                    filter: vec![],
+                },
+            },
+            CloudCommands::Service {
+                command: ServiceCommands::Get {
+                    service_id: "s".into(),
+                    org_id: None,
+                },
+            },
+            CloudCommands::Backup {
+                command: BackupCommands::List {
+                    service_id: "s".into(),
+                    org_id: None,
+                },
+            },
+            CloudCommands::Activity {
+                command: ActivityCommands::List {
+                    org_id: None,
+                    from_date: None,
+                    to_date: None,
+                },
+            },
+            CloudCommands::Member {
+                command: MemberCommands::List { org_id: None },
+            },
+            CloudCommands::Key {
+                command: KeyCommands::List { org_id: None },
+            },
+        ];
+        for cmd in &read_commands {
+            assert!(
+                !cmd.is_write_command(),
+                "expected read-only: {:?}",
+                std::mem::discriminant(cmd)
+            );
+        }
+    }
+
+    #[test]
+    fn is_write_command_classifies_write_commands() {
+        let write_commands = vec![
+            CloudCommands::Org {
+                command: OrgCommands::Update {
+                    org_id: "o".into(),
+                    name: None,
+                    remove_private_endpoint: vec![],
+                    enable_core_dumps: None,
+                },
+            },
+            CloudCommands::Service {
+                command: ServiceCommands::Delete {
+                    service_id: "s".into(),
+                    force: false,
+                    org_id: None,
+                },
+            },
+            CloudCommands::Service {
+                command: ServiceCommands::Start {
+                    service_id: "s".into(),
+                    org_id: None,
+                },
+            },
+            CloudCommands::Member {
+                command: MemberCommands::Remove {
+                    user_id: "u".into(),
+                    org_id: None,
+                },
+            },
+            CloudCommands::Key {
+                command: KeyCommands::Delete {
+                    key_id: "k".into(),
+                    org_id: None,
+                },
+            },
+            CloudCommands::Invitation {
+                command: InvitationCommands::Create {
+                    email: "a@b.com".into(),
+                    role_id: vec![],
+                    org_id: None,
+                },
+            },
+        ];
+        for cmd in &write_commands {
+            assert!(
+                cmd.is_write_command(),
+                "expected write: {:?}",
+                std::mem::discriminant(cmd)
+            );
         }
     }
 }

@@ -19,6 +19,9 @@ CONTEXT FOR AGENTS:
   1. Local: Install and interact with versions of ClickHouse to develop locally.
   2. Cloud: Manage ClickHouse Cloud infrastructure and push local work to cloud.
 
+  Authentication: OAuth (`cloud auth login`) is read-only. For write operations (create, update,
+  delete), use API key auth: `cloud auth login --api-key X --api-secret Y`.
+
   You can install the ClickHouse Agent Skills with:
 
   `clickhousectl skills`
@@ -43,7 +46,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure. You need to have a ClickHouse Cloud account and be authenticated.
-  Agents should suggest the user to sign up at https://clickhouse.cloud, and then use `clickhousectl cloud auth login` to authenticate.
+  OAuth login (`cloud auth login`) is read-only — it can list and inspect resources but cannot create, modify, or delete.
+  For write operations, authenticate with API keys:
+    clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
   Add --json to any cloud command for machine-readable output.
   Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(Box<CloudArgs>),

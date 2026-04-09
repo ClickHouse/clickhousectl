@@ -97,7 +97,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             AuthCommands::Status => {
                 match cloud::auth::load_tokens() {
                     Some(tokens) if cloud::auth::is_token_valid(&tokens) => {
-                        println!("OAuth: logged in (token valid, url: {})", tokens.api_url);
+                        println!(
+                            "OAuth: logged in (token valid, url: {}) [read-only]",
+                            tokens.api_url
+                        );
                     }
                     Some(tokens) => {
                         println!(
@@ -112,7 +115,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 let creds = cloud::credentials::load_credentials();
                 if creds.is_some() {
                     println!(
-                        "API keys: configured ({})",
+                        "API keys: configured ({}) [read/write]",
                         cloud::credentials::credentials_path().display()
                     );
                 } else {
@@ -134,6 +137,24 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         args.url.as_deref(),
     )
     .map_err(|e| Error::Cloud(e.to_string()))?;
+
+    // OAuth (Bearer) tokens are read-only. Block write commands early
+    // to avoid fail loops where agents repeatedly hit 403 errors.
+    if client.is_bearer_auth() && args.command.is_write_command() {
+        return Err(Error::Cloud(
+            "This command requires API key authentication. \
+             OAuth (browser login) provides read-only access.\n\n\
+             To authenticate with an API key:\n  \
+             clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
+             Or set environment variables:\n  \
+             export CLICKHOUSE_CLOUD_API_KEY=your-key\n  \
+             export CLICKHOUSE_CLOUD_API_SECRET=your-secret\n\n\
+             Create API keys in the ClickHouse Cloud console:\n  \
+             https://console.clickhouse.cloud\n  \
+             Navigate to your organization > API Keys."
+                .into(),
+        ));
+    }
 
     let json = args.json;
 
