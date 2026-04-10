@@ -62,6 +62,13 @@ CONTEXT FOR AGENTS:
   Using any flags skips interactive mode. Project scope is the default. Universal `.agents/skills`
   is always included.")]
     Skills(SkillsArgs),
+
+    /// Update clickhousectl to the latest version
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Self-update command. Downloads the latest clickhousectl release from GitHub and replaces the
+  current binary. Use --check to see if an update is available without installing.")]
+    Update(UpdateArgs),
 }
 
 #[derive(Args, Debug)]
@@ -86,6 +93,13 @@ pub struct SkillsArgs {
     /// Install into global agent config directories in your home directory
     #[arg(long)]
     pub global: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct UpdateArgs {
+    /// Check for updates without installing
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[cfg(test)]

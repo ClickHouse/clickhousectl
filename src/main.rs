@@ -5,6 +5,7 @@ mod init;
 mod local;
 mod paths;
 mod skills;
+mod update;
 mod user_agent;
 mod version_manager;
 
@@ -12,7 +13,7 @@ use clap::Parser;
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
     CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs,
+    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
 };
 
 use cloud::CloudClient;
@@ -22,7 +23,20 @@ use error::{Error, Result};
 async fn main() {
     let cli = Cli::parse();
 
+    // Run background update check for commands other than `update` itself
+    let is_update_cmd = matches!(cli.command, Commands::Update(_));
+    let update_check = if !is_update_cmd {
+        Some(tokio::spawn(update::maybe_notify_update()))
+    } else {
+        None
+    };
+
     let result = run(cli.command).await;
+
+    // Wait for the update check to finish so the notice can print
+    if let Some(handle) = update_check {
+        let _ = handle.await;
+    }
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
@@ -35,6 +49,27 @@ async fn run(cmd: Commands) -> Result<()> {
         Commands::Local(args) => local::run(args.command, args.json).await,
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
+        Commands::Update(args) => run_update(args).await,
+    }
+}
+
+async fn run_update(args: UpdateArgs) -> Result<()> {
+    if args.check {
+        match update::check_for_update().await? {
+            Some((current, latest)) => {
+                println!(
+                    "Update available: v{} → v{}",
+                    current, latest
+                );
+                println!("Run `clickhousectl update` to upgrade.");
+            }
+            None => {
+                println!("Already up to date (v{}).", env!("CARGO_PKG_VERSION"));
+            }
+        }
+        Ok(())
+    } else {
+        update::perform_update().await
     }
 }
 
