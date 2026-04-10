@@ -36,10 +36,10 @@ async fn main() {
     let result = run(cli.command).await;
 
     // Give the cache refresh a brief window to finish so short-lived commands
-    // (e.g. `local which`) don't always drop it before the write completes.
-    // This is bounded — it will never block more than 5 seconds.
+    // don't always drop it before the write completes. The background HTTP
+    // request itself has a 400ms timeout, so 500ms here is enough headroom.
     if let Some(handle) = cache_refresh {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
     }
 
     if let Err(e) = result {

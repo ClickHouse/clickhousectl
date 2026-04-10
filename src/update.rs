@@ -59,12 +59,12 @@ fn is_newer(current: &str, latest: &str) -> bool {
     }
 }
 
-/// Fetch the latest release info from GitHub.
-async fn fetch_latest_release() -> Result<GitHubRelease> {
+/// Fetch the latest release info from GitHub with configurable timeout.
+async fn fetch_latest_release(timeout: std::time::Duration) -> Result<GitHubRelease> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
     let client = reqwest::Client::builder()
         .user_agent(crate::user_agent::user_agent())
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(timeout)
         .build()?;
 
     let response = client
@@ -78,10 +78,16 @@ async fn fetch_latest_release() -> Result<GitHubRelease> {
     Ok(release)
 }
 
+/// Timeout for explicit user-initiated commands (update, update --check).
+const EXPLICIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Timeout for the implicit background cache refresh.
+const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Check for updates. Returns Some((current, latest)) if an update is available.
+/// Uses the explicit (longer) timeout since this is called from user-initiated commands.
 pub async fn check_for_update() -> Result<Option<(String, String)>> {
     let current = env!("CARGO_PKG_VERSION");
-    let release = fetch_latest_release().await?;
+    let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
 
     if is_newer(current, latest) {
@@ -95,7 +101,7 @@ pub async fn check_for_update() -> Result<Option<(String, String)>> {
 /// Download the latest release and replace the current binary.
 pub async fn perform_update() -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
-    let release = fetch_latest_release().await?;
+    let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
 
     if !is_newer(current, latest) {
@@ -229,9 +235,9 @@ pub fn print_cached_update_notice() {
     }
 }
 
-/// Refresh the update cache in the background if stale. Fire-and-forget —
-/// never prints, silently ignores errors. The *next* invocation will see
-/// the refreshed cache and print the notice synchronously.
+/// Refresh the update cache in the background if stale. Never prints.
+/// On any failure (timeout, network error, etc.), writes the current version
+/// to the cache so we don't retry for another 24 hours.
 pub async fn refresh_update_cache() {
     // Only hit the network if cache is stale or missing
     let needs_refresh = match read_update_check() {
@@ -242,15 +248,16 @@ pub async fn refresh_update_cache() {
         return;
     }
 
-    let Ok(result) = check_for_update().await else {
-        return;
-    };
-    match result {
-        Some((_current, latest)) => {
-            let _ = save_update_check(&latest);
+    let current = env!("CARGO_PKG_VERSION");
+    let release = fetch_latest_release(BACKGROUND_TIMEOUT).await;
+    match release {
+        Ok(r) => {
+            let latest = r.tag_name;
+            let display = latest.strip_prefix('v').unwrap_or(&latest);
+            let _ = save_update_check(display);
         }
-        None => {
-            let current = env!("CARGO_PKG_VERSION");
+        Err(_) => {
+            // Failed or timed out — write current version so we back off for 24h
             let _ = save_update_check(current);
         }
     }
