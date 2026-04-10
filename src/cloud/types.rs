@@ -2090,4 +2090,63 @@ mod tests {
         assert_eq!(obj.len(), 1);
         assert_eq!(obj["object_storage_concurrency"], 10);
     }
+
+    #[test]
+    fn get_scaling_deserializes_full_payload() {
+        let json = r#"{
+            "replicas": 4,
+            "replicaCpuMillicores": 125,
+            "replicaMemoryGb": 0.5
+        }"#;
+        let scaling: ClickPipeGetScaling = serde_json::from_str(json).unwrap();
+        assert_eq!(scaling.replicas, Some(4));
+        assert_eq!(scaling.replica_cpu_millicores, Some(125));
+        assert_eq!(scaling.replica_memory_gb, Some(0.5));
+    }
+
+    #[test]
+    fn get_scaling_accepts_integer_memory_value() {
+        let json = r#"{"replicas": 1, "replicaCpuMillicores": 500, "replicaMemoryGb": 2}"#;
+        let scaling: ClickPipeGetScaling = serde_json::from_str(json).unwrap();
+        assert_eq!(scaling.replica_memory_gb, Some(2.0));
+    }
+
+    #[test]
+    fn get_scaling_deserializes_empty_payload() {
+        let scaling: ClickPipeGetScaling = serde_json::from_str("{}").unwrap();
+        assert!(scaling.replicas.is_none());
+        assert!(scaling.replica_cpu_millicores.is_none());
+        assert!(scaling.replica_memory_gb.is_none());
+    }
+
+    #[test]
+    fn get_destination_deserializes_full_payload() {
+        let json = r#"{
+            "database": "default",
+            "table": "nyc_taxi",
+            "managedTable": true,
+            "columns": [
+                {"name": "trip_id", "type": "UInt32"},
+                {"name": "pickup_date", "type": "Date"}
+            ]
+        }"#;
+        let dest: ClickPipeGetDestination = serde_json::from_str(json).unwrap();
+        assert_eq!(dest.database.as_deref(), Some("default"));
+        assert_eq!(dest.table.as_deref(), Some("nyc_taxi"));
+        assert_eq!(dest.managed_table, Some(true));
+        let cols = dest.columns.unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0].name, "trip_id");
+        assert_eq!(cols[0].column_type, "UInt32");
+    }
+
+    #[test]
+    fn get_destination_deserializes_sparse_payload() {
+        let json = r#"{"database": "default"}"#;
+        let dest: ClickPipeGetDestination = serde_json::from_str(json).unwrap();
+        assert_eq!(dest.database.as_deref(), Some("default"));
+        assert!(dest.table.is_none());
+        assert!(dest.managed_table.is_none());
+        assert!(dest.columns.is_none());
+    }
 }
