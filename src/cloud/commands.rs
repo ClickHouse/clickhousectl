@@ -641,6 +641,8 @@ pub async fn service_create(
     opts: CreateServiceOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate input before any network call so typos like --provider awss
+    // fail locally instead of on the /organizations lookup.
     let request = build_create_service_request(&opts)?;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
@@ -877,6 +879,8 @@ pub async fn service_update(
     opts: ServiceUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate input before any network call so typos like --release-channel turbo
+    // fail locally instead of on the /organizations lookup.
     let request = build_update_service_request(&opts)?;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
@@ -1458,6 +1462,8 @@ pub async fn key_create(
     opts: KeyCreateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate input before any network call so typos like --state broken
+    // fail locally instead of on the /organizations lookup.
     let request = build_api_key_create_request(&opts)?;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
@@ -1519,6 +1525,8 @@ pub async fn key_update(
     opts: KeyUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Validate input before any network call so typos like --state broken
+    // fail locally instead of on the /organizations lookup.
     let request = build_api_key_update_request(&opts)?;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
