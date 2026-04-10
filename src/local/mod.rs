@@ -463,7 +463,12 @@ fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
     for line in existing.lines() {
         if let Some(key) = extract_dotenv_key(line) {
             if let Some((_, val)) = vars.iter().find(|(k, _)| *k == key) {
-                result.push_str(&format!("{}={}", key, val));
+                let prefix = if line.trim_start().starts_with("export") {
+                    "export "
+                } else {
+                    ""
+                };
+                result.push_str(&format!("{}{}={}", prefix, key, val));
                 written.insert(key);
             } else {
                 // A CLICKHOUSE_* var we don't manage — keep as-is
@@ -675,8 +680,8 @@ mod tests {
             ("CLICKHOUSE_PORT", "9000".to_string()),
         ];
         let result = update_dotenv(existing, &vars);
-        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
-        assert!(result.contains("CLICKHOUSE_PORT=9000"));
+        assert!(result.contains("export CLICKHOUSE_HOST=localhost"));
+        assert!(result.contains("export CLICKHOUSE_PORT=9000"));
         assert!(!result.contains("oldhost"));
         assert!(!result.contains("1234"));
     }
@@ -695,7 +700,7 @@ mod tests {
         let existing = "export CLICKHOUSE_PORT = 1234\nDATABASE_URL=postgres://...\n";
         let vars = vec![("CLICKHOUSE_PORT", "9000".to_string())];
         let result = update_dotenv(existing, &vars);
-        assert!(result.contains("CLICKHOUSE_PORT=9000"));
+        assert!(result.contains("export CLICKHOUSE_PORT=9000"));
         assert!(result.contains("DATABASE_URL=postgres://..."));
         assert!(!result.contains("1234"));
     }
