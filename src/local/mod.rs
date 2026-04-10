@@ -246,6 +246,10 @@ async fn start_server(
         return Err(Error::JsonForegroundConflict);
     }
 
+    // Recover any orphaned servers so name resolution and collision checks
+    // see processes that lost their metadata files.
+    server::recover_current_project_servers();
+
     // Resolve server name and check for collisions before any downloads
     let server_name = server::resolve_name(name.as_deref());
 
@@ -394,6 +398,10 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             if global {
                 stop_server_global(&name, project.as_deref(), json)
             } else {
+                // Recover orphaned servers so we can stop processes
+                // that lost their metadata files.
+                server::recover_current_project_servers();
+
                 if !json {
                     println!("Stopping server '{}'...", name);
                 }
@@ -411,6 +419,10 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             }
         }
         ServerCommands::Remove { name } => {
+            // Recover orphaned servers so we correctly detect a running
+            // process even when its metadata file is missing.
+            server::recover_current_project_servers();
+
             if server::is_server_running(&name) {
                 return Err(Error::ServerAlreadyRunning(name));
             }
