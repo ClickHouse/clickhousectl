@@ -412,7 +412,7 @@ fn dotenv_server(
         update_dotenv(&existing, &vars)
     } else {
         vars.iter()
-            .map(|(k, v)| format!("{}={}", k, v))
+            .map(|(k, v)| format_dotenv_line("", k, v))
             .collect::<Vec<_>>()
             .join("\n")
             + "\n"
@@ -433,6 +433,26 @@ fn dotenv_server(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// Format a dotenv line. Values that are plain alphanumeric tokens are written
+/// bare; anything containing spaces, `#`, quotes, backslashes, or newlines is
+/// double-quoted with inner `"`, `\`, and newlines escaped.
+fn format_dotenv_line(prefix: &str, key: &str, val: &str) -> String {
+    let needs_quoting = val.is_empty()
+        || val
+            .bytes()
+            .any(|b| b == b' ' || b == b'#' || b == b'"' || b == b'\'' || b == b'\\' || b == b'\n');
+
+    if needs_quoting {
+        let escaped = val
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        format!("{}{}=\"{}\"", prefix, key, escaped)
+    } else {
+        format!("{}{}={}", prefix, key, val)
+    }
 }
 
 /// Extract a CLICKHOUSE_* key from a dotenv line, handling optional `export`
@@ -468,7 +488,7 @@ fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
                 } else {
                     ""
                 };
-                result.push_str(&format!("{}{}={}", prefix, key, val));
+                result.push_str(&format_dotenv_line(prefix, key, val));
                 written.insert(key);
             } else {
                 // A CLICKHOUSE_* var we don't manage — keep as-is
@@ -483,7 +503,8 @@ fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
     // Append any vars that weren't already in the file
     for (key, val) in vars {
         if !written.contains(key) {
-            result.push_str(&format!("{}={}\n", key, val));
+            result.push_str(&format_dotenv_line("", key, val));
+            result.push('\n');
         }
     }
 
@@ -744,5 +765,74 @@ mod tests {
     fn extract_dotenv_key_comment_and_blank() {
         assert_eq!(extract_dotenv_key("# CLICKHOUSE_HOST=localhost"), None);
         assert_eq!(extract_dotenv_key(""), None);
+    }
+
+    #[test]
+    fn format_dotenv_line_plain_value() {
+        assert_eq!(format_dotenv_line("", "KEY", "value"), "KEY=value");
+    }
+
+    #[test]
+    fn format_dotenv_line_with_prefix() {
+        assert_eq!(format_dotenv_line("export ", "KEY", "value"), "export KEY=value");
+    }
+
+    #[test]
+    fn format_dotenv_line_quotes_spaces() {
+        assert_eq!(
+            format_dotenv_line("", "CLICKHOUSE_PASSWORD", "my secret"),
+            r#"CLICKHOUSE_PASSWORD="my secret""#
+        );
+    }
+
+    #[test]
+    fn format_dotenv_line_quotes_hash() {
+        assert_eq!(
+            format_dotenv_line("", "CLICKHOUSE_PASSWORD", "pass#123"),
+            r#"CLICKHOUSE_PASSWORD="pass#123""#
+        );
+    }
+
+    #[test]
+    fn format_dotenv_line_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            format_dotenv_line("", "CLICKHOUSE_PASSWORD", r#"a"b\c"#),
+            r#"CLICKHOUSE_PASSWORD="a\"b\\c""#
+        );
+    }
+
+    #[test]
+    fn format_dotenv_line_escapes_newlines() {
+        assert_eq!(
+            format_dotenv_line("", "CLICKHOUSE_PASSWORD", "line1\nline2"),
+            r#"CLICKHOUSE_PASSWORD="line1\nline2""#
+        );
+    }
+
+    #[test]
+    fn format_dotenv_line_quotes_empty_value() {
+        assert_eq!(
+            format_dotenv_line("", "CLICKHOUSE_PASSWORD", ""),
+            r#"CLICKHOUSE_PASSWORD="""#
+        );
+    }
+
+    #[test]
+    fn update_dotenv_quotes_special_values() {
+        let vars = vec![
+            ("CLICKHOUSE_HOST", "localhost".to_string()),
+            ("CLICKHOUSE_PASSWORD", "my secret#123".to_string()),
+        ];
+        let result = update_dotenv("", &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+        assert!(result.contains(r#"CLICKHOUSE_PASSWORD="my secret#123""#));
+    }
+
+    #[test]
+    fn update_dotenv_quotes_when_replacing_in_place() {
+        let existing = "CLICKHOUSE_PASSWORD=old\n";
+        let vars = vec![("CLICKHOUSE_PASSWORD", "new pass".to_string())];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains(r#"CLICKHOUSE_PASSWORD="new pass""#));
     }
 }
