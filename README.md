@@ -127,6 +127,7 @@ clickhousectl local server remove test
 clickhousectl local server dotenv                        # From "default" server → .env
 clickhousectl local server dotenv --name dev             # From "dev" server → .env
 clickhousectl local server dotenv --local                # Write to .env.local instead
+clickhousectl local server dotenv --user default --password secret --database mydb  # Include credentials
 ```
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.

@@ -368,7 +368,14 @@ async fn start_server(
     }
 }
 
-fn dotenv_server(name: Option<&str>, use_local: bool, json: bool) -> Result<()> {
+fn dotenv_server(
+    name: Option<&str>,
+    use_local: bool,
+    user: Option<String>,
+    password: Option<String>,
+    database: Option<String>,
+    json: bool,
+) -> Result<()> {
     let server_name = name.unwrap_or("default");
     let entries = server::list_all_servers();
     let entry = entries
@@ -380,14 +387,22 @@ fn dotenv_server(name: Option<&str>, use_local: bool, json: bool) -> Result<()> 
         .as_ref()
         .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
 
-    let vars = vec![
+    // Only write vars we actually know from server metadata.
+    // User, password, and database are only included when explicitly provided.
+    let mut vars: Vec<(&str, String)> = vec![
         ("CLICKHOUSE_HOST", "localhost".to_string()),
         ("CLICKHOUSE_PORT", info.tcp_port.to_string()),
         ("CLICKHOUSE_HTTP_PORT", info.http_port.to_string()),
-        ("CLICKHOUSE_USER", "default".to_string()),
-        ("CLICKHOUSE_PASSWORD", String::new()),
-        ("CLICKHOUSE_DATABASE", "default".to_string()),
     ];
+    if let Some(u) = user {
+        vars.push(("CLICKHOUSE_USER", u));
+    }
+    if let Some(p) = password {
+        vars.push(("CLICKHOUSE_PASSWORD", p));
+    }
+    if let Some(d) = database {
+        vars.push(("CLICKHOUSE_DATABASE", d));
+    }
 
     let filename = if use_local { ".env.local" } else { ".env" };
     let path = std::path::Path::new(filename);
@@ -420,14 +435,33 @@ fn dotenv_server(name: Option<&str>, use_local: bool, json: bool) -> Result<()> 
     Ok(())
 }
 
+/// Extract a CLICKHOUSE_* key from a dotenv line, handling optional `export`
+/// prefix and whitespace around `=`.
+/// Returns the bare key (e.g. "CLICKHOUSE_HOST") or None if the line isn't
+/// a CLICKHOUSE_* assignment.
+fn extract_dotenv_key(line: &str) -> Option<&str> {
+    let s = line.trim();
+    let s = s
+        .strip_prefix("export")
+        .map(|rest| rest.trim_start())
+        .unwrap_or(s);
+    let eq_pos = s.find('=')?;
+    let key = s[..eq_pos].trim_end();
+    if key.starts_with("CLICKHOUSE_") && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        Some(key)
+    } else {
+        None
+    }
+}
+
 /// Update an existing .env file: replace CLICKHOUSE_* vars in-place, append any missing ones.
 fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
     let mut result = String::new();
     let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     for line in existing.lines() {
-        let trimmed = line.trim();
-        if let Some(key) = trimmed.strip_prefix("CLICKHOUSE_").and_then(|_| trimmed.split('=').next()) {
+        if let Some(key) = extract_dotenv_key(line) {
             if let Some((_, val)) = vars.iter().find(|(k, _)| *k == key) {
                 result.push_str(&format!("{}={}", key, val));
                 written.insert(key);
@@ -546,9 +580,13 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             }
             Ok(())
         }
-        ServerCommands::Dotenv { name, local } => {
-            dotenv_server(name.as_deref(), local, json)
-        }
+        ServerCommands::Dotenv {
+            name,
+            local,
+            user,
+            password,
+            database,
+        } => dotenv_server(name.as_deref(), local, user, password, database, json),
         ServerCommands::Remove { name } => {
             if server::is_server_running(&name) {
                 return Err(Error::ServerAlreadyRunning(name));
@@ -627,5 +665,79 @@ mod tests {
         let result = update_dotenv(existing, &vars);
         assert!(result.contains("CLICKHOUSE_HOST=localhost"));
         assert!(result.contains("CLICKHOUSE_PORT=9000"));
+    }
+
+    #[test]
+    fn update_dotenv_handles_export_prefix() {
+        let existing = "export CLICKHOUSE_HOST=oldhost\nexport CLICKHOUSE_PORT=1234\n";
+        let vars = vec![
+            ("CLICKHOUSE_HOST", "localhost".to_string()),
+            ("CLICKHOUSE_PORT", "9000".to_string()),
+        ];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+        assert!(result.contains("CLICKHOUSE_PORT=9000"));
+        assert!(!result.contains("oldhost"));
+        assert!(!result.contains("1234"));
+    }
+
+    #[test]
+    fn update_dotenv_handles_spaces_around_equals() {
+        let existing = "CLICKHOUSE_HOST = oldhost\n";
+        let vars = vec![("CLICKHOUSE_HOST", "localhost".to_string())];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+        assert!(!result.contains("oldhost"));
+    }
+
+    #[test]
+    fn update_dotenv_handles_export_with_spaces() {
+        let existing = "export CLICKHOUSE_PORT = 1234\nDATABASE_URL=postgres://...\n";
+        let vars = vec![("CLICKHOUSE_PORT", "9000".to_string())];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("CLICKHOUSE_PORT=9000"));
+        assert!(result.contains("DATABASE_URL=postgres://..."));
+        assert!(!result.contains("1234"));
+    }
+
+    #[test]
+    fn update_dotenv_preserves_unmanaged_clickhouse_vars() {
+        let existing = "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PASSWORD=secret\n";
+        // Only updating HOST — PASSWORD should be left alone
+        let vars = vec![("CLICKHOUSE_HOST", "newhost".to_string())];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=newhost"));
+        assert!(result.contains("CLICKHOUSE_PASSWORD=secret"));
+    }
+
+    #[test]
+    fn extract_dotenv_key_simple() {
+        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST=localhost"), Some("CLICKHOUSE_HOST"));
+    }
+
+    #[test]
+    fn extract_dotenv_key_with_export() {
+        assert_eq!(extract_dotenv_key("export CLICKHOUSE_HOST=localhost"), Some("CLICKHOUSE_HOST"));
+    }
+
+    #[test]
+    fn extract_dotenv_key_with_spaces() {
+        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST = localhost"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(
+            extract_dotenv_key("export CLICKHOUSE_HOST = localhost"),
+            Some("CLICKHOUSE_HOST")
+        );
+    }
+
+    #[test]
+    fn extract_dotenv_key_non_clickhouse() {
+        assert_eq!(extract_dotenv_key("DATABASE_URL=postgres://..."), None);
+        assert_eq!(extract_dotenv_key("export FOO=bar"), None);
+    }
+
+    #[test]
+    fn extract_dotenv_key_comment_and_blank() {
+        assert_eq!(extract_dotenv_key("# CLICKHOUSE_HOST=localhost"), None);
+        assert_eq!(extract_dotenv_key(""), None);
     }
 }
