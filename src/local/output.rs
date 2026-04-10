@@ -333,6 +333,31 @@ impl fmt::Display for ServerRemoveOutput {
     }
 }
 
+// ── server dotenv ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerDotenvOutput {
+    pub file: String,
+    pub server: String,
+    pub vars: Vec<DotenvVar>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DotenvVar {
+    pub key: String,
+    pub value: String,
+}
+
+impl fmt::Display for ServerDotenvOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Wrote to {} (server '{}')", self.file, self.server)?;
+        for var in &self.vars {
+            writeln!(f, "  {}={}", var.key, var.value)?;
+        }
+        Ok(())
+    }
+}
+
 // ── helper ──────────────────────────────────────────────────────────────────
 
 /// Print output as JSON or human-readable text.

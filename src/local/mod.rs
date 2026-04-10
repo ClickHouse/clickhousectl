@@ -368,6 +368,89 @@ async fn start_server(
     }
 }
 
+fn dotenv_server(name: Option<&str>, use_local: bool, json: bool) -> Result<()> {
+    let server_name = name.unwrap_or("default");
+    let entries = server::list_all_servers();
+    let entry = entries
+        .iter()
+        .find(|e| e.name == server_name)
+        .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+    let info = entry
+        .info
+        .as_ref()
+        .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
+
+    let vars = vec![
+        ("CLICKHOUSE_HOST", "localhost".to_string()),
+        ("CLICKHOUSE_PORT", info.tcp_port.to_string()),
+        ("CLICKHOUSE_HTTP_PORT", info.http_port.to_string()),
+        ("CLICKHOUSE_USER", "default".to_string()),
+        ("CLICKHOUSE_PASSWORD", String::new()),
+        ("CLICKHOUSE_DATABASE", "default".to_string()),
+    ];
+
+    let filename = if use_local { ".env.local" } else { ".env" };
+    let path = std::path::Path::new(filename);
+
+    let content = if path.exists() {
+        let existing = std::fs::read_to_string(path)?;
+        update_dotenv(&existing, &vars)
+    } else {
+        vars.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+
+    std::fs::write(path, &content)?;
+
+    let out = output::ServerDotenvOutput {
+        file: filename.to_string(),
+        server: server_name.to_string(),
+        vars: vars
+            .into_iter()
+            .map(|(k, v)| output::DotenvVar {
+                key: k.to_string(),
+                value: v,
+            })
+            .collect(),
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+/// Update an existing .env file: replace CLICKHOUSE_* vars in-place, append any missing ones.
+fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
+    let mut result = String::new();
+    let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if let Some(key) = trimmed.strip_prefix("CLICKHOUSE_").and_then(|_| trimmed.split('=').next()) {
+            if let Some((_, val)) = vars.iter().find(|(k, _)| *k == key) {
+                result.push_str(&format!("{}={}", key, val));
+                written.insert(key);
+            } else {
+                // A CLICKHOUSE_* var we don't manage — keep as-is
+                result.push_str(line);
+            }
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+
+    // Append any vars that weren't already in the file
+    for (key, val) in vars {
+        if !written.contains(key) {
+            result.push_str(&format!("{}={}\n", key, val));
+        }
+    }
+
+    result
+}
+
 async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> {
     match command {
         ServerCommands::Start {
@@ -463,6 +546,9 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             }
             Ok(())
         }
+        ServerCommands::Dotenv { name, local } => {
+            dotenv_server(name.as_deref(), local, json)
+        }
         ServerCommands::Remove { name } => {
             if server::is_server_running(&name) {
                 return Err(Error::ServerAlreadyRunning(name));
@@ -494,5 +580,52 @@ mod tests {
             matches!(err, Error::JsonForegroundConflict),
             "expected JsonForegroundConflict, got: {err}"
         );
+    }
+
+    #[test]
+    fn update_dotenv_creates_fresh_content() {
+        let vars = vec![
+            ("CLICKHOUSE_HOST", "localhost".to_string()),
+            ("CLICKHOUSE_PORT", "9000".to_string()),
+        ];
+        let result = update_dotenv("", &vars);
+        assert_eq!(result, "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\n");
+    }
+
+    #[test]
+    fn update_dotenv_replaces_existing_vars() {
+        let existing = "CLICKHOUSE_HOST=oldhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_PORT=1234\n";
+        let vars = vec![
+            ("CLICKHOUSE_HOST", "localhost".to_string()),
+            ("CLICKHOUSE_PORT", "9000".to_string()),
+        ];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+        assert!(result.contains("CLICKHOUSE_PORT=9000"));
+        assert!(result.contains("DATABASE_URL=postgres://..."));
+        assert!(!result.contains("oldhost"));
+        assert!(!result.contains("1234"));
+    }
+
+    #[test]
+    fn update_dotenv_preserves_non_clickhouse_vars() {
+        let existing = "FOO=bar\nBAZ=qux\n";
+        let vars = vec![("CLICKHOUSE_HOST", "localhost".to_string())];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("FOO=bar"));
+        assert!(result.contains("BAZ=qux"));
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+    }
+
+    #[test]
+    fn update_dotenv_appends_missing_vars() {
+        let existing = "CLICKHOUSE_HOST=localhost\n";
+        let vars = vec![
+            ("CLICKHOUSE_HOST", "localhost".to_string()),
+            ("CLICKHOUSE_PORT", "9000".to_string()),
+        ];
+        let result = update_dotenv(existing, &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+        assert!(result.contains("CLICKHOUSE_PORT=9000"));
     }
 }

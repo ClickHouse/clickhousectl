@@ -214,4 +214,22 @@ CONTEXT FOR AGENTS:
         /// Name of the server to remove
         name: String,
     },
+
+    /// Write ClickHouse connection env vars to a .env file
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT, CLICKHOUSE_HTTP_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD,
+  and CLICKHOUSE_DATABASE into a .env file (or .env.local with --local).
+  If the file already exists, existing CLICKHOUSE_* vars are replaced in-place. Otherwise the file is created.
+  Useful for configuring apps that read from dotenv files.
+  Related: `clickhousectl local server start` to start a server, `clickhousectl local server list` to see servers.")]
+    Dotenv {
+        /// Server name (default: "default")
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Write to .env.local instead of .env
+        #[arg(long)]
+        local: bool,
+    },
 }
