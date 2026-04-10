@@ -41,7 +41,11 @@ macro_rules! string_enum {
             fn from_str(s: &str) -> Result<Self, Self::Err> {
                 match s {
                     $($value => Ok(Self::$variant),)+
-                    _ => Err(format!("invalid {}: {}", stringify!($name), s)),
+                    _ => Err(format!(
+                        "unknown value '{}', expected one of: {}",
+                        s,
+                        [$($value),+].join(", ")
+                    )),
                 }
             }
         }

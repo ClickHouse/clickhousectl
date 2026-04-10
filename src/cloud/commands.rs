@@ -48,7 +48,7 @@ fn parse_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Erro
 where
     T: FromStr<Err = String>,
 {
-    T::from_str(value).map_err(|err| format!("invalid {} '{}': {}", field, value, err).into())
+    T::from_str(value).map_err(|err| format!("invalid {}: {}", field, err).into())
 }
 
 fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
