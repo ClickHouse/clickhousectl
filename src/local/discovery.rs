@@ -69,8 +69,10 @@ fn inspect_process(pid: u32) -> Option<DiscoveredProcess> {
 /// Get the current working directory of a process (macOS).
 #[cfg(target_os = "macos")]
 fn get_process_cwd(pid: u32) -> Option<String> {
+    // -a is required to AND the conditions; without it macOS lsof OR's
+    // -d and -p, returning the cwd of every process on the system.
     let output = Command::new("lsof")
-        .args(["-d", "cwd", "-Fn", "-p", &pid.to_string()])
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
         .output()
         .ok()?;
 
