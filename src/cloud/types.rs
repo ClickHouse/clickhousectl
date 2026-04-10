@@ -41,7 +41,11 @@ macro_rules! string_enum {
             fn from_str(s: &str) -> Result<Self, Self::Err> {
                 match s {
                     $($value => Ok(Self::$variant),)+
-                    _ => Err(format!("invalid {}: {}", stringify!($name), s)),
+                    _ => Err(format!(
+                        "unknown value '{}', expected one of: {}",
+                        s,
+                        [$($value),+].join(", ")
+                    )),
                 }
             }
         }
@@ -112,14 +116,25 @@ macro_rules! flexible_string_enum {
             }
         }
 
+        impl $name {
+            /// Returns the list of known string values for this enum.
+            pub fn known_values() -> &'static [&'static str] {
+                &[$($value),+]
+            }
+        }
+
         impl FromStr for $name {
             type Err = String;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                Ok(match s {
-                    $($value => Self::$variant,)+
-                    other => Self::Other(other.to_string()),
-                })
+                match s {
+                    $($value => Ok(Self::$variant),)+
+                    _ => Err(format!(
+                        "unknown value '{}', expected one of: {}",
+                        s,
+                        [$($value),+].join(", ")
+                    )),
+                }
             }
         }
 

@@ -52,7 +52,7 @@ pub enum Error {
     #[error("Server '{0}' is already running")]
     ServerAlreadyRunning(String),
 
-    #[error("Cloud API error: {0}")]
+    #[error("{0}")]
     Cloud(String),
 
     #[error("{0}")]
