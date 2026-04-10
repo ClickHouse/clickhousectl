@@ -23,20 +23,15 @@ use error::{Error, Result};
 async fn main() {
     let cli = Cli::parse();
 
-    // Run background update check for commands other than `update` itself
+    // For non-update commands: print a cached update notice (sync, no network)
+    // and spawn a fire-and-forget task to refresh the cache in the background.
     let is_update_cmd = matches!(cli.command, Commands::Update(_));
-    let update_check = if !is_update_cmd {
-        Some(tokio::spawn(update::maybe_notify_update()))
-    } else {
-        None
-    };
+    if !is_update_cmd {
+        update::print_cached_update_notice();
+        tokio::spawn(update::refresh_update_cache());
+    }
 
     let result = run(cli.command).await;
-
-    // Wait for the update check to finish so the notice can print
-    if let Some(handle) = update_check {
-        let _ = handle.await;
-    }
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);

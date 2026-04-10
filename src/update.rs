@@ -64,6 +64,7 @@ async fn fetch_latest_release() -> Result<GitHubRelease> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
     let client = reqwest::Client::builder()
         .user_agent(crate::user_agent::user_agent())
+        .timeout(std::time::Duration::from_secs(10))
         .build()?;
 
     let response = client
@@ -212,44 +213,46 @@ fn read_update_check() -> Option<(u64, String)> {
     Some((ts, version))
 }
 
-/// Check if we should perform a background update check (respecting the 24h cache).
-/// Prints a notice to stderr if an update is available. Returns quietly on any error.
-pub async fn maybe_notify_update() {
-    // Check cache first
-    if let Some((ts, cached_version)) = read_update_check()
-        && now_secs() - ts < CHECK_INTERVAL_SECS
-    {
-        // Cache is fresh — use cached result
+/// Print an update notice from cached data only. No network, no async.
+/// Called synchronously before the command runs so output never interleaves.
+pub fn print_cached_update_notice() {
+    if let Some((_, cached_version)) = read_update_check() {
         let current = env!("CARGO_PKG_VERSION");
         if is_newer(current, &cached_version) {
-            print_update_notice(current, &cached_version);
-        }
-        return;
-    }
-
-    // Cache is stale or missing — check GitHub
-    let result = check_for_update().await;
-    match result {
-        Ok(Some((current, latest))) => {
-            let _ = save_update_check(&latest);
-            print_update_notice(&current, &latest);
-        }
-        Ok(None) => {
-            let current = env!("CARGO_PKG_VERSION");
-            let _ = save_update_check(current);
-        }
-        Err(_) => {
-            // Silently ignore errors — don't disrupt normal usage
+            eprintln!(
+                "\nA new version of clickhousectl is available: v{} (current: v{})",
+                cached_version, current
+            );
+            eprintln!("Run `clickhousectl update` to upgrade.\n");
         }
     }
 }
 
-fn print_update_notice(current: &str, latest: &str) {
-    eprintln!(
-        "\nA new version of clickhousectl is available: v{} (current: v{})",
-        latest, current
-    );
-    eprintln!("Run `clickhousectl update` to upgrade.\n");
+/// Refresh the update cache in the background if stale. Fire-and-forget —
+/// never prints, silently ignores errors. The *next* invocation will see
+/// the refreshed cache and print the notice synchronously.
+pub async fn refresh_update_cache() {
+    // Only hit the network if cache is stale or missing
+    let needs_refresh = match read_update_check() {
+        Some((ts, _)) => now_secs().saturating_sub(ts) >= CHECK_INTERVAL_SECS,
+        None => true,
+    };
+    if !needs_refresh {
+        return;
+    }
+
+    let Ok(result) = check_for_update().await else {
+        return;
+    };
+    match result {
+        Some((_current, latest)) => {
+            let _ = save_update_check(&latest);
+        }
+        None => {
+            let current = env!("CARGO_PKG_VERSION");
+            let _ = save_update_check(current);
+        }
+    }
 }
 
 #[cfg(test)]
