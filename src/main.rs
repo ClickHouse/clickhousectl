@@ -24,14 +24,23 @@ async fn main() {
     let cli = Cli::parse();
 
     // For non-update commands: print a cached update notice (sync, no network)
-    // and spawn a fire-and-forget task to refresh the cache in the background.
+    // and spawn a background task to refresh the cache.
     let is_update_cmd = matches!(cli.command, Commands::Update(_));
-    if !is_update_cmd {
+    let cache_refresh = if !is_update_cmd {
         update::print_cached_update_notice();
-        tokio::spawn(update::refresh_update_cache());
-    }
+        Some(tokio::spawn(update::refresh_update_cache()))
+    } else {
+        None
+    };
 
     let result = run(cli.command).await;
+
+    // Give the cache refresh a brief window to finish so short-lived commands
+    // (e.g. `local which`) don't always drop it before the write completes.
+    // This is bounded — it will never block more than 5 seconds.
+    if let Some(handle) = cache_refresh {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+    }
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);

@@ -121,6 +121,7 @@ pub async fn perform_update() -> Result<()> {
 
     let client = reqwest::Client::builder()
         .user_agent(crate::user_agent::user_agent())
+        .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
     let response = client
