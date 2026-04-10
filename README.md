@@ -115,10 +115,14 @@ clickhousectl local server start -- --config-file=/path/to/config.xml
 
 # List all servers (running and stopped)
 clickhousectl local server list
+clickhousectl local server list --global                  # List servers across all projects
 
 # Stop servers
 clickhousectl local server stop default                   # Stop by name
+clickhousectl local server stop default --global          # Stop from any project
+clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
 clickhousectl local server stop-all                       # Stop all running servers
+clickhousectl local server stop-all --global              # Stop all servers system-wide
 
 # Remove a stopped server and its data
 clickhousectl local server remove test
@@ -127,6 +131,10 @@ clickhousectl local server remove test
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
+
+**Orphaned server recovery:** If server metadata files are lost while the ClickHouse process is still running, the CLI automatically recovers them via process discovery. Running `server list`, `server start`, or any server command will detect orphaned processes belonging to the current project and bring them back under management.
+
+**Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.
 
 #### Project-local data directory
 

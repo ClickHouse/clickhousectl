@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod discovery;
 pub mod output;
 pub mod server;
 
@@ -378,90 +379,36 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             foreground,
             args,
         } => start_server(name, version, http_port, tcp_port, foreground, args, json).await,
-        ServerCommands::List => {
-            let entries = server::list_all_servers();
-            let running_count = entries.iter().filter(|e| e.running).count();
-            let total = entries.len();
-
-            let out = output::ServerListOutput {
-                servers: entries
-                    .into_iter()
-                    .map(|e| {
-                        let (pid, version, http_port, tcp_port) = match e.info {
-                            Some(info) => (
-                                Some(info.pid),
-                                Some(info.version),
-                                Some(info.http_port),
-                                Some(info.tcp_port),
-                            ),
-                            None => (None, None, None, None),
-                        };
-                        output::ServerListEntry {
-                            name: e.name,
-                            running: e.running,
-                            pid,
-                            version,
-                            http_port,
-                            tcp_port,
-                        }
-                    })
-                    .collect(),
-                total_servers: total,
-                total_running_servers: running_count,
-            };
-            output::print_output(&out, json);
-            Ok(())
-        }
-        ServerCommands::Stop { name } => {
-            if !json {
-                println!("Stopping server '{}'...", name);
-            }
-            server::kill_server(&name)?;
-            let out = output::ServerStopOutput { name };
-            output::print_output(&out, json);
-            Ok(())
-        }
-        ServerCommands::StopAll => {
-            let servers = server::list_running_servers();
-            let mut stop_entries = Vec::new();
-            for s in &servers {
-                if !json {
-                    print!("Stopping '{}'...", s.name);
-                }
-                match server::kill_server(&s.name) {
-                    Ok(()) => {
-                        if !json {
-                            println!(" stopped");
-                        }
-                        stop_entries.push(output::ServerStopEntry {
-                            name: s.name.clone(),
-                            stopped: true,
-                            error: None,
-                        });
-                    }
-                    Err(e) => {
-                        if !json {
-                            println!(" error: {}", e);
-                        }
-                        stop_entries.push(output::ServerStopEntry {
-                            name: s.name.clone(),
-                            stopped: false,
-                            error: Some(e.to_string()),
-                        });
-                    }
-                }
-            }
-            if json {
-                let out = output::ServerStopAllOutput {
-                    servers: stop_entries,
-                };
-                output::print_output(&out, json);
-            } else if servers.is_empty() {
-                println!("No running servers");
+        ServerCommands::List { global } => {
+            if global {
+                list_servers_global(json)
             } else {
-                println!("Done");
+                list_servers_local(json)
             }
-            Ok(())
+        }
+        ServerCommands::Stop {
+            name,
+            global,
+            project,
+        } => {
+            if global {
+                stop_server_global(&name, project.as_deref(), json)
+            } else {
+                if !json {
+                    println!("Stopping server '{}'...", name);
+                }
+                server::kill_server(&name)?;
+                let out = output::ServerStopOutput { name };
+                output::print_output(&out, json);
+                Ok(())
+            }
+        }
+        ServerCommands::StopAll { global } => {
+            if global {
+                stop_all_servers_global(json)
+            } else {
+                stop_all_servers_local(json)
+            }
         }
         ServerCommands::Remove { name } => {
             if server::is_server_running(&name) {
@@ -480,6 +427,188 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             Ok(())
         }
     }
+}
+
+fn list_servers_local(json: bool) -> Result<()> {
+    let entries = server::list_all_servers();
+    let running_count = entries.iter().filter(|e| e.running).count();
+    let total = entries.len();
+
+    let out = output::ServerListOutput {
+        servers: entries
+            .into_iter()
+            .map(|e| {
+                let (pid, version, http_port, tcp_port) = match e.info {
+                    Some(info) => (
+                        Some(info.pid),
+                        Some(info.version),
+                        Some(info.http_port),
+                        Some(info.tcp_port),
+                    ),
+                    None => (None, None, None, None),
+                };
+                output::ServerListEntry {
+                    name: e.name,
+                    running: e.running,
+                    pid,
+                    version,
+                    http_port,
+                    tcp_port,
+                    project: None,
+                }
+            })
+            .collect(),
+        total_servers: total,
+        total_running_servers: running_count,
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+fn list_servers_global(json: bool) -> Result<()> {
+    let entries = server::list_all_servers_global();
+    let total = entries.len();
+
+    let out = output::ServerListOutput {
+        servers: entries
+            .into_iter()
+            .map(|e| output::ServerListEntry {
+                name: e.name,
+                running: true,
+                pid: Some(e.pid),
+                version: e.version,
+                http_port: e.http_port,
+                tcp_port: e.tcp_port,
+                project: Some(e.project),
+            })
+            .collect(),
+        total_servers: total,
+        total_running_servers: total,
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<()> {
+    let all = server::list_all_servers_global();
+    let mut matches: Vec<_> = all.iter().filter(|e| e.name == name).collect();
+
+    if let Some(proj) = project {
+        matches.retain(|e| e.project == proj);
+    }
+
+    if matches.is_empty() {
+        return Err(Error::ServerNotFound(name.to_string()));
+    }
+
+    if matches.len() > 1 {
+        let projects: Vec<_> = matches.iter().map(|e| e.project.as_str()).collect();
+        return Err(Error::Exec(format!(
+            "Server '{}' exists in multiple projects: {}. Use --project to specify which one.",
+            name,
+            projects.join(", ")
+        )));
+    }
+
+    let entry = matches[0];
+    if !json {
+        println!(
+            "Stopping server '{}' in {}...",
+            entry.name, entry.project
+        );
+    }
+    server::kill_server_by_pid(entry.pid)?;
+    let out = output::ServerStopOutput {
+        name: name.to_string(),
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+fn stop_all_servers_local(json: bool) -> Result<()> {
+    let servers = server::list_running_servers();
+    let mut stop_entries = Vec::new();
+    for s in &servers {
+        if !json {
+            print!("Stopping '{}'...", s.name);
+        }
+        match server::kill_server(&s.name) {
+            Ok(()) => {
+                if !json {
+                    println!(" stopped");
+                }
+                stop_entries.push(output::ServerStopEntry {
+                    name: s.name.clone(),
+                    stopped: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                if !json {
+                    println!(" error: {}", e);
+                }
+                stop_entries.push(output::ServerStopEntry {
+                    name: s.name.clone(),
+                    stopped: false,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    if json {
+        let out = output::ServerStopAllOutput {
+            servers: stop_entries,
+        };
+        output::print_output(&out, json);
+    } else if servers.is_empty() {
+        println!("No running servers");
+    } else {
+        println!("Done");
+    }
+    Ok(())
+}
+
+fn stop_all_servers_global(json: bool) -> Result<()> {
+    let servers = server::list_all_servers_global();
+    let mut stop_entries = Vec::new();
+    for s in &servers {
+        if !json {
+            print!("Stopping '{}' ({})...", s.name, s.project);
+        }
+        match server::kill_server_by_pid(s.pid) {
+            Ok(()) => {
+                if !json {
+                    println!(" stopped");
+                }
+                stop_entries.push(output::ServerStopEntry {
+                    name: s.name.clone(),
+                    stopped: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                if !json {
+                    println!(" error: {}", e);
+                }
+                stop_entries.push(output::ServerStopEntry {
+                    name: s.name.clone(),
+                    stopped: false,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    if json {
+        let out = output::ServerStopAllOutput {
+            servers: stop_entries,
+        };
+        output::print_output(&out, json);
+    } else if servers.is_empty() {
+        println!("No running servers");
+    } else {
+        println!("Done");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -180,8 +180,13 @@ CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
   Automatically cleans up stale entries for processes that are no longer running.
   Shows name, status (running/stopped), PID, version, and ports.
+  Use --global to list servers across all projects system-wide.
   Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop <name>` to stop one.")]
-    List,
+    List {
+        /// List servers across all projects, not just the current one
+        #[arg(long)]
+        global: bool,
+    },
 
     /// Stop a running server by name
     #[command(after_help = "\
@@ -189,10 +194,20 @@ CONTEXT FOR AGENTS:
   Stops a named ClickHouse server. Use the name from `clickhousectl local server list`.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data directory is preserved — restart with `clickhousectl local server start --name <name>`.
+  Use --global to stop a server from any project. If the name is ambiguous across projects,
+  use --project to specify which one.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop
         name: String,
+
+        /// Stop a server from any project, not just the current one
+        #[arg(long)]
+        global: bool,
+
+        /// Project directory to disambiguate when using --global
+        #[arg(long, requires = "global")]
+        project: Option<String>,
     },
 
     /// Stop all running server instances
@@ -201,8 +216,13 @@ CONTEXT FOR AGENTS:
   Stops all running ClickHouse server instances.
   Sends SIGTERM first, then SIGKILL if processes don't exit.
   Data directories are preserved.
+  Use --global to stop all servers across all projects system-wide.
   Related: `clickhousectl local server list` to see servers.")]
-    StopAll,
+    StopAll {
+        /// Stop all servers across all projects, not just the current one
+        #[arg(long)]
+        global: bool,
+    },
 
     /// Remove a stopped server and its data
     #[command(after_help = "\

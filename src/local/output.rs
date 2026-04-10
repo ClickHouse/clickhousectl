@@ -211,6 +211,8 @@ pub struct ServerListEntry {
     pub http_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tcp_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,30 +238,74 @@ struct ServerListRow {
     tcp_port: String,
 }
 
+#[derive(Tabled)]
+struct ServerListRowGlobal {
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "PID")]
+    pid: String,
+    #[tabled(rename = "Version")]
+    version: String,
+    #[tabled(rename = "HTTP Port")]
+    http_port: String,
+    #[tabled(rename = "TCP Port")]
+    tcp_port: String,
+    #[tabled(rename = "Project")]
+    project: String,
+}
+
 impl fmt::Display for ServerListOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.servers.is_empty() {
             write!(f, "No servers")?;
             return Ok(());
         }
-        let rows: Vec<ServerListRow> = self
-            .servers
-            .iter()
-            .map(|e| ServerListRow {
-                name: e.name.clone(),
-                status: if e.running {
-                    "running".to_string()
-                } else {
-                    "stopped".to_string()
-                },
-                pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                version: e.version.clone().unwrap_or_default(),
-                http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
-            })
-            .collect();
-        let table = Table::new(rows).with(Style::rounded()).to_string();
-        writeln!(f, "{table}")?;
+
+        let has_project = self.servers.iter().any(|e| e.project.is_some());
+
+        if has_project {
+            let rows: Vec<ServerListRowGlobal> = self
+                .servers
+                .iter()
+                .map(|e| ServerListRowGlobal {
+                    name: e.name.clone(),
+                    status: if e.running {
+                        "running".to_string()
+                    } else {
+                        "stopped".to_string()
+                    },
+                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
+                    version: e.version.clone().unwrap_or_default(),
+                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
+                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                    project: e.project.clone().unwrap_or_default(),
+                })
+                .collect();
+            let table = Table::new(rows).with(Style::rounded()).to_string();
+            writeln!(f, "{table}")?;
+        } else {
+            let rows: Vec<ServerListRow> = self
+                .servers
+                .iter()
+                .map(|e| ServerListRow {
+                    name: e.name.clone(),
+                    status: if e.running {
+                        "running".to_string()
+                    } else {
+                        "stopped".to_string()
+                    },
+                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
+                    version: e.version.clone().unwrap_or_default(),
+                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
+                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                })
+                .collect();
+            let table = Table::new(rows).with(Style::rounded()).to_string();
+            writeln!(f, "{table}")?;
+        }
+
         write!(
             f,
             "\n{} server{}, {} running",
@@ -503,6 +549,7 @@ mod tests {
                     version: Some("25.12.5.44".to_string()),
                     http_port: Some(8123),
                     tcp_port: Some(9000),
+                    project: None,
                 },
                 ServerListEntry {
                     name: "test".to_string(),
@@ -511,6 +558,7 @@ mod tests {
                     version: None,
                     http_port: None,
                     tcp_port: None,
+                    project: None,
                 },
             ],
             total_servers: 2,
@@ -756,6 +804,7 @@ mod tests {
                     version: Some("25.12.5.44".to_string()),
                     http_port: Some(8123),
                     tcp_port: Some(9000),
+                    project: None,
                 },
                 ServerListEntry {
                     name: "test".to_string(),
@@ -764,6 +813,7 @@ mod tests {
                     version: None,
                     http_port: None,
                     tcp_port: None,
+                    project: None,
                 },
             ],
             total_servers: 2,
@@ -806,6 +856,7 @@ mod tests {
                 version: Some("25.12.5.44".to_string()),
                 http_port: Some(8123),
                 tcp_port: Some(9000),
+                project: None,
             }],
             total_servers: 1,
             total_running_servers: 1,
