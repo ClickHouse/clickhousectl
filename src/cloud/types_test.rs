@@ -1,4 +1,5 @@
 use super::types::*;
+use std::str::FromStr;
 
 // Contract policy for this suite:
 // - mirror GA request/response schemas and query surfaces only
@@ -1844,4 +1845,80 @@ fn test_service_query_endpoint_role_values() {
         let ep: ServiceQueryEndpoint = serde_json::from_value(json).unwrap();
         assert_eq!(ep.roles.as_ref().unwrap()[0], *role);
     }
+}
+
+// --- FromStr rejects unknown values for user input validation ---
+
+#[test]
+fn test_cloud_provider_fromstr_rejects_unknown() {
+    assert!(CloudProvider::from_str("aws").is_ok());
+    assert!(CloudProvider::from_str("gcp").is_ok());
+    assert!(CloudProvider::from_str("azure").is_ok());
+    let err = CloudProvider::from_str("awss").unwrap_err();
+    assert!(err.contains("awss"), "error should mention the bad value");
+    assert!(err.contains("aws"), "error should list valid values");
+}
+
+#[test]
+fn test_cloud_region_fromstr_rejects_unknown() {
+    assert!(CloudRegion::from_str("us-east-1").is_ok());
+    let err = CloudRegion::from_str("us-east-99").unwrap_err();
+    assert!(err.contains("us-east-99"));
+}
+
+#[test]
+fn test_service_tier_fromstr_rejects_unknown() {
+    assert!(ServiceTier::from_str("production").is_ok());
+    assert!(ServiceTier::from_str("development").is_ok());
+    let err = ServiceTier::from_str("productoin").unwrap_err();
+    assert!(err.contains("productoin"));
+}
+
+#[test]
+fn test_release_channel_fromstr_rejects_unknown() {
+    assert!(ReleaseChannel::from_str("slow").is_ok());
+    assert!(ReleaseChannel::from_str("default").is_ok());
+    assert!(ReleaseChannel::from_str("fast").is_ok());
+    let err = ReleaseChannel::from_str("turbo").unwrap_err();
+    assert!(err.contains("turbo"));
+    assert!(err.contains("slow"));
+}
+
+#[test]
+fn test_compliance_type_fromstr_rejects_unknown() {
+    assert!(ComplianceType::from_str("hipaa").is_ok());
+    assert!(ComplianceType::from_str("pci").is_ok());
+    let err = ComplianceType::from_str("soc2").unwrap_err();
+    assert!(err.contains("soc2"));
+}
+
+#[test]
+fn test_service_profile_fromstr_rejects_unknown() {
+    assert!(ServiceProfile::from_str("v1-default").is_ok());
+    let err = ServiceProfile::from_str("v2-default").unwrap_err();
+    assert!(err.contains("v2-default"));
+}
+
+#[test]
+fn test_flexible_enum_known_values() {
+    let values = CloudProvider::known_values();
+    assert_eq!(values, &["aws", "gcp", "azure"]);
+}
+
+// --- Deserialization still accepts unknown values from API responses ---
+
+#[test]
+fn test_flexible_enum_deserialize_accepts_unknown() {
+    // API responses can contain new values the CLI doesn't know about
+    let json = serde_json::json!({
+        "id": "svc-1",
+        "name": "svc",
+        "provider": "oracle",
+        "region": "mars-west-1",
+        "state": "quantum-superposition"
+    });
+    let svc: Service = serde_json::from_value(json).unwrap();
+    assert_eq!(svc.provider, "oracle");
+    assert_eq!(svc.region, "mars-west-1");
+    assert_eq!(svc.state, "quantum-superposition");
 }
