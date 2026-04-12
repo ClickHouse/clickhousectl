@@ -33,23 +33,29 @@ ISSUE_LABEL = "openapi-drift"
 HTTP_METHODS = {"get", "put", "post", "delete", "patch", "options", "head", "trace"}
 
 
-def fetch_live_spec() -> dict:
-    """Fetch the live OpenAPI spec. Falls back to curl if urllib has SSL issues."""
+def fetch_live_spec() -> dict | None:
+    """Fetch the live OpenAPI spec. Returns None on network failure."""
     try:
         req = urllib.request.Request(LIVE_SPEC_URL, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
     except urllib.error.URLError:
+        pass
+
+    # Fallback: use curl (handles system CA certs better on some platforms)
+    try:
         result = subprocess.run(
             ["curl", "-sf", LIVE_SPEC_URL],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        if result.returncode != 0:
-            print(f"Failed to fetch live spec from {LIVE_SPEC_URL}", file=sys.stderr)
-            sys.exit(1)
-        return json.loads(result.stdout)
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +367,12 @@ def main():
     # Fetch live spec
     print("Fetching live OpenAPI spec...", file=sys.stderr)
     live_spec = fetch_live_spec()
+    if live_spec is None:
+        print(
+            f"WARNING: Could not reach {LIVE_SPEC_URL} — skipping drift check.",
+            file=sys.stderr,
+        )
+        return
 
     # Parse Rust source
     print("Parsing client.rs and models.rs...", file=sys.stderr)
