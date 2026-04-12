@@ -23,6 +23,7 @@ chrono = "0.4.44"
 open = "5.3.3"
 url = "2.5.8"
 tabled = "0.20.0"
+clickhouse-cloud-api = { version = "0.1.0", path = "../clickhouse-cloud-api" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

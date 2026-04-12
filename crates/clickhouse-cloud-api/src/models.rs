@@ -14,6 +14,20 @@ pub enum PgHaType {
     Async,
     #[serde(rename = "sync")]
     Sync,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgHaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Async => write!(f, "async"),
+            Self::Sync => write!(f, "sync"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `pgProvider` enum from the ClickHouse Cloud API.
@@ -22,6 +36,18 @@ pub enum PgProvider {
     #[serde(rename = "aws")]
     #[default]
     Aws,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aws => write!(f, "aws"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `pgSize` enum from the ClickHouse Cloud API.
@@ -324,6 +350,165 @@ pub enum PgSize {
     R8gd_48xlarge,
     #[serde(rename = "r8gd.metal-48xl")]
     R8gd_metal_48xl,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::C6gd_medium => write!(f, "c6gd.medium"),
+            Self::C6gd_large => write!(f, "c6gd.large"),
+            Self::C6gd_xlarge => write!(f, "c6gd.xlarge"),
+            Self::C6gd_2xlarge => write!(f, "c6gd.2xlarge"),
+            Self::C6gd_4xlarge => write!(f, "c6gd.4xlarge"),
+            Self::C6gd_8xlarge => write!(f, "c6gd.8xlarge"),
+            Self::C6gd_12xlarge => write!(f, "c6gd.12xlarge"),
+            Self::C6gd_16xlarge => write!(f, "c6gd.16xlarge"),
+            Self::C6gd_metal => write!(f, "c6gd.metal"),
+            Self::I7i_large => write!(f, "i7i.large"),
+            Self::I7i_xlarge => write!(f, "i7i.xlarge"),
+            Self::I7i_2xlarge => write!(f, "i7i.2xlarge"),
+            Self::I7i_4xlarge => write!(f, "i7i.4xlarge"),
+            Self::I7i_8xlarge => write!(f, "i7i.8xlarge"),
+            Self::I7i_12xlarge => write!(f, "i7i.12xlarge"),
+            Self::I7i_16xlarge => write!(f, "i7i.16xlarge"),
+            Self::I7i_24xlarge => write!(f, "i7i.24xlarge"),
+            Self::I7i_metal_24xl => write!(f, "i7i.metal-24xl"),
+            Self::I7i_48xlarge => write!(f, "i7i.48xlarge"),
+            Self::I7i_metal_48xl => write!(f, "i7i.metal-48xl"),
+            Self::I7ie_large => write!(f, "i7ie.large"),
+            Self::I7ie_xlarge => write!(f, "i7ie.xlarge"),
+            Self::I7ie_2xlarge => write!(f, "i7ie.2xlarge"),
+            Self::I7ie_3xlarge => write!(f, "i7ie.3xlarge"),
+            Self::I7ie_6xlarge => write!(f, "i7ie.6xlarge"),
+            Self::I7ie_12xlarge => write!(f, "i7ie.12xlarge"),
+            Self::I7ie_18xlarge => write!(f, "i7ie.18xlarge"),
+            Self::I7ie_24xlarge => write!(f, "i7ie.24xlarge"),
+            Self::I7ie_metal_24xl => write!(f, "i7ie.metal-24xl"),
+            Self::I7ie_48xlarge => write!(f, "i7ie.48xlarge"),
+            Self::I7ie_metal_48xl => write!(f, "i7ie.metal-48xl"),
+            Self::I8g_large => write!(f, "i8g.large"),
+            Self::I8g_xlarge => write!(f, "i8g.xlarge"),
+            Self::I8g_2xlarge => write!(f, "i8g.2xlarge"),
+            Self::I8g_4xlarge => write!(f, "i8g.4xlarge"),
+            Self::I8g_8xlarge => write!(f, "i8g.8xlarge"),
+            Self::I8g_12xlarge => write!(f, "i8g.12xlarge"),
+            Self::I8g_16xlarge => write!(f, "i8g.16xlarge"),
+            Self::I8g_24xlarge => write!(f, "i8g.24xlarge"),
+            Self::I8g_metal_24xl => write!(f, "i8g.metal-24xl"),
+            Self::I8g_48xlarge => write!(f, "i8g.48xlarge"),
+            Self::I8ge_large => write!(f, "i8ge.large"),
+            Self::I8ge_xlarge => write!(f, "i8ge.xlarge"),
+            Self::I8ge_2xlarge => write!(f, "i8ge.2xlarge"),
+            Self::I8ge_3xlarge => write!(f, "i8ge.3xlarge"),
+            Self::I8ge_6xlarge => write!(f, "i8ge.6xlarge"),
+            Self::I8ge_12xlarge => write!(f, "i8ge.12xlarge"),
+            Self::I8ge_18xlarge => write!(f, "i8ge.18xlarge"),
+            Self::I8ge_24xlarge => write!(f, "i8ge.24xlarge"),
+            Self::I8ge_metal_24xl => write!(f, "i8ge.metal-24xl"),
+            Self::I8ge_48xlarge => write!(f, "i8ge.48xlarge"),
+            Self::I8ge_metal_48xl => write!(f, "i8ge.metal-48xl"),
+            Self::M6a_large => write!(f, "m6a.large"),
+            Self::M6a_xlarge => write!(f, "m6a.xlarge"),
+            Self::M6a_2xlarge => write!(f, "m6a.2xlarge"),
+            Self::M6a_4xlarge => write!(f, "m6a.4xlarge"),
+            Self::M6a_8xlarge => write!(f, "m6a.8xlarge"),
+            Self::M6a_12xlarge => write!(f, "m6a.12xlarge"),
+            Self::M6a_16xlarge => write!(f, "m6a.16xlarge"),
+            Self::M6a_24xlarge => write!(f, "m6a.24xlarge"),
+            Self::M6a_32xlarge => write!(f, "m6a.32xlarge"),
+            Self::M6a_48xlarge => write!(f, "m6a.48xlarge"),
+            Self::M6a_metal => write!(f, "m6a.metal"),
+            Self::M6gd_medium => write!(f, "m6gd.medium"),
+            Self::M6gd_large => write!(f, "m6gd.large"),
+            Self::M6gd_xlarge => write!(f, "m6gd.xlarge"),
+            Self::M6gd_2xlarge => write!(f, "m6gd.2xlarge"),
+            Self::M6gd_4xlarge => write!(f, "m6gd.4xlarge"),
+            Self::M6gd_8xlarge => write!(f, "m6gd.8xlarge"),
+            Self::M6gd_12xlarge => write!(f, "m6gd.12xlarge"),
+            Self::M6gd_16xlarge => write!(f, "m6gd.16xlarge"),
+            Self::M6gd_metal => write!(f, "m6gd.metal"),
+            Self::M6id_large => write!(f, "m6id.large"),
+            Self::M6id_xlarge => write!(f, "m6id.xlarge"),
+            Self::M6id_2xlarge => write!(f, "m6id.2xlarge"),
+            Self::M6id_4xlarge => write!(f, "m6id.4xlarge"),
+            Self::M6id_8xlarge => write!(f, "m6id.8xlarge"),
+            Self::M6id_12xlarge => write!(f, "m6id.12xlarge"),
+            Self::M6id_16xlarge => write!(f, "m6id.16xlarge"),
+            Self::M6id_24xlarge => write!(f, "m6id.24xlarge"),
+            Self::M6id_32xlarge => write!(f, "m6id.32xlarge"),
+            Self::M6id_metal => write!(f, "m6id.metal"),
+            Self::M7a_medium => write!(f, "m7a.medium"),
+            Self::M7a_large => write!(f, "m7a.large"),
+            Self::M7a_xlarge => write!(f, "m7a.xlarge"),
+            Self::M7a_2xlarge => write!(f, "m7a.2xlarge"),
+            Self::M7a_4xlarge => write!(f, "m7a.4xlarge"),
+            Self::M7a_8xlarge => write!(f, "m7a.8xlarge"),
+            Self::M7a_12xlarge => write!(f, "m7a.12xlarge"),
+            Self::M7a_16xlarge => write!(f, "m7a.16xlarge"),
+            Self::M7a_24xlarge => write!(f, "m7a.24xlarge"),
+            Self::M7a_32xlarge => write!(f, "m7a.32xlarge"),
+            Self::M7a_48xlarge => write!(f, "m7a.48xlarge"),
+            Self::M7a_metal_48xl => write!(f, "m7a.metal-48xl"),
+            Self::M7i_large => write!(f, "m7i.large"),
+            Self::M7i_xlarge => write!(f, "m7i.xlarge"),
+            Self::M7i_2xlarge => write!(f, "m7i.2xlarge"),
+            Self::M7i_4xlarge => write!(f, "m7i.4xlarge"),
+            Self::M7i_8xlarge => write!(f, "m7i.8xlarge"),
+            Self::M7i_12xlarge => write!(f, "m7i.12xlarge"),
+            Self::M7i_16xlarge => write!(f, "m7i.16xlarge"),
+            Self::M7i_24xlarge => write!(f, "m7i.24xlarge"),
+            Self::M7i_metal_24xl => write!(f, "m7i.metal-24xl"),
+            Self::M7i_48xlarge => write!(f, "m7i.48xlarge"),
+            Self::M7i_metal_48xl => write!(f, "m7i.metal-48xl"),
+            Self::M8gd_medium => write!(f, "m8gd.medium"),
+            Self::M8gd_large => write!(f, "m8gd.large"),
+            Self::M8gd_xlarge => write!(f, "m8gd.xlarge"),
+            Self::M8gd_2xlarge => write!(f, "m8gd.2xlarge"),
+            Self::M8gd_4xlarge => write!(f, "m8gd.4xlarge"),
+            Self::M8gd_8xlarge => write!(f, "m8gd.8xlarge"),
+            Self::M8gd_12xlarge => write!(f, "m8gd.12xlarge"),
+            Self::M8gd_16xlarge => write!(f, "m8gd.16xlarge"),
+            Self::M8gd_24xlarge => write!(f, "m8gd.24xlarge"),
+            Self::M8gd_metal_24xl => write!(f, "m8gd.metal-24xl"),
+            Self::M8gd_48xlarge => write!(f, "m8gd.48xlarge"),
+            Self::M8gd_metal_48xl => write!(f, "m8gd.metal-48xl"),
+            Self::R6gd_medium => write!(f, "r6gd.medium"),
+            Self::R6gd_large => write!(f, "r6gd.large"),
+            Self::R6gd_xlarge => write!(f, "r6gd.xlarge"),
+            Self::R6gd_2xlarge => write!(f, "r6gd.2xlarge"),
+            Self::R6gd_4xlarge => write!(f, "r6gd.4xlarge"),
+            Self::R6gd_8xlarge => write!(f, "r6gd.8xlarge"),
+            Self::R6gd_12xlarge => write!(f, "r6gd.12xlarge"),
+            Self::R6gd_16xlarge => write!(f, "r6gd.16xlarge"),
+            Self::R6gd_metal => write!(f, "r6gd.metal"),
+            Self::R6id_large => write!(f, "r6id.large"),
+            Self::R6id_xlarge => write!(f, "r6id.xlarge"),
+            Self::R6id_2xlarge => write!(f, "r6id.2xlarge"),
+            Self::R6id_4xlarge => write!(f, "r6id.4xlarge"),
+            Self::R6id_8xlarge => write!(f, "r6id.8xlarge"),
+            Self::R6id_12xlarge => write!(f, "r6id.12xlarge"),
+            Self::R6id_16xlarge => write!(f, "r6id.16xlarge"),
+            Self::R6id_24xlarge => write!(f, "r6id.24xlarge"),
+            Self::R6id_32xlarge => write!(f, "r6id.32xlarge"),
+            Self::R6id_metal => write!(f, "r6id.metal"),
+            Self::R8gd_medium => write!(f, "r8gd.medium"),
+            Self::R8gd_large => write!(f, "r8gd.large"),
+            Self::R8gd_xlarge => write!(f, "r8gd.xlarge"),
+            Self::R8gd_2xlarge => write!(f, "r8gd.2xlarge"),
+            Self::R8gd_4xlarge => write!(f, "r8gd.4xlarge"),
+            Self::R8gd_8xlarge => write!(f, "r8gd.8xlarge"),
+            Self::R8gd_12xlarge => write!(f, "r8gd.12xlarge"),
+            Self::R8gd_16xlarge => write!(f, "r8gd.16xlarge"),
+            Self::R8gd_24xlarge => write!(f, "r8gd.24xlarge"),
+            Self::R8gd_metal_24xl => write!(f, "r8gd.metal-24xl"),
+            Self::R8gd_48xlarge => write!(f, "r8gd.48xlarge"),
+            Self::R8gd_metal_48xl => write!(f, "r8gd.metal-48xl"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `pgStateProperty` enum from the ClickHouse Cloud API.
@@ -346,6 +531,25 @@ pub enum PgStateProperty {
     Unavailable,
     #[serde(rename = "deleting")]
     Deleting,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgStateProperty {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Creating => write!(f, "creating"),
+            Self::Restarting => write!(f, "restarting"),
+            Self::Running => write!(f, "running"),
+            Self::Replaying_wal => write!(f, "replaying_wal"),
+            Self::Restoring_backup => write!(f, "restoring_backup"),
+            Self::Finalizing_restore => write!(f, "finalizing_restore"),
+            Self::Unavailable => write!(f, "unavailable"),
+            Self::Deleting => write!(f, "deleting"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `pgVersion` enum from the ClickHouse Cloud API.
@@ -358,6 +562,20 @@ pub enum PgVersion {
     _17,
     #[serde(rename = "16")]
     _16,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::_18 => write!(f, "18"),
+            Self::_17 => write!(f, "17"),
+            Self::_16 => write!(f, "16"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Activity.actorType`.
@@ -372,6 +590,21 @@ pub enum ActivityActortype {
     System,
     #[serde(rename = "api")]
     Api,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ActivityActortype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User => write!(f, "user"),
+            Self::Support => write!(f, "support"),
+            Self::System => write!(f, "system"),
+            Self::Api => write!(f, "api"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Activity.keyUpdateType`.
@@ -400,6 +633,28 @@ pub enum ActivityKeyupdatetype {
     Service_role_changed,
     #[serde(rename = "roles-v2-changed")]
     Roles_v2_changed,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ActivityKeyupdatetype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Created => write!(f, "created"),
+            Self::Deleted => write!(f, "deleted"),
+            Self::Name_changed => write!(f, "name-changed"),
+            Self::Role_changed => write!(f, "role-changed"),
+            Self::State_changed => write!(f, "state-changed"),
+            Self::Date_changed => write!(f, "date-changed"),
+            Self::Ip_access_list_changed => write!(f, "ip-access-list-changed"),
+            Self::Org_role_changed => write!(f, "org-role-changed"),
+            Self::Default_service_role_changed => write!(f, "default-service-role-changed"),
+            Self::Service_role_changed => write!(f, "service-role-changed"),
+            Self::Roles_v2_changed => write!(f, "roles-v2-changed"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Activity.type`.
@@ -504,6 +759,66 @@ pub enum ActivityType {
     Service_update_core_dump,
     #[serde(rename = "backup_delete")]
     Backup_delete,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ActivityType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Create_organization => write!(f, "create_organization"),
+            Self::Organization_update_name => write!(f, "organization_update_name"),
+            Self::Transfer_service_in => write!(f, "transfer_service_in"),
+            Self::Transfer_service_out => write!(f, "transfer_service_out"),
+            Self::Save_payment_method => write!(f, "save_payment_method"),
+            Self::Marketplace_subscription => write!(f, "marketplace_subscription"),
+            Self::Migrate_marketplace_billing_details_in => write!(f, "migrate_marketplace_billing_details_in"),
+            Self::Migrate_marketplace_billing_details_out => write!(f, "migrate_marketplace_billing_details_out"),
+            Self::Organization_update_tier => write!(f, "organization_update_tier"),
+            Self::Organization_invite_create => write!(f, "organization_invite_create"),
+            Self::Organization_invite_delete => write!(f, "organization_invite_delete"),
+            Self::Organization_member_join => write!(f, "organization_member_join"),
+            Self::Organization_member_add => write!(f, "organization_member_add"),
+            Self::Organization_member_leave => write!(f, "organization_member_leave"),
+            Self::Organization_member_delete => write!(f, "organization_member_delete"),
+            Self::Organization_member_update_role => write!(f, "organization_member_update_role"),
+            Self::Organization_member_update_mfa_method => write!(f, "organization_member_update_mfa_method"),
+            Self::User_login => write!(f, "user_login"),
+            Self::User_login_failed => write!(f, "user_login_failed"),
+            Self::User_logout => write!(f, "user_logout"),
+            Self::Key_create => write!(f, "key_create"),
+            Self::Key_delete => write!(f, "key_delete"),
+            Self::Openapi_key_update => write!(f, "openapi_key_update"),
+            Self::Service_create => write!(f, "service_create"),
+            Self::Service_start => write!(f, "service_start"),
+            Self::Service_stop => write!(f, "service_stop"),
+            Self::Service_awaken => write!(f, "service_awaken"),
+            Self::Service_idle => write!(f, "service_idle"),
+            Self::Service_running => write!(f, "service_running"),
+            Self::Service_partially_running => write!(f, "service_partially_running"),
+            Self::Service_delete => write!(f, "service_delete"),
+            Self::Service_update_name => write!(f, "service_update_name"),
+            Self::Service_update_ip_access_list => write!(f, "service_update_ip_access_list"),
+            Self::Service_update_autoscaling_memory => write!(f, "service_update_autoscaling_memory"),
+            Self::Service_update_autoscaling_idling => write!(f, "service_update_autoscaling_idling"),
+            Self::Service_update_password => write!(f, "service_update_password"),
+            Self::Service_update_autoscaling_replicas => write!(f, "service_update_autoscaling_replicas"),
+            Self::Service_update_max_allowable_replicas => write!(f, "service_update_max_allowable_replicas"),
+            Self::Service_update_backup_configuration => write!(f, "service_update_backup_configuration"),
+            Self::Service_restore_backup => write!(f, "service_restore_backup"),
+            Self::Service_update_release_channel => write!(f, "service_update_release_channel"),
+            Self::Service_update_gpt_usage_consent => write!(f, "service_update_gpt_usage_consent"),
+            Self::Service_update_private_endpoints => write!(f, "service_update_private_endpoints"),
+            Self::Service_import_to_organization => write!(f, "service_import_to_organization"),
+            Self::Service_export_from_organization => write!(f, "service_export_from_organization"),
+            Self::Service_maintenance_start => write!(f, "service_maintenance_start"),
+            Self::Service_maintenance_end => write!(f, "service_maintenance_end"),
+            Self::Service_update_core_dump => write!(f, "service_update_core_dump"),
+            Self::Backup_delete => write!(f, "backup_delete"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ApiKey.state`.
@@ -514,6 +829,19 @@ pub enum ApiKeyState {
     Enabled,
     #[serde(rename = "disabled")]
     Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ApiKeyState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ApiKeyPatchRequest.state`.
@@ -524,6 +852,19 @@ pub enum ApiKeyPatchRequestState {
     Enabled,
     #[serde(rename = "disabled")]
     Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ApiKeyPatchRequestState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ApiKeyPostRequest.state`.
@@ -534,6 +875,19 @@ pub enum ApiKeyPostRequestState {
     Enabled,
     #[serde(rename = "disabled")]
     Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ApiKeyPostRequestState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AssignedRole.roleType`.
@@ -544,6 +898,19 @@ pub enum AssignedRoleRoletype {
     System,
     #[serde(rename = "custom")]
     Custom,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AssignedRoleRoletype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => write!(f, "system"),
+            Self::Custom => write!(f, "custom"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AwsBackupBucket.bucketProvider`.
@@ -551,6 +918,18 @@ pub enum AssignedRoleRoletype {
 pub enum AwsBackupBucketBucketprovider {
     #[default]
     AWS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AwsBackupBucketBucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AWS => write!(f, "AWS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AwsBackupBucketPatchRequestV1.bucketProvider`.
@@ -558,6 +937,18 @@ pub enum AwsBackupBucketBucketprovider {
 pub enum AwsBackupBucketPatchRequestV1Bucketprovider {
     #[default]
     AWS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AwsBackupBucketPatchRequestV1Bucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AWS => write!(f, "AWS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AwsBackupBucketPostRequestV1.bucketProvider`.
@@ -565,6 +956,18 @@ pub enum AwsBackupBucketPatchRequestV1Bucketprovider {
 pub enum AwsBackupBucketPostRequestV1Bucketprovider {
     #[default]
     AWS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AwsBackupBucketPostRequestV1Bucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AWS => write!(f, "AWS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AwsBackupBucketProperties.bucketProvider`.
@@ -572,6 +975,18 @@ pub enum AwsBackupBucketPostRequestV1Bucketprovider {
 pub enum AwsBackupBucketPropertiesBucketprovider {
     #[default]
     AWS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AwsBackupBucketPropertiesBucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AWS => write!(f, "AWS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AzureBackupBucket.bucketProvider`.
@@ -579,6 +994,18 @@ pub enum AwsBackupBucketPropertiesBucketprovider {
 pub enum AzureBackupBucketBucketprovider {
     #[default]
     AZURE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AzureBackupBucketBucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AZURE => write!(f, "AZURE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AzureBackupBucketPatchRequestV1.bucketProvider`.
@@ -586,6 +1013,18 @@ pub enum AzureBackupBucketBucketprovider {
 pub enum AzureBackupBucketPatchRequestV1Bucketprovider {
     #[default]
     AZURE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AzureBackupBucketPatchRequestV1Bucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AZURE => write!(f, "AZURE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AzureBackupBucketPostRequestV1.bucketProvider`.
@@ -593,6 +1032,18 @@ pub enum AzureBackupBucketPatchRequestV1Bucketprovider {
 pub enum AzureBackupBucketPostRequestV1Bucketprovider {
     #[default]
     AZURE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AzureBackupBucketPostRequestV1Bucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AZURE => write!(f, "AZURE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `AzureBackupBucketProperties.bucketProvider`.
@@ -600,6 +1051,18 @@ pub enum AzureBackupBucketPostRequestV1Bucketprovider {
 pub enum AzureBackupBucketPropertiesBucketprovider {
     #[default]
     AZURE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AzureBackupBucketPropertiesBucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AZURE => write!(f, "AZURE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Backup.status`.
@@ -612,6 +1075,20 @@ pub enum BackupStatus {
     Error,
     #[serde(rename = "in_progress")]
     In_progress,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for BackupStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done => write!(f, "done"),
+            Self::Error => write!(f, "error"),
+            Self::In_progress => write!(f, "in_progress"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Backup.type`.
@@ -622,6 +1099,19 @@ pub enum BackupType {
     Full,
     #[serde(rename = "incremental")]
     Incremental,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for BackupType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => write!(f, "full"),
+            Self::Incremental => write!(f, "incremental"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ByocConfig.cloudProvider`.
@@ -634,6 +1124,20 @@ pub enum ByocConfigCloudprovider {
     Aws,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ByocConfigCloudprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gcp => write!(f, "gcp"),
+            Self::Aws => write!(f, "aws"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ByocConfig.regionId`.
@@ -684,6 +1188,39 @@ pub enum ByocConfigRegionid {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ByocConfigRegionid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ByocConfig.state`.
@@ -696,6 +1233,20 @@ pub enum ByocConfigState {
     Infra_provisioning,
     #[serde(rename = "infra-terminated")]
     Infra_terminated,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ByocConfigState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Infra_ready => write!(f, "infra-ready"),
+            Self::Infra_provisioning => write!(f, "infra-provisioning"),
+            Self::Infra_terminated => write!(f, "infra-terminated"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ByocInfrastructurePostRequest.regionId`.
@@ -746,6 +1297,39 @@ pub enum ByocInfrastructurePostRequestRegionid {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ByocInfrastructurePostRequestRegionid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipe.state`.
@@ -766,6 +1350,31 @@ pub enum ClickPipeState {
     Pausing,
     Modifying,
     Resync,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Other(String),
+}
+
+impl std::fmt::Display for ClickPipeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown => write!(f, "Unknown"),
+            Self::Provisioning => write!(f, "Provisioning"),
+            Self::Running => write!(f, "Running"),
+            Self::Stopping => write!(f, "Stopping"),
+            Self::Stopped => write!(f, "Stopped"),
+            Self::Failed => write!(f, "Failed"),
+            Self::Completed => write!(f, "Completed"),
+            Self::InternalError => write!(f, "InternalError"),
+            Self::Setup => write!(f, "Setup"),
+            Self::Snapshot => write!(f, "Snapshot"),
+            Self::Paused => write!(f, "Paused"),
+            Self::Pausing => write!(f, "Pausing"),
+            Self::Modifying => write!(f, "Modifying"),
+            Self::Resync => write!(f, "Resync"),
+            Self::Other(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeBigQueryPipeSettings.replicationMode`.
@@ -774,6 +1383,18 @@ pub enum ClickPipeBigQueryPipeSettingsReplicationmode {
     #[serde(rename = "snapshot")]
     #[default]
     Snapshot,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeBigQueryPipeSettingsReplicationmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Snapshot => write!(f, "snapshot"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeBigQueryPipeTableMapping.tableEngine`.
@@ -783,6 +1404,20 @@ pub enum ClickPipeBigQueryPipeTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeBigQueryPipeTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeDestinationTableEngine.type`.
@@ -793,6 +1428,21 @@ pub enum ClickPipeDestinationTableEngineType {
     ReplacingMergeTree,
     SummingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeDestinationTableEngineType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::SummingMergeTree => write!(f, "SummingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKafkaOffset.strategy`.
@@ -805,6 +1455,20 @@ pub enum ClickPipeKafkaOffsetStrategy {
     From_latest,
     #[serde(rename = "from_timestamp")]
     From_timestamp,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaOffsetStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::From_beginning => write!(f, "from_beginning"),
+            Self::From_latest => write!(f, "from_latest"),
+            Self::From_timestamp => write!(f, "from_timestamp"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKafkaSchemaRegistry.authentication`.
@@ -812,6 +1476,18 @@ pub enum ClickPipeKafkaOffsetStrategy {
 pub enum ClickPipeKafkaSchemaRegistryAuthentication {
     #[default]
     PLAIN,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaSchemaRegistryAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PLAIN => write!(f, "PLAIN"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKafkaSource.authentication`.
@@ -826,6 +1502,23 @@ pub enum ClickPipeKafkaSourceAuthentication {
     IAM_ROLE,
     IAM_USER,
     MUTUAL_TLS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PLAIN => write!(f, "PLAIN"),
+            Self::SCRAM_SHA_256 => write!(f, "SCRAM-SHA-256"),
+            Self::SCRAM_SHA_512 => write!(f, "SCRAM-SHA-512"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::MUTUAL_TLS => write!(f, "MUTUAL_TLS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKafkaSource.format`.
@@ -836,6 +1529,21 @@ pub enum ClickPipeKafkaSourceFormat {
     Avro,
     AvroConfluent,
     Protobuf,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::Avro => write!(f, "Avro"),
+            Self::AvroConfluent => write!(f, "AvroConfluent"),
+            Self::Protobuf => write!(f, "Protobuf"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKafkaSource.type`.
@@ -858,6 +1566,25 @@ pub enum ClickPipeKafkaSourceType {
     Azureeventhub,
     #[serde(rename = "dokafka")]
     Dokafka,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kafka => write!(f, "kafka"),
+            Self::Redpanda => write!(f, "redpanda"),
+            Self::Msk => write!(f, "msk"),
+            Self::Gcmk => write!(f, "gcmk"),
+            Self::Confluent => write!(f, "confluent"),
+            Self::Warpstream => write!(f, "warpstream"),
+            Self::Azureeventhub => write!(f, "azureeventhub"),
+            Self::Dokafka => write!(f, "dokafka"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKinesisSource.authentication`.
@@ -866,6 +1593,19 @@ pub enum ClickPipeKinesisSourceAuthentication {
     #[default]
     IAM_ROLE,
     IAM_USER,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKinesisSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKinesisSource.format`.
@@ -875,6 +1615,20 @@ pub enum ClickPipeKinesisSourceFormat {
     JSONEachRow,
     Avro,
     AvroConfluent,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKinesisSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::Avro => write!(f, "Avro"),
+            Self::AvroConfluent => write!(f, "AvroConfluent"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeKinesisSource.iteratorType`.
@@ -884,6 +1638,20 @@ pub enum ClickPipeKinesisSourceIteratortype {
     TRIM_HORIZON,
     LATEST,
     AT_TIMESTAMP,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKinesisSourceIteratortype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TRIM_HORIZON => write!(f, "TRIM_HORIZON"),
+            Self::LATEST => write!(f, "LATEST"),
+            Self::AT_TIMESTAMP => write!(f, "AT_TIMESTAMP"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMongoDBPipeSettings.replicationMode`.
@@ -896,6 +1664,20 @@ pub enum ClickPipeMongoDBPipeSettingsReplicationmode {
     Snapshot,
     #[serde(rename = "cdc_only")]
     Cdc_only,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMongoDBPipeSettingsReplicationmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cdc => write!(f, "cdc"),
+            Self::Snapshot => write!(f, "snapshot"),
+            Self::Cdc_only => write!(f, "cdc_only"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMongoDBPipeTableMapping.tableEngine`.
@@ -905,6 +1687,20 @@ pub enum ClickPipeMongoDBPipeTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMongoDBPipeTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMongoDBSource.readPreference`.
@@ -921,6 +1717,22 @@ pub enum ClickPipeMongoDBSourceReadpreference {
     SecondaryPreferred,
     #[serde(rename = "nearest")]
     Nearest,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMongoDBSourceReadpreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Primary => write!(f, "primary"),
+            Self::PrimaryPreferred => write!(f, "primaryPreferred"),
+            Self::Secondary => write!(f, "secondary"),
+            Self::SecondaryPreferred => write!(f, "secondaryPreferred"),
+            Self::Nearest => write!(f, "nearest"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMutateKafkaSchemaRegistry.authentication`.
@@ -928,6 +1740,18 @@ pub enum ClickPipeMongoDBSourceReadpreference {
 pub enum ClickPipeMutateKafkaSchemaRegistryAuthentication {
     #[default]
     PLAIN,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutateKafkaSchemaRegistryAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PLAIN => write!(f, "PLAIN"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMutateMongoDBSource.readPreference`.
@@ -944,6 +1768,22 @@ pub enum ClickPipeMutateMongoDBSourceReadpreference {
     SecondaryPreferred,
     #[serde(rename = "nearest")]
     Nearest,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutateMongoDBSourceReadpreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Primary => write!(f, "primary"),
+            Self::PrimaryPreferred => write!(f, "primaryPreferred"),
+            Self::Secondary => write!(f, "secondary"),
+            Self::SecondaryPreferred => write!(f, "secondaryPreferred"),
+            Self::Nearest => write!(f, "nearest"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMutateMySQLSource.authentication`.
@@ -953,6 +1793,19 @@ pub enum ClickPipeMutateMySQLSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutateMySQLSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic => write!(f, "basic"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMutateMySQLSource.type`.
@@ -969,6 +1822,22 @@ pub enum ClickPipeMutateMySQLSourceType {
     Mariadb,
     #[serde(rename = "rdsmariadb")]
     Rdsmariadb,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutateMySQLSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mysql => write!(f, "mysql"),
+            Self::Rdsmysql => write!(f, "rdsmysql"),
+            Self::Auroramysql => write!(f, "auroramysql"),
+            Self::Mariadb => write!(f, "mariadb"),
+            Self::Rdsmariadb => write!(f, "rdsmariadb"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMutatePostgresSource.authentication`.
@@ -978,6 +1847,19 @@ pub enum ClickPipeMutatePostgresSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutatePostgresSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic => write!(f, "basic"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMutatePostgresSource.type`.
@@ -1006,6 +1888,28 @@ pub enum ClickPipeMutatePostgresSourceType {
     Crunchybridge,
     #[serde(rename = "tigerdata")]
     Tigerdata,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutatePostgresSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Postgres => write!(f, "postgres"),
+            Self::Supabase => write!(f, "supabase"),
+            Self::Neon => write!(f, "neon"),
+            Self::Alloydb => write!(f, "alloydb"),
+            Self::Planetscale => write!(f, "planetscale"),
+            Self::Rdspostgres => write!(f, "rdspostgres"),
+            Self::Aurorapostgres => write!(f, "aurorapostgres"),
+            Self::Cloudsqlpostgres => write!(f, "cloudsqlpostgres"),
+            Self::Azurepostgres => write!(f, "azurepostgres"),
+            Self::Crunchybridge => write!(f, "crunchybridge"),
+            Self::Tigerdata => write!(f, "tigerdata"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMySQLPipeSettings.replicationMechanism`.
@@ -1014,6 +1918,19 @@ pub enum ClickPipeMySQLPipeSettingsReplicationmechanism {
     #[default]
     GTID,
     FILE_POS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMySQLPipeSettingsReplicationmechanism {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GTID => write!(f, "GTID"),
+            Self::FILE_POS => write!(f, "FILE_POS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMySQLPipeSettings.replicationMode`.
@@ -1026,6 +1943,20 @@ pub enum ClickPipeMySQLPipeSettingsReplicationmode {
     Snapshot,
     #[serde(rename = "cdc_only")]
     Cdc_only,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMySQLPipeSettingsReplicationmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cdc => write!(f, "cdc"),
+            Self::Snapshot => write!(f, "snapshot"),
+            Self::Cdc_only => write!(f, "cdc_only"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMySQLPipeTableMapping.tableEngine`.
@@ -1035,6 +1966,20 @@ pub enum ClickPipeMySQLPipeTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMySQLPipeTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMySQLSource.authentication`.
@@ -1044,6 +1989,19 @@ pub enum ClickPipeMySQLSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMySQLSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic => write!(f, "basic"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeMySQLSource.type`.
@@ -1060,6 +2018,22 @@ pub enum ClickPipeMySQLSourceType {
     Mariadb,
     #[serde(rename = "rdsmariadb")]
     Rdsmariadb,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMySQLSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mysql => write!(f, "mysql"),
+            Self::Rdsmysql => write!(f, "rdsmysql"),
+            Self::Auroramysql => write!(f, "auroramysql"),
+            Self::Mariadb => write!(f, "mariadb"),
+            Self::Rdsmariadb => write!(f, "rdsmariadb"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeObjectStorageSource.authentication`.
@@ -1070,6 +2044,21 @@ pub enum ClickPipeObjectStorageSourceAuthentication {
     IAM_USER,
     CONNECTION_STRING,
     SERVICE_ACCOUNT,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeObjectStorageSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::CONNECTION_STRING => write!(f, "CONNECTION_STRING"),
+            Self::SERVICE_ACCOUNT => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeObjectStorageSource.compression`.
@@ -1093,6 +2082,26 @@ pub enum ClickPipeObjectStorageSourceCompression {
     Zstd,
     #[serde(rename = "auto")]
     Auto,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeObjectStorageSourceCompression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Gzip => write!(f, "gzip"),
+            Self::Gz => write!(f, "gz"),
+            Self::Brotli => write!(f, "brotli"),
+            Self::Br => write!(f, "br"),
+            Self::Xz => write!(f, "xz"),
+            Self::LZMA => write!(f, "LZMA"),
+            Self::Zstd => write!(f, "zstd"),
+            Self::Auto => write!(f, "auto"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeObjectStorageSource.format`.
@@ -1107,6 +2116,25 @@ pub enum ClickPipeObjectStorageSourceFormat {
     TabSeparatedWithNames,
     Parquet,
     Avro,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeObjectStorageSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::JSONAsObject => write!(f, "JSONAsObject"),
+            Self::CSV => write!(f, "CSV"),
+            Self::CSVWithNames => write!(f, "CSVWithNames"),
+            Self::TabSeparated => write!(f, "TabSeparated"),
+            Self::TabSeparatedWithNames => write!(f, "TabSeparatedWithNames"),
+            Self::Parquet => write!(f, "Parquet"),
+            Self::Avro => write!(f, "Avro"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeObjectStorageSource.type`.
@@ -1125,6 +2153,23 @@ pub enum ClickPipeObjectStorageSourceType {
     Cloudflarer2,
     #[serde(rename = "ovhobjectstorage")]
     Ovhobjectstorage,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeObjectStorageSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::S3 => write!(f, "s3"),
+            Self::Gcs => write!(f, "gcs"),
+            Self::Dospaces => write!(f, "dospaces"),
+            Self::Azureblobstorage => write!(f, "azureblobstorage"),
+            Self::Cloudflarer2 => write!(f, "cloudflarer2"),
+            Self::Ovhobjectstorage => write!(f, "ovhobjectstorage"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchKafkaSource.authentication`.
@@ -1139,6 +2184,23 @@ pub enum ClickPipePatchKafkaSourceAuthentication {
     IAM_ROLE,
     IAM_USER,
     MUTUAL_TLS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchKafkaSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PLAIN => write!(f, "PLAIN"),
+            Self::SCRAM_SHA_256 => write!(f, "SCRAM-SHA-256"),
+            Self::SCRAM_SHA_512 => write!(f, "SCRAM-SHA-512"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::MUTUAL_TLS => write!(f, "MUTUAL_TLS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchKinesisSource.authentication`.
@@ -1147,6 +2209,19 @@ pub enum ClickPipePatchKinesisSourceAuthentication {
     #[default]
     IAM_ROLE,
     IAM_USER,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchKinesisSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchMongoDBPipeRemoveTableMapping.tableEngine`.
@@ -1156,6 +2231,20 @@ pub enum ClickPipePatchMongoDBPipeRemoveTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchMongoDBPipeRemoveTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchMongoDBSource.readPreference`.
@@ -1172,6 +2261,22 @@ pub enum ClickPipePatchMongoDBSourceReadpreference {
     SecondaryPreferred,
     #[serde(rename = "nearest")]
     Nearest,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchMongoDBSourceReadpreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Primary => write!(f, "primary"),
+            Self::PrimaryPreferred => write!(f, "primaryPreferred"),
+            Self::Secondary => write!(f, "secondary"),
+            Self::SecondaryPreferred => write!(f, "secondaryPreferred"),
+            Self::Nearest => write!(f, "nearest"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchMySQLPipeRemoveTableMapping.tableEngine`.
@@ -1181,6 +2286,20 @@ pub enum ClickPipePatchMySQLPipeRemoveTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchMySQLPipeRemoveTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchMySQLSource.authentication`.
@@ -1190,6 +2309,19 @@ pub enum ClickPipePatchMySQLSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchMySQLSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic => write!(f, "basic"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchObjectStorageSource.authentication`.
@@ -1200,6 +2332,21 @@ pub enum ClickPipePatchObjectStorageSourceAuthentication {
     IAM_USER,
     CONNECTION_STRING,
     SERVICE_ACCOUNT,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchObjectStorageSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::CONNECTION_STRING => write!(f, "CONNECTION_STRING"),
+            Self::SERVICE_ACCOUNT => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePatchPostgresPipeRemoveTableMapping.tableEngine`.
@@ -1209,6 +2356,20 @@ pub enum ClickPipePatchPostgresPipeRemoveTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchPostgresPipeRemoveTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostKafkaSource.authentication`.
@@ -1223,6 +2384,23 @@ pub enum ClickPipePostKafkaSourceAuthentication {
     IAM_ROLE,
     IAM_USER,
     MUTUAL_TLS,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKafkaSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PLAIN => write!(f, "PLAIN"),
+            Self::SCRAM_SHA_256 => write!(f, "SCRAM-SHA-256"),
+            Self::SCRAM_SHA_512 => write!(f, "SCRAM-SHA-512"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::MUTUAL_TLS => write!(f, "MUTUAL_TLS"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostKafkaSource.format`.
@@ -1233,6 +2411,21 @@ pub enum ClickPipePostKafkaSourceFormat {
     Avro,
     AvroConfluent,
     Protobuf,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKafkaSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::Avro => write!(f, "Avro"),
+            Self::AvroConfluent => write!(f, "AvroConfluent"),
+            Self::Protobuf => write!(f, "Protobuf"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostKafkaSource.type`.
@@ -1255,6 +2448,25 @@ pub enum ClickPipePostKafkaSourceType {
     Azureeventhub,
     #[serde(rename = "dokafka")]
     Dokafka,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKafkaSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kafka => write!(f, "kafka"),
+            Self::Redpanda => write!(f, "redpanda"),
+            Self::Msk => write!(f, "msk"),
+            Self::Gcmk => write!(f, "gcmk"),
+            Self::Confluent => write!(f, "confluent"),
+            Self::Warpstream => write!(f, "warpstream"),
+            Self::Azureeventhub => write!(f, "azureeventhub"),
+            Self::Dokafka => write!(f, "dokafka"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostKinesisSource.authentication`.
@@ -1263,6 +2475,19 @@ pub enum ClickPipePostKinesisSourceAuthentication {
     #[default]
     IAM_ROLE,
     IAM_USER,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKinesisSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostKinesisSource.format`.
@@ -1272,6 +2497,20 @@ pub enum ClickPipePostKinesisSourceFormat {
     JSONEachRow,
     Avro,
     AvroConfluent,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKinesisSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::Avro => write!(f, "Avro"),
+            Self::AvroConfluent => write!(f, "AvroConfluent"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostKinesisSource.iteratorType`.
@@ -1281,6 +2520,20 @@ pub enum ClickPipePostKinesisSourceIteratortype {
     TRIM_HORIZON,
     LATEST,
     AT_TIMESTAMP,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKinesisSourceIteratortype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TRIM_HORIZON => write!(f, "TRIM_HORIZON"),
+            Self::LATEST => write!(f, "LATEST"),
+            Self::AT_TIMESTAMP => write!(f, "AT_TIMESTAMP"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostObjectStorageSource.authentication`.
@@ -1291,6 +2544,21 @@ pub enum ClickPipePostObjectStorageSourceAuthentication {
     IAM_USER,
     CONNECTION_STRING,
     SERVICE_ACCOUNT,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostObjectStorageSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::IAM_USER => write!(f, "IAM_USER"),
+            Self::CONNECTION_STRING => write!(f, "CONNECTION_STRING"),
+            Self::SERVICE_ACCOUNT => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostObjectStorageSource.compression`.
@@ -1314,6 +2582,26 @@ pub enum ClickPipePostObjectStorageSourceCompression {
     Zstd,
     #[serde(rename = "auto")]
     Auto,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostObjectStorageSourceCompression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Gzip => write!(f, "gzip"),
+            Self::Gz => write!(f, "gz"),
+            Self::Brotli => write!(f, "brotli"),
+            Self::Br => write!(f, "br"),
+            Self::Xz => write!(f, "xz"),
+            Self::LZMA => write!(f, "LZMA"),
+            Self::Zstd => write!(f, "zstd"),
+            Self::Auto => write!(f, "auto"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostObjectStorageSource.format`.
@@ -1328,6 +2616,25 @@ pub enum ClickPipePostObjectStorageSourceFormat {
     TabSeparatedWithNames,
     Parquet,
     Avro,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostObjectStorageSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::JSONAsObject => write!(f, "JSONAsObject"),
+            Self::CSV => write!(f, "CSV"),
+            Self::CSVWithNames => write!(f, "CSVWithNames"),
+            Self::TabSeparated => write!(f, "TabSeparated"),
+            Self::TabSeparatedWithNames => write!(f, "TabSeparatedWithNames"),
+            Self::Parquet => write!(f, "Parquet"),
+            Self::Avro => write!(f, "Avro"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostObjectStorageSource.type`.
@@ -1346,6 +2653,23 @@ pub enum ClickPipePostObjectStorageSourceType {
     Cloudflarer2,
     #[serde(rename = "ovhobjectstorage")]
     Ovhobjectstorage,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostObjectStorageSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::S3 => write!(f, "s3"),
+            Self::Gcs => write!(f, "gcs"),
+            Self::Dospaces => write!(f, "dospaces"),
+            Self::Azureblobstorage => write!(f, "azureblobstorage"),
+            Self::Cloudflarer2 => write!(f, "cloudflarer2"),
+            Self::Ovhobjectstorage => write!(f, "ovhobjectstorage"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostgresPipeSettings.replicationMode`.
@@ -1358,6 +2682,20 @@ pub enum ClickPipePostgresPipeSettingsReplicationmode {
     Snapshot,
     #[serde(rename = "cdc_only")]
     Cdc_only,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostgresPipeSettingsReplicationmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cdc => write!(f, "cdc"),
+            Self::Snapshot => write!(f, "snapshot"),
+            Self::Cdc_only => write!(f, "cdc_only"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostgresPipeTableMapping.tableEngine`.
@@ -1367,6 +2705,20 @@ pub enum ClickPipePostgresPipeTableMappingTableengine {
     MergeTree,
     ReplacingMergeTree,
     Null,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostgresPipeTableMappingTableengine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MergeTree => write!(f, "MergeTree"),
+            Self::ReplacingMergeTree => write!(f, "ReplacingMergeTree"),
+            Self::Null => write!(f, "Null"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostgresSource.authentication`.
@@ -1376,6 +2728,19 @@ pub enum ClickPipePostgresSourceAuthentication {
     #[default]
     Basic,
     IAM_ROLE,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostgresSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic => write!(f, "basic"),
+            Self::IAM_ROLE => write!(f, "IAM_ROLE"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipePostgresSource.type`.
@@ -1404,6 +2769,28 @@ pub enum ClickPipePostgresSourceType {
     Crunchybridge,
     #[serde(rename = "tigerdata")]
     Tigerdata,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostgresSourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Postgres => write!(f, "postgres"),
+            Self::Supabase => write!(f, "supabase"),
+            Self::Neon => write!(f, "neon"),
+            Self::Alloydb => write!(f, "alloydb"),
+            Self::Planetscale => write!(f, "planetscale"),
+            Self::Rdspostgres => write!(f, "rdspostgres"),
+            Self::Aurorapostgres => write!(f, "aurorapostgres"),
+            Self::Cloudsqlpostgres => write!(f, "cloudsqlpostgres"),
+            Self::Azurepostgres => write!(f, "azurepostgres"),
+            Self::Crunchybridge => write!(f, "crunchybridge"),
+            Self::Tigerdata => write!(f, "tigerdata"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickPipeStatePatchRequest.command`.
@@ -1416,6 +2803,20 @@ pub enum ClickPipeStatePatchRequestCommand {
     Stop,
     #[serde(rename = "resync")]
     Resync,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeStatePatchRequestCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start => write!(f, "start"),
+            Self::Stop => write!(f, "stop"),
+            Self::Resync => write!(f, "resync"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertChannelEmail.type`.
@@ -1426,6 +2827,19 @@ pub enum ClickStackAlertChannelEmailType {
     Webhook,
     #[serde(rename = "email")]
     Email,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertChannelEmailType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Webhook => write!(f, "webhook"),
+            Self::Email => write!(f, "email"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertChannelWebhook.severity`.
@@ -1440,6 +2854,21 @@ pub enum ClickStackAlertChannelWebhookSeverity {
     Warning,
     #[serde(rename = "info")]
     Info,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertChannelWebhookSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Critical => write!(f, "critical"),
+            Self::Error => write!(f, "error"),
+            Self::Warning => write!(f, "warning"),
+            Self::Info => write!(f, "info"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertChannelWebhook.type`.
@@ -1450,6 +2879,19 @@ pub enum ClickStackAlertChannelWebhookType {
     Webhook,
     #[serde(rename = "email")]
     Email,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertChannelWebhookType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Webhook => write!(f, "webhook"),
+            Self::Email => write!(f, "email"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertResponse.interval`.
@@ -1472,6 +2914,25 @@ pub enum ClickStackAlertResponseInterval {
     _12h,
     #[serde(rename = "1d")]
     _1d,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertResponseInterval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::_1m => write!(f, "1m"),
+            Self::_5m => write!(f, "5m"),
+            Self::_15m => write!(f, "15m"),
+            Self::_30m => write!(f, "30m"),
+            Self::_1h => write!(f, "1h"),
+            Self::_6h => write!(f, "6h"),
+            Self::_12h => write!(f, "12h"),
+            Self::_1d => write!(f, "1d"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertResponse.source`.
@@ -1482,6 +2943,19 @@ pub enum ClickStackAlertResponseSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertResponseSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Saved_search => write!(f, "saved_search"),
+            Self::Tile => write!(f, "tile"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertResponse.state`.
@@ -1492,6 +2966,21 @@ pub enum ClickStackAlertResponseState {
     OK,
     INSUFFICIENT_DATA,
     DISABLED,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertResponseState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ALERT => write!(f, "ALERT"),
+            Self::OK => write!(f, "OK"),
+            Self::INSUFFICIENT_DATA => write!(f, "INSUFFICIENT_DATA"),
+            Self::DISABLED => write!(f, "DISABLED"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackAlertResponse.thresholdType`.
@@ -1502,6 +2991,19 @@ pub enum ClickStackAlertResponseThresholdtype {
     Above,
     #[serde(rename = "below")]
     Below,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertResponseThresholdtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Above => write!(f, "above"),
+            Self::Below => write!(f, "below"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackBarBuilderChartConfig.displayType`.
@@ -1510,6 +3012,18 @@ pub enum ClickStackBarBuilderChartConfigDisplaytype {
     #[serde(rename = "stacked_bar")]
     #[default]
     Stacked_bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBarBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackBarRawSqlChartConfig.configType`.
@@ -1518,6 +3032,18 @@ pub enum ClickStackBarRawSqlChartConfigConfigtype {
     #[serde(rename = "sql")]
     #[default]
     Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBarRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackBarRawSqlChartConfig.displayType`.
@@ -1526,6 +3052,18 @@ pub enum ClickStackBarRawSqlChartConfigDisplaytype {
     #[serde(rename = "stacked_bar")]
     #[default]
     Stacked_bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBarRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackCreateAlertRequest.interval`.
@@ -1548,6 +3086,25 @@ pub enum ClickStackCreateAlertRequestInterval {
     _12h,
     #[serde(rename = "1d")]
     _1d,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCreateAlertRequestInterval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::_1m => write!(f, "1m"),
+            Self::_5m => write!(f, "5m"),
+            Self::_15m => write!(f, "15m"),
+            Self::_30m => write!(f, "30m"),
+            Self::_1h => write!(f, "1h"),
+            Self::_6h => write!(f, "6h"),
+            Self::_12h => write!(f, "12h"),
+            Self::_1d => write!(f, "1d"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackCreateAlertRequest.source`.
@@ -1558,6 +3115,19 @@ pub enum ClickStackCreateAlertRequestSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCreateAlertRequestSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Saved_search => write!(f, "saved_search"),
+            Self::Tile => write!(f, "tile"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackCreateAlertRequest.thresholdType`.
@@ -1568,6 +3138,19 @@ pub enum ClickStackCreateAlertRequestThresholdtype {
     Above,
     #[serde(rename = "below")]
     Below,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCreateAlertRequestThresholdtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Above => write!(f, "above"),
+            Self::Below => write!(f, "below"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackCreateDashboardRequest.savedQueryLanguage`.
@@ -1578,6 +3161,19 @@ pub enum ClickStackCreateDashboardRequestSavedquerylanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCreateDashboardRequestSavedquerylanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackDashboardResponse.savedQueryLanguage`.
@@ -1588,6 +3184,19 @@ pub enum ClickStackDashboardResponseSavedquerylanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackDashboardResponseSavedquerylanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackFilter.sourceMetricType`.
@@ -1604,6 +3213,22 @@ pub enum ClickStackFilterSourcemetrictype {
     Summary,
     #[serde(rename = "exponential histogram")]
     Exponential_histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackFilterSourcemetrictype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sum => write!(f, "sum"),
+            Self::Gauge => write!(f, "gauge"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Summary => write!(f, "summary"),
+            Self::Exponential_histogram => write!(f, "exponential histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackFilter.type`.
@@ -1611,6 +3236,18 @@ pub enum ClickStackFilterSourcemetrictype {
 pub enum ClickStackFilterType {
     #[default]
     QUERY_EXPRESSION,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QUERY_EXPRESSION => write!(f, "QUERY_EXPRESSION"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackFilterInput.sourceMetricType`.
@@ -1627,6 +3264,22 @@ pub enum ClickStackFilterInputSourcemetrictype {
     Summary,
     #[serde(rename = "exponential histogram")]
     Exponential_histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackFilterInputSourcemetrictype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sum => write!(f, "sum"),
+            Self::Gauge => write!(f, "gauge"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Summary => write!(f, "summary"),
+            Self::Exponential_histogram => write!(f, "exponential histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackFilterInput.type`.
@@ -1634,6 +3287,18 @@ pub enum ClickStackFilterInputSourcemetrictype {
 pub enum ClickStackFilterInputType {
     #[default]
     QUERY_EXPRESSION,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackFilterInputType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QUERY_EXPRESSION => write!(f, "QUERY_EXPRESSION"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackGenericWebhook.service`.
@@ -1642,6 +3307,18 @@ pub enum ClickStackGenericWebhookService {
     #[serde(rename = "generic")]
     #[default]
     Generic,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackGenericWebhookService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Generic => write!(f, "generic"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackIncidentIOWebhook.service`.
@@ -1650,6 +3327,18 @@ pub enum ClickStackIncidentIOWebhookService {
     #[serde(rename = "incidentio")]
     #[default]
     Incidentio,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackIncidentIOWebhookService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Incidentio => write!(f, "incidentio"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackLineBuilderChartConfig.displayType`.
@@ -1658,6 +3347,18 @@ pub enum ClickStackLineBuilderChartConfigDisplaytype {
     #[serde(rename = "line")]
     #[default]
     Line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLineBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line => write!(f, "line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackLineRawSqlChartConfig.configType`.
@@ -1666,6 +3367,18 @@ pub enum ClickStackLineRawSqlChartConfigConfigtype {
     #[serde(rename = "sql")]
     #[default]
     Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLineRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackLineRawSqlChartConfig.displayType`.
@@ -1674,6 +3387,18 @@ pub enum ClickStackLineRawSqlChartConfigDisplaytype {
     #[serde(rename = "line")]
     #[default]
     Line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLineRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line => write!(f, "line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackLogSource.kind`.
@@ -1682,6 +3407,18 @@ pub enum ClickStackLogSourceKind {
     #[serde(rename = "log")]
     #[default]
     Log,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLogSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Log => write!(f, "log"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackMarkdownChartConfig.displayType`.
@@ -1690,6 +3427,18 @@ pub enum ClickStackMarkdownChartConfigDisplaytype {
     #[serde(rename = "markdown")]
     #[default]
     Markdown,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackMarkdownChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Markdown => write!(f, "markdown"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackMarkdownChartSeries.type`.
@@ -1698,6 +3447,18 @@ pub enum ClickStackMarkdownChartSeriesType {
     #[serde(rename = "markdown")]
     #[default]
     Markdown,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackMarkdownChartSeriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Markdown => write!(f, "markdown"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackMaterializedView.minGranularity`.
@@ -1734,6 +3495,32 @@ pub enum ClickStackMaterializedViewMingranularity {
     _7d,
     #[serde(rename = "30d")]
     _30d,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackMaterializedViewMingranularity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::_1s => write!(f, "1s"),
+            Self::_15s => write!(f, "15s"),
+            Self::_30s => write!(f, "30s"),
+            Self::_1m => write!(f, "1m"),
+            Self::_5m => write!(f, "5m"),
+            Self::_15m => write!(f, "15m"),
+            Self::_30m => write!(f, "30m"),
+            Self::_1h => write!(f, "1h"),
+            Self::_2h => write!(f, "2h"),
+            Self::_6h => write!(f, "6h"),
+            Self::_12h => write!(f, "12h"),
+            Self::_1d => write!(f, "1d"),
+            Self::_2d => write!(f, "2d"),
+            Self::_7d => write!(f, "7d"),
+            Self::_30d => write!(f, "30d"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackMetricSource.kind`.
@@ -1742,6 +3529,18 @@ pub enum ClickStackMetricSourceKind {
     #[serde(rename = "metric")]
     #[default]
     Metric,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackMetricSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Metric => write!(f, "metric"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberBuilderChartConfig.displayType`.
@@ -1750,6 +3549,18 @@ pub enum ClickStackNumberBuilderChartConfigDisplaytype {
     #[serde(rename = "number")]
     #[default]
     Number,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number => write!(f, "number"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.aggFn`.
@@ -1776,6 +3587,27 @@ pub enum ClickStackNumberChartSeriesAggfn {
     Any,
     #[serde(rename = "none")]
     None,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberChartSeriesAggfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Avg => write!(f, "avg"),
+            Self::Count => write!(f, "count"),
+            Self::Count_distinct => write!(f, "count_distinct"),
+            Self::Last_value => write!(f, "last_value"),
+            Self::Max => write!(f, "max"),
+            Self::Min => write!(f, "min"),
+            Self::Quantile => write!(f, "quantile"),
+            Self::Sum => write!(f, "sum"),
+            Self::Any => write!(f, "any"),
+            Self::None => write!(f, "none"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.metricDataType`.
@@ -1792,6 +3624,22 @@ pub enum ClickStackNumberChartSeriesMetricdatatype {
     Summary,
     #[serde(rename = "exponential histogram")]
     Exponential_histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberChartSeriesMetricdatatype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sum => write!(f, "sum"),
+            Self::Gauge => write!(f, "gauge"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Summary => write!(f, "summary"),
+            Self::Exponential_histogram => write!(f, "exponential histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.type`.
@@ -1800,6 +3648,18 @@ pub enum ClickStackNumberChartSeriesType {
     #[serde(rename = "number")]
     #[default]
     Number,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberChartSeriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number => write!(f, "number"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberChartSeries.whereLanguage`.
@@ -1810,6 +3670,19 @@ pub enum ClickStackNumberChartSeriesWherelanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberChartSeriesWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberFormat.output`.
@@ -1826,6 +3699,22 @@ pub enum ClickStackNumberFormatOutput {
     Time,
     #[serde(rename = "number")]
     Number,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberFormatOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Currency => write!(f, "currency"),
+            Self::Percent => write!(f, "percent"),
+            Self::Byte => write!(f, "byte"),
+            Self::Time => write!(f, "time"),
+            Self::Number => write!(f, "number"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberRawSqlChartConfig.configType`.
@@ -1834,6 +3723,18 @@ pub enum ClickStackNumberRawSqlChartConfigConfigtype {
     #[serde(rename = "sql")]
     #[default]
     Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackNumberRawSqlChartConfig.displayType`.
@@ -1842,6 +3743,18 @@ pub enum ClickStackNumberRawSqlChartConfigDisplaytype {
     #[serde(rename = "number")]
     #[default]
     Number,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Number => write!(f, "number"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackPagerDutyAPIWebhook.service`.
@@ -1850,6 +3763,18 @@ pub enum ClickStackPagerDutyAPIWebhookService {
     #[serde(rename = "pagerduty_api")]
     #[default]
     Pagerduty_api,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPagerDutyAPIWebhookService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pagerduty_api => write!(f, "pagerduty_api"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackPieBuilderChartConfig.displayType`.
@@ -1858,6 +3783,18 @@ pub enum ClickStackPieBuilderChartConfigDisplaytype {
     #[serde(rename = "pie")]
     #[default]
     Pie,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPieBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pie => write!(f, "pie"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackPieRawSqlChartConfig.configType`.
@@ -1866,6 +3803,18 @@ pub enum ClickStackPieRawSqlChartConfigConfigtype {
     #[serde(rename = "sql")]
     #[default]
     Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPieRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackPieRawSqlChartConfig.displayType`.
@@ -1874,6 +3823,18 @@ pub enum ClickStackPieRawSqlChartConfigDisplaytype {
     #[serde(rename = "pie")]
     #[default]
     Pie,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPieRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pie => write!(f, "pie"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSavedFilterValue.type`.
@@ -1882,6 +3843,18 @@ pub enum ClickStackSavedFilterValueType {
     #[serde(rename = "sql")]
     #[default]
     Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedFilterValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSearchChartConfig.displayType`.
@@ -1890,6 +3863,18 @@ pub enum ClickStackSearchChartConfigDisplaytype {
     #[serde(rename = "search")]
     #[default]
     Search,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSearchChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Search => write!(f, "search"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSearchChartConfig.whereLanguage`.
@@ -1900,6 +3885,19 @@ pub enum ClickStackSearchChartConfigWherelanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSearchChartConfigWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSearchChartSeries.type`.
@@ -1908,6 +3906,18 @@ pub enum ClickStackSearchChartSeriesType {
     #[serde(rename = "search")]
     #[default]
     Search,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSearchChartSeriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Search => write!(f, "search"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSearchChartSeries.whereLanguage`.
@@ -1918,6 +3928,19 @@ pub enum ClickStackSearchChartSeriesWherelanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSearchChartSeriesWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSelectItem.aggFn`.
@@ -1944,6 +3967,27 @@ pub enum ClickStackSelectItemAggfn {
     Any,
     #[serde(rename = "none")]
     None,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSelectItemAggfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Avg => write!(f, "avg"),
+            Self::Count => write!(f, "count"),
+            Self::Count_distinct => write!(f, "count_distinct"),
+            Self::Last_value => write!(f, "last_value"),
+            Self::Max => write!(f, "max"),
+            Self::Min => write!(f, "min"),
+            Self::Quantile => write!(f, "quantile"),
+            Self::Sum => write!(f, "sum"),
+            Self::Any => write!(f, "any"),
+            Self::None => write!(f, "none"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSelectItem.level`.
@@ -1958,6 +4002,21 @@ pub enum ClickStackSelectItemLevel {
     _0_95,
     #[serde(rename = "0.99")]
     _0_99,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSelectItemLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::_0_5 => write!(f, "0.5"),
+            Self::_0_9 => write!(f, "0.9"),
+            Self::_0_95 => write!(f, "0.95"),
+            Self::_0_99 => write!(f, "0.99"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSelectItem.metricType`.
@@ -1974,6 +4033,22 @@ pub enum ClickStackSelectItemMetrictype {
     Summary,
     #[serde(rename = "exponential histogram")]
     Exponential_histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSelectItemMetrictype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sum => write!(f, "sum"),
+            Self::Gauge => write!(f, "gauge"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Summary => write!(f, "summary"),
+            Self::Exponential_histogram => write!(f, "exponential histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSelectItem.periodAggFn`.
@@ -1982,6 +4057,18 @@ pub enum ClickStackSelectItemPeriodaggfn {
     #[serde(rename = "delta")]
     #[default]
     Delta,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSelectItemPeriodaggfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Delta => write!(f, "delta"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSelectItem.whereLanguage`.
@@ -1992,6 +4079,19 @@ pub enum ClickStackSelectItemWherelanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSelectItemWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSessionSource.kind`.
@@ -2000,6 +4100,18 @@ pub enum ClickStackSessionSourceKind {
     #[serde(rename = "session")]
     #[default]
     Session,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSessionSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Session => write!(f, "session"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSlackAPIWebhook.service`.
@@ -2008,6 +4120,18 @@ pub enum ClickStackSlackAPIWebhookService {
     #[serde(rename = "slack_api")]
     #[default]
     Slack_api,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSlackAPIWebhookService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slack_api => write!(f, "slack_api"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackSlackWebhook.service`.
@@ -2016,6 +4140,18 @@ pub enum ClickStackSlackWebhookService {
     #[serde(rename = "slack")]
     #[default]
     Slack,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSlackWebhookService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slack => write!(f, "slack"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableBuilderChartConfig.displayType`.
@@ -2024,6 +4160,18 @@ pub enum ClickStackTableBuilderChartConfigDisplaytype {
     #[serde(rename = "table")]
     #[default]
     Table,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table => write!(f, "table"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableChartSeries.aggFn`.
@@ -2050,6 +4198,27 @@ pub enum ClickStackTableChartSeriesAggfn {
     Any,
     #[serde(rename = "none")]
     None,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableChartSeriesAggfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Avg => write!(f, "avg"),
+            Self::Count => write!(f, "count"),
+            Self::Count_distinct => write!(f, "count_distinct"),
+            Self::Last_value => write!(f, "last_value"),
+            Self::Max => write!(f, "max"),
+            Self::Min => write!(f, "min"),
+            Self::Quantile => write!(f, "quantile"),
+            Self::Sum => write!(f, "sum"),
+            Self::Any => write!(f, "any"),
+            Self::None => write!(f, "none"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableChartSeries.metricDataType`.
@@ -2066,6 +4235,22 @@ pub enum ClickStackTableChartSeriesMetricdatatype {
     Summary,
     #[serde(rename = "exponential histogram")]
     Exponential_histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableChartSeriesMetricdatatype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sum => write!(f, "sum"),
+            Self::Gauge => write!(f, "gauge"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Summary => write!(f, "summary"),
+            Self::Exponential_histogram => write!(f, "exponential histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableChartSeries.sortOrder`.
@@ -2076,6 +4261,19 @@ pub enum ClickStackTableChartSeriesSortorder {
     Desc,
     #[serde(rename = "asc")]
     Asc,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableChartSeriesSortorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Desc => write!(f, "desc"),
+            Self::Asc => write!(f, "asc"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableChartSeries.type`.
@@ -2084,6 +4282,18 @@ pub enum ClickStackTableChartSeriesType {
     #[serde(rename = "table")]
     #[default]
     Table,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableChartSeriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table => write!(f, "table"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableChartSeries.whereLanguage`.
@@ -2094,6 +4304,19 @@ pub enum ClickStackTableChartSeriesWherelanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableChartSeriesWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableRawSqlChartConfig.configType`.
@@ -2102,6 +4325,18 @@ pub enum ClickStackTableRawSqlChartConfigConfigtype {
     #[serde(rename = "sql")]
     #[default]
     Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTableRawSqlChartConfig.displayType`.
@@ -2110,6 +4345,18 @@ pub enum ClickStackTableRawSqlChartConfigDisplaytype {
     #[serde(rename = "table")]
     #[default]
     Table,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table => write!(f, "table"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.aggFn`.
@@ -2136,6 +4383,27 @@ pub enum ClickStackTimeChartSeriesAggfn {
     Any,
     #[serde(rename = "none")]
     None,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTimeChartSeriesAggfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Avg => write!(f, "avg"),
+            Self::Count => write!(f, "count"),
+            Self::Count_distinct => write!(f, "count_distinct"),
+            Self::Last_value => write!(f, "last_value"),
+            Self::Max => write!(f, "max"),
+            Self::Min => write!(f, "min"),
+            Self::Quantile => write!(f, "quantile"),
+            Self::Sum => write!(f, "sum"),
+            Self::Any => write!(f, "any"),
+            Self::None => write!(f, "none"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.displayType`.
@@ -2146,6 +4414,19 @@ pub enum ClickStackTimeChartSeriesDisplaytype {
     Stacked_bar,
     #[serde(rename = "line")]
     Line,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTimeChartSeriesDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Line => write!(f, "line"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.metricDataType`.
@@ -2162,6 +4443,22 @@ pub enum ClickStackTimeChartSeriesMetricdatatype {
     Summary,
     #[serde(rename = "exponential histogram")]
     Exponential_histogram,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTimeChartSeriesMetricdatatype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sum => write!(f, "sum"),
+            Self::Gauge => write!(f, "gauge"),
+            Self::Histogram => write!(f, "histogram"),
+            Self::Summary => write!(f, "summary"),
+            Self::Exponential_histogram => write!(f, "exponential histogram"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.type`.
@@ -2170,6 +4467,18 @@ pub enum ClickStackTimeChartSeriesType {
     #[serde(rename = "time")]
     #[default]
     Time,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTimeChartSeriesType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Time => write!(f, "time"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTimeChartSeries.whereLanguage`.
@@ -2180,6 +4489,19 @@ pub enum ClickStackTimeChartSeriesWherelanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTimeChartSeriesWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackTraceSource.kind`.
@@ -2188,6 +4510,18 @@ pub enum ClickStackTraceSourceKind {
     #[serde(rename = "trace")]
     #[default]
     Trace,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTraceSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Trace => write!(f, "trace"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackUpdateAlertRequest.interval`.
@@ -2210,6 +4544,25 @@ pub enum ClickStackUpdateAlertRequestInterval {
     _12h,
     #[serde(rename = "1d")]
     _1d,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackUpdateAlertRequestInterval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::_1m => write!(f, "1m"),
+            Self::_5m => write!(f, "5m"),
+            Self::_15m => write!(f, "15m"),
+            Self::_30m => write!(f, "30m"),
+            Self::_1h => write!(f, "1h"),
+            Self::_6h => write!(f, "6h"),
+            Self::_12h => write!(f, "12h"),
+            Self::_1d => write!(f, "1d"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackUpdateAlertRequest.source`.
@@ -2220,6 +4573,19 @@ pub enum ClickStackUpdateAlertRequestSource {
     Saved_search,
     #[serde(rename = "tile")]
     Tile,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackUpdateAlertRequestSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Saved_search => write!(f, "saved_search"),
+            Self::Tile => write!(f, "tile"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackUpdateAlertRequest.thresholdType`.
@@ -2230,6 +4596,19 @@ pub enum ClickStackUpdateAlertRequestThresholdtype {
     Above,
     #[serde(rename = "below")]
     Below,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackUpdateAlertRequestThresholdtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Above => write!(f, "above"),
+            Self::Below => write!(f, "below"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ClickStackUpdateDashboardRequest.savedQueryLanguage`.
@@ -2240,6 +4619,19 @@ pub enum ClickStackUpdateDashboardRequestSavedquerylanguage {
     Sql,
     #[serde(rename = "lucene")]
     Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackUpdateDashboardRequestSavedquerylanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `CreateReversePrivateEndpoint.mskAuthentication`.
@@ -2248,6 +4640,19 @@ pub enum CreateReversePrivateEndpointMskauthentication {
     #[default]
     SASL_IAM,
     SASL_SCRAM,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for CreateReversePrivateEndpointMskauthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SASL_IAM => write!(f, "SASL_IAM"),
+            Self::SASL_SCRAM => write!(f, "SASL_SCRAM"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `CreateReversePrivateEndpoint.type`.
@@ -2257,6 +4662,20 @@ pub enum CreateReversePrivateEndpointType {
     VPC_ENDPOINT_SERVICE,
     VPC_RESOURCE,
     MSK_MULTI_VPC,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for CreateReversePrivateEndpointType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VPC_ENDPOINT_SERVICE => write!(f, "VPC_ENDPOINT_SERVICE"),
+            Self::VPC_RESOURCE => write!(f, "VPC_RESOURCE"),
+            Self::MSK_MULTI_VPC => write!(f, "MSK_MULTI_VPC"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `GcpBackupBucket.bucketProvider`.
@@ -2264,6 +4683,18 @@ pub enum CreateReversePrivateEndpointType {
 pub enum GcpBackupBucketBucketprovider {
     #[default]
     GCP,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for GcpBackupBucketBucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GCP => write!(f, "GCP"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `GcpBackupBucketPatchRequestV1.bucketProvider`.
@@ -2271,6 +4702,18 @@ pub enum GcpBackupBucketBucketprovider {
 pub enum GcpBackupBucketPatchRequestV1Bucketprovider {
     #[default]
     GCP,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for GcpBackupBucketPatchRequestV1Bucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GCP => write!(f, "GCP"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `GcpBackupBucketPostRequestV1.bucketProvider`.
@@ -2278,6 +4721,18 @@ pub enum GcpBackupBucketPatchRequestV1Bucketprovider {
 pub enum GcpBackupBucketPostRequestV1Bucketprovider {
     #[default]
     GCP,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for GcpBackupBucketPostRequestV1Bucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GCP => write!(f, "GCP"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `GcpBackupBucketProperties.bucketProvider`.
@@ -2285,6 +4740,18 @@ pub enum GcpBackupBucketPostRequestV1Bucketprovider {
 pub enum GcpBackupBucketPropertiesBucketprovider {
     #[default]
     GCP,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for GcpBackupBucketPropertiesBucketprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GCP => write!(f, "GCP"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `InstancePrivateEndpoint.cloudProvider`.
@@ -2297,6 +4764,20 @@ pub enum InstancePrivateEndpointCloudprovider {
     Aws,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for InstancePrivateEndpointCloudprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gcp => write!(f, "gcp"),
+            Self::Aws => write!(f, "aws"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `InstancePrivateEndpoint.region`.
@@ -2347,6 +4828,39 @@ pub enum InstancePrivateEndpointRegion {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for InstancePrivateEndpointRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Invitation.role`.
@@ -2357,6 +4871,19 @@ pub enum InvitationRole {
     Admin,
     #[serde(rename = "developer")]
     Developer,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for InvitationRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admin => write!(f, "admin"),
+            Self::Developer => write!(f, "developer"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `InvitationPostRequest.role`.
@@ -2367,6 +4894,19 @@ pub enum InvitationPostRequestRole {
     Admin,
     #[serde(rename = "developer")]
     Developer,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for InvitationPostRequestRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admin => write!(f, "admin"),
+            Self::Developer => write!(f, "developer"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Member.role`.
@@ -2377,6 +4917,19 @@ pub enum MemberRole {
     Admin,
     #[serde(rename = "developer")]
     Developer,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for MemberRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admin => write!(f, "admin"),
+            Self::Developer => write!(f, "developer"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `MemberPatchRequest.role`.
@@ -2387,6 +4940,19 @@ pub enum MemberPatchRequestRole {
     Admin,
     #[serde(rename = "developer")]
     Developer,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for MemberPatchRequestRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admin => write!(f, "admin"),
+            Self::Developer => write!(f, "developer"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `OrganizationPatchPrivateEndpoint.cloudProvider`.
@@ -2399,6 +4965,20 @@ pub enum OrganizationPatchPrivateEndpointCloudprovider {
     Aws,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationPatchPrivateEndpointCloudprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gcp => write!(f, "gcp"),
+            Self::Aws => write!(f, "aws"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `OrganizationPatchPrivateEndpoint.region`.
@@ -2449,6 +5029,39 @@ pub enum OrganizationPatchPrivateEndpointRegion {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationPatchPrivateEndpointRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `OrganizationPrivateEndpoint.cloudProvider`.
@@ -2461,6 +5074,20 @@ pub enum OrganizationPrivateEndpointCloudprovider {
     Aws,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationPrivateEndpointCloudprovider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gcp => write!(f, "gcp"),
+            Self::Aws => write!(f, "aws"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `OrganizationPrivateEndpoint.region`.
@@ -2511,6 +5138,39 @@ pub enum OrganizationPrivateEndpointRegion {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationPrivateEndpointRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `PostgresServiceSetState.command`.
@@ -2523,6 +5183,20 @@ pub enum PostgresServiceSetStateCommand {
     Promote,
     #[serde(rename = "switchover")]
     Switchover,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PostgresServiceSetStateCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Restart => write!(f, "restart"),
+            Self::Promote => write!(f, "promote"),
+            Self::Switchover => write!(f, "switchover"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `RBACPolicy.allowDeny`.
@@ -2531,6 +5205,19 @@ pub enum RBACPolicyAllowdeny {
     #[default]
     ALLOW,
     DENY,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for RBACPolicyAllowdeny {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ALLOW => write!(f, "ALLOW"),
+            Self::DENY => write!(f, "DENY"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `RBACPolicyCreateRequest.allowDeny`.
@@ -2539,6 +5226,19 @@ pub enum RBACPolicyCreateRequestAllowdeny {
     #[default]
     ALLOW,
     DENY,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for RBACPolicyCreateRequestAllowdeny {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ALLOW => write!(f, "ALLOW"),
+            Self::DENY => write!(f, "DENY"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `RBACPolicyTags.roleV2`.
@@ -2549,6 +5249,19 @@ pub enum RBACPolicyTagsRolev2 {
     Sql_console_readonly,
     #[serde(rename = "sql-console-admin")]
     Sql_console_admin,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for RBACPolicyTagsRolev2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql_console_readonly => write!(f, "sql-console-readonly"),
+            Self::Sql_console_admin => write!(f, "sql-console-admin"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `RBACRole.type`.
@@ -2559,6 +5272,19 @@ pub enum RBACRoleType {
     System,
     #[serde(rename = "custom")]
     Custom,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for RBACRoleType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => write!(f, "system"),
+            Self::Custom => write!(f, "custom"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ReversePrivateEndpoint.mskAuthentication`.
@@ -2567,6 +5293,19 @@ pub enum ReversePrivateEndpointMskauthentication {
     #[default]
     SASL_IAM,
     SASL_SCRAM,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ReversePrivateEndpointMskauthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SASL_IAM => write!(f, "SASL_IAM"),
+            Self::SASL_SCRAM => write!(f, "SASL_SCRAM"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ReversePrivateEndpoint.status`.
@@ -2581,6 +5320,25 @@ pub enum ReversePrivateEndpointStatus {
     PendingAcceptance,
     Rejected,
     Expired,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Other(String),
+}
+
+impl std::fmt::Display for ReversePrivateEndpointStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown => write!(f, "Unknown"),
+            Self::Provisioning => write!(f, "Provisioning"),
+            Self::Deleting => write!(f, "Deleting"),
+            Self::Ready => write!(f, "Ready"),
+            Self::Failed => write!(f, "Failed"),
+            Self::PendingAcceptance => write!(f, "PendingAcceptance"),
+            Self::Rejected => write!(f, "Rejected"),
+            Self::Expired => write!(f, "Expired"),
+            Self::Other(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ReversePrivateEndpoint.type`.
@@ -2590,6 +5348,20 @@ pub enum ReversePrivateEndpointType {
     VPC_ENDPOINT_SERVICE,
     VPC_RESOURCE,
     MSK_MULTI_VPC,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ReversePrivateEndpointType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VPC_ENDPOINT_SERVICE => write!(f, "VPC_ENDPOINT_SERVICE"),
+            Self::VPC_RESOURCE => write!(f, "VPC_RESOURCE"),
+            Self::MSK_MULTI_VPC => write!(f, "MSK_MULTI_VPC"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ScimPatchOperation.op`.
@@ -2602,6 +5374,20 @@ pub enum ScimPatchOperationOp {
     Replace,
     #[serde(rename = "remove")]
     Remove,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ScimPatchOperationOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Add => write!(f, "add"),
+            Self::Replace => write!(f, "replace"),
+            Self::Remove => write!(f, "remove"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.complianceType`.
@@ -2612,6 +5398,19 @@ pub enum ServiceCompliancetype {
     Hipaa,
     #[serde(rename = "pci")]
     Pci,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceCompliancetype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hipaa => write!(f, "hipaa"),
+            Self::Pci => write!(f, "pci"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.profile`.
@@ -2630,6 +5429,23 @@ pub enum ServiceProfile {
     V1_highmem_l,
     #[serde(rename = "v1-highmem-xl")]
     V1_highmem_xl,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::V1_default => write!(f, "v1-default"),
+            Self::V1_highmem_xs => write!(f, "v1-highmem-xs"),
+            Self::V1_highmem_s => write!(f, "v1-highmem-s"),
+            Self::V1_highmem_m => write!(f, "v1-highmem-m"),
+            Self::V1_highmem_l => write!(f, "v1-highmem-l"),
+            Self::V1_highmem_xl => write!(f, "v1-highmem-xl"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.provider`.
@@ -2642,6 +5458,20 @@ pub enum ServiceProvider {
     Gcp,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aws => write!(f, "aws"),
+            Self::Gcp => write!(f, "gcp"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.region`.
@@ -2692,6 +5522,39 @@ pub enum ServiceRegion {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.releaseChannel`.
@@ -2704,6 +5567,20 @@ pub enum ServiceReleasechannel {
     Default,
     #[serde(rename = "fast")]
     Fast,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceReleasechannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slow => write!(f, "slow"),
+            Self::Default => write!(f, "default"),
+            Self::Fast => write!(f, "fast"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.state`.
@@ -2738,6 +5615,31 @@ pub enum ServiceState {
     Failed,
     #[serde(rename = "idle")]
     Idle,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Starting => write!(f, "starting"),
+            Self::Stopping => write!(f, "stopping"),
+            Self::Terminating => write!(f, "terminating"),
+            Self::Softdeleting => write!(f, "softdeleting"),
+            Self::Awaking => write!(f, "awaking"),
+            Self::Partially_running => write!(f, "partially_running"),
+            Self::Provisioning => write!(f, "provisioning"),
+            Self::Running => write!(f, "running"),
+            Self::Stopped => write!(f, "stopped"),
+            Self::Terminated => write!(f, "terminated"),
+            Self::Softdeleted => write!(f, "softdeleted"),
+            Self::Degraded => write!(f, "degraded"),
+            Self::Failed => write!(f, "failed"),
+            Self::Idle => write!(f, "idle"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `Service.tier`.
@@ -2766,6 +5668,28 @@ pub enum ServiceTier {
     Dedicated_standard_n2d_standard_32_16SSD,
     #[serde(rename = "dedicated_standard_n2d_standard_64_24SSD")]
     Dedicated_standard_n2d_standard_64_24SSD,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Development => write!(f, "development"),
+            Self::Production => write!(f, "production"),
+            Self::Dedicated_high_mem => write!(f, "dedicated_high_mem"),
+            Self::Dedicated_high_cpu => write!(f, "dedicated_high_cpu"),
+            Self::Dedicated_standard => write!(f, "dedicated_standard"),
+            Self::Dedicated_standard_n2d_standard_4 => write!(f, "dedicated_standard_n2d_standard_4"),
+            Self::Dedicated_standard_n2d_standard_8 => write!(f, "dedicated_standard_n2d_standard_8"),
+            Self::Dedicated_standard_n2d_standard_32 => write!(f, "dedicated_standard_n2d_standard_32"),
+            Self::Dedicated_standard_n2d_standard_128 => write!(f, "dedicated_standard_n2d_standard_128"),
+            Self::Dedicated_standard_n2d_standard_32_16SSD => write!(f, "dedicated_standard_n2d_standard_32_16SSD"),
+            Self::Dedicated_standard_n2d_standard_64_24SSD => write!(f, "dedicated_standard_n2d_standard_64_24SSD"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceEndpoint.protocol`.
@@ -2778,6 +5702,20 @@ pub enum ServiceEndpointProtocol {
     Nativesecure,
     #[serde(rename = "mysql")]
     Mysql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceEndpointProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Https => write!(f, "https"),
+            Self::Nativesecure => write!(f, "nativesecure"),
+            Self::Mysql => write!(f, "mysql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceEndpointChange.protocol`.
@@ -2786,6 +5724,18 @@ pub enum ServiceEndpointChangeProtocol {
     #[serde(rename = "mysql")]
     #[default]
     Mysql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceEndpointChangeProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mysql => write!(f, "mysql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePatchRequest.releaseChannel`.
@@ -2798,6 +5748,20 @@ pub enum ServicePatchRequestReleasechannel {
     Default,
     #[serde(rename = "fast")]
     Fast,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePatchRequestReleasechannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slow => write!(f, "slow"),
+            Self::Default => write!(f, "default"),
+            Self::Fast => write!(f, "fast"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePostRequest.complianceType`.
@@ -2808,6 +5772,19 @@ pub enum ServicePostRequestCompliancetype {
     Hipaa,
     #[serde(rename = "pci")]
     Pci,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePostRequestCompliancetype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hipaa => write!(f, "hipaa"),
+            Self::Pci => write!(f, "pci"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePostRequest.profile`.
@@ -2826,6 +5803,23 @@ pub enum ServicePostRequestProfile {
     V1_highmem_l,
     #[serde(rename = "v1-highmem-xl")]
     V1_highmem_xl,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePostRequestProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::V1_default => write!(f, "v1-default"),
+            Self::V1_highmem_xs => write!(f, "v1-highmem-xs"),
+            Self::V1_highmem_s => write!(f, "v1-highmem-s"),
+            Self::V1_highmem_m => write!(f, "v1-highmem-m"),
+            Self::V1_highmem_l => write!(f, "v1-highmem-l"),
+            Self::V1_highmem_xl => write!(f, "v1-highmem-xl"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePostRequest.provider`.
@@ -2838,6 +5832,20 @@ pub enum ServicePostRequestProvider {
     Gcp,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePostRequestProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aws => write!(f, "aws"),
+            Self::Gcp => write!(f, "gcp"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePostRequest.region`.
@@ -2888,6 +5896,39 @@ pub enum ServicePostRequestRegion {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePostRequestRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePostRequest.releaseChannel`.
@@ -2900,6 +5941,20 @@ pub enum ServicePostRequestReleasechannel {
     Default,
     #[serde(rename = "fast")]
     Fast,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePostRequestReleasechannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slow => write!(f, "slow"),
+            Self::Default => write!(f, "default"),
+            Self::Fast => write!(f, "fast"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServicePostRequest.tier`.
@@ -2928,6 +5983,28 @@ pub enum ServicePostRequestTier {
     Dedicated_standard_n2d_standard_32_16SSD,
     #[serde(rename = "dedicated_standard_n2d_standard_64_24SSD")]
     Dedicated_standard_n2d_standard_64_24SSD,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServicePostRequestTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Development => write!(f, "development"),
+            Self::Production => write!(f, "production"),
+            Self::Dedicated_high_mem => write!(f, "dedicated_high_mem"),
+            Self::Dedicated_high_cpu => write!(f, "dedicated_high_cpu"),
+            Self::Dedicated_standard => write!(f, "dedicated_standard"),
+            Self::Dedicated_standard_n2d_standard_4 => write!(f, "dedicated_standard_n2d_standard_4"),
+            Self::Dedicated_standard_n2d_standard_8 => write!(f, "dedicated_standard_n2d_standard_8"),
+            Self::Dedicated_standard_n2d_standard_32 => write!(f, "dedicated_standard_n2d_standard_32"),
+            Self::Dedicated_standard_n2d_standard_128 => write!(f, "dedicated_standard_n2d_standard_128"),
+            Self::Dedicated_standard_n2d_standard_32_16SSD => write!(f, "dedicated_standard_n2d_standard_32_16SSD"),
+            Self::Dedicated_standard_n2d_standard_64_24SSD => write!(f, "dedicated_standard_n2d_standard_64_24SSD"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.complianceType`.
@@ -2938,6 +6015,19 @@ pub enum ServiceScalingPatchResponseCompliancetype {
     Hipaa,
     #[serde(rename = "pci")]
     Pci,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseCompliancetype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hipaa => write!(f, "hipaa"),
+            Self::Pci => write!(f, "pci"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.profile`.
@@ -2956,6 +6046,23 @@ pub enum ServiceScalingPatchResponseProfile {
     V1_highmem_l,
     #[serde(rename = "v1-highmem-xl")]
     V1_highmem_xl,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::V1_default => write!(f, "v1-default"),
+            Self::V1_highmem_xs => write!(f, "v1-highmem-xs"),
+            Self::V1_highmem_s => write!(f, "v1-highmem-s"),
+            Self::V1_highmem_m => write!(f, "v1-highmem-m"),
+            Self::V1_highmem_l => write!(f, "v1-highmem-l"),
+            Self::V1_highmem_xl => write!(f, "v1-highmem-xl"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.provider`.
@@ -2968,6 +6075,20 @@ pub enum ServiceScalingPatchResponseProvider {
     Gcp,
     #[serde(rename = "azure")]
     Azure,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Aws => write!(f, "aws"),
+            Self::Gcp => write!(f, "gcp"),
+            Self::Azure => write!(f, "azure"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.region`.
@@ -3018,6 +6139,39 @@ pub enum ServiceScalingPatchResponseRegion {
     Germanywestcentral,
     #[serde(rename = "centralus")]
     Centralus,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ap_northeast_1 => write!(f, "ap-northeast-1"),
+            Self::Ap_northeast_2 => write!(f, "ap-northeast-2"),
+            Self::Ap_south_1 => write!(f, "ap-south-1"),
+            Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
+            Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Eu_central_1 => write!(f, "eu-central-1"),
+            Self::Eu_west_1 => write!(f, "eu-west-1"),
+            Self::Eu_west_2 => write!(f, "eu-west-2"),
+            Self::Il_central_1 => write!(f, "il-central-1"),
+            Self::Us_east_1 => write!(f, "us-east-1"),
+            Self::Us_east_2 => write!(f, "us-east-2"),
+            Self::Us_west_2 => write!(f, "us-west-2"),
+            Self::Us_east1 => write!(f, "us-east1"),
+            Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west4 => write!(f, "europe-west4"),
+            Self::Asia_southeast1 => write!(f, "asia-southeast1"),
+            Self::Asia_northeast1 => write!(f, "asia-northeast1"),
+            Self::Eastus => write!(f, "eastus"),
+            Self::Eastus2 => write!(f, "eastus2"),
+            Self::Westus3 => write!(f, "westus3"),
+            Self::Germanywestcentral => write!(f, "germanywestcentral"),
+            Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.releaseChannel`.
@@ -3030,6 +6184,20 @@ pub enum ServiceScalingPatchResponseReleasechannel {
     Default,
     #[serde(rename = "fast")]
     Fast,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseReleasechannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slow => write!(f, "slow"),
+            Self::Default => write!(f, "default"),
+            Self::Fast => write!(f, "fast"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.state`.
@@ -3064,6 +6232,31 @@ pub enum ServiceScalingPatchResponseState {
     Failed,
     #[serde(rename = "idle")]
     Idle,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Starting => write!(f, "starting"),
+            Self::Stopping => write!(f, "stopping"),
+            Self::Terminating => write!(f, "terminating"),
+            Self::Softdeleting => write!(f, "softdeleting"),
+            Self::Awaking => write!(f, "awaking"),
+            Self::Partially_running => write!(f, "partially_running"),
+            Self::Provisioning => write!(f, "provisioning"),
+            Self::Running => write!(f, "running"),
+            Self::Stopped => write!(f, "stopped"),
+            Self::Terminated => write!(f, "terminated"),
+            Self::Softdeleted => write!(f, "softdeleted"),
+            Self::Degraded => write!(f, "degraded"),
+            Self::Failed => write!(f, "failed"),
+            Self::Idle => write!(f, "idle"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceScalingPatchResponse.tier`.
@@ -3092,6 +6285,28 @@ pub enum ServiceScalingPatchResponseTier {
     Dedicated_standard_n2d_standard_32_16SSD,
     #[serde(rename = "dedicated_standard_n2d_standard_64_24SSD")]
     Dedicated_standard_n2d_standard_64_24SSD,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceScalingPatchResponseTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Development => write!(f, "development"),
+            Self::Production => write!(f, "production"),
+            Self::Dedicated_high_mem => write!(f, "dedicated_high_mem"),
+            Self::Dedicated_high_cpu => write!(f, "dedicated_high_cpu"),
+            Self::Dedicated_standard => write!(f, "dedicated_standard"),
+            Self::Dedicated_standard_n2d_standard_4 => write!(f, "dedicated_standard_n2d_standard_4"),
+            Self::Dedicated_standard_n2d_standard_8 => write!(f, "dedicated_standard_n2d_standard_8"),
+            Self::Dedicated_standard_n2d_standard_32 => write!(f, "dedicated_standard_n2d_standard_32"),
+            Self::Dedicated_standard_n2d_standard_128 => write!(f, "dedicated_standard_n2d_standard_128"),
+            Self::Dedicated_standard_n2d_standard_32_16SSD => write!(f, "dedicated_standard_n2d_standard_32_16SSD"),
+            Self::Dedicated_standard_n2d_standard_64_24SSD => write!(f, "dedicated_standard_n2d_standard_64_24SSD"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `ServiceStatePatchRequest.command`.
@@ -3104,6 +6319,20 @@ pub enum ServiceStatePatchRequestCommand {
     Stop,
     #[serde(rename = "awake")]
     Awake,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ServiceStatePatchRequestCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start => write!(f, "start"),
+            Self::Stop => write!(f, "stop"),
+            Self::Awake => write!(f, "awake"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `UsageCostRecord.entityType`.
@@ -3116,6 +6345,20 @@ pub enum UsageCostRecordEntitytype {
     Service,
     #[serde(rename = "clickpipe")]
     Clickpipe,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for UsageCostRecordEntitytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Datawarehouse => write!(f, "datawarehouse"),
+            Self::Service => write!(f, "service"),
+            Self::Clickpipe => write!(f, "clickpipe"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `pgConfig.default_transaction_isolation`.
@@ -3128,6 +6371,20 @@ pub enum PgConfigDefaultTransactionIsolation {
     Repeatable_read,
     #[serde(rename = "serializable")]
     Serializable,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigDefaultTransactionIsolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read_committed => write!(f, "read committed"),
+            Self::Repeatable_read => write!(f, "repeatable read"),
+            Self::Serializable => write!(f, "serializable"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Inline enum for `pgConfig.wal_compression`.
@@ -3142,6 +6399,21 @@ pub enum PgConfigWalCompression {
     Lz4,
     #[serde(rename = "zstd")]
     Zstd,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigWalCompression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => write!(f, "off"),
+            Self::On => write!(f, "on"),
+            Self::Lz4 => write!(f, "lz4"),
+            Self::Zstd => write!(f, "zstd"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `BackupBucket` - one of multiple variants.
@@ -3151,6 +6423,19 @@ pub enum BackupBucket {
     AwsBackupBucket(AwsBackupBucket),
     GcpBackupBucket(GcpBackupBucket),
     AzureBackupBucket(AzureBackupBucket),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for BackupBucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwsBackupBucket(_) => write!(f, "AwsBackupBucket"),
+            Self::GcpBackupBucket(_) => write!(f, "GcpBackupBucket"),
+            Self::AzureBackupBucket(_) => write!(f, "AzureBackupBucket"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `BackupBucketPatchRequest` - one of multiple variants.
@@ -3160,6 +6445,19 @@ pub enum BackupBucketPatchRequest {
     AwsBackupBucketPatchRequestV1(AwsBackupBucketPatchRequestV1),
     GcpBackupBucketPatchRequestV1(GcpBackupBucketPatchRequestV1),
     AzureBackupBucketPatchRequestV1(AzureBackupBucketPatchRequestV1),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for BackupBucketPatchRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwsBackupBucketPatchRequestV1(_) => write!(f, "AwsBackupBucketPatchRequestV1"),
+            Self::GcpBackupBucketPatchRequestV1(_) => write!(f, "GcpBackupBucketPatchRequestV1"),
+            Self::AzureBackupBucketPatchRequestV1(_) => write!(f, "AzureBackupBucketPatchRequestV1"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `BackupBucketPostRequest` - one of multiple variants.
@@ -3169,6 +6467,19 @@ pub enum BackupBucketPostRequest {
     AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1),
     GcpBackupBucketPostRequestV1(GcpBackupBucketPostRequestV1),
     AzureBackupBucketPostRequestV1(AzureBackupBucketPostRequestV1),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for BackupBucketPostRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwsBackupBucketPostRequestV1(_) => write!(f, "AwsBackupBucketPostRequestV1"),
+            Self::GcpBackupBucketPostRequestV1(_) => write!(f, "GcpBackupBucketPostRequestV1"),
+            Self::AzureBackupBucketPostRequestV1(_) => write!(f, "AzureBackupBucketPostRequestV1"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `BackupBucketProperties` - one of multiple variants.
@@ -3178,6 +6489,19 @@ pub enum BackupBucketProperties {
     AwsBackupBucketProperties(AwsBackupBucketProperties),
     GcpBackupBucketProperties(GcpBackupBucketProperties),
     AzureBackupBucketProperties(AzureBackupBucketProperties),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for BackupBucketProperties {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwsBackupBucketProperties(_) => write!(f, "AwsBackupBucketProperties"),
+            Self::GcpBackupBucketProperties(_) => write!(f, "GcpBackupBucketProperties"),
+            Self::AzureBackupBucketProperties(_) => write!(f, "AzureBackupBucketProperties"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackAlertChannel` - one of multiple variants.
@@ -3186,6 +6510,18 @@ pub enum BackupBucketProperties {
 pub enum ClickStackAlertChannel {
     ClickStackAlertChannelEmail(ClickStackAlertChannelEmail),
     ClickStackAlertChannelWebhook(ClickStackAlertChannelWebhook),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertChannelEmail(_) => write!(f, "ClickStackAlertChannelEmail"),
+            Self::ClickStackAlertChannelWebhook(_) => write!(f, "ClickStackAlertChannelWebhook"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackBarChartConfig` - one of multiple variants.
@@ -3194,6 +6530,18 @@ pub enum ClickStackAlertChannel {
 pub enum ClickStackBarChartConfig {
     ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfig),
     ClickStackBarRawSqlChartConfig(ClickStackBarRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBarChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackBarBuilderChartConfig(_) => write!(f, "ClickStackBarBuilderChartConfig"),
+            Self::ClickStackBarRawSqlChartConfig(_) => write!(f, "ClickStackBarRawSqlChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackDashboardChartSeries` - one of multiple variants.
@@ -3205,6 +6553,21 @@ pub enum ClickStackDashboardChartSeries {
     ClickStackNumberChartSeries(ClickStackNumberChartSeries),
     ClickStackSearchChartSeries(ClickStackSearchChartSeries),
     ClickStackMarkdownChartSeries(ClickStackMarkdownChartSeries),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackDashboardChartSeries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackTimeChartSeries(_) => write!(f, "ClickStackTimeChartSeries"),
+            Self::ClickStackTableChartSeries(_) => write!(f, "ClickStackTableChartSeries"),
+            Self::ClickStackNumberChartSeries(_) => write!(f, "ClickStackNumberChartSeries"),
+            Self::ClickStackSearchChartSeries(_) => write!(f, "ClickStackSearchChartSeries"),
+            Self::ClickStackMarkdownChartSeries(_) => write!(f, "ClickStackMarkdownChartSeries"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackLineChartConfig` - one of multiple variants.
@@ -3213,6 +6576,18 @@ pub enum ClickStackDashboardChartSeries {
 pub enum ClickStackLineChartConfig {
     ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfig),
     ClickStackLineRawSqlChartConfig(ClickStackLineRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLineChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackLineBuilderChartConfig(_) => write!(f, "ClickStackLineBuilderChartConfig"),
+            Self::ClickStackLineRawSqlChartConfig(_) => write!(f, "ClickStackLineRawSqlChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackNumberChartConfig` - one of multiple variants.
@@ -3221,6 +6596,18 @@ pub enum ClickStackLineChartConfig {
 pub enum ClickStackNumberChartConfig {
     ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfig),
     ClickStackNumberRawSqlChartConfig(ClickStackNumberRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackNumberBuilderChartConfig(_) => write!(f, "ClickStackNumberBuilderChartConfig"),
+            Self::ClickStackNumberRawSqlChartConfig(_) => write!(f, "ClickStackNumberRawSqlChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackPieChartConfig` - one of multiple variants.
@@ -3229,6 +6616,18 @@ pub enum ClickStackNumberChartConfig {
 pub enum ClickStackPieChartConfig {
     ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfig),
     ClickStackPieRawSqlChartConfig(ClickStackPieRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPieChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackPieBuilderChartConfig(_) => write!(f, "ClickStackPieBuilderChartConfig"),
+            Self::ClickStackPieRawSqlChartConfig(_) => write!(f, "ClickStackPieRawSqlChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackSource` - one of multiple variants.
@@ -3239,6 +6638,20 @@ pub enum ClickStackSource {
     ClickStackTraceSource(ClickStackTraceSource),
     ClickStackMetricSource(ClickStackMetricSource),
     ClickStackSessionSource(ClickStackSessionSource),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackLogSource(_) => write!(f, "ClickStackLogSource"),
+            Self::ClickStackTraceSource(_) => write!(f, "ClickStackTraceSource"),
+            Self::ClickStackMetricSource(_) => write!(f, "ClickStackMetricSource"),
+            Self::ClickStackSessionSource(_) => write!(f, "ClickStackSessionSource"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackTableChartConfig` - one of multiple variants.
@@ -3247,6 +6660,18 @@ pub enum ClickStackSource {
 pub enum ClickStackTableChartConfig {
     ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfig),
     ClickStackTableRawSqlChartConfig(ClickStackTableRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTableChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackTableBuilderChartConfig(_) => write!(f, "ClickStackTableBuilderChartConfig"),
+            Self::ClickStackTableRawSqlChartConfig(_) => write!(f, "ClickStackTableRawSqlChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackTileConfig` - one of multiple variants.
@@ -3260,6 +6685,23 @@ pub enum ClickStackTileConfig {
     ClickStackPieChartConfig(ClickStackPieChartConfig),
     ClickStackSearchChartConfig(ClickStackSearchChartConfig),
     ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTileConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
+            Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
+            Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
+            Self::ClickStackNumberChartConfig(_) => write!(f, "ClickStackNumberChartConfig"),
+            Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
+            Self::ClickStackSearchChartConfig(_) => write!(f, "ClickStackSearchChartConfig"),
+            Self::ClickStackMarkdownChartConfig(_) => write!(f, "ClickStackMarkdownChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ClickStackWebhook` - one of multiple variants.
@@ -3271,6 +6713,21 @@ pub enum ClickStackWebhook {
     ClickStackGenericWebhook(ClickStackGenericWebhook),
     ClickStackSlackAPIWebhook(ClickStackSlackAPIWebhook),
     ClickStackPagerDutyAPIWebhook(ClickStackPagerDutyAPIWebhook),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackWebhook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackSlackWebhook(_) => write!(f, "ClickStackSlackWebhook"),
+            Self::ClickStackIncidentIOWebhook(_) => write!(f, "ClickStackIncidentIOWebhook"),
+            Self::ClickStackGenericWebhook(_) => write!(f, "ClickStackGenericWebhook"),
+            Self::ClickStackSlackAPIWebhook(_) => write!(f, "ClickStackSlackAPIWebhook"),
+            Self::ClickStackPagerDutyAPIWebhook(_) => write!(f, "ClickStackPagerDutyAPIWebhook"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// Type alias for `pgCreatedAtProperty`.

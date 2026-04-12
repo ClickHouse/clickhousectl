@@ -5,15 +5,21 @@
 use crate::error::Error;
 use crate::models::*;
 
+/// Authentication mode for the API client.
+#[derive(Debug, Clone)]
+enum Auth {
+    Basic { key_id: String, key_secret: String },
+    Bearer { token: String },
+}
+
 /// ClickHouse Cloud API client.
 ///
-/// Uses HTTP Basic Auth with key ID and key secret.
+/// Supports both HTTP Basic Auth (API key/secret) and Bearer token (OAuth) authentication.
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
     base_url: String,
-    key_id: String,
-    key_secret: String,
+    auth: Auth,
 }
 
 impl Client {
@@ -31,15 +37,46 @@ impl Client {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            key_id: key_id.into(),
-            key_secret: key_secret.into(),
+            auth: Auth::Basic {
+                key_id: key_id.into(),
+                key_secret: key_secret.into(),
+            },
+        }
+    }
+
+    /// Create a new client with Bearer token authentication and a custom base URL.
+    pub fn with_bearer_token(
+        base_url: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            auth: Auth::Bearer {
+                token: token.into(),
+            },
+        }
+    }
+
+    /// Replace the Bearer token without rebuilding the client.
+    ///
+    /// Useful for refreshing an expired OAuth token.
+    /// Panics if the client is not using Bearer auth.
+    pub fn set_bearer_token(&mut self, token: impl Into<String>) {
+        match &mut self.auth {
+            Auth::Bearer { token: t } => *t = token.into(),
+            Auth::Basic { .. } => panic!("set_bearer_token called on a Basic-auth client"),
         }
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, format!("{}{}", self.base_url, path))
-            .basic_auth(&self.key_id, Some(&self.key_secret))
+        let builder = self
+            .http
+            .request(method, format!("{}{}", self.base_url, path));
+        match &self.auth {
+            Auth::Basic { key_id, key_secret } => builder.basic_auth(key_id, Some(key_secret)),
+            Auth::Bearer { token } => builder.bearer_auth(token),
+        }
     }
 
     /// Get list of available organizations
@@ -2109,14 +2146,14 @@ impl Client {
         organization_id: &str,
         from_date: &str,
         to_date: &str,
-        filter: Option<&str>,
+        filters: &[&str],
     ) -> Result<ApiResponse<UsageCost>, Error> {
         let path = format!("/v1/organizations/{organization_id}/usageCost");
         let mut req = self.request(reqwest::Method::GET, &path);
         req = req.query(&[("from_date", from_date)]);
         req = req.query(&[("to_date", to_date)]);
-        if let Some(v) = filter {
-            req = req.query(&[("filter", v)]);
+        for f in filters {
+            req = req.query(&[("filter", f)]);
         }
         let resp = req.send().await?;
         let status = resp.status();

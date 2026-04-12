@@ -1,5 +1,5 @@
 use clickhouse_cloud_api::{models::*, Client};
-use wiremock::matchers::{basic_auth, method, path, query_param};
+use wiremock::matchers::{basic_auth, bearer_token, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
@@ -305,7 +305,7 @@ async fn get_usage_cost_with_query_params() {
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let resp = client
-        .usage_cost_get("org-1", "2024-01-01", "2024-01-31", None)
+        .usage_cost_get("org-1", "2024-01-01", "2024-01-31", &[])
         .await
         .unwrap();
     let cost = resp.result.unwrap();
@@ -455,4 +455,50 @@ async fn update_service_password() {
         .unwrap();
     let result = resp.result.unwrap();
     assert_eq!(result.password, Some("new-password-abc".to_string()));
+}
+
+#[tokio::test]
+async fn bearer_auth_sends_token() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .and(bearer_token("my-oauth-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "result": [
+                {
+                    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "name": "Bearer Org"
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::with_bearer_token(mock_server.uri(), "my-oauth-token");
+    let resp = client.organization_get_list().await.unwrap();
+    let orgs = resp.result.unwrap();
+    assert_eq!(orgs.len(), 1);
+    assert_eq!(orgs[0].name, Some("Bearer Org".to_string()));
+}
+
+#[tokio::test]
+async fn set_bearer_token_updates_token() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .and(bearer_token("refreshed-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "result": []
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let mut client = Client::with_bearer_token(mock_server.uri(), "old-token");
+    client.set_bearer_token("refreshed-token");
+    let resp = client.organization_get_list().await.unwrap();
+    assert_eq!(resp.result.unwrap().len(), 0);
 }

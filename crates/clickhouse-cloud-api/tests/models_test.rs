@@ -419,3 +419,33 @@ fn deserialize_postgres_service() {
     let pg: PostgresService = serde_json::from_str(json).unwrap();
     assert_eq!(pg.name, Some("my-postgres".to_string()));
 }
+
+#[test]
+fn unknown_enum_variant_deserializes() {
+    // An unknown service state from the API should deserialize into Unknown(String)
+    let json = r#"{"state": "brand-new-state"}"#;
+    let svc: Service = serde_json::from_str(json).unwrap();
+    assert_eq!(svc.state, Some(ServiceState::Unknown("brand-new-state".to_string())));
+}
+
+#[test]
+fn unknown_enum_variant_roundtrips() {
+    let state = ServiceState::Unknown("future-state".to_string());
+    let json = serde_json::to_string(&state).unwrap();
+    assert_eq!(json, r#""future-state""#);
+    let back: ServiceState = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, state);
+}
+
+#[test]
+fn known_enum_variant_still_deserializes() {
+    let json = r#""running""#;
+    let state: ServiceState = serde_json::from_str(json).unwrap();
+    assert_eq!(state, ServiceState::Running);
+}
+
+#[test]
+fn unknown_enum_display() {
+    assert_eq!(ServiceState::Running.to_string(), "running");
+    assert_eq!(ServiceState::Unknown("brand-new".to_string()).to_string(), "brand-new");
+}

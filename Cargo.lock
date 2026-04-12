@@ -256,6 +256,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "clickhouse-cloud-api",
  "dirs",
  "flate2",
  "futures-util",
