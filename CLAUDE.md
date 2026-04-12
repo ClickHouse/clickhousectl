@@ -2,21 +2,32 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Repo structure
+
+This is a Cargo workspace with two crates:
+
+- **`crates/clickhousectl/`** — the CLI binary (version manager + cloud CLI)
+- **`crates/clickhouse-cloud-api/`** — typed Rust client library for the ClickHouse Cloud API (not yet integrated into the CLI)
+
 ## Build & Test
 
 ```bash
-cargo build                          # dev build
+cargo build                          # dev build (whole workspace)
 cargo build --release                # release build
-cargo test                           # run all tests
+cargo test                           # run all tests (both crates)
+cargo test -p clickhousectl          # test CLI only
+cargo test -p clickhouse-cloud-api   # test library only
 cargo test test_detect_platform      # run a single test
 cargo clippy                         # lint
 ```
 
 No separate lint CI — just `cargo build` and `cargo test` must pass.
 
-Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release.yml`). The crate uses `rustls-tls` instead of OpenSSL to support this.
+Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release.yml`). The CLI crate uses `rustls-tls` instead of OpenSSL to support this.
 
 ## Architecture
+
+### CLI (`crates/clickhousectl/`)
 
 `clickhousectl` is the official ClickHouse CLI — a version manager + cloud CLI. Two top-level subcommands: `local` and `cloud`.
 
@@ -26,21 +37,32 @@ Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release
 
 3. **Auth** (`cloud auth login|logout|status`) — authentication subcommand under cloud. `login` defaults to OAuth device flow (`src/cloud/auth.rs`), supports `--interactive` for API key prompt, or `--api-key`/`--api-secret` for non-interactive. `logout` clears all credentials. Tokens stored in `.clickhouse/tokens.json`, API keys in `.clickhouse/credentials.json` (both project-local).
 
+### API library (`crates/clickhouse-cloud-api/`)
+
+Typed Rust client generated from the ClickHouse Cloud OpenAPI spec. Contains:
+
+- `src/client.rs` — `Client` struct with async methods for every API endpoint
+- `src/models.rs` — request/response types generated from the OpenAPI spec
+- `src/error.rs` — error types (Http, Json, Api)
+- `tests/spec_coverage_test.rs` — validates the client and models cover the OpenAPI spec
+
+The library is standalone and not yet a dependency of the CLI.
+
 ## Adding commands
 
 ### New local subcommand
 
-1. Add variant to `LocalCommands` in `src/cli.rs` using clap derive macros
-2. Add match arm in `run_local()` in `src/main.rs`
+1. Add variant to `LocalCommands` in `crates/clickhousectl/src/cli.rs` using clap derive macros
+2. Add match arm in `run_local()` in `crates/clickhousectl/src/main.rs`
 3. Implement handler (in `main.rs` for simple commands, or a dedicated module)
 
 ### New cloud subcommand
 
-1. Add variant to the relevant enum in `src/cli.rs` (e.g. `ServiceCommands`)
-2. Add match arm in `run_cloud()` in `src/main.rs`
-3. Add method to `CloudClient` in `cloud/client.rs`
-4. Add request/response types to `cloud/types.rs` — use `#[serde(rename_all = "camelCase")]` (API uses camelCase) and `#[serde(skip_serializing_if = "Option::is_none")]` for optional fields
-5. Implement handler in `cloud/commands.rs` with the `--json` output pattern:
+1. Add variant to the relevant enum in `crates/clickhousectl/src/cli.rs` (e.g. `ServiceCommands`)
+2. Add match arm in `run_cloud()` in `crates/clickhousectl/src/main.rs`
+3. Add method to `CloudClient` in `crates/clickhousectl/src/cloud/client.rs`
+4. Add request/response types to `crates/clickhousectl/src/cloud/types.rs` — use `#[serde(rename_all = "camelCase")]` (API uses camelCase) and `#[serde(skip_serializing_if = "Option::is_none")]` for optional fields
+5. Implement handler in `crates/clickhousectl/src/cloud/commands.rs` with the `--json` output pattern:
    ```rust
    if json {
        println!("{}", serde_json::to_string_pretty(&data)?);
@@ -53,16 +75,16 @@ ClickHouse Cloud OpenAPI spec: https://api.clickhouse.cloud/v1
 
 ## Dependencies
 
-Use `cargo add` to add new dependencies (not manual `Cargo.toml` edits). Always use the latest version of packages.
+Use `cargo add` to add new dependencies (not manual `Cargo.toml` edits). Always use the latest version of packages. Specify the crate with `-p`:
 
 ```bash
-cargo add serde --features derive    # add with features
-cargo add rpassword                  # add latest version
+cargo add -p clickhousectl serde --features derive
+cargo add -p clickhouse-cloud-api url
 ```
 
 ## Key details
 
-- CLI is defined with clap derive macros in `src/cli.rs`, dispatched in `src/main.rs`
+- CLI is defined with clap derive macros in `crates/clickhousectl/src/cli.rs`, dispatched in `crates/clickhousectl/src/main.rs`
 - `src/paths.rs` handles `~/.clickhouse/` paths (global install dir); `src/init.rs` handles `.clickhouse/` paths (project-local data dir)
 - `local client` uses `exec()` (process replacement), so code after `cmd.exec()` only runs on failure
 - Error types use `thiserror` in `src/error.rs`; cloud module has its own error type wrapped as `Error::Cloud(String)`
@@ -75,12 +97,12 @@ cargo add rpassword                  # add latest version
 - If the user references a GitHub issue (e.g. "work on issue 3"), use `gh issue view 3` to get the details, then create a branch like `issue-3-short-description`.
 - Update `README.md` and any relevant documentation as part of the change — PRs should include doc updates for new or changed functionality.
 - Commit to the branch, push, and create a PR with `gh pr create`.
-- Releases are done by tagging `main` (e.g. `git tag v0.1.4 && git push origin v0.1.4`), which triggers the GitHub Actions release workflow. Ensure version is updated in Cargo.toml.
+- Releases are done by tagging `main` (e.g. `git tag v0.1.4 && git push origin v0.1.4`), which triggers the GitHub Actions release workflow. Ensure version is updated in `crates/clickhousectl/Cargo.toml`.
 
 ## Testing locally
 
 ```bash
-cargo run -- local install stable
-cargo run -- local server start      # starts server in .clickhouse/servers/default/
-cargo run -- local client --query "SELECT 1"
+cargo run -p clickhousectl -- local install stable
+cargo run -p clickhousectl -- local server start      # starts server in .clickhouse/servers/default/
+cargo run -p clickhousectl -- local client --query "SELECT 1"
 ```
