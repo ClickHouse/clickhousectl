@@ -26,9 +26,21 @@ enum AuthMode {
 }
 
 pub struct CloudClient {
+    /// Library client for migrated commands.
+    lib_client: clickhouse_cloud_api::Client,
+    /// Raw reqwest client for unmigrated commands (kept during transition).
     client: Client,
     auth_mode: AuthMode,
     base_url: String,
+}
+
+/// Convert CLI base URL (with /v1 suffix) to library base URL (without /v1).
+/// The library prefixes /v1 in its own path construction.
+fn lib_base_url(cli_base_url: &str) -> String {
+    cli_base_url
+        .strip_suffix("/v1")
+        .unwrap_or(cli_base_url)
+        .to_string()
 }
 
 impl CloudClient {
@@ -56,7 +68,14 @@ impl CloudClient {
             let base_url = url_override
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+            let lib_client = clickhouse_cloud_api::Client::with_http_client(
+                client.clone(),
+                lib_base_url(&base_url),
+                &key,
+                &secret,
+            );
             return Ok(Self {
+                lib_client,
                 client,
                 auth_mode: Self::basic_auth(&key, &secret),
                 base_url,
@@ -69,7 +88,14 @@ impl CloudClient {
 
         // Try file credentials
         if let Some(creds) = crate::cloud::credentials::load_credentials() {
+            let lib_client = clickhouse_cloud_api::Client::with_http_client(
+                client.clone(),
+                lib_base_url(&base_url),
+                &creds.api_key,
+                &creds.api_secret,
+            );
             return Ok(Self {
+                lib_client,
                 client,
                 auth_mode: Self::basic_auth(&creds.api_key, &creds.api_secret),
                 base_url,
@@ -80,7 +106,14 @@ impl CloudClient {
         let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
         let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
         if let (Some(key), Some(secret)) = (env_key, env_secret) {
+            let lib_client = clickhouse_cloud_api::Client::with_http_client(
+                client.clone(),
+                lib_base_url(&base_url),
+                &key,
+                &secret,
+            );
             return Ok(Self {
+                lib_client,
                 client,
                 auth_mode: Self::basic_auth(&key, &secret),
                 base_url,
@@ -94,7 +127,13 @@ impl CloudClient {
             let base_url = url_override
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or(tokens.api_url.clone());
+            let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
+                client.clone(),
+                lib_base_url(&base_url),
+                &tokens.access_token,
+            );
             return Ok(Self {
+                lib_client,
                 client,
                 auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
                 base_url,
@@ -116,6 +155,41 @@ impl CloudClient {
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
         matches!(self.auth_mode, AuthMode::Bearer(_))
+    }
+
+    /// Access the library client for migrated commands.
+    pub fn api(&self) -> &clickhouse_cloud_api::Client {
+        &self.lib_client
+    }
+
+    /// Unwrap an `ApiResponse<T>` into `T`, returning an error if the result is empty.
+    pub fn unwrap_response<T>(
+        response: clickhouse_cloud_api::models::ApiResponse<T>,
+    ) -> Result<T> {
+        response.result.ok_or_else(|| CloudError {
+            message: "Empty response from API".into(),
+        })
+    }
+
+    /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
+    pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
+        let message = match &err {
+            clickhouse_cloud_api::Error::Api { status, message } => {
+                let mut msg = message.clone();
+                if *status == 403 && self.is_bearer_auth() {
+                    msg.push_str(
+                        "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
+                         Use API key authentication for write operations:\n  \
+                         clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
+                         Learn how to create API keys:\n  \
+                         https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
+                    );
+                }
+                msg
+            }
+            other => other.to_string(),
+        };
+        CloudError { message }
     }
 
     fn auth_header_value(&self) -> &str {
@@ -250,14 +324,6 @@ impl CloudClient {
         }
     }
 
-    fn org_prometheus_url(&self, org_id: &str, filtered_metrics: Option<bool>) -> String {
-        let path = format!("/organizations/{}/prometheus", org_id);
-        match filtered_metrics {
-            Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
-            None => self.url(&path),
-        }
-    }
-
     fn service_prometheus_url(
         &self,
         org_id: &str,
@@ -272,26 +338,6 @@ impl CloudClient {
             Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
             None => self.url(&path),
         }
-    }
-
-    fn org_usage_url(
-        &self,
-        org_id: &str,
-        from_date: &str,
-        to_date: &str,
-        filters: &[String],
-    ) -> String {
-        let path = format!("/organizations/{}/usageCost", org_id);
-        let mut params = vec![
-            format!("from_date={}", urlencoding::encode(from_date)),
-            format!("to_date={}", urlencoding::encode(to_date)),
-        ];
-        params.extend(
-            filters
-                .iter()
-                .map(|f| format!("filter={}", urlencoding::encode(f))),
-        );
-        format!("{}?{}", self.url(&path), params.join("&"))
     }
 
     fn activities_url(
@@ -342,13 +388,28 @@ impl CloudClient {
             .await
     }
 
-    // Organization endpoints
-    pub async fn list_organizations(&self) -> Result<Vec<Organization>> {
-        self.get("/organizations").await
+    // Organization endpoints (delegated to library client)
+    pub async fn list_organizations(
+        &self,
+    ) -> Result<Vec<clickhouse_cloud_api::models::Organization>> {
+        let response = self
+            .api()
+            .organization_get_list()
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    pub async fn get_organization(&self, org_id: &str) -> Result<Organization> {
-        self.get(&format!("/organizations/{}", org_id)).await
+    pub async fn get_organization(
+        &self,
+        org_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::Organization> {
+        let response = self
+            .api()
+            .organization_get(org_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Service endpoints
@@ -558,14 +619,18 @@ impl CloudClient {
         .await
     }
 
-    // Phase 3 - Org endpoints
+    // Organization endpoints (delegated to library client)
     pub async fn update_organization(
         &self,
         org_id: &str,
-        request: &UpdateOrgRequest,
-    ) -> Result<Organization> {
-        self.patch(&format!("/organizations/{}", org_id), request)
+        request: &clickhouse_cloud_api::models::OrganizationPatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::Organization> {
+        let response = self
+            .api()
+            .organization_update(org_id, request)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn get_org_prometheus(
@@ -573,11 +638,11 @@ impl CloudClient {
         org_id: &str,
         filtered_metrics: Option<bool>,
     ) -> Result<String> {
-        self.request_text(
-            self.client
-                .get(self.org_prometheus_url(org_id, filtered_metrics)),
-        )
-        .await
+        let fm_str = filtered_metrics.map(|b| if b { "true" } else { "false" });
+        self.api()
+            .organization_prometheus_get(org_id, fm_str)
+            .await
+            .map_err(|e| self.convert_error(e))
     }
 
     pub async fn get_org_usage(
@@ -586,12 +651,14 @@ impl CloudClient {
         from_date: &str,
         to_date: &str,
         filters: &[String],
-    ) -> Result<UsageCost> {
-        self.request(
-            self.client
-                .get(self.org_usage_url(org_id, from_date, to_date, filters)),
-        )
-        .await
+    ) -> Result<clickhouse_cloud_api::models::UsageCost> {
+        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
+        let response = self
+            .api()
+            .usage_cost_get(org_id, from_date, to_date, &filter_refs)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Phase 4 - Member endpoints
@@ -749,7 +816,12 @@ impl CloudClient {
             0 => Err(CloudError {
                 message: "No organization found for this API key".into(),
             }),
-            1 => Ok(orgs[0].id.clone()),
+            1 => {
+                let id = orgs[0].id.as_ref().ok_or_else(|| CloudError {
+                    message: "Organization missing ID".into(),
+                })?;
+                Ok(id.to_string())
+            }
             _ => Err(CloudError {
                 message: "Multiple organizations found. Specify --org-id to choose one. \
                           Use `clickhousectl cloud org list` to see your organizations."
@@ -763,9 +835,19 @@ impl CloudClient {
 mod tests {
     use super::*;
 
+    const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
+
     fn test_client() -> CloudClient {
+        let http = Client::builder().build().unwrap();
+        let lib_client = clickhouse_cloud_api::Client::with_http_client(
+            http.clone(),
+            DEFAULT_LIB_BASE_URL,
+            "test_key",
+            "test_secret",
+        );
         CloudClient {
-            client: Client::builder().build().unwrap(),
+            lib_client,
+            client: http,
             auth_mode: AuthMode::Basic("Basic test".to_string()),
             base_url: DEFAULT_BASE_URL.to_string(),
         }
@@ -815,54 +897,6 @@ mod tests {
     }
 
     #[test]
-    fn org_usage_url_requires_dates_and_supports_filters() {
-        let client = test_client();
-        let url = client.org_usage_url(
-            "org-1",
-            "2024-01-01T00:00:00Z",
-            "2024-01-31T23:59:59Z",
-            &[
-                "entityType=service".to_string(),
-                "entityName=my svc".to_string(),
-            ],
-        );
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/usageCost?from_date=2024-01-01T00%3A00%3A00Z&to_date=2024-01-31T23%3A59%3A59Z&filter=entityType%3Dservice&filter=entityName%3Dmy%20svc"
-        );
-    }
-
-    #[test]
-    fn org_usage_url_includes_only_required_dates_without_filters() {
-        let client = test_client();
-        let url = client.org_usage_url("org-1", "2024-01-01", "2024-01-31", &[]);
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/usageCost?from_date=2024-01-01&to_date=2024-01-31"
-        );
-    }
-
-    #[test]
-    fn org_prometheus_url_supports_filtered_metrics_query() {
-        let client = test_client();
-        let url = client.org_prometheus_url("org-1", Some(true));
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/prometheus?filtered_metrics=true"
-        );
-    }
-
-    #[test]
-    fn org_prometheus_url_omits_filtered_metrics_when_not_set() {
-        let client = test_client();
-        let url = client.org_prometheus_url("org-1", None);
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/prometheus"
-        );
-    }
-
-    #[test]
     fn service_prometheus_url_supports_filtered_metrics_query() {
         let client = test_client();
         let url = client.service_prometheus_url("org-1", "svc-1", Some(false));
@@ -884,8 +918,15 @@ mod tests {
 
     #[test]
     fn is_bearer_auth_returns_true_for_bearer() {
+        let http = Client::builder().build().unwrap();
+        let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
+            http.clone(),
+            DEFAULT_LIB_BASE_URL,
+            "test_token",
+        );
         let client = CloudClient {
-            client: Client::builder().build().unwrap(),
+            lib_client,
+            client: http,
             auth_mode: AuthMode::Bearer("Bearer test".to_string()),
             base_url: DEFAULT_BASE_URL.to_string(),
         };
@@ -896,5 +937,93 @@ mod tests {
     fn is_bearer_auth_returns_false_for_basic() {
         let client = test_client();
         assert!(!client.is_bearer_auth());
+    }
+
+    #[test]
+    fn lib_base_url_strips_v1_suffix() {
+        assert_eq!(
+            lib_base_url("https://api.clickhouse.cloud/v1"),
+            "https://api.clickhouse.cloud"
+        );
+    }
+
+    #[test]
+    fn lib_base_url_preserves_url_without_v1() {
+        assert_eq!(
+            lib_base_url("https://api.clickhouse.cloud"),
+            "https://api.clickhouse.cloud"
+        );
+    }
+
+    #[test]
+    fn lib_base_url_strips_v1_from_staging() {
+        assert_eq!(
+            lib_base_url("https://api.clickhouse-staging.com/v1"),
+            "https://api.clickhouse-staging.com"
+        );
+    }
+
+    #[test]
+    fn api_returns_library_client_ref() {
+        let client = test_client();
+        // Verify api() returns a reference without panicking
+        let _api = client.api();
+    }
+
+    #[test]
+    fn unwrap_response_extracts_result() {
+        let response = clickhouse_cloud_api::models::ApiResponse {
+            status: Some(200.0),
+            request_id: None,
+            result: Some(vec!["hello".to_string()]),
+            error: None,
+        };
+        let result = CloudClient::unwrap_response(response).unwrap();
+        assert_eq!(result, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn unwrap_response_errors_on_empty_result() {
+        let response: clickhouse_cloud_api::models::ApiResponse<String> =
+            clickhouse_cloud_api::models::ApiResponse {
+                status: Some(200.0),
+                request_id: None,
+                result: None,
+                error: None,
+            };
+        let err = CloudClient::unwrap_response(response).unwrap_err();
+        assert_eq!(err.message, "Empty response from API");
+    }
+
+    #[test]
+    fn convert_error_includes_oauth_hint_for_403_bearer() {
+        let http = Client::builder().build().unwrap();
+        let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
+            http.clone(),
+            DEFAULT_LIB_BASE_URL,
+            "test_token",
+        );
+        let client = CloudClient {
+            lib_client,
+            client: http,
+            auth_mode: AuthMode::Bearer("Bearer test".to_string()),
+            base_url: DEFAULT_BASE_URL.to_string(),
+        };
+        let err = client.convert_error(clickhouse_cloud_api::Error::Api {
+            status: 403,
+            message: "Forbidden".into(),
+        });
+        assert!(err.message.contains("Hint: You are authenticated via OAuth"));
+    }
+
+    #[test]
+    fn convert_error_no_hint_for_403_basic() {
+        let client = test_client();
+        let err = client.convert_error(clickhouse_cloud_api::Error::Api {
+            status: 403,
+            message: "Forbidden".into(),
+        });
+        assert!(!err.message.contains("Hint:"));
+        assert_eq!(err.message, "Forbidden");
     }
 }

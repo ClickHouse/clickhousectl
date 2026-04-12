@@ -33,95 +33,6 @@ fn test_delete_response_serialize() {
 }
 
 #[test]
-fn test_organization_deserialize() {
-    let json = r#"{"id":"org-1","name":"My Org","createdAt":"2024-01-01T00:00:00Z"}"#;
-    let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.id, "org-1");
-    assert_eq!(org.name, "My Org");
-    assert_eq!(org.created_at.as_deref(), Some("2024-01-01T00:00:00Z"));
-}
-
-#[test]
-fn test_organization_deserialize_minimal() {
-    let json = r#"{"id":"org-1","name":"My Org"}"#;
-    let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.id, "org-1");
-    assert!(org.created_at.is_none());
-    assert!(org.private_endpoints.is_none());
-    assert!(org.byoc_config.is_none());
-    assert!(org.enable_core_dumps.is_none());
-}
-
-#[test]
-fn test_organization_with_new_fields() {
-    let json = serde_json::json!({
-        "id": "org-1",
-        "name": "My Org",
-        "createdAt": "2024-01-01T00:00:00Z",
-        "privateEndpoints": [{"id": "pe-1", "description": "VPC endpoint", "cloudProvider": "aws", "region": "us-east-1"}],
-        "byocConfig": [{
-            "id": "byoc-1",
-            "state": "infra-ready",
-            "accountName": "prod-account",
-            "regionId": "us-east-1",
-            "cloudProvider": "aws",
-            "displayName": "Production BYOC"
-        }],
-        "enableCoreDumps": true
-    });
-    let org: Organization = serde_json::from_value(json).unwrap();
-    let pe = &org.private_endpoints.as_ref().unwrap()[0];
-    assert_eq!(pe.id.as_deref(), Some("pe-1"));
-    assert_eq!(pe.description.as_deref(), Some("VPC endpoint"));
-    assert_eq!(pe.cloud_provider.as_deref(), Some("aws"));
-    assert_eq!(pe.region.as_deref(), Some("us-east-1"));
-    let byoc = &org.byoc_config.as_ref().unwrap()[0];
-    assert_eq!(byoc.id.as_deref(), Some("byoc-1"));
-    assert_eq!(byoc.state.as_deref(), Some("infra-ready"));
-    assert_eq!(byoc.account_name.as_deref(), Some("prod-account"));
-    assert_eq!(byoc.region_id.as_deref(), Some("us-east-1"));
-    assert_eq!(byoc.cloud_provider.as_deref(), Some("aws"));
-    assert_eq!(byoc.display_name.as_deref(), Some("Production BYOC"));
-    assert_eq!(org.enable_core_dumps, Some(true));
-}
-
-#[test]
-fn test_byoc_config_state_values() {
-    for state in &["infra-ready", "infra-provisioning", "infra-terminated"] {
-        let json = serde_json::json!({
-            "id": "org-1",
-            "name": "My Org",
-            "byocConfig": [{
-                "id": "byoc-1",
-                "state": state
-            }]
-        });
-        let org: Organization = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            org.byoc_config.as_ref().unwrap()[0].state.as_deref(),
-            Some(*state)
-        );
-    }
-}
-
-#[test]
-fn test_organization_roundtrip() {
-    let org = Organization {
-        id: "org-1".to_string(),
-        name: "My Org".to_string(),
-        created_at: Some("2024-01-01T00:00:00Z".to_string()),
-        private_endpoints: None,
-        byoc_config: None,
-        enable_core_dumps: None,
-    };
-    let json = serde_json::to_string(&org).unwrap();
-    let org2: Organization = serde_json::from_str(&json).unwrap();
-    assert_eq!(org.id, org2.id);
-    assert_eq!(org.name, org2.name);
-    assert_eq!(org.created_at, org2.created_at);
-}
-
-#[test]
 fn test_service_deserialize_full() {
     let json = serde_json::json!({
         "id": "svc-1",
@@ -594,17 +505,17 @@ fn test_service_state_command_values() {
 
 #[test]
 fn test_api_response_with_result() {
-    let json = r#"{"result":{"id":"org-1","name":"My Org"}}"#;
-    let resp: ApiResponse<Organization> = serde_json::from_str(json).unwrap();
+    let json = r#"{"result":{"key":"value"}}"#;
+    let resp: ApiResponse<serde_json::Value> = serde_json::from_str(json).unwrap();
     assert!(resp.result.is_some());
     assert!(resp.error.is_none());
-    assert_eq!(resp.result.unwrap().id, "org-1");
+    assert_eq!(resp.result.unwrap()["key"], "value");
 }
 
 #[test]
 fn test_api_response_with_error() {
     let json = r#"{"error":{"code":"NOT_FOUND","message":"Not found"}}"#;
-    let resp: ApiResponse<Organization> = serde_json::from_str(json).unwrap();
+    let resp: ApiResponse<serde_json::Value> = serde_json::from_str(json).unwrap();
     assert!(resp.result.is_none());
     assert!(resp.error.is_some());
     assert_eq!(resp.error.unwrap().message, "Not found");
@@ -835,171 +746,6 @@ fn test_create_private_endpoint_request_no_desc() {
 }
 
 // ── Org type tests ──────────────────────────────────────────────────
-
-#[test]
-fn test_update_org_request_serialize() {
-    let req = UpdateOrgRequest {
-        name: Some("New Org Name".to_string()),
-        ..Default::default()
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["name"], "New Org Name");
-    assert!(json.get("privateEndpoints").is_none());
-    assert!(json.get("enableCoreDumps").is_none());
-
-    let req_empty = UpdateOrgRequest::default();
-    let json_empty = serde_json::to_value(&req_empty).unwrap();
-    assert!(json_empty.get("name").is_none());
-}
-
-#[test]
-fn test_update_org_request_full() {
-    let req = UpdateOrgRequest {
-        name: Some("Updated Org".to_string()),
-        private_endpoints: Some(OrganizationPrivateEndpointsPatch {
-            remove: Some(vec![OrganizationPatchPrivateEndpoint {
-                id: Some("vpce-123".to_string()),
-                description: Some("My endpoint".to_string()),
-                cloud_provider: Some(CloudProvider::Aws),
-                region: Some(CloudRegion::UsEast1),
-            }]),
-        }),
-        enable_core_dumps: Some(true),
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["name"], "Updated Org");
-    assert_eq!(json["privateEndpoints"]["remove"][0]["id"], "vpce-123");
-    assert_eq!(
-        json["privateEndpoints"]["remove"][0]["cloudProvider"],
-        "aws"
-    );
-    assert_eq!(json["enableCoreDumps"], true);
-}
-
-#[test]
-fn test_organization_private_endpoints_patch_serialize() {
-    let patch = OrganizationPrivateEndpointsPatch {
-        remove: Some(vec![OrganizationPatchPrivateEndpoint {
-            id: Some("vpce-2".to_string()),
-            description: None,
-            cloud_provider: None,
-            region: None,
-        }]),
-    };
-    let json = serde_json::to_value(&patch).unwrap();
-    assert_eq!(json["remove"][0]["id"], "vpce-2");
-}
-
-#[test]
-fn test_organization_private_endpoints_patch_empty() {
-    let patch = OrganizationPrivateEndpointsPatch::default();
-    let json = serde_json::to_value(&patch).unwrap();
-    assert!(json.get("remove").is_none());
-}
-
-#[test]
-fn test_organization_private_endpoints_patch_excludes_deprecated_add() {
-    let patch = OrganizationPrivateEndpointsPatch {
-        remove: Some(vec![OrganizationPatchPrivateEndpoint {
-            id: Some("vpce-2".to_string()),
-            description: None,
-            cloud_provider: None,
-            region: None,
-        }]),
-    };
-    let json = serde_json::to_value(&patch).unwrap();
-    assert!(json.get("add").is_none());
-}
-
-// ── UsageCostRecord tests ───────────────────────────────────────────
-
-#[test]
-fn test_usage_cost_record_deserialize() {
-    let json = serde_json::json!({
-        "dataWarehouseId": "dw-1",
-        "serviceId": "svc-1",
-        "date": "2024-01-15",
-        "entityType": "service",
-        "entityId": "svc-1",
-        "entityName": "my-service",
-        "metrics": {
-            "computeCHC": 42.5,
-            "storageCHC": 10.0
-        },
-        "totalCHC": 52.5,
-        "locked": true
-    });
-    let record: UsageCostRecord = serde_json::from_value(json).unwrap();
-    assert_eq!(record.data_warehouse_id.as_deref(), Some("dw-1"));
-    assert_eq!(record.service_id.as_deref(), Some("svc-1"));
-    assert_eq!(record.date.as_deref(), Some("2024-01-15"));
-    assert_eq!(record.entity_type.as_deref(), Some("service"));
-    assert_eq!(record.entity_id.as_deref(), Some("svc-1"));
-    assert_eq!(record.entity_name.as_deref(), Some("my-service"));
-    assert_eq!(record.metrics.as_ref().unwrap().compute_chc, Some(42.5));
-    assert_eq!(record.metrics.as_ref().unwrap().storage_chc, Some(10.0));
-    assert_eq!(record.total_chc, Some(52.5));
-    assert_eq!(record.locked, Some(true));
-}
-
-#[test]
-fn test_usage_cost_record_entity_types() {
-    for entity_type in &["datawarehouse", "service", "clickpipe"] {
-        let json = serde_json::json!({"entityType": entity_type});
-        let record: UsageCostRecord = serde_json::from_value(json).unwrap();
-        assert_eq!(record.entity_type.as_deref(), Some(*entity_type));
-    }
-}
-
-#[test]
-fn test_usage_cost_record_serialize_total_chc() {
-    let record = UsageCostRecord {
-        data_warehouse_id: None,
-        service_id: None,
-        date: None,
-        entity_type: None,
-        entity_id: None,
-        entity_name: None,
-        metrics: None,
-        total_chc: Some(99.99),
-        locked: None,
-    };
-    let json = serde_json::to_value(&record).unwrap();
-    // Verify camelCase rename for totalCHC
-    assert_eq!(json["totalCHC"], 99.99);
-    assert!(json.get("totalChc").is_none());
-}
-
-#[test]
-fn test_usage_cost_metrics_roundtrip() {
-    let metrics = UsageCostMetrics {
-        storage_chc: Some(1.25),
-        backup_chc: Some(2.5),
-        compute_chc: Some(3.75),
-        data_transfer_chc: Some(4.0),
-        initial_load_chc: Some(5.0),
-        public_data_transfer_chc: Some(6.0),
-        inter_region_tier1_data_transfer_chc: Some(7.0),
-        inter_region_tier2_data_transfer_chc: Some(8.0),
-        inter_region_tier3_data_transfer_chc: Some(9.0),
-        inter_region_tier4_data_transfer_chc: Some(10.0),
-    };
-    let json = serde_json::to_value(&metrics).unwrap();
-    assert_eq!(json["storageCHC"], 1.25);
-    assert_eq!(json["backupCHC"], 2.5);
-    assert_eq!(json["computeCHC"], 3.75);
-    assert_eq!(json["dataTransferCHC"], 4.0);
-    assert_eq!(json["initialLoadCHC"], 5.0);
-    assert_eq!(json["publicDataTransferCHC"], 6.0);
-    assert_eq!(json["interRegionTier1DataTransferCHC"], 7.0);
-    assert_eq!(json["interRegionTier2DataTransferCHC"], 8.0);
-    assert_eq!(json["interRegionTier3DataTransferCHC"], 9.0);
-    assert_eq!(json["interRegionTier4DataTransferCHC"], 10.0);
-
-    let roundtrip: UsageCostMetrics = serde_json::from_value(json).unwrap();
-    assert_eq!(roundtrip.storage_chc, Some(1.25));
-    assert_eq!(roundtrip.inter_region_tier4_data_transfer_chc, Some(10.0));
-}
 
 // ── Member type tests ───────────────────────────────────────────────
 
@@ -1445,63 +1191,6 @@ fn test_backup_type_values() {
 }
 
 // ── UsageCost wrapper tests ─────────────────────────────────────────
-
-#[test]
-fn test_usage_cost_deserialize() {
-    let json = serde_json::json!({
-        "grandTotalCHC": 123.45,
-        "costs": [{
-            "serviceId": "svc-1",
-            "date": "2024-01-15",
-            "totalCHC": 52.5
-        }]
-    });
-    let cost: UsageCost = serde_json::from_value(json).unwrap();
-    assert_eq!(cost.grand_total_chc, Some(123.45));
-    assert_eq!(cost.costs.as_ref().unwrap().len(), 1);
-    assert_eq!(cost.costs.as_ref().unwrap()[0].total_chc, Some(52.5));
-}
-
-#[test]
-fn test_usage_cost_deserialize_empty_costs_array() {
-    let json = serde_json::json!({
-        "grandTotalCHC": 0,
-        "costs": []
-    });
-    let cost: UsageCost = serde_json::from_value(json).unwrap();
-    assert_eq!(cost.grand_total_chc, Some(0.0));
-    assert!(cost.costs.as_ref().unwrap().is_empty());
-}
-
-#[test]
-fn test_usage_cost_serialize_grand_total() {
-    let cost = UsageCost {
-        grand_total_chc: Some(99.99),
-        costs: Some(vec![UsageCostRecord {
-            data_warehouse_id: None,
-            service_id: Some("svc-1".to_string()),
-            date: Some("2024-01-15".to_string()),
-            entity_type: None,
-            entity_id: None,
-            entity_name: Some("my-service".to_string()),
-            metrics: None,
-            total_chc: Some(99.99),
-            locked: None,
-        }]),
-    };
-    let json = serde_json::to_value(&cost).unwrap();
-    assert_eq!(json["grandTotalCHC"], 99.99);
-    assert_eq!(json["costs"][0]["serviceId"], "svc-1");
-    assert!(json.get("grandTotalChc").is_none());
-}
-
-#[test]
-fn test_usage_cost_minimal() {
-    let json = serde_json::json!({});
-    let cost: UsageCost = serde_json::from_value(json).unwrap();
-    assert!(cost.grand_total_chc.is_none());
-    assert!(cost.costs.is_none());
-}
 
 // ── PrivateEndpointConfig tests ─────────────────────────────────────
 

@@ -1,6 +1,11 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
+use clickhouse_cloud_api::models::{
+    OrganizationPatchPrivateEndpoint, OrganizationPatchPrivateEndpointCloudprovider,
+    OrganizationPatchPrivateEndpointRegion, OrganizationPatchRequest,
+    OrganizationPrivateEndpointsPatch,
+};
 use std::io::{IsTerminal, Write};
 use std::str::FromStr;
 use tabled::{Table, Tabled, settings::Style};
@@ -188,9 +193,21 @@ fn parse_org_private_endpoint_remove(
             "id" => endpoint.id = Some(raw_value.to_string()),
             "description" => endpoint.description = Some(raw_value.to_string()),
             "cloud-provider" => {
-                endpoint.cloud_provider = Some(parse_enum(raw_value, "cloud_provider")?)
+                endpoint.cloud_provider = Some(
+                    serde_json::from_value::<OrganizationPatchPrivateEndpointCloudprovider>(
+                        serde_json::Value::String(raw_value.to_string()),
+                    )
+                    .expect("enum with Unknown variant should always deserialize"),
+                );
             }
-            "region" => endpoint.region = Some(parse_enum(raw_value, "region")?),
+            "region" => {
+                endpoint.region = Some(
+                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
+                        serde_json::Value::String(raw_value.to_string()),
+                    )
+                    .expect("enum with Unknown variant should always deserialize"),
+                );
+            }
             _ => {
                 return Err(format!(
                     "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
@@ -217,6 +234,7 @@ fn parse_org_private_endpoints_patch(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Some(OrganizationPrivateEndpointsPatch {
+        add: None,
         remove: Some(endpoints),
     }))
 }
@@ -260,8 +278,8 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
         let rows: Vec<Row> = orgs
             .into_iter()
             .map(|o| Row {
-                name: o.name,
-                id: o.id,
+                name: o.name.unwrap_or_default(),
+                id: o.id.map(|u| u.to_string()).unwrap_or_default(),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -279,10 +297,16 @@ pub async fn org_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!("Organization: {}", org.name);
-        println!("  ID: {}", org.id);
+        println!(
+            "Organization: {}",
+            org.name.as_deref().unwrap_or("")
+        );
+        println!(
+            "  ID: {}",
+            org.id.map(|u| u.to_string()).unwrap_or_default()
+        );
         if let Some(created) = org.created_at {
-            println!("  Created: {}", created);
+            println!("  Created: {}", created.to_rfc3339());
         }
     }
     Ok(())
@@ -581,8 +605,8 @@ fn build_query_endpoint_create_request(
 
 fn build_org_update_request(
     opts: &OrgUpdateOptions,
-) -> Result<UpdateOrgRequest, Box<dyn std::error::Error>> {
-    Ok(UpdateOrgRequest {
+) -> Result<OrganizationPatchRequest, Box<dyn std::error::Error>> {
+    Ok(OrganizationPatchRequest {
         name: opts.name.clone(),
         private_endpoints: parse_org_private_endpoints_patch(&opts.remove_private_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
@@ -1105,7 +1129,11 @@ pub async fn org_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!("Organization updated: {} ({})", org.name, org.id);
+        println!(
+            "Organization updated: {} ({})",
+            org.name.as_deref().unwrap_or(""),
+            org.id.map(|u| u.to_string()).unwrap_or_default()
+        );
     }
     Ok(())
 }

@@ -58,6 +58,44 @@ impl Client {
         }
     }
 
+    /// Create a new client with a pre-built HTTP client and Basic auth.
+    ///
+    /// Use this when you need to customize the underlying `reqwest::Client`
+    /// (e.g. to set a custom user-agent or timeout).
+    pub fn with_http_client(
+        http: reqwest::Client,
+        base_url: impl Into<String>,
+        key_id: impl Into<String>,
+        key_secret: impl Into<String>,
+    ) -> Self {
+        Self {
+            http,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            auth: Auth::Basic {
+                key_id: key_id.into(),
+                key_secret: key_secret.into(),
+            },
+        }
+    }
+
+    /// Create a new client with a pre-built HTTP client and Bearer auth.
+    ///
+    /// Use this when you need to customize the underlying `reqwest::Client`
+    /// (e.g. to set a custom user-agent or timeout).
+    pub fn with_http_client_bearer(
+        http: reqwest::Client,
+        base_url: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Self {
+        Self {
+            http,
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            auth: Auth::Bearer {
+                token: token.into(),
+            },
+        }
+    }
+
     /// Replace the Bearer token without rebuilding the client.
     ///
     /// Useful for refreshing an expired OAuth token.
@@ -922,8 +960,14 @@ impl Client {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Api { status: status.as_u16(), message: text });
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text),
+            });
         }
         Ok(resp.text().await?)
     }
@@ -1986,8 +2030,14 @@ impl Client {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Api { status: status.as_u16(), message: text });
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text),
+            });
         }
         Ok(resp.text().await?)
     }
