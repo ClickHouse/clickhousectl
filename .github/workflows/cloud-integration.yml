@@ -40,11 +40,5 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build clickhousectl
-        run: cargo build
-
-      - name: Run fast tests
-        run: cargo test
-
       - name: Run cloud integration suite
         run: cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
