@@ -121,7 +121,7 @@ impl Client {
     pub async fn organization_get_list(
         &self,
     ) -> Result<ApiResponse<Vec<Organization>>, Error> {
-        let path = format!("/v1/organizations");
+        let path = "/v1/organizations".to_string();
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
