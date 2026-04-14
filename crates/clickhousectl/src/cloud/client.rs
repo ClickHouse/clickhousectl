@@ -1,4 +1,4 @@
-use crate::cloud::types::*;
+use crate::cloud::types::{ApiResponse, DeleteResponse};
 use base64::Engine;
 use reqwest::Client;
 use std::env;
@@ -431,17 +431,11 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        command: ServiceStateCommand,
+        command: clickhouse_cloud_api::models::ServiceStatePatchRequestCommand,
     ) -> Result<clickhouse_cloud_api::models::Service> {
-        use clickhouse_cloud_api::models::{
-            ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
-        };
-        let lib_command = match command {
-            ServiceStateCommand::Start => ServiceStatePatchRequestCommand::Start,
-            ServiceStateCommand::Stop => ServiceStatePatchRequestCommand::Stop,
-        };
+        use clickhouse_cloud_api::models::ServiceStatePatchRequest;
         let request = ServiceStatePatchRequest {
-            command: Some(lib_command),
+            command: Some(command),
         };
         let response = self
             .api()

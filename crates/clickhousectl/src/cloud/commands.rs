@@ -1,28 +1,66 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
-use crate::cloud::types::*;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
-    BackupConfigurationPatchRequest, InstanceServiceQueryApiEndpointsPostRequest,
-    IpAccessListEntry, OrganizationPatchPrivateEndpoint,
+    BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
+    InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
+    IpAccessListPatch, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1, Service,
+    ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
+    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
+    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
+    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
+    ServiceReplicaScalingPatchRequest, ServiceStatePatchRequestCommand,
     ServicPrivateEndpointePostRequest,
-    // Aliased to avoid conflict with CLI types still in `use crate::cloud::types::*`.
-    // TODO(phase-3e): Remove aliases once CLI types are deleted from types.rs.
-    IpAccessListPatch as LibIpAccessListPatch,
-    InstancePrivateEndpointsPatch as LibInstancePrivateEndpointsPatch,
-    InstanceTagsPatch as LibInstanceTagsPatch, ResourceTagsV1,
-    Service as LibService,
-    ServiceEndpointChange as LibServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServiceEndpointProtocol as LibServiceEndpointProtocol,
-    ServicePasswordPatchRequest as LibServicePasswordPatchRequest, ServicePatchRequest,
-    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
-    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
+
+/// Known provider values for client-side validation (from OpenAPI spec).
+const KNOWN_PROVIDERS: &[&str] = &["aws", "gcp", "azure"];
+
+/// Known region values for client-side validation (from OpenAPI spec).
+const KNOWN_REGIONS: &[&str] = &[
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-south-1",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "eu-central-1",
+    "eu-west-1",
+    "eu-west-2",
+    "il-central-1",
+    "us-east-1",
+    "us-east-2",
+    "us-west-2",
+    "us-east1",
+    "us-central1",
+    "europe-west4",
+    "asia-southeast1",
+    "asia-northeast1",
+    "eastus",
+    "eastus2",
+    "westus3",
+    "germanywestcentral",
+    "centralus",
+];
+
+/// Known release channel values for client-side validation (from OpenAPI spec).
+const KNOWN_RELEASE_CHANNELS: &[&str] = &["slow", "default", "fast"];
+
+/// Known compliance type values for client-side validation (from OpenAPI spec).
+const KNOWN_COMPLIANCE_TYPES: &[&str] = &["hipaa", "pci"];
+
+/// Known service profile values for client-side validation (from OpenAPI spec).
+const KNOWN_PROFILES: &[&str] = &[
+    "v1-default",
+    "v1-highmem-xs",
+    "v1-highmem-s",
+    "v1-highmem-m",
+    "v1-highmem-l",
+    "v1-highmem-xl",
+];
 
 /// Resolve org ID from explicit arg or auto-detect
 async fn resolve_org_id(
@@ -42,7 +80,7 @@ async fn resolve_service(
     org_id: &str,
     name: Option<&str>,
     id: Option<&str>,
-) -> Result<LibService, Box<dyn std::error::Error>> {
+) -> Result<Service, Box<dyn std::error::Error>> {
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
@@ -144,8 +182,8 @@ fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> 
 fn parse_ip_access_list_patch(
     add: &[String],
     remove: &[String],
-) -> Option<LibIpAccessListPatch> {
-    let patch = LibIpAccessListPatch {
+) -> Option<IpAccessListPatch> {
+    let patch = IpAccessListPatch {
         add: parse_ip_access_entries(add),
         remove: parse_ip_access_entries(remove),
     };
@@ -156,8 +194,8 @@ fn parse_ip_access_list_patch(
 fn parse_private_endpoint_ids_patch(
     add: &[String],
     remove: &[String],
-) -> Option<LibInstancePrivateEndpointsPatch> {
-    let patch = LibInstancePrivateEndpointsPatch {
+) -> Option<InstancePrivateEndpointsPatch> {
+    let patch = InstancePrivateEndpointsPatch {
         add: (!add.is_empty()).then(|| add.to_vec()),
         remove: (!remove.is_empty()).then(|| remove.to_vec()),
     };
@@ -168,11 +206,11 @@ fn parse_private_endpoint_ids_patch(
 fn parse_service_endpoint_changes(
     enable: &[String],
     disable: &[String],
-) -> Result<Option<Vec<LibServiceEndpointChange>>, Box<dyn std::error::Error>> {
+) -> Result<Option<Vec<ServiceEndpointChange>>, Box<dyn std::error::Error>> {
     let mut changes = Vec::new();
 
     for protocol in enable {
-        changes.push(LibServiceEndpointChange {
+        changes.push(ServiceEndpointChange {
             protocol: Some(parse_serde_enum::<ServiceEndpointChangeProtocol>(
                 protocol,
                 "endpoint",
@@ -183,7 +221,7 @@ fn parse_service_endpoint_changes(
     }
 
     for protocol in disable {
-        changes.push(LibServiceEndpointChange {
+        changes.push(ServiceEndpointChange {
             protocol: Some(parse_serde_enum::<ServiceEndpointChangeProtocol>(
                 protocol,
                 "endpoint",
@@ -199,8 +237,8 @@ fn parse_service_endpoint_changes(
 fn parse_instance_tags_patch(
     add: &[String],
     remove: &[String],
-) -> Result<Option<LibInstanceTagsPatch>, Box<dyn std::error::Error>> {
-    let patch = LibInstanceTagsPatch {
+) -> Result<Option<InstanceTagsPatch>, Box<dyn std::error::Error>> {
+    let patch = InstanceTagsPatch {
         add: parse_tags(add)?,
         remove: parse_tags(remove)?,
     };
@@ -650,12 +688,12 @@ fn build_create_service_request(
         provider: Some(parse_serde_enum::<ServicePostRequestProvider>(
             &opts.provider,
             "provider",
-            CloudProvider::known_values(),
+            KNOWN_PROVIDERS,
         )?),
         region: Some(parse_serde_enum::<ServicePostRequestRegion>(
             &opts.region,
             "region",
-            CloudRegion::known_values(),
+            KNOWN_REGIONS,
         )?),
         ip_access_list,
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
@@ -676,7 +714,7 @@ fn build_create_service_request(
                 parse_serde_enum::<ServicePostRequestReleasechannel>(
                     value,
                     "release_channel",
-                    ReleaseChannel::known_values(),
+                    KNOWN_RELEASE_CHANNELS,
                 )
             })
             .transpose()?,
@@ -693,7 +731,7 @@ fn build_create_service_request(
                 parse_serde_enum::<ServicePostRequestCompliancetype>(
                     value,
                     "compliance_type",
-                    ComplianceType::known_values(),
+                    KNOWN_COMPLIANCE_TYPES,
                 )
             })
             .transpose()?,
@@ -704,7 +742,7 @@ fn build_create_service_request(
                 parse_serde_enum::<ServicePostRequestProfile>(
                     value,
                     "profile",
-                    ServiceProfile::known_values(),
+                    KNOWN_PROFILES,
                 )
             })
             .transpose()?,
@@ -737,7 +775,7 @@ fn build_update_service_request(
                 parse_serde_enum::<ServicePatchRequestReleasechannel>(
                     value,
                     "release_channel",
-                    ReleaseChannel::known_values(),
+                    KNOWN_RELEASE_CHANNELS,
                 )
             })
             .transpose()?,
@@ -750,8 +788,8 @@ fn build_update_service_request(
 
 fn build_service_password_patch_request(
     opts: &ServiceResetPasswordOptions,
-) -> LibServicePasswordPatchRequest {
-    LibServicePasswordPatchRequest {
+) -> ServicePasswordPatchRequest {
+    ServicePasswordPatchRequest {
         new_password_hash: opts.new_password_hash.clone(),
         new_double_sha1_hash: opts.new_double_sha1_hash.clone(),
     }
@@ -939,7 +977,7 @@ pub async fn service_delete(
         if matches!(state.as_str(), "running" | "idle" | "starting") {
             eprintln!("Stopping service {} before deletion...", service_id);
             client
-                .change_service_state(&org_id, service_id, ServiceStateCommand::Stop)
+                .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
                 .await?;
 
             // Poll until the service is stopped
@@ -980,7 +1018,7 @@ pub async fn service_start(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
-        .change_service_state(&org_id, service_id, ServiceStateCommand::Start)
+        .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Start)
         .await?;
 
     if json {
@@ -1007,7 +1045,7 @@ pub async fn service_stop(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
-        .change_service_state(&org_id, service_id, ServiceStateCommand::Stop)
+        .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
         .await?;
 
     if json {
@@ -2093,7 +2131,7 @@ pub async fn service_client(
         .as_ref()
         .and_then(|eps| {
             eps.iter()
-                .find(|e| e.protocol.as_ref() == Some(&LibServiceEndpointProtocol::Nativesecure))
+                .find(|e| e.protocol.as_ref() == Some(&ServiceEndpointProtocol::Nativesecure))
         })
         .ok_or_else(|| {
             format!(
@@ -2144,7 +2182,7 @@ pub async fn service_client(
     // Resolve password: --generate-password > --password > env var > TTY prompt
     let password = if opts.generate_password {
         eprintln!("Generating new password for service '{}'...", svc_name);
-        let request = LibServicePasswordPatchRequest::default();
+        let request = ServicePasswordPatchRequest::default();
         let resp = client.reset_password(&org_id, &svc_id, &request).await?;
         let new_password = resp.password.ok_or("API did not return a password")?;
         // Wait in case of any delay in password propagation
