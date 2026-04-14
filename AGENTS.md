@@ -1,13 +1,13 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Repo structure
 
 This is a Cargo workspace with two crates:
 
 - **`crates/clickhousectl/`** — the CLI binary (version manager + cloud CLI)
-- **`crates/clickhouse-cloud-api/`** — typed Rust client library for the ClickHouse Cloud API (used by the CLI for all cloud commands)
+- **`crates/clickhouse-cloud-api/`** — typed Rust client library for the ClickHouse Cloud API (not yet integrated into the CLI)
 
 ## Build & Test
 
@@ -46,7 +46,7 @@ Typed Rust client generated from the ClickHouse Cloud OpenAPI spec. Contains:
 - `src/error.rs` — error types (Http, Json, Api)
 - `tests/spec_coverage_test.rs` — validates the client and models cover the OpenAPI spec
 
-The CLI depends on this library for all cloud API calls.
+The library is standalone and not yet a dependency of the CLI.
 
 ## Adding commands
 
