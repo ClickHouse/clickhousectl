@@ -3,11 +3,13 @@ use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
+    BackupConfigurationPatchRequest, InstanceServiceQueryApiEndpointsPostRequest,
     IpAccessListEntry, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
+    ServicPrivateEndpointePostRequest,
     // Aliased to avoid conflict with CLI types still in `use crate::cloud::types::*`.
-    // TODO(phase-3e): Remove aliases once CLI Service/Endpoint types are deleted from types.rs.
+    // TODO(phase-3e): Remove aliases once CLI types are deleted from types.rs.
     IpAccessListPatch as LibIpAccessListPatch,
     InstancePrivateEndpointsPatch as LibInstancePrivateEndpointsPatch,
     InstanceTagsPatch as LibInstanceTagsPatch, ResourceTagsV1,
@@ -757,8 +759,8 @@ fn build_service_password_patch_request(
 
 fn build_query_endpoint_create_request(
     opts: &QueryEndpointCreateOptions,
-) -> CreateQueryEndpointRequest {
-    CreateQueryEndpointRequest {
+) -> InstanceServiceQueryApiEndpointsPostRequest {
+    InstanceServiceQueryApiEndpointsPostRequest {
         roles: (!opts.roles.is_empty()).then(|| opts.roles.clone()),
         open_api_keys: (!opts.open_api_keys.is_empty()).then(|| opts.open_api_keys.clone()),
         allowed_origins: opts.allowed_origins.clone(),
@@ -832,8 +834,8 @@ fn build_api_key_update_request(
 
 fn build_backup_config_update_request(
     opts: &BackupConfigUpdateOptions,
-) -> UpdateBackupConfigRequest {
-    UpdateBackupConfigRequest {
+) -> BackupConfigurationPatchRequest {
+    BackupConfigurationPatchRequest {
         backup_period_in_hours: opts.backup_period_hours.map(f64::from),
         backup_retention_period_in_hours: opts.backup_retention_period_hours.map(f64::from),
         backup_start_time: opts.backup_start_time.clone(),
@@ -1310,8 +1312,8 @@ pub async fn private_endpoint_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let request = CreatePrivateEndpointRequest {
-        id: endpoint_id.to_string(),
+    let request = ServicPrivateEndpointePostRequest {
+        id: Some(endpoint_id.to_string()),
         description: description.map(String::from),
     };
 
@@ -1348,8 +1350,14 @@ pub async fn private_endpoint_get_config(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Private endpoint configuration for service {}", service_id);
-        println!("  Endpoint Service ID: {}", config.endpoint_service_id);
-        println!("  Private DNS Hostname: {}", config.private_dns_hostname);
+        println!(
+            "  Endpoint Service ID: {}",
+            config.endpoint_service_id.as_deref().unwrap_or_default()
+        );
+        println!(
+            "  Private DNS Hostname: {}",
+            config.private_dns_hostname.as_deref().unwrap_or_default()
+        );
     }
     Ok(())
 }

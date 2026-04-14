@@ -524,71 +524,69 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    // Query endpoint
+    // Query endpoint (delegated to library client)
     pub async fn get_query_endpoint(
         &self,
         org_id: &str,
         service_id: &str,
-    ) -> Result<ServiceQueryEndpoint> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/serviceQueryEndpoint",
-            org_id, service_id
-        ))
-        .await
+    ) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
+        let response = self
+            .api()
+            .instance_query_endpoint_get(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn create_query_endpoint(
         &self,
         org_id: &str,
         service_id: &str,
-        request: &CreateQueryEndpointRequest,
-    ) -> Result<ServiceQueryEndpoint> {
-        self.post(
-            &format!(
-                "/organizations/{}/services/{}/serviceQueryEndpoint",
-                org_id, service_id
-            ),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::InstanceServiceQueryApiEndpointsPostRequest,
+    ) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
+        let response = self
+            .api()
+            .instance_query_endpoint_upsert(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn delete_query_endpoint(&self, org_id: &str, service_id: &str) -> Result<()> {
-        self.delete(&format!(
-            "/organizations/{}/services/{}/serviceQueryEndpoint",
-            org_id, service_id
-        ))
-        .await
+        self.api()
+            .instance_query_endpoint_delete(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(())
     }
 
-    // Private endpoint
+    // Private endpoint (delegated to library client)
     pub async fn create_private_endpoint(
         &self,
         org_id: &str,
         service_id: &str,
-        request: &CreatePrivateEndpointRequest,
-    ) -> Result<InstancePrivateEndpoint> {
-        self.post(
-            &format!(
-                "/organizations/{}/services/{}/privateEndpoint",
-                org_id, service_id
-            ),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::ServicPrivateEndpointePostRequest,
+    ) -> Result<clickhouse_cloud_api::models::InstancePrivateEndpoint> {
+        let response = self
+            .api()
+            .instance_private_endpoint_create(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    // Private endpoint config
+    // Private endpoint config (delegated to library client)
     pub async fn get_service_private_endpoint_config(
         &self,
         org_id: &str,
         service_id: &str,
-    ) -> Result<PrivateEndpointConfig> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/privateEndpointConfig",
-            org_id, service_id
-        ))
-        .await
+    ) -> Result<clickhouse_cloud_api::models::PrivateEndpointConfig> {
+        let response = self
+            .api()
+            .instance_private_endpoint_config_get(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn get_service_prometheus(
@@ -830,33 +828,32 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    // Phase 6 - Backup Config endpoints
+    // Backup Config endpoints (delegated to library client)
     pub async fn get_backup_config(
         &self,
         org_id: &str,
         service_id: &str,
-    ) -> Result<BackupConfiguration> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/backupConfiguration",
-            org_id, service_id
-        ))
-        .await
+    ) -> Result<clickhouse_cloud_api::models::BackupConfiguration> {
+        let response = self
+            .api()
+            .backup_configuration_get(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn update_backup_config(
         &self,
         org_id: &str,
         service_id: &str,
-        request: &UpdateBackupConfigRequest,
-    ) -> Result<BackupConfiguration> {
-        self.patch(
-            &format!(
-                "/organizations/{}/services/{}/backupConfiguration",
-                org_id, service_id
-            ),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::BackupConfigurationPatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::BackupConfiguration> {
+        let response = self
+            .api()
+            .backup_configuration_update(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Helper to get the default organization
