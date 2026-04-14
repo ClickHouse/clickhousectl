@@ -1,6 +1,4 @@
-use crate::cloud::types::{ApiResponse, DeleteResponse};
-use base64::Engine;
-use reqwest::Client;
+use crate::cloud::types::DeleteResponse;
 use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
@@ -21,17 +19,13 @@ impl std::error::Error for CloudError {}
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
-    Basic(String),
-    Bearer(String),
+    Basic,
+    Bearer,
 }
 
 pub struct CloudClient {
-    /// Library client for migrated commands.
     lib_client: clickhouse_cloud_api::Client,
-    /// Raw reqwest client for unmigrated commands (kept during transition).
-    client: Client,
     auth_mode: AuthMode,
-    base_url: String,
 }
 
 /// Convert CLI base URL (with /v1 suffix) to library base URL (without /v1).
@@ -49,7 +43,7 @@ impl CloudClient {
         api_secret: Option<&str>,
         url_override: Option<&str>,
     ) -> Result<Self> {
-        let client = Client::builder()
+        let http = reqwest::Client::builder()
             .user_agent(crate::user_agent::user_agent())
             .build()
             .map_err(|e| CloudError {
@@ -69,16 +63,14 @@ impl CloudClient {
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
             let lib_client = clickhouse_cloud_api::Client::with_http_client(
-                client.clone(),
+                http,
                 lib_base_url(&base_url),
                 &key,
                 &secret,
             );
             return Ok(Self {
                 lib_client,
-                client,
-                auth_mode: Self::basic_auth(&key, &secret),
-                base_url,
+                auth_mode: AuthMode::Basic,
             });
         }
 
@@ -89,16 +81,14 @@ impl CloudClient {
         // Try file credentials
         if let Some(creds) = crate::cloud::credentials::load_credentials() {
             let lib_client = clickhouse_cloud_api::Client::with_http_client(
-                client.clone(),
+                http,
                 lib_base_url(&base_url),
                 &creds.api_key,
                 &creds.api_secret,
             );
             return Ok(Self {
                 lib_client,
-                client,
-                auth_mode: Self::basic_auth(&creds.api_key, &creds.api_secret),
-                base_url,
+                auth_mode: AuthMode::Basic,
             });
         }
 
@@ -107,16 +97,14 @@ impl CloudClient {
         let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
         if let (Some(key), Some(secret)) = (env_key, env_secret) {
             let lib_client = clickhouse_cloud_api::Client::with_http_client(
-                client.clone(),
+                http,
                 lib_base_url(&base_url),
                 &key,
                 &secret,
             );
             return Ok(Self {
                 lib_client,
-                client,
-                auth_mode: Self::basic_auth(&key, &secret),
-                base_url,
+                auth_mode: AuthMode::Basic,
             });
         }
 
@@ -128,15 +116,13 @@ impl CloudClient {
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or(tokens.api_url.clone());
             let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
-                client.clone(),
+                http,
                 lib_base_url(&base_url),
                 &tokens.access_token,
             );
             return Ok(Self {
                 lib_client,
-                client,
-                auth_mode: AuthMode::Bearer(format!("Bearer {}", tokens.access_token)),
-                base_url,
+                auth_mode: AuthMode::Bearer,
             });
         }
 
@@ -145,16 +131,10 @@ impl CloudClient {
         })
     }
 
-    fn basic_auth(key: &str, secret: &str) -> AuthMode {
-        let credentials = format!("{}:{}", key, secret);
-        let encoded = base64::engine::general_purpose::STANDARD.encode(credentials);
-        AuthMode::Basic(format!("Basic {}", encoded))
-    }
-
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
-        matches!(self.auth_mode, AuthMode::Bearer(_))
+        matches!(self.auth_mode, AuthMode::Bearer)
     }
 
     /// Access the library client for migrated commands.
@@ -190,152 +170,6 @@ impl CloudClient {
             other => other.to_string(),
         };
         CloudError { message }
-    }
-
-    fn auth_header_value(&self) -> &str {
-        match &self.auth_mode {
-            AuthMode::Basic(v) | AuthMode::Bearer(v) => v,
-        }
-    }
-
-    /// If using OAuth and the response is 403, append a hint about API key auth.
-    fn maybe_append_oauth_hint(&self, message: &mut String, status: reqwest::StatusCode) {
-        if status == reqwest::StatusCode::FORBIDDEN && self.is_bearer_auth() {
-            message.push_str(
-                "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
-                 Use API key authentication for write operations:\n  \
-                 clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET\n\n\
-                 Learn how to create API keys:\n  \
-                 https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
-            );
-        }
-    }
-
-    /// Send a request and parse the JSON response body.
-    async fn request<T: serde::de::DeserializeOwned>(
-        &self,
-        req: reqwest::RequestBuilder,
-    ) -> Result<T> {
-        let response = req
-            .header("Authorization", self.auth_header_value())
-            .send()
-            .await
-            .map_err(|e| CloudError {
-                message: format!("Request failed: {}", e),
-            })?;
-
-        let status = response.status();
-        let body = response.text().await.map_err(|e| CloudError {
-            message: format!("Failed to read response: {}", e),
-        })?;
-
-        if !status.is_success() {
-            let mut message = if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
-                && let Some(err) = api_resp.error
-            {
-                err.message
-            } else {
-                format!("API error ({}): {}", status, body)
-            };
-            self.maybe_append_oauth_hint(&mut message, status);
-            return Err(CloudError { message });
-        }
-
-        let api_response: ApiResponse<T> = serde_json::from_str(&body).map_err(|e| CloudError {
-            message: format!("Failed to parse response: {} - Body: {}", e, body),
-        })?;
-
-        api_response.result.ok_or_else(|| CloudError {
-            message: "Empty response from API".into(),
-        })
-    }
-
-    /// Send a request expecting no response body.
-    async fn request_no_body(&self, req: reqwest::RequestBuilder) -> Result<()> {
-        let response = req
-            .header("Authorization", self.auth_header_value())
-            .send()
-            .await
-            .map_err(|e| CloudError {
-                message: format!("Request failed: {}", e),
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let mut message = if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
-                && let Some(err) = api_resp.error
-            {
-                err.message
-            } else {
-                format!("API error ({}): {}", status, body)
-            };
-            self.maybe_append_oauth_hint(&mut message, status);
-            return Err(CloudError { message });
-        }
-
-        Ok(())
-    }
-
-    /// Send a request and return a plaintext response body.
-    async fn request_text(&self, req: reqwest::RequestBuilder) -> Result<String> {
-        let response = req
-            .header("Authorization", self.auth_header_value())
-            .send()
-            .await
-            .map_err(|e| CloudError {
-                message: format!("Request failed: {}", e),
-            })?;
-
-        let status = response.status();
-        let body = response.text().await.map_err(|e| CloudError {
-            message: format!("Failed to read response: {}", e),
-        })?;
-
-        if !status.is_success() {
-            let mut message = if let Ok(api_resp) = serde_json::from_str::<ApiResponse<()>>(&body)
-                && let Some(err) = api_resp.error
-            {
-                err.message
-            } else {
-                format!("API error ({}): {}", status, body)
-            };
-            self.maybe_append_oauth_hint(&mut message, status);
-            return Err(CloudError { message });
-        }
-
-        Ok(body)
-    }
-
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url, path)
-    }
-
-    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.request(self.client.get(self.url(path))).await
-    }
-
-    async fn post<T: serde::de::DeserializeOwned, B: serde::Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        self.request(self.client.post(self.url(path)).json(body))
-            .await
-    }
-
-    async fn patch<T: serde::de::DeserializeOwned, B: serde::Serialize>(
-        &self,
-        path: &str,
-        body: &B,
-    ) -> Result<T> {
-        self.request(self.client.patch(self.url(path)).json(body))
-            .await
-    }
-
-    async fn delete(&self, path: &str) -> Result<()> {
-        self.request_no_body(self.client.delete(self.url(path)))
-            .await
     }
 
     // Organization endpoints (delegated to library client)
@@ -879,34 +713,30 @@ mod tests {
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
 
     fn test_client() -> CloudClient {
-        let http = Client::builder().build().unwrap();
+        let http = reqwest::Client::builder().build().unwrap();
         let lib_client = clickhouse_cloud_api::Client::with_http_client(
-            http.clone(),
+            http,
             DEFAULT_LIB_BASE_URL,
             "test_key",
             "test_secret",
         );
         CloudClient {
             lib_client,
-            client: http,
-            auth_mode: AuthMode::Basic("Basic test".to_string()),
-            base_url: DEFAULT_BASE_URL.to_string(),
+            auth_mode: AuthMode::Basic,
         }
     }
 
     #[test]
     fn is_bearer_auth_returns_true_for_bearer() {
-        let http = Client::builder().build().unwrap();
+        let http = reqwest::Client::builder().build().unwrap();
         let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
-            http.clone(),
+            http,
             DEFAULT_LIB_BASE_URL,
             "test_token",
         );
         let client = CloudClient {
             lib_client,
-            client: http,
-            auth_mode: AuthMode::Bearer("Bearer test".to_string()),
-            base_url: DEFAULT_BASE_URL.to_string(),
+            auth_mode: AuthMode::Bearer,
         };
         assert!(client.is_bearer_auth());
     }
@@ -975,17 +805,15 @@ mod tests {
 
     #[test]
     fn convert_error_includes_oauth_hint_for_403_bearer() {
-        let http = Client::builder().build().unwrap();
+        let http = reqwest::Client::builder().build().unwrap();
         let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
-            http.clone(),
+            http,
             DEFAULT_LIB_BASE_URL,
             "test_token",
         );
         let client = CloudClient {
             lib_client,
-            client: http,
-            auth_mode: AuthMode::Bearer("Bearer test".to_string()),
-            base_url: DEFAULT_BASE_URL.to_string(),
+            auth_mode: AuthMode::Bearer,
         };
         let err = client.convert_error(clickhouse_cloud_api::Error::Api {
             status: 403,

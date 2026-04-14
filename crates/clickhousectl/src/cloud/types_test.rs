@@ -1,4 +1,4 @@
-use super::types::{ApiResponse, DeleteResponse};
+use super::types::DeleteResponse;
 
 // Contract policy for this suite:
 // - mirror GA request/response schemas and query surfaces only
@@ -29,26 +29,6 @@ fn test_delete_response_serialize() {
     assert_eq!(json["status"], 200.0);
     assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
     assert!(json.get("request_id").is_none());
-}
-
-// ── ApiResponse wrapper tests ───────────────────────────────────────
-
-#[test]
-fn test_api_response_with_result() {
-    let json = r#"{"result":{"key":"value"}}"#;
-    let resp: ApiResponse<serde_json::Value> = serde_json::from_str(json).unwrap();
-    assert!(resp.result.is_some());
-    assert!(resp.error.is_none());
-    assert_eq!(resp.result.unwrap()["key"], "value");
-}
-
-#[test]
-fn test_api_response_with_error() {
-    let json = r#"{"error":{"code":"NOT_FOUND","message":"Not found"}}"#;
-    let resp: ApiResponse<serde_json::Value> = serde_json::from_str(json).unwrap();
-    assert!(resp.result.is_none());
-    assert!(resp.error.is_some());
-    assert_eq!(resp.error.unwrap().message, "Not found");
 }
 
 // ── Activity tests (library types) ─────────────────────────────────
