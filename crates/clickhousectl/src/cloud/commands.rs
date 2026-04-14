@@ -870,7 +870,14 @@ pub async fn service_start(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} starting (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} starting (state: {})",
+            svc.name.as_deref().unwrap_or("unknown"),
+            svc.state
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        );
     }
     Ok(())
 }
@@ -890,7 +897,14 @@ pub async fn service_stop(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} stopping (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} stopping (state: {})",
+            svc.name.as_deref().unwrap_or("unknown"),
+            svc.state
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        );
     }
     Ok(())
 }

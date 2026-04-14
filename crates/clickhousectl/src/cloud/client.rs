@@ -412,15 +412,14 @@ impl CloudClient {
     }
 
     pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<DeleteResponse> {
-        let body = self
-            .request_text(self.client.delete(self.url(&format!(
-                "/organizations/{}/services/{}",
-                org_id, service_id
-            ))))
-            .await?;
-
-        serde_json::from_str::<DeleteResponse>(&body).map_err(|e| CloudError {
-            message: format!("Failed to parse delete response: {} - Body: {}", e, body),
+        let response = self
+            .api()
+            .instance_delete(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
         })
     }
 
@@ -429,13 +428,23 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         command: ServiceStateCommand,
-    ) -> Result<Service> {
-        let request = StateChangeRequest { command };
-        self.patch(
-            &format!("/organizations/{}/services/{}/state", org_id, service_id),
-            &request,
-        )
-        .await
+    ) -> Result<clickhouse_cloud_api::models::Service> {
+        use clickhouse_cloud_api::models::{
+            ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+        };
+        let lib_command = match command {
+            ServiceStateCommand::Start => ServiceStatePatchRequestCommand::Start,
+            ServiceStateCommand::Stop => ServiceStatePatchRequestCommand::Stop,
+        };
+        let request = ServiceStatePatchRequest {
+            command: Some(lib_command),
+        };
+        let response = self
+            .api()
+            .instance_state_update(org_id, service_id, &request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Backup endpoints (delegated to library client)
