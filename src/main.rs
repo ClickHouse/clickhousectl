@@ -15,19 +15,30 @@ use cli::{
     CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
 };
+use clap::error::ErrorKind;
 
 use cloud::CloudClient;
 use error::{Error, Result};
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // For --help and --version, show the update notice after the output
+            if e.kind() == ErrorKind::DisplayHelp || e.kind() == ErrorKind::DisplayVersion {
+                e.print().expect("failed to print output");
+                update::print_cached_update_notice();
+                std::process::exit(0);
+            }
+            e.exit();
+        }
+    };
 
-    // For non-update commands: print a cached update notice (sync, no network)
-    // and spawn a background task to refresh the cache.
+    // Spawn a background task to refresh the update cache for non-update commands.
+    // The notice itself is only shown on --help (above), not during normal execution.
     let is_update_cmd = matches!(cli.command, Commands::Update(_));
     let cache_refresh = if !is_update_cmd {
-        update::print_cached_update_notice();
         Some(tokio::spawn(update::refresh_update_cache()))
     } else {
         None
