@@ -5,6 +5,7 @@ mod init;
 mod local;
 mod paths;
 mod skills;
+mod update;
 mod user_agent;
 mod version_manager;
 
@@ -12,7 +13,7 @@ use clap::Parser;
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
     CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs,
+    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
 };
 
 use cloud::CloudClient;
@@ -22,7 +23,24 @@ use error::{Error, Result};
 async fn main() {
     let cli = Cli::parse();
 
+    // For non-update commands: print a cached update notice (sync, no network)
+    // and spawn a background task to refresh the cache.
+    let is_update_cmd = matches!(cli.command, Commands::Update(_));
+    let cache_refresh = if !is_update_cmd {
+        update::print_cached_update_notice();
+        Some(tokio::spawn(update::refresh_update_cache()))
+    } else {
+        None
+    };
+
     let result = run(cli.command).await;
+
+    // Give the cache refresh a brief window to finish so short-lived commands
+    // don't always drop it before the write completes. The background HTTP
+    // request itself has a 400ms timeout, so 500ms here is enough headroom.
+    if let Some(handle) = cache_refresh {
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
+    }
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
@@ -35,6 +53,27 @@ async fn run(cmd: Commands) -> Result<()> {
         Commands::Local(args) => local::run(args.command, args.json).await,
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
+        Commands::Update(args) => run_update(args).await,
+    }
+}
+
+async fn run_update(args: UpdateArgs) -> Result<()> {
+    if args.check {
+        match update::check_for_update().await? {
+            Some((current, latest)) => {
+                println!(
+                    "Update available: v{} → v{}",
+                    current, latest
+                );
+                println!("Run `clickhousectl update` to upgrade.");
+            }
+            None => {
+                println!("Already up to date (v{}).", env!("CARGO_PKG_VERSION"));
+            }
+        }
+        Ok(())
+    } else {
+        update::perform_update().await
     }
 }
 

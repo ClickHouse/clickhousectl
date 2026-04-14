@@ -478,6 +478,20 @@ Supports global or project scope installation. Project scope installs Skills int
 - `--all` install Skills for all supported agents
 - `--detected-only` install Skills for supported agents that were detected on the system
 
+## Self-update
+
+`clickhousectl` can update itself to the latest release:
+
+```bash
+# Update to the latest version
+clickhousectl update
+
+# Check for updates without installing
+clickhousectl update --check
+```
+
+The CLI also checks for updates in the background (at most once per 24 hours) and displays a notice when a newer version is available.
+
 ## Cloud integration testing
 
 Cloud commands are tested against a real ClickHouse Cloud workspace. All changes to Cloud commands must pass CI testing before merge. CI tests are under [`tests/cloud_cli.rs`](tests/cloud_cli.rs).
