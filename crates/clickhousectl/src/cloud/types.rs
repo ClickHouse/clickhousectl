@@ -229,13 +229,6 @@ string_enum! {
 }
 
 flexible_string_enum! {
-    pub enum AssignedRoleType {
-        System => "system",
-        Custom => "custom",
-    }
-}
-
-flexible_string_enum! {
     pub enum ServiceTier {
         Development => "development",
         Production => "production",
@@ -300,13 +293,6 @@ string_enum! {
     pub enum ServiceStateCommand {
         Start => "start",
         Stop => "stop",
-    }
-}
-
-flexible_string_enum! {
-    pub enum ApiKeyState {
-        Enabled => "enabled",
-        Disabled => "disabled",
     }
 }
 
@@ -377,17 +363,6 @@ pub struct InstanceTagsPatch {
 pub struct ServiceEndpointChange {
     pub protocol: ServiceToggleableEndpointProtocol,
     pub enabled: bool,
-}
-
-/// Role assigned to an API key, member, or invitation
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AssignedRole {
-    pub role_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_type: Option<AssignedRoleType>,
 }
 
 // =============================================================================
@@ -748,95 +723,6 @@ pub struct CreatePrivateEndpointRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-}
-
-// =============================================================================
-// API Key types
-// =============================================================================
-
-/// API key
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApiKey {
-    pub id: String,
-    pub name: String,
-    pub state: ApiKeyState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub roles: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_roles: Option<Vec<AssignedRole>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_suffix: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub used_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip_access_list: Option<Vec<IpAccessEntry>>,
-}
-
-/// Hash data for pre-hashed API key creation
-#[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ApiKeyHashData {
-    pub key_id_hash: String,
-    pub key_id_suffix: String,
-    pub key_secret_hash: String,
-}
-
-/// Create API key request
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateApiKeyRequest {
-    pub name: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<ApiKeyState>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_role_ids: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip_access_list: Option<Vec<IpAccessEntry>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hash_data: Option<ApiKeyHashData>,
-}
-
-/// Create API key response (includes the secret, shown only once)
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateApiKeyResponse {
-    pub key: ApiKey,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_secret: Option<String>,
-}
-
-/// Update API key request
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateApiKeyRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_role_ids: Option<Vec<String>>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<ApiKeyState>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ip_access_list: Option<Vec<IpAccessEntry>>,
 }
 
 // =============================================================================

@@ -271,28 +271,6 @@ fn test_service_toggleable_endpoint_protocol_values() {
     }
 }
 
-#[test]
-fn test_assigned_role_deserialize() {
-    let json = serde_json::json!({
-        "roleId": "role-uuid-1",
-        "roleName": "Admin",
-        "roleType": "system"
-    });
-    let role: AssignedRole = serde_json::from_value(json).unwrap();
-    assert_eq!(role.role_id, "role-uuid-1");
-    assert_eq!(role.role_name.as_deref(), Some("Admin"));
-    assert_eq!(role.role_type.as_deref(), Some("system"));
-}
-
-#[test]
-fn test_assigned_role_minimal() {
-    let json = serde_json::json!({"roleId": "role-uuid-1"});
-    let role: AssignedRole = serde_json::from_value(json).unwrap();
-    assert_eq!(role.role_id, "role-uuid-1");
-    assert!(role.role_name.is_none());
-    assert!(role.role_type.is_none());
-}
-
 // ── Request serialization tests ─────────────────────────────────────
 
 #[test]
@@ -658,164 +636,6 @@ fn test_create_private_endpoint_request_no_desc() {
 
 // ── API Key type tests ──────────────────────────────────────────────
 
-#[test]
-fn test_api_key_deserialize() {
-    let json = serde_json::json!({
-        "id": "key-1",
-        "name": "my-key",
-        "state": "enabled",
-        "roles": ["admin", "developer"],
-        "assignedRoles": [
-            {"roleId": "role-1", "roleName": "Admin", "roleType": "system"}
-        ],
-        "keySuffix": "abcd",
-        "createdAt": "2024-01-15T10:00:00Z",
-        "expireAt": "2025-01-15T10:00:00Z",
-        "usedAt": "2024-06-01T08:00:00Z",
-        "ipAccessList": [{"source": "10.0.0.0/8", "description": "VPN"}]
-    });
-    let key: ApiKey = serde_json::from_value(json).unwrap();
-    assert_eq!(key.id, "key-1");
-    assert_eq!(key.name, "my-key");
-    assert_eq!(key.state, "enabled");
-    assert_eq!(key.roles.as_ref().unwrap(), &["admin", "developer"]);
-    assert_eq!(key.assigned_roles.as_ref().unwrap().len(), 1);
-    assert_eq!(key.key_suffix.as_deref(), Some("abcd"));
-    assert_eq!(key.created_at.as_deref(), Some("2024-01-15T10:00:00Z"));
-    assert_eq!(key.expire_at.as_deref(), Some("2025-01-15T10:00:00Z"));
-    assert_eq!(key.used_at.as_deref(), Some("2024-06-01T08:00:00Z"));
-    assert_eq!(key.ip_access_list.as_ref().unwrap().len(), 1);
-}
-
-#[test]
-fn test_api_key_state_values() {
-    for state in &["enabled", "disabled"] {
-        let json = serde_json::json!({
-            "id": "key-1",
-            "name": "test",
-            "state": state
-        });
-        let key: ApiKey = serde_json::from_value(json).unwrap();
-        assert_eq!(key.state, *state);
-    }
-}
-
-#[test]
-fn test_create_api_key_request_serialize() {
-    let req = CreateApiKeyRequest {
-        name: "ci-key".to_string(),
-        expire_at: None,
-        state: None,
-        assigned_role_ids: None,
-        ip_access_list: None,
-        hash_data: None,
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["name"], "ci-key");
-    assert!(json.get("expireAt").is_none());
-    assert!(json.get("state").is_none());
-    assert!(json.get("assignedRoleIds").is_none());
-    assert!(json.get("ipAccessList").is_none());
-    assert!(json.get("hashData").is_none());
-}
-
-#[test]
-fn test_create_api_key_request_full() {
-    let req = CreateApiKeyRequest {
-        name: "full-key".to_string(),
-        expire_at: Some("2025-12-31T23:59:59Z".to_string()),
-        state: Some(ApiKeyState::Enabled),
-        assigned_role_ids: Some(vec!["role-uuid-1".to_string()]),
-        ip_access_list: Some(vec![IpAccessEntry {
-            source: "10.0.0.0/8".to_string(),
-            description: None,
-        }]),
-        hash_data: None,
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["name"], "full-key");
-    assert_eq!(json["expireAt"], "2025-12-31T23:59:59Z");
-    assert_eq!(json["state"], "enabled");
-    assert_eq!(json["assignedRoleIds"], serde_json::json!(["role-uuid-1"]));
-    assert_eq!(json["ipAccessList"][0]["source"], "10.0.0.0/8");
-}
-
-#[test]
-fn test_create_api_key_request_with_hash_data() {
-    let req = CreateApiKeyRequest {
-        name: "prehashed-key".to_string(),
-        expire_at: None,
-        state: None,
-        assigned_role_ids: None,
-        ip_access_list: None,
-        hash_data: Some(ApiKeyHashData {
-            key_id_hash: "hash-of-id".to_string(),
-            key_id_suffix: "abcd".to_string(),
-            key_secret_hash: "hash-of-secret".to_string(),
-        }),
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["name"], "prehashed-key");
-    assert_eq!(json["hashData"]["keyIdHash"], "hash-of-id");
-    assert_eq!(json["hashData"]["keyIdSuffix"], "abcd");
-    assert_eq!(json["hashData"]["keySecretHash"], "hash-of-secret");
-    assert!(json.get("roles").is_none());
-}
-
-#[test]
-fn test_create_api_key_response_deserialize() {
-    let json = serde_json::json!({
-        "key": {
-            "id": "key-2",
-            "name": "new-key",
-            "state": "enabled"
-        },
-        "keyId": "kid-abc",
-        "keySecret": "secret-xyz"
-    });
-    let resp: CreateApiKeyResponse = serde_json::from_value(json).unwrap();
-    assert_eq!(resp.key.id, "key-2");
-    assert_eq!(resp.key.name, "new-key");
-    assert_eq!(resp.key.state, "enabled");
-    assert_eq!(resp.key_id.as_deref(), Some("kid-abc"));
-    assert_eq!(resp.key_secret.as_deref(), Some("secret-xyz"));
-}
-
-#[test]
-fn test_create_api_key_response_without_generated_credentials() {
-    let json = serde_json::json!({
-        "key": {
-            "id": "key-2",
-            "name": "prehashed-key",
-            "state": "enabled"
-        }
-    });
-    let resp: CreateApiKeyResponse = serde_json::from_value(json).unwrap();
-    assert_eq!(resp.key.id, "key-2");
-    assert!(resp.key_id.is_none());
-    assert!(resp.key_secret.is_none());
-}
-
-#[test]
-fn test_update_api_key_request_serialize() {
-    let req = UpdateApiKeyRequest {
-        name: Some("renamed-key".to_string()),
-        assigned_role_ids: Some(vec!["role-uuid-1".to_string()]),
-        expire_at: Some("2025-12-31T00:00:00Z".to_string()),
-        state: Some(ApiKeyState::Disabled),
-        ip_access_list: Some(vec![IpAccessEntry {
-            source: "0.0.0.0/0".to_string(),
-            description: None,
-        }]),
-    };
-    let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["name"], "renamed-key");
-    assert_eq!(json["assignedRoleIds"], serde_json::json!(["role-uuid-1"]));
-    assert_eq!(json["expireAt"], "2025-12-31T00:00:00Z");
-    assert_eq!(json["state"], "disabled");
-    assert_eq!(json["ipAccessList"][0]["source"], "0.0.0.0/0");
-    assert!(json.get("roles").is_none());
-}
 
 // ── Activity, Backup Config ─────────────────────────────────────────
 
@@ -987,25 +807,6 @@ fn test_service_password_patch_request_with_hashes() {
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["newPasswordHash"], "sha256hash");
     assert_eq!(json["newDoubleSha1Hash"], "doublesha1hash");
-}
-
-// ── ApiKeyHashData tests ────────────────────────────────────────────
-
-#[test]
-fn test_api_key_hash_data_roundtrip() {
-    let data = ApiKeyHashData {
-        key_id_hash: "idhash".to_string(),
-        key_id_suffix: "suf1".to_string(),
-        key_secret_hash: "secrethash".to_string(),
-    };
-    let json = serde_json::to_value(&data).unwrap();
-    assert_eq!(json["keyIdHash"], "idhash");
-    assert_eq!(json["keyIdSuffix"], "suf1");
-    assert_eq!(json["keySecretHash"], "secrethash");
-    let data2: ApiKeyHashData = serde_json::from_value(json).unwrap();
-    assert_eq!(data.key_id_hash, data2.key_id_hash);
-    assert_eq!(data.key_id_suffix, data2.key_id_suffix);
-    assert_eq!(data.key_secret_hash, data2.key_secret_hash);
 }
 
 // ── Comprehensive enum value tests (from OpenAPI spec) ──────────────
@@ -1261,19 +1062,6 @@ fn test_service_profile_values() {
         });
         let svc: Service = serde_json::from_value(json).unwrap();
         assert_eq!(svc.profile.as_deref(), Some(*profile));
-    }
-}
-
-#[test]
-fn test_assigned_role_type_values() {
-    for role_type in &["system", "custom"] {
-        let json = serde_json::json!({
-            "roleId": "role-1",
-            "roleName": "Admin",
-            "roleType": role_type
-        });
-        let role: AssignedRole = serde_json::from_value(json).unwrap();
-        assert_eq!(role.role_type.as_deref(), Some(*role_type));
     }
 }
 

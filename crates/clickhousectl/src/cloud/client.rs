@@ -742,41 +742,65 @@ impl CloudClient {
         Ok(())
     }
 
-    // Phase 5 - API Key endpoints
-    pub async fn list_api_keys(&self, org_id: &str) -> Result<Vec<ApiKey>> {
-        self.get(&format!("/organizations/{}/keys", org_id)).await
+    // Phase 5 - API Key endpoints (delegated to library client)
+    pub async fn list_api_keys(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::ApiKey>> {
+        let response = self
+            .api()
+            .openapi_key_get_list(org_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn create_api_key(
         &self,
         org_id: &str,
-        request: &CreateApiKeyRequest,
-    ) -> Result<CreateApiKeyResponse> {
-        self.post(&format!("/organizations/{}/keys", org_id), request)
+        request: &clickhouse_cloud_api::models::ApiKeyPostRequest,
+    ) -> Result<clickhouse_cloud_api::models::ApiKeyPostResponse> {
+        let response = self
+            .api()
+            .openapi_key_create(org_id, request)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    pub async fn get_api_key(&self, org_id: &str, key_id: &str) -> Result<ApiKey> {
-        self.get(&format!("/organizations/{}/keys/{}", org_id, key_id))
+    pub async fn get_api_key(
+        &self,
+        org_id: &str,
+        key_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::ApiKey> {
+        let response = self
+            .api()
+            .openapi_key_get(org_id, key_id)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn update_api_key(
         &self,
         org_id: &str,
         key_id: &str,
-        request: &UpdateApiKeyRequest,
-    ) -> Result<ApiKey> {
-        self.patch(
-            &format!("/organizations/{}/keys/{}", org_id, key_id),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::ApiKeyPatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::ApiKey> {
+        let response = self
+            .api()
+            .openapi_key_update(org_id, key_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<()> {
-        self.delete(&format!("/organizations/{}/keys/{}", org_id, key_id))
+        self.api()
+            .openapi_key_delete(org_id, key_id)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(())
     }
 
     // Phase 6 - Activity endpoints

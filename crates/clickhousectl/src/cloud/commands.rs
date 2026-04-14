@@ -2,9 +2,10 @@ use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
 use crate::cloud::types::*;
 use clickhouse_cloud_api::models::{
-    OrganizationPatchPrivateEndpoint, OrganizationPatchPrivateEndpointCloudprovider,
-    OrganizationPatchPrivateEndpointRegion, OrganizationPatchRequest,
-    OrganizationPrivateEndpointsPatch,
+    ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
+    IpAccessListEntry, OrganizationPatchPrivateEndpoint,
+    OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
 };
 use std::io::{IsTerminal, Write};
 use std::str::FromStr;
@@ -243,19 +244,85 @@ fn parse_api_key_hash_data(
     key_id_hash: Option<&str>,
     key_id_suffix: Option<&str>,
     key_secret_hash: Option<&str>,
-) -> Result<Option<ApiKeyHashData>, Box<dyn std::error::Error>> {
+) -> Result<Option<clickhouse_cloud_api::models::ApiKeyHashData>, Box<dyn std::error::Error>> {
     match (key_id_hash, key_id_suffix, key_secret_hash) {
         (None, None, None) => Ok(None),
-        (Some(key_id_hash), Some(key_id_suffix), Some(key_secret_hash)) => Ok(Some(ApiKeyHashData {
-            key_id_hash: key_id_hash.to_string(),
-            key_id_suffix: key_id_suffix.to_string(),
-            key_secret_hash: key_secret_hash.to_string(),
-        })),
+        (Some(key_id_hash), Some(key_id_suffix), Some(key_secret_hash)) => {
+            Ok(Some(clickhouse_cloud_api::models::ApiKeyHashData {
+                key_id_hash: Some(key_id_hash.to_string()),
+                key_id_suffix: Some(key_id_suffix.to_string()),
+                key_secret_hash: Some(key_secret_hash.to_string()),
+            }))
+        }
         _ => Err(
             "pre-hashed API key input requires --hash-key-id, --hash-key-id-suffix, and --hash-key-secret together"
                 .into(),
         ),
     }
+}
+
+fn parse_ip_access_entries_lib(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
+    (!values.is_empty()).then(|| {
+        values
+            .iter()
+            .map(|value| IpAccessListEntry {
+                source: Some(value.clone()),
+                description: None,
+            })
+            .collect()
+    })
+}
+
+fn parse_uuid_list(values: &[String], field: &str) -> Result<Vec<uuid::Uuid>, Box<dyn std::error::Error>> {
+    values
+        .iter()
+        .map(|s| {
+            uuid::Uuid::parse_str(s)
+                .map_err(|e| format!("invalid {} UUID '{}': {}", field, s, e).into())
+        })
+        .collect()
+}
+
+fn parse_api_key_state_post(
+    value: &str,
+) -> Result<ApiKeyPostRequestState, Box<dyn std::error::Error>> {
+    match value {
+        "enabled" => Ok(ApiKeyPostRequestState::Enabled),
+        "disabled" => Ok(ApiKeyPostRequestState::Disabled),
+        _ => Err(format!(
+            "invalid state: unknown value '{}', expected one of: enabled, disabled",
+            value
+        )
+        .into()),
+    }
+}
+
+fn parse_api_key_state_patch(
+    value: &str,
+) -> Result<ApiKeyPatchRequestState, Box<dyn std::error::Error>> {
+    match value {
+        "enabled" => Ok(ApiKeyPatchRequestState::Enabled),
+        "disabled" => Ok(ApiKeyPatchRequestState::Disabled),
+        _ => Err(format!(
+            "invalid state: unknown value '{}', expected one of: enabled, disabled",
+            value
+        )
+        .into()),
+    }
+}
+
+fn parse_expire_at(
+    value: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, Box<dyn std::error::Error>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| {
+            format!(
+                "invalid expire_at '{}': expected ISO 8601 / RFC 3339 format (e.g. 2025-12-31T23:59:59Z): {}",
+                value, e
+            )
+            .into()
+        })
 }
 
 pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -615,38 +682,56 @@ fn build_org_update_request(
 
 fn build_api_key_create_request(
     opts: &KeyCreateOptions,
-) -> Result<CreateApiKeyRequest, Box<dyn std::error::Error>> {
-    Ok(CreateApiKeyRequest {
-        name: opts.name.clone(),
-        expire_at: opts.expires_at.clone(),
+) -> Result<ApiKeyPostRequest, Box<dyn std::error::Error>> {
+    Ok(ApiKeyPostRequest {
+        name: Some(opts.name.clone()),
+        expire_at: opts
+            .expires_at
+            .as_deref()
+            .map(parse_expire_at)
+            .transpose()?,
         state: opts
             .state
             .as_deref()
-            .map(|value| parse_enum(value, "state"))
+            .map(parse_api_key_state_post)
             .transpose()?,
-        assigned_role_ids: (!opts.role_ids.is_empty()).then(|| opts.role_ids.clone()),
-        ip_access_list: parse_ip_access_entries(&opts.ip_allow),
+        assigned_role_ids: if opts.role_ids.is_empty() {
+            None
+        } else {
+            Some(parse_uuid_list(&opts.role_ids, "role_id")?)
+        },
+        ip_access_list: parse_ip_access_entries_lib(&opts.ip_allow),
         hash_data: parse_api_key_hash_data(
             opts.hash_key_id.as_deref(),
             opts.hash_key_id_suffix.as_deref(),
             opts.hash_key_secret.as_deref(),
         )?,
+        roles: None,
     })
 }
 
 fn build_api_key_update_request(
     opts: &KeyUpdateOptions,
-) -> Result<UpdateApiKeyRequest, Box<dyn std::error::Error>> {
-    Ok(UpdateApiKeyRequest {
+) -> Result<ApiKeyPatchRequest, Box<dyn std::error::Error>> {
+    Ok(ApiKeyPatchRequest {
         name: opts.name.clone(),
-        assigned_role_ids: (!opts.role_ids.is_empty()).then(|| opts.role_ids.clone()),
-        expire_at: opts.expires_at.clone(),
+        assigned_role_ids: if opts.role_ids.is_empty() {
+            None
+        } else {
+            Some(parse_uuid_list(&opts.role_ids, "role_id")?)
+        },
+        expire_at: opts
+            .expires_at
+            .as_deref()
+            .map(parse_expire_at)
+            .transpose()?,
         state: opts
             .state
             .as_deref()
-            .map(|value| parse_enum(value, "state"))
+            .map(parse_api_key_state_patch)
             .transpose()?,
-        ip_access_list: parse_ip_access_entries(&opts.ip_allow),
+        ip_access_list: parse_ip_access_entries_lib(&opts.ip_allow),
+        roles: None,
     })
 }
 
@@ -1508,10 +1593,13 @@ pub async fn key_list(
         let rows: Vec<Row> = keys
             .into_iter()
             .map(|k| Row {
-                name: k.name,
-                id: k.id,
-                state: k.state.to_string(),
-                expires: k.expire_at.unwrap_or_else(|| "never".to_string()),
+                name: k.name.unwrap_or_default(),
+                id: k.id.map(|id| id.to_string()).unwrap_or_default(),
+                state: k.state.map(|s| s.to_string()).unwrap_or_else(|| "-".into()),
+                expires: k
+                    .expire_at
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "never".into()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1535,7 +1623,13 @@ pub async fn key_create(
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("API key created!");
-        println!("  Name: {}", resp.key.name);
+        println!(
+            "  Name: {}",
+            resp.key
+                .as_ref()
+                .and_then(|k| k.name.as_deref())
+                .unwrap_or("unknown")
+        );
         if let Some(key_id) = &resp.key_id {
             println!("  Key ID: {}", key_id);
         }
@@ -1565,17 +1659,28 @@ pub async fn key_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&key)?);
     } else {
-        println!("API Key: {}", key.name);
-        println!("  ID: {}", key.id);
-        println!("  State: {}", key.state);
+        println!(
+            "API Key: {}",
+            key.name.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  ID: {}",
+            key.id.map(|id| id.to_string()).unwrap_or_default()
+        );
+        println!(
+            "  State: {}",
+            key.state
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "-".into())
+        );
         if let Some(roles) = &key.roles {
             println!("  Roles: {}", roles.join(", "));
         }
         if let Some(created) = &key.created_at {
-            println!("  Created: {}", created);
+            println!("  Created: {}", created.to_rfc3339());
         }
         if let Some(expires) = &key.expire_at {
-            println!("  Expires: {}", expires);
+            println!("  Expires: {}", expires.to_rfc3339());
         }
     }
     Ok(())
@@ -1597,9 +1702,20 @@ pub async fn key_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&key)?);
     } else {
-        println!("API key {} updated", key.name);
-        println!("  ID: {}", key.id);
-        println!("  State: {}", key.state);
+        println!(
+            "API key {} updated",
+            key.name.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  ID: {}",
+            key.id.map(|id| id.to_string()).unwrap_or_default()
+        );
+        println!(
+            "  State: {}",
+            key.state
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "-".into())
+        );
     }
     Ok(())
 }
@@ -2124,7 +2240,7 @@ mod tests {
     fn build_api_key_requests_support_hashes_and_ip_allowlists() {
         let create_opts = KeyCreateOptions {
             name: "ci-key".to_string(),
-            role_ids: vec!["role-1".to_string()],
+            role_ids: vec!["a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()],
             expires_at: Some("2025-12-31T23:59:59Z".to_string()),
             state: Some("enabled".to_string()),
             ip_allow: vec!["10.0.0.0/8".to_string()],
@@ -2137,10 +2253,14 @@ mod tests {
         let create_json = serde_json::to_value(&create_request).unwrap();
         assert_eq!(create_json["hashData"]["keyIdHash"], "id-hash");
         assert_eq!(create_json["ipAccessList"][0]["source"], "10.0.0.0/8");
+        assert_eq!(
+            create_json["assignedRoleIds"][0],
+            "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"
+        );
 
         let update_opts = KeyUpdateOptions {
             name: Some("renamed".to_string()),
-            role_ids: vec!["role-1".to_string()],
+            role_ids: vec!["a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()],
             expires_at: Some("2025-01-01T00:00:00Z".to_string()),
             state: Some("disabled".to_string()),
             ip_allow: vec!["0.0.0.0/0".to_string()],
@@ -2151,6 +2271,36 @@ mod tests {
         assert_eq!(update_json["expireAt"], "2025-01-01T00:00:00Z");
         assert_eq!(update_json["state"], "disabled");
         assert_eq!(update_json["ipAccessList"][0]["source"], "0.0.0.0/0");
+    }
+
+    #[test]
+    fn build_api_key_create_request_rejects_invalid_uuid() {
+        let opts = KeyCreateOptions {
+            name: "ci-key".to_string(),
+            role_ids: vec!["not-a-uuid".to_string()],
+            ..Default::default()
+        };
+        let err = build_api_key_create_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("not-a-uuid"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_api_key_create_request_rejects_invalid_expire_at() {
+        let opts = KeyCreateOptions {
+            name: "ci-key".to_string(),
+            expires_at: Some("next-tuesday".to_string()),
+            ..Default::default()
+        };
+        let err = build_api_key_create_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("next-tuesday"),
+            "error should mention the bad value: {}",
+            err
+        );
     }
 
     #[test]
