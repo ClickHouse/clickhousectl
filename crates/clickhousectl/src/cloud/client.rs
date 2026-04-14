@@ -405,10 +405,14 @@ impl CloudClient {
     pub async fn create_service(
         &self,
         org_id: &str,
-        request: &CreateServiceRequest,
-    ) -> Result<CreateServiceResponse> {
-        self.post(&format!("/organizations/{}/services", org_id), request)
+        request: &clickhouse_cloud_api::models::ServicePostRequest,
+    ) -> Result<clickhouse_cloud_api::models::ServicePostResponse> {
+        let response = self
+            .api()
+            .instance_create(org_id, request)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<DeleteResponse> {
@@ -480,13 +484,14 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        request: &UpdateServiceRequest,
-    ) -> Result<Service> {
-        self.patch(
-            &format!("/organizations/{}/services/{}", org_id, service_id),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::ServicePatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::Service> {
+        let response = self
+            .api()
+            .instance_update(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Replica scaling
@@ -494,16 +499,14 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        request: &ReplicaScalingRequest,
-    ) -> Result<ServiceScalingPatchResponse> {
-        self.patch(
-            &format!(
-                "/organizations/{}/services/{}/replicaScaling",
-                org_id, service_id
-            ),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::ServiceReplicaScalingPatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::ServiceScalingPatchResponse> {
+        let response = self
+            .api()
+            .instance_replica_scaling_update(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Reset password
@@ -511,13 +514,14 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        request: &ServicePasswordPatchRequest,
-    ) -> Result<ServicePasswordPatchResponse> {
-        self.patch(
-            &format!("/organizations/{}/services/{}/password", org_id, service_id),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::ServicePasswordPatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::ServicePasswordPatchResponse> {
+        let response = self
+            .api()
+            .instance_password_update(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Query endpoint

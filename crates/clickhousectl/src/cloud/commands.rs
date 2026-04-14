@@ -8,11 +8,18 @@ use clickhouse_cloud_api::models::{
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
     // Aliased to avoid conflict with CLI types still in `use crate::cloud::types::*`.
     // TODO(phase-3e): Remove aliases once CLI Service/Endpoint types are deleted from types.rs.
+    IpAccessListPatch as LibIpAccessListPatch,
+    InstancePrivateEndpointsPatch as LibInstancePrivateEndpointsPatch,
+    InstanceTagsPatch as LibInstanceTagsPatch, ResourceTagsV1,
     Service as LibService,
-    ServiceEndpointProtocol as LibServiceEndpointProtocol,
+    ServiceEndpointChange as LibServiceEndpointChange,
+    ServiceEndpointChangeProtocol, ServiceEndpointProtocol as LibServiceEndpointProtocol,
+    ServicePasswordPatchRequest as LibServicePasswordPatchRequest, ServicePatchRequest,
+    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
+    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
+    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
 };
 use std::io::{IsTerminal, Write};
-use std::str::FromStr;
 use tabled::{Table, Tabled, settings::Style};
 
 /// Resolve org ID from explicit arg or auto-detect
@@ -57,21 +64,35 @@ async fn resolve_service(
     }
 }
 
-fn parse_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Error>>
-where
-    T: FromStr<Err = String>,
-{
-    T::from_str(value).map_err(|err| format!("invalid {}: {}", field, err).into())
+/// Parse a string into a library enum via serde deserialization, with client-side
+/// validation against a known-values list. Library enums have an `Unknown(String)`
+/// catch-all that prevents serde from ever failing, so we validate first.
+fn parse_serde_enum<T: serde::de::DeserializeOwned>(
+    value: &str,
+    field: &str,
+    known_values: &[&str],
+) -> Result<T, Box<dyn std::error::Error>> {
+    if !known_values.contains(&value) {
+        return Err(format!(
+            "invalid {}: unknown value '{}', expected one of: {}",
+            field,
+            value,
+            known_values.join(", ")
+        )
+        .into());
+    }
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|e| format!("invalid {}: {}", field, e).into())
 }
 
-fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
+fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
     match value.split_once('=') {
         Some((key, tag_value)) => {
             let key = key.trim();
             if key.is_empty() {
                 Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
             } else {
-                Ok(ResourceTag {
+                Ok(ResourceTagsV1 {
                     key: key.to_string(),
                     value: Some(tag_value.to_string()),
                 })
@@ -82,7 +103,7 @@ fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
             if key.is_empty() {
                 Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
             } else {
-                Ok(ResourceTag {
+                Ok(ResourceTagsV1 {
                     key: key.to_string(),
                     value: None,
                 })
@@ -91,7 +112,9 @@ fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
     }
 }
 
-fn parse_tags(values: &[String]) -> Result<Option<Vec<ResourceTag>>, Box<dyn std::error::Error>> {
+fn parse_tags(
+    values: &[String],
+) -> Result<Option<Vec<ResourceTagsV1>>, Box<dyn std::error::Error>> {
     if values.is_empty() {
         Ok(None)
     } else {
@@ -104,20 +127,23 @@ fn parse_tags(values: &[String]) -> Result<Option<Vec<ResourceTag>>, Box<dyn std
     }
 }
 
-fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessEntry>> {
+fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
     (!values.is_empty()).then(|| {
         values
             .iter()
-            .map(|value| IpAccessEntry {
-                source: value.clone(),
+            .map(|value| IpAccessListEntry {
+                source: Some(value.clone()),
                 description: None,
             })
             .collect()
     })
 }
 
-fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAccessListPatch> {
-    let patch = IpAccessListPatch {
+fn parse_ip_access_list_patch(
+    add: &[String],
+    remove: &[String],
+) -> Option<LibIpAccessListPatch> {
+    let patch = LibIpAccessListPatch {
         add: parse_ip_access_entries(add),
         remove: parse_ip_access_entries(remove),
     };
@@ -128,8 +154,8 @@ fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAcc
 fn parse_private_endpoint_ids_patch(
     add: &[String],
     remove: &[String],
-) -> Option<InstancePrivateEndpointsPatch> {
-    let patch = InstancePrivateEndpointsPatch {
+) -> Option<LibInstancePrivateEndpointsPatch> {
+    let patch = LibInstancePrivateEndpointsPatch {
         add: (!add.is_empty()).then(|| add.to_vec()),
         remove: (!remove.is_empty()).then(|| remove.to_vec()),
     };
@@ -140,20 +166,28 @@ fn parse_private_endpoint_ids_patch(
 fn parse_service_endpoint_changes(
     enable: &[String],
     disable: &[String],
-) -> Result<Option<Vec<ServiceEndpointChange>>, Box<dyn std::error::Error>> {
+) -> Result<Option<Vec<LibServiceEndpointChange>>, Box<dyn std::error::Error>> {
     let mut changes = Vec::new();
 
     for protocol in enable {
-        changes.push(ServiceEndpointChange {
-            protocol: parse_enum(protocol, "endpoint")?,
-            enabled: true,
+        changes.push(LibServiceEndpointChange {
+            protocol: Some(parse_serde_enum::<ServiceEndpointChangeProtocol>(
+                protocol,
+                "endpoint",
+                &["mysql"],
+            )?),
+            enabled: Some(true),
         });
     }
 
     for protocol in disable {
-        changes.push(ServiceEndpointChange {
-            protocol: parse_enum(protocol, "endpoint")?,
-            enabled: false,
+        changes.push(LibServiceEndpointChange {
+            protocol: Some(parse_serde_enum::<ServiceEndpointChangeProtocol>(
+                protocol,
+                "endpoint",
+                &["mysql"],
+            )?),
+            enabled: Some(false),
         });
     }
 
@@ -163,8 +197,8 @@ fn parse_service_endpoint_changes(
 fn parse_instance_tags_patch(
     add: &[String],
     remove: &[String],
-) -> Result<Option<InstanceTagsPatch>, Box<dyn std::error::Error>> {
-    let patch = InstanceTagsPatch {
+) -> Result<Option<LibInstanceTagsPatch>, Box<dyn std::error::Error>> {
+    let patch = LibInstanceTagsPatch {
         add: parse_tags(add)?,
         remove: parse_tags(remove)?,
     };
@@ -599,31 +633,50 @@ pub struct BackupConfigUpdateOptions {
 
 fn build_create_service_request(
     opts: &CreateServiceOptions,
-) -> Result<CreateServiceRequest, Box<dyn std::error::Error>> {
+) -> Result<ServicePostRequest, Box<dyn std::error::Error>> {
     let ip_access_list = if opts.ip_allow.is_empty() {
-        Some(vec![IpAccessEntry {
-            source: "0.0.0.0/0".to_string(),
+        Some(vec![IpAccessListEntry {
+            source: Some("0.0.0.0/0".to_string()),
             description: Some("Allow all (created by clickhousectl)".to_string()),
         }])
     } else {
         parse_ip_access_entries(&opts.ip_allow)
     };
 
-    Ok(CreateServiceRequest {
-        name: opts.name.clone(),
-        provider: parse_enum(&opts.provider, "provider")?,
-        region: parse_enum(&opts.region, "region")?,
+    Ok(ServicePostRequest {
+        name: Some(opts.name.clone()),
+        provider: Some(parse_serde_enum::<ServicePostRequestProvider>(
+            &opts.provider,
+            "provider",
+            CloudProvider::known_values(),
+        )?),
+        region: Some(parse_serde_enum::<ServicePostRequestRegion>(
+            &opts.region,
+            "region",
+            CloudRegion::known_values(),
+        )?),
         ip_access_list,
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
         num_replicas: opts.num_replicas.map(f64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
-        backup_id: opts.backup_id.clone(),
+        backup_id: opts
+            .backup_id
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|e| format!("invalid backup_id: {}", e))?,
         release_channel: opts
             .release_channel
             .as_deref()
-            .map(|value| parse_enum(value, "release_channel"))
+            .map(|value| {
+                parse_serde_enum::<ServicePostRequestReleasechannel>(
+                    value,
+                    "release_channel",
+                    ReleaseChannel::known_values(),
+                )
+            })
             .transpose()?,
         tags: parse_tags(&opts.tags)?,
         data_warehouse_id: opts.data_warehouse_id.clone(),
@@ -634,23 +687,41 @@ fn build_create_service_request(
         compliance_type: opts
             .compliance_type
             .as_deref()
-            .map(|value| parse_enum(value, "compliance_type"))
+            .map(|value| {
+                parse_serde_enum::<ServicePostRequestCompliancetype>(
+                    value,
+                    "compliance_type",
+                    ComplianceType::known_values(),
+                )
+            })
             .transpose()?,
         profile: opts
             .profile
             .as_deref()
-            .map(|value| parse_enum(value, "profile"))
+            .map(|value| {
+                parse_serde_enum::<ServicePostRequestProfile>(
+                    value,
+                    "profile",
+                    ServiceProfile::known_values(),
+                )
+            })
             .transpose()?,
         private_preview_terms_checked: opts.private_preview_terms_checked.then_some(true),
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
+        // Fields not exposed in CLI
+        byoc_id: None,
+        max_total_memory_gb: None,
+        min_total_memory_gb: None,
+        private_endpoint_ids: None,
+        tier: None,
     })
 }
 
 fn build_update_service_request(
     opts: &ServiceUpdateOptions,
-) -> Result<UpdateServiceRequest, Box<dyn std::error::Error>> {
-    Ok(UpdateServiceRequest {
+) -> Result<ServicePatchRequest, Box<dyn std::error::Error>> {
+    Ok(ServicePatchRequest {
         name: opts.name.clone(),
         ip_access_list: parse_ip_access_list_patch(&opts.add_ip_allow, &opts.remove_ip_allow),
         private_endpoint_ids: parse_private_endpoint_ids_patch(
@@ -660,7 +731,13 @@ fn build_update_service_request(
         release_channel: opts
             .release_channel
             .as_deref()
-            .map(|value| parse_enum(value, "release_channel"))
+            .map(|value| {
+                parse_serde_enum::<ServicePatchRequestReleasechannel>(
+                    value,
+                    "release_channel",
+                    ReleaseChannel::known_values(),
+                )
+            })
             .transpose()?,
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         transparent_data_encryption_key_id: opts.transparent_data_encryption_key_id.clone(),
@@ -671,8 +748,8 @@ fn build_update_service_request(
 
 fn build_service_password_patch_request(
     opts: &ServiceResetPasswordOptions,
-) -> ServicePasswordPatchRequest {
-    ServicePasswordPatchRequest {
+) -> LibServicePasswordPatchRequest {
+    LibServicePasswordPatchRequest {
         new_password_hash: opts.new_password_hash.clone(),
         new_double_sha1_hash: opts.new_double_sha1_hash.clone(),
     }
@@ -778,32 +855,69 @@ pub async fn service_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
+        let svc = response
+            .service
+            .ok_or("API returned no service in create response")?;
+        let password = response
+            .password
+            .ok_or("API returned no password in create response")?;
+
         println!("Service created successfully!");
         println!();
-        println!("Service: {}", response.service.name);
-        println!("  ID: {}", response.service.id);
-        println!("  State: {}", response.service.state);
-        println!("  Provider: {}", response.service.provider);
-        println!("  Region: {}", response.service.region);
-        if let Some(replicas) = response.service.num_replicas {
+        println!(
+            "Service: {}",
+            svc.name.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  ID: {}",
+            svc.id
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        );
+        println!(
+            "  State: {}",
+            svc.state
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        );
+        println!(
+            "  Provider: {}",
+            svc.provider
+                .as_ref()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        );
+        println!(
+            "  Region: {}",
+            svc.region
+                .as_ref()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        );
+        if let Some(replicas) = svc.num_replicas {
             println!("  Replicas: {}", replicas);
         }
-        if let Some(min_mem) = response.service.min_replica_memory_gb {
+        if let Some(min_mem) = svc.min_replica_memory_gb {
             println!("  Min Memory/Replica: {} GB", min_mem);
         }
-        if let Some(max_mem) = response.service.max_replica_memory_gb {
+        if let Some(max_mem) = svc.max_replica_memory_gb {
             println!("  Max Memory/Replica: {} GB", max_mem);
         }
-        if let Some(endpoints) = &response.service.endpoints
+        if let Some(endpoints) = &svc.endpoints
             && let Some(ep) = endpoints.first()
         {
-            println!("  Host: {}", ep.host);
-            println!("  Port: {}", ep.port);
+            if let Some(host) = &ep.host {
+                println!("  Host: {}", host);
+            }
+            if let Some(port) = ep.port {
+                println!("  Port: {}", port);
+            }
         }
         println!();
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
-        println!("  Password: {}", response.password);
+        println!("  Password: {}", password);
     }
     Ok(())
 }
@@ -1030,9 +1144,19 @@ pub async fn service_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} updated", svc.name);
-        println!("  ID: {}", svc.id);
-        println!("  State: {}", svc.state);
+        let name = svc.name.as_deref().unwrap_or("unknown");
+        let id = svc
+            .id
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let state = svc
+            .state
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".into());
+        println!("Service {} updated", name);
+        println!("  ID: {}", id);
+        println!("  State: {}", state);
     }
     Ok(())
 }
@@ -1054,7 +1178,7 @@ pub async fn service_scale(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
-    let request = ReplicaScalingRequest {
+    let request = ServiceReplicaScalingPatchRequest {
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
         num_replicas: opts.num_replicas.map(f64::from),
@@ -1069,7 +1193,8 @@ pub async fn service_scale(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} scaling updated", svc.name);
+        let name = svc.name.as_deref().unwrap_or("unknown");
+        println!("Service {} scaling updated", name);
         if let Some(min) = svc.min_replica_memory_gb {
             println!("  Min Memory/Replica: {} GB", min);
         }
@@ -2011,7 +2136,7 @@ pub async fn service_client(
     // Resolve password: --generate-password > --password > env var > TTY prompt
     let password = if opts.generate_password {
         eprintln!("Generating new password for service '{}'...", svc_name);
-        let request = ServicePasswordPatchRequest::default();
+        let request = LibServicePasswordPatchRequest::default();
         let resp = client.reset_password(&org_id, &svc_id, &request).await?;
         let new_password = resp.password.ok_or("API did not return a password")?;
         // Wait in case of any delay in password propagation
@@ -2119,7 +2244,7 @@ mod tests {
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(10),
             ip_allow: vec!["10.0.0.0/8".to_string()],
-            backup_id: Some("backup-1".to_string()),
+            backup_id: Some("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()),
             release_channel: Some("fast".to_string()),
             data_warehouse_id: Some("dw-1".to_string()),
             is_readonly: true,
