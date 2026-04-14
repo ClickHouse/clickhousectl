@@ -821,6 +821,7 @@ fn test_update_api_key_request_serialize() {
 
 #[test]
 fn test_activity_deserialize() {
+    use clickhouse_cloud_api::models::Activity;
     let json = serde_json::json!({
         "id": "act-1",
         "type": "service_create",
@@ -834,11 +835,11 @@ fn test_activity_deserialize() {
         "userAgent": "clickhousectl/0.1.0"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
-    assert_eq!(act.id, "act-1");
-    assert_eq!(act.activity_type, "service_create");
-    assert_eq!(act.actor_type.as_deref(), Some("user"));
+    assert_eq!(act.id.as_deref(), Some("act-1"));
+    assert_eq!(act.r#type.as_ref().unwrap().to_string(), "service_create");
+    assert_eq!(act.actor_type.as_ref().unwrap().to_string(), "user");
     assert_eq!(act.actor_id.as_deref(), Some("user-5"));
-    assert_eq!(act.created_at.as_deref(), Some("2024-07-01T08:00:00Z"));
+    assert!(act.created_at.is_some());
     assert_eq!(act.actor_details.as_deref(), Some("Alice Smith"));
     assert_eq!(act.actor_ip_address.as_deref(), Some("1.2.3.4"));
     assert_eq!(act.organization_id.as_deref(), Some("org-1"));
@@ -848,6 +849,7 @@ fn test_activity_deserialize() {
 
 #[test]
 fn test_activity_key_update() {
+    use clickhouse_cloud_api::models::Activity;
     let json = serde_json::json!({
         "id": "act-2",
         "type": "openapi_key_update",
@@ -856,20 +858,21 @@ fn test_activity_key_update() {
         "keyUpdateType": "state-changed"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
-    assert_eq!(act.activity_type, "openapi_key_update");
+    assert_eq!(act.r#type.as_ref().unwrap().to_string(), "openapi_key_update");
     assert_eq!(act.target_key_id.as_deref(), Some("key-1"));
-    assert_eq!(act.key_update_type.as_deref(), Some("state-changed"));
+    assert_eq!(act.key_update_type.as_ref().unwrap().to_string(), "state-changed");
 }
 
 #[test]
 fn test_activity_minimal() {
+    use clickhouse_cloud_api::models::Activity;
     let json = serde_json::json!({
         "id": "act-3",
         "type": "user_login"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
-    assert_eq!(act.id, "act-3");
-    assert_eq!(act.activity_type, "user_login");
+    assert_eq!(act.id.as_deref(), Some("act-3"));
+    assert_eq!(act.r#type.as_ref().unwrap().to_string(), "user_login");
     assert!(act.actor_type.is_none());
     assert!(act.actor_details.is_none());
     assert!(act.service_id.is_none());
@@ -1009,6 +1012,7 @@ fn test_api_key_hash_data_roundtrip() {
 
 #[test]
 fn test_activity_type_values() {
+    use clickhouse_cloud_api::models::Activity;
     let types = [
         "create_organization",
         "organization_update_name",
@@ -1063,22 +1067,24 @@ fn test_activity_type_values() {
     for t in &types {
         let json = serde_json::json!({"id": "act-1", "type": t});
         let act: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(act.activity_type, *t);
+        assert_eq!(act.r#type.as_ref().unwrap().to_string(), *t);
     }
 }
 
 #[test]
 fn test_activity_actor_type_values() {
+    use clickhouse_cloud_api::models::Activity;
     for actor_type in &["user", "support", "system", "api"] {
         let json =
             serde_json::json!({"id": "act-1", "type": "user_login", "actorType": actor_type});
         let act: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(act.actor_type.as_deref(), Some(*actor_type));
+        assert_eq!(act.actor_type.as_ref().unwrap().to_string(), *actor_type);
     }
 }
 
 #[test]
 fn test_activity_key_update_type_values() {
+    use clickhouse_cloud_api::models::Activity;
     let update_types = [
         "created",
         "deleted",
@@ -1099,7 +1105,7 @@ fn test_activity_key_update_type_values() {
             "keyUpdateType": t
         });
         let act: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(act.key_update_type.as_deref(), Some(*t));
+        assert_eq!(act.key_update_type.as_ref().unwrap().to_string(), *t);
     }
 }
 

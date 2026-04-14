@@ -310,86 +310,6 @@ flexible_string_enum! {
     }
 }
 
-flexible_string_enum! {
-    pub enum ActivityType {
-        CreateOrganization => "create_organization",
-        OrganizationUpdateName => "organization_update_name",
-        TransferServiceIn => "transfer_service_in",
-        TransferServiceOut => "transfer_service_out",
-        SavePaymentMethod => "save_payment_method",
-        MarketplaceSubscription => "marketplace_subscription",
-        MigrateMarketplaceBillingDetailsIn => "migrate_marketplace_billing_details_in",
-        MigrateMarketplaceBillingDetailsOut => "migrate_marketplace_billing_details_out",
-        OrganizationUpdateTier => "organization_update_tier",
-        OrganizationInviteCreate => "organization_invite_create",
-        OrganizationInviteDelete => "organization_invite_delete",
-        OrganizationMemberJoin => "organization_member_join",
-        OrganizationMemberAdd => "organization_member_add",
-        OrganizationMemberLeave => "organization_member_leave",
-        OrganizationMemberDelete => "organization_member_delete",
-        OrganizationMemberUpdateRole => "organization_member_update_role",
-        OrganizationMemberUpdateMfaMethod => "organization_member_update_mfa_method",
-        UserLogin => "user_login",
-        UserLoginFailed => "user_login_failed",
-        UserLogout => "user_logout",
-        KeyCreate => "key_create",
-        KeyDelete => "key_delete",
-        OpenApiKeyUpdate => "openapi_key_update",
-        ServiceCreate => "service_create",
-        ServiceStart => "service_start",
-        ServiceStop => "service_stop",
-        ServiceAwaken => "service_awaken",
-        ServiceIdle => "service_idle",
-        ServiceRunning => "service_running",
-        ServicePartiallyRunning => "service_partially_running",
-        ServiceDelete => "service_delete",
-        ServiceUpdateName => "service_update_name",
-        ServiceUpdateIpAccessList => "service_update_ip_access_list",
-        ServiceUpdateAutoscalingMemory => "service_update_autoscaling_memory",
-        ServiceUpdateAutoscalingIdling => "service_update_autoscaling_idling",
-        ServiceUpdatePassword => "service_update_password",
-        ServiceUpdateAutoscalingReplicas => "service_update_autoscaling_replicas",
-        ServiceUpdateMaxAllowableReplicas => "service_update_max_allowable_replicas",
-        ServiceUpdateBackupConfiguration => "service_update_backup_configuration",
-        ServiceRestoreBackup => "service_restore_backup",
-        ServiceUpdateReleaseChannel => "service_update_release_channel",
-        ServiceUpdateGptUsageConsent => "service_update_gpt_usage_consent",
-        ServiceUpdatePrivateEndpoints => "service_update_private_endpoints",
-        ServiceImportToOrganization => "service_import_to_organization",
-        ServiceExportFromOrganization => "service_export_from_organization",
-        ServiceMaintenanceStart => "service_maintenance_start",
-        ServiceMaintenanceEnd => "service_maintenance_end",
-        ServiceUpdateCoreDump => "service_update_core_dump",
-        BackupDelete => "backup_delete",
-    }
-}
-
-flexible_string_enum! {
-    pub enum ActivityActorType {
-        User => "user",
-        Support => "support",
-        System => "system",
-        Api => "api",
-    }
-}
-
-flexible_string_enum! {
-    pub enum ActivityKeyUpdateType {
-        Created => "created",
-        Deleted => "deleted",
-        NameChanged => "name-changed",
-        RoleChanged => "role-changed",
-        StateChanged => "state-changed",
-        DateChanged => "date-changed",
-        IpAccessListChanged => "ip-access-list-changed",
-        OrgRoleChanged => "org-role-changed",
-        DefaultServiceRoleChanged => "default-service-role-changed",
-        ServiceRoleChanged => "service-role-changed",
-        RolesV2Changed => "roles-v2-changed",
-    }
-}
-
-
 #[allow(clippy::derivable_impls)]
 impl Default for CloudProvider {
     fn default() -> Self {
@@ -920,37 +840,8 @@ pub struct UpdateApiKeyRequest {
 }
 
 // =============================================================================
-// Activity, Backup, Backup Config
+// Backup Config
 // =============================================================================
-
-/// Activity log entry
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Activity {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub activity_type: ActivityType,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_type: Option<ActivityActorType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_details: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_ip_address: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub organization_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_agent: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_key_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_update_type: Option<ActivityKeyUpdateType>,
-}
 
 /// Backup configuration
 #[derive(Debug, Deserialize, Serialize)]

@@ -1650,9 +1650,15 @@ pub async fn activity_list(
         let rows: Vec<Row> = activities
             .into_iter()
             .map(|a| Row {
-                id: a.id,
-                activity_type: a.activity_type.to_string(),
-                created: a.created_at.unwrap_or_else(|| "-".to_string()),
+                id: a.id.unwrap_or_default(),
+                activity_type: a
+                    .r#type
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                created: a
+                    .created_at
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1673,8 +1679,18 @@ pub async fn activity_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&activity)?);
     } else {
-        println!("Activity: {}", activity.id);
-        println!("  Type: {}", activity.activity_type);
+        println!(
+            "Activity: {}",
+            activity.id.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  Type: {}",
+            activity
+                .r#type
+                .as_ref()
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
         if let Some(actor_type) = &activity.actor_type {
             println!("  Actor Type: {}", actor_type);
         }
@@ -1682,7 +1698,7 @@ pub async fn activity_get(
             println!("  Actor ID: {}", actor_id);
         }
         if let Some(created) = &activity.created_at {
-            println!("  Created: {}", created);
+            println!("  Created: {}", created.to_rfc3339());
         }
     }
     Ok(())

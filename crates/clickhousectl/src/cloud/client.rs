@@ -340,26 +340,6 @@ impl CloudClient {
         }
     }
 
-    fn activities_url(
-        &self,
-        org_id: &str,
-        from_date: Option<&str>,
-        to_date: Option<&str>,
-    ) -> String {
-        let path = format!("/organizations/{}/activities", org_id);
-        let mut params = Vec::new();
-        if let Some(from) = from_date {
-            params.push(format!("from_date={}", urlencoding::encode(from)));
-        }
-        if let Some(to) = to_date {
-            params.push(format!("to_date={}", urlencoding::encode(to)));
-        }
-        if params.is_empty() {
-            self.url(&path)
-        } else {
-            format!("{}?{}", self.url(&path), params.join("&"))
-        }
-    }
 
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request(self.client.get(self.url(path))).await
@@ -805,20 +785,26 @@ impl CloudClient {
         org_id: &str,
         from_date: Option<&str>,
         to_date: Option<&str>,
-    ) -> Result<Vec<Activity>> {
-        self.request(
-            self.client
-                .get(self.activities_url(org_id, from_date, to_date)),
-        )
-        .await
+    ) -> Result<Vec<clickhouse_cloud_api::models::Activity>> {
+        let response = self
+            .api()
+            .activity_get_list(org_id, from_date, to_date)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    pub async fn get_activity(&self, org_id: &str, activity_id: &str) -> Result<Activity> {
-        self.get(&format!(
-            "/organizations/{}/activities/{}",
-            org_id, activity_id
-        ))
-        .await
+    pub async fn get_activity(
+        &self,
+        org_id: &str,
+        activity_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::Activity> {
+        let response = self
+            .api()
+            .activity_get(org_id, activity_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Phase 6 - Backup Config endpoints
@@ -914,26 +900,6 @@ mod tests {
         assert_eq!(
             url,
             "https://api.clickhouse.cloud/v1/organizations/org-1/services"
-        );
-    }
-
-    #[test]
-    fn activities_url_includes_optional_date_filters() {
-        let client = test_client();
-        let url = client.activities_url("org-1", Some("2024-01-01"), Some("2024-01-31"));
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/activities?from_date=2024-01-01&to_date=2024-01-31"
-        );
-    }
-
-    #[test]
-    fn activities_url_omits_query_without_dates() {
-        let client = test_client();
-        let url = client.activities_url("org-1", None, None);
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/activities"
         );
     }
 
