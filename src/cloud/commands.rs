@@ -48,7 +48,7 @@ fn parse_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Erro
 where
     T: FromStr<Err = String>,
 {
-    T::from_str(value).map_err(|err| format!("invalid {} '{}': {}", field, value, err).into())
+    T::from_str(value).map_err(|err| format!("invalid {}: {}", field, err).into())
 }
 
 fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
@@ -641,8 +641,10 @@ pub async fn service_create(
     opts: CreateServiceOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    // Validate input before any network call so typos like --provider awss
+    // fail locally instead of on the /organizations lookup.
     let request = build_create_service_request(&opts)?;
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let response = client.create_service(&org_id, &request).await?;
 
@@ -877,8 +879,10 @@ pub async fn service_update(
     opts: ServiceUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    // Validate input before any network call so typos like --release-channel turbo
+    // fail locally instead of on the /organizations lookup.
     let request = build_update_service_request(&opts)?;
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let svc = client.update_service(&org_id, service_id, &request).await?;
 
@@ -1458,8 +1462,10 @@ pub async fn key_create(
     opts: KeyCreateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    // Validate input before any network call so typos like --state broken
+    // fail locally instead of on the /organizations lookup.
     let request = build_api_key_create_request(&opts)?;
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let resp = client.create_api_key(&org_id, &request).await?;
 
@@ -1519,8 +1525,10 @@ pub async fn key_update(
     opts: KeyUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    // Validate input before any network call so typos like --state broken
+    // fail locally instead of on the /organizations lookup.
     let request = build_api_key_update_request(&opts)?;
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let key = client.update_api_key(&org_id, key_id, &request).await?;
 
@@ -2096,6 +2104,101 @@ mod tests {
         assert_eq!(backup_json["backupPeriodInHours"], 12.0);
         assert_eq!(backup_json["backupRetentionPeriodInHours"], 336.0);
         assert_eq!(backup_json["backupStartTime"], "03:00");
+    }
+
+    // Regression tests: invalid enum values must be rejected by build_* functions
+    // before any network call (resolve_org_id). See issue #101.
+
+    #[test]
+    fn build_create_service_request_rejects_invalid_provider() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "awss".to_string(),
+            region: "us-east-1".to_string(),
+            ..Default::default()
+        };
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("awss"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_invalid_region() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-99".to_string(),
+            ..Default::default()
+        };
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("us-east-99"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_invalid_release_channel() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            release_channel: Some("turbo".to_string()),
+            ..Default::default()
+        };
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("turbo"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_update_service_request_rejects_invalid_release_channel() {
+        let opts = ServiceUpdateOptions {
+            release_channel: Some("turbo".to_string()),
+            ..Default::default()
+        };
+        let err = build_update_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("turbo"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_api_key_create_request_rejects_invalid_state() {
+        let opts = KeyCreateOptions {
+            name: "ci-key".to_string(),
+            state: Some("broken".to_string()),
+            ..Default::default()
+        };
+        let err = build_api_key_create_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("broken"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_api_key_update_request_rejects_invalid_state() {
+        let opts = KeyUpdateOptions {
+            state: Some("broken".to_string()),
+            ..Default::default()
+        };
+        let err = build_api_key_update_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("broken"),
+            "error should mention the bad value: {}",
+            err
+        );
     }
 
     #[test]
