@@ -181,7 +181,11 @@ CONTEXT FOR AGENTS:
   Automatically cleans up stale entries for processes that are no longer running.
   Shows name, status (running/stopped), PID, version, and ports.
   Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop <name>` to stop one.")]
-    List,
+    List {
+        /// System-wide maintenance only: list servers across all projects. You almost certainly want the default project-scoped list instead.
+        #[arg(long)]
+        global: bool,
+    },
 
     /// Stop a running server by name
     #[command(after_help = "\
@@ -193,6 +197,14 @@ CONTEXT FOR AGENTS:
     Stop {
         /// Name of the server to stop
         name: String,
+
+        /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
+        #[arg(long)]
+        global: bool,
+
+        /// Project directory to disambiguate when using --global
+        #[arg(long, requires = "global")]
+        project: Option<String>,
     },
 
     /// Stop all running server instances
@@ -202,7 +214,11 @@ CONTEXT FOR AGENTS:
   Sends SIGTERM first, then SIGKILL if processes don't exit.
   Data directories are preserved.
   Related: `clickhousectl local server list` to see servers.")]
-    StopAll,
+    StopAll {
+        /// System-wide maintenance only: stop all servers across all projects. You almost certainly want the default project-scoped stop-all instead.
+        #[arg(long)]
+        global: bool,
+    },
 
     /// Remove a stopped server and its data
     #[command(after_help = "\

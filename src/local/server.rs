@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::init;
+use crate::local::discovery;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -97,7 +98,11 @@ fn load_running_info(name: &str) -> Option<ServerInfo> {
 
 /// List all known servers (both running and stopped).
 /// Discovers servers by scanning data directories in .clickhouse/servers/.
+/// Also runs process discovery to recover any orphaned servers for the current project.
 pub fn list_all_servers() -> Vec<ServerEntry> {
+    // Recover any orphaned servers before listing
+    recover_current_project_servers();
+
     let dir = servers_dir();
     let mut entries = Vec::new();
 
@@ -159,25 +164,52 @@ fn is_process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-/// Kill a server by name.
-pub fn kill_server(name: &str) -> Result<()> {
-    let info = load_running_info(name).ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
-
-    unsafe {
-        libc::kill(info.pid as i32, libc::SIGTERM);
+/// Send a signal to a process and return an error if the signal could not be delivered
+/// (e.g. EPERM from a process owned by another user).
+fn send_signal(pid: u32, signal: i32) -> Result<()> {
+    let ret = unsafe { libc::kill(pid as i32, signal) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        Err(Error::Exec(format!(
+            "Failed to send signal to PID {}: {}",
+            pid, err
+        )))
+    } else {
+        Ok(())
     }
+}
+
+/// Attempt to terminate a process: SIGTERM, wait, SIGKILL if needed, then verify exit.
+fn kill_process(pid: u32) -> Result<()> {
+    send_signal(pid, libc::SIGTERM)?;
 
     // Wait briefly for graceful shutdown
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    if is_process_alive(info.pid) {
+    if is_process_alive(pid) {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        if is_process_alive(info.pid) {
-            unsafe {
-                libc::kill(info.pid as i32, libc::SIGKILL);
-            }
+        if is_process_alive(pid) {
+            send_signal(pid, libc::SIGKILL)?;
+            // Give the kernel a moment to reap the process
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
+
+    if is_process_alive(pid) {
+        return Err(Error::Exec(format!(
+            "Process {} did not exit after SIGKILL",
+            pid
+        )));
+    }
+
+    Ok(())
+}
+
+/// Kill a server by name.
+pub fn kill_server(name: &str) -> Result<()> {
+    let info = load_running_info(name).ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
+
+    kill_process(info.pid)?;
 
     remove_server_info(name);
     Ok(())
@@ -297,4 +329,82 @@ pub fn now_timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}", duration.as_secs())
+}
+
+/// Recover orphaned servers for the current project via process discovery.
+///
+/// Scans for running ClickHouse processes whose cwd matches this project's
+/// `.clickhouse/servers/<name>/data/` path. If a process is found that has no
+/// metadata file, a new `ServerInfo` is saved so it appears in `server list`
+/// and can be managed normally.
+pub fn recover_current_project_servers() {
+    let current_dir = match std::env::current_dir().and_then(|p| p.canonicalize()) {
+        Ok(p) => p.display().to_string(),
+        Err(_) => return,
+    };
+
+    let processes = discovery::discover_clickhouse_processes();
+    for proc in processes {
+        // Canonicalize the discovered project root for comparison
+        let discovered_root = match std::path::Path::new(&proc.project_root).canonicalize() {
+            Ok(p) => p.display().to_string(),
+            Err(_) => proc.project_root.clone(),
+        };
+
+        if discovered_root != current_dir {
+            continue;
+        }
+
+        // Only recover if we don't already have metadata for this server
+        if load_running_info(&proc.server_name).is_some() {
+            continue;
+        }
+
+        let info = ServerInfo {
+            name: proc.server_name,
+            pid: proc.pid,
+            version: proc.version.unwrap_or_else(|| "unknown".to_string()),
+            http_port: proc.http_port.unwrap_or(0),
+            tcp_port: proc.tcp_port.unwrap_or(0),
+            started_at: "recovered".to_string(),
+            cwd: current_dir.clone(),
+        };
+        let _ = save_server_info(&info);
+    }
+}
+
+/// A server entry for global listing — always running (discovered via process inspection).
+pub struct GlobalServerEntry {
+    pub name: String,
+    pub pid: u32,
+    pub project: String,
+    pub http_port: Option<u16>,
+    pub tcp_port: Option<u16>,
+    pub version: Option<String>,
+}
+
+/// List all running ClickHouse servers across all projects via process discovery.
+pub fn list_all_servers_global() -> Vec<GlobalServerEntry> {
+    let processes = discovery::discover_clickhouse_processes();
+    processes
+        .into_iter()
+        .map(|p| GlobalServerEntry {
+            name: p.server_name,
+            pid: p.pid,
+            project: p.project_root,
+            http_port: p.http_port,
+            tcp_port: p.tcp_port,
+            version: p.version,
+        })
+        .collect()
+}
+
+/// Kill a server found via global process discovery.
+/// Takes a PID directly and kills it, without requiring local metadata.
+pub fn kill_server_by_pid(pid: u32) -> Result<()> {
+    if !is_process_alive(pid) {
+        return Err(Error::ServerNotRunning(format!("PID {}", pid)));
+    }
+
+    kill_process(pid)
 }
