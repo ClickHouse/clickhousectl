@@ -311,36 +311,6 @@ impl CloudClient {
         format!("{}{}", self.base_url, path)
     }
 
-    fn list_services_url(&self, org_id: &str, filters: &[String]) -> String {
-        let path = format!("/organizations/{}/services", org_id);
-        let query: Vec<String> = filters
-            .iter()
-            .map(|f| format!("filter={}", urlencoding::encode(f)))
-            .collect();
-        if query.is_empty() {
-            self.url(&path)
-        } else {
-            format!("{}?{}", self.url(&path), query.join("&"))
-        }
-    }
-
-    fn service_prometheus_url(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        filtered_metrics: Option<bool>,
-    ) -> String {
-        let path = format!(
-            "/organizations/{}/services/{}/prometheus",
-            org_id, service_id
-        );
-        match filtered_metrics {
-            Some(value) => format!("{}?filtered_metrics={}", self.url(&path), value),
-            None => self.url(&path),
-        }
-    }
-
-
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request(self.client.get(self.url(path))).await
     }
@@ -392,27 +362,44 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    // Service endpoints
-    pub async fn list_services(&self, org_id: &str) -> Result<Vec<Service>> {
-        self.get(&format!("/organizations/{}/services", org_id))
+    // Service endpoints (delegated to library client)
+    pub async fn list_services(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::Service>> {
+        let response = self
+            .api()
+            .instance_get_list(org_id, &[])
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn list_services_filtered(
         &self,
         org_id: &str,
         filters: &[String],
-    ) -> Result<Vec<Service>> {
-        self.request(self.client.get(self.list_services_url(org_id, filters)))
+    ) -> Result<Vec<clickhouse_cloud_api::models::Service>> {
+        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
+        let response = self
+            .api()
+            .instance_get_list(org_id, &filter_refs)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    pub async fn get_service(&self, org_id: &str, service_id: &str) -> Result<Service> {
-        self.get(&format!(
-            "/organizations/{}/services/{}",
-            org_id, service_id
-        ))
-        .await
+    pub async fn get_service(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::Service> {
+        let response = self
+            .api()
+            .instance_get(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn create_service(
@@ -597,12 +584,11 @@ impl CloudClient {
         service_id: &str,
         filtered_metrics: Option<bool>,
     ) -> Result<String> {
-        self.request_text(self.client.get(self.service_prometheus_url(
-            org_id,
-            service_id,
-            filtered_metrics,
-        )))
-        .await
+        let filtered = filtered_metrics.map(|b| b.to_string());
+        self.api()
+            .instance_prometheus_get(org_id, service_id, filtered.as_deref())
+            .await
+            .map_err(|e| self.convert_error(e))
     }
 
     // Organization endpoints (delegated to library client)
@@ -902,49 +888,6 @@ mod tests {
             auth_mode: AuthMode::Basic("Basic test".to_string()),
             base_url: DEFAULT_BASE_URL.to_string(),
         }
-    }
-
-    #[test]
-    fn list_services_url_includes_repeated_filters() {
-        let client = test_client();
-        let url = client.list_services_url(
-            "org-1",
-            &["tag:env=prod".to_string(), "state=running".to_string()],
-        );
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/services?filter=tag%3Aenv%3Dprod&filter=state%3Drunning"
-        );
-    }
-
-    #[test]
-    fn list_services_url_omits_query_without_filters() {
-        let client = test_client();
-        let url = client.list_services_url("org-1", &[]);
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/services"
-        );
-    }
-
-    #[test]
-    fn service_prometheus_url_supports_filtered_metrics_query() {
-        let client = test_client();
-        let url = client.service_prometheus_url("org-1", "svc-1", Some(false));
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus?filtered_metrics=false"
-        );
-    }
-
-    #[test]
-    fn service_prometheus_url_omits_filtered_metrics_when_not_set() {
-        let client = test_client();
-        let url = client.service_prometheus_url("org-1", "svc-1", None);
-        assert_eq!(
-            url,
-            "https://api.clickhouse.cloud/v1/organizations/org-1/services/svc-1/prometheus"
-        );
     }
 
     #[test]

@@ -77,7 +77,7 @@ async fn list_services() {
         .await;
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
-    let resp = client.instance_get_list("org-123", None).await.unwrap();
+    let resp = client.instance_get_list("org-123", &[]).await.unwrap();
     let services = resp.result.unwrap();
     assert_eq!(services.len(), 1);
     assert_eq!(services[0].name, Some("svc-1".to_string()));

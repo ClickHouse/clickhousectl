@@ -6,6 +6,10 @@ use clickhouse_cloud_api::models::{
     IpAccessListEntry, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
+    // Aliased to avoid conflict with CLI types still in `use crate::cloud::types::*`.
+    // TODO(phase-3e): Remove aliases once CLI Service/Endpoint types are deleted from types.rs.
+    Service as LibService,
+    ServiceEndpointProtocol as LibServiceEndpointProtocol,
 };
 use std::io::{IsTerminal, Write};
 use std::str::FromStr;
@@ -29,11 +33,14 @@ async fn resolve_service(
     org_id: &str,
     name: Option<&str>,
     id: Option<&str>,
-) -> Result<Service, Box<dyn std::error::Error>> {
+) -> Result<LibService, Box<dyn std::error::Error>> {
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
-            let matches: Vec<_> = services.into_iter().filter(|s| s.name == name).collect();
+            let matches: Vec<_> = services
+                .into_iter()
+                .filter(|s| s.name.as_deref() == Some(name))
+                .collect();
             match matches.len() {
                 0 => Err(format!("no service found with name '{}'", name).into()),
                 1 => Ok(matches.into_iter().next().unwrap()),
@@ -422,14 +429,20 @@ pub async fn service_list(
                     .endpoints
                     .as_ref()
                     .and_then(|eps| eps.first())
-                    .map(|e| format!("{}:{}", e.host, e.port))
+                    .map(|e| {
+                        format!(
+                            "{}:{}",
+                            e.host.as_deref().unwrap_or("?"),
+                            e.port.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
+                        )
+                    })
                     .unwrap_or_else(|| "-".to_string());
                 Row {
-                    name: svc.name,
-                    id: svc.id,
-                    state: svc.state.to_string(),
-                    provider: svc.provider.to_string(),
-                    region: svc.region.to_string(),
+                    name: svc.name.unwrap_or_default(),
+                    id: svc.id.map(|u| u.to_string()).unwrap_or_default(),
+                    state: svc.state.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into()),
+                    provider: svc.provider.map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()),
+                    region: svc.region.map(|r| r.to_string()).unwrap_or_else(|| "unknown".into()),
                     endpoint,
                 }
             })
@@ -452,11 +465,11 @@ pub async fn service_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service: {}", svc.name);
-        println!("  ID: {}", svc.id);
-        println!("  State: {}", svc.state);
-        println!("  Provider: {}", svc.provider);
-        println!("  Region: {}", svc.region);
+        println!("Service: {}", svc.name.as_deref().unwrap_or("unknown"));
+        println!("  ID: {}", svc.id.map(|u| u.to_string()).unwrap_or_default());
+        println!("  State: {}", svc.state.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "unknown".into()));
+        println!("  Provider: {}", svc.provider.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "unknown".into()));
+        println!("  Region: {}", svc.region.as_ref().map(|r| r.to_string()).unwrap_or_else(|| "unknown".into()));
         if let Some(tier) = &svc.tier {
             println!("  Tier: {}", tier);
         }
@@ -466,14 +479,19 @@ pub async fn service_get(
         if let Some(endpoints) = &svc.endpoints {
             println!("  Endpoints:");
             for ep in endpoints {
-                println!("    {} - {}:{}", ep.protocol, ep.host, ep.port);
+                println!(
+                    "    {} - {}:{}",
+                    ep.protocol.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                    ep.host.as_deref().unwrap_or("?"),
+                    ep.port.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
+                );
             }
         }
         if let Some(ip_list) = &svc.ip_access_list {
             println!("  IP Access List:");
             for ip in ip_list {
                 let desc = ip.description.as_deref().unwrap_or("");
-                println!("    {} {}", ip.source, desc);
+                println!("    {} {}", ip.source.as_deref().unwrap_or("?"), desc);
             }
         }
     }
@@ -801,7 +819,7 @@ pub async fn service_delete(
 
     if force {
         let svc = client.get_service(&org_id, service_id).await?;
-        let state = svc.state.to_string();
+        let state = svc.state.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "unknown".into());
         if matches!(state.as_str(), "running" | "idle" | "starting") {
             eprintln!("Stopping service {} before deletion...", service_id);
             client
@@ -812,7 +830,7 @@ pub async fn service_delete(
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let svc = client.get_service(&org_id, service_id).await?;
-                let state = svc.state.to_string();
+                let state = svc.state.as_ref().map(|s| s.to_string()).unwrap_or_else(|| "unknown".into());
                 eprintln!("  state: {}", state);
                 if matches!(state.as_str(), "stopped" | "idle") {
                     break;
@@ -1928,17 +1946,17 @@ pub async fn service_client(
         .as_ref()
         .and_then(|eps| {
             eps.iter()
-                .find(|e| e.protocol == ServiceEndpointProtocol::NativeSecure)
+                .find(|e| e.protocol.as_ref() == Some(&LibServiceEndpointProtocol::Nativesecure))
         })
         .ok_or_else(|| {
             format!(
                 "service '{}' has no nativesecure endpoint — is it running?",
-                svc.name
+                svc.name.as_deref().unwrap_or("unknown")
             )
         })?;
 
-    let host = &endpoint.host;
-    let port = endpoint.port as u16;
+    let host = endpoint.host.as_deref().ok_or("endpoint has no host")?;
+    let port = endpoint.port.ok_or("endpoint has no port")? as u16;
 
     // Determine which client version to use
     let service_version = svc.clickhouse_version.as_deref();
@@ -1972,11 +1990,15 @@ pub async fn service_client(
         return Err(format!("clickhouse binary not found at {}", binary.display()).into());
     }
 
+    // Extract name/id as strings for use in messages and API calls
+    let svc_name = svc.name.as_deref().unwrap_or("unknown");
+    let svc_id = svc.id.map(|u| u.to_string()).unwrap_or_default();
+
     // Resolve password: --generate-password > --password > env var > TTY prompt
     let password = if opts.generate_password {
-        eprintln!("Generating new password for service '{}'...", svc.name);
+        eprintln!("Generating new password for service '{}'...", svc_name);
         let request = ServicePasswordPatchRequest::default();
-        let resp = client.reset_password(&org_id, &svc.id, &request).await?;
+        let resp = client.reset_password(&org_id, &svc_id, &request).await?;
         let new_password = resp.password.ok_or("API did not return a password")?;
         // Wait in case of any delay in password propagation
         eprintln!("Waiting for password to propagate...");
@@ -1997,7 +2019,7 @@ pub async fn service_client(
     };
 
     // Build and exec the clickhouse-client command
-    eprintln!("Connecting to {} ({}:{})...", svc.name, host, port);
+    eprintln!("Connecting to {} ({}:{})...", svc_name, host, port);
 
     let mut cmd = std::process::Command::new(&binary);
     cmd.arg("client")

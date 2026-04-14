@@ -976,12 +976,12 @@ impl Client {
     pub async fn instance_get_list(
         &self,
         organization_id: &str,
-        filter: Option<&str>,
+        filters: &[&str],
     ) -> Result<ApiResponse<Vec<Service>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/services");
         let mut req = self.request(reqwest::Method::GET, &path);
-        if let Some(v) = filter {
-            req = req.query(&[("filter", v)]);
+        for f in filters {
+            req = req.query(&[("filter", f)]);
         }
         let resp = req.send().await?;
         let status = resp.status();
