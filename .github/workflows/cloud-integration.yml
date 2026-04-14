@@ -6,9 +6,9 @@ on:
     - cron: "0 3 * * 1-5"
   pull_request:
     paths:
-      - "crates/clickhousectl/src/**"
-      - "crates/clickhousectl/tests/**"
-      - "crates/clickhousectl/Cargo.toml"
+      - "crates/clickhouse-cloud-api/src/**"
+      - "crates/clickhouse-cloud-api/tests/**"
+      - "crates/clickhouse-cloud-api/Cargo.toml"
       - "Cargo.lock"
 
 permissions:
@@ -47,15 +47,4 @@ jobs:
         run: cargo test
 
       - name: Run cloud integration suite
-        env:
-          CLICKHOUSECTL_BIN: target/debug/clickhousectl
-        run: cargo test --test cloud_cli -- --ignored --nocapture
-
-      - name: Upload debug artifacts on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloud-integration-debug
-          path: |
-            target/debug/clickhousectl
-            target/debug/deps/cloud_cli-*
+        run: cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture

@@ -494,7 +494,7 @@ The CLI also checks for updates in the background (at most once per 24 hours) an
 
 ## Cloud integration testing
 
-Cloud commands are tested against a real ClickHouse Cloud workspace. All changes to Cloud commands must pass CI testing before merge. CI tests are under [`tests/cloud_cli.rs`](tests/cloud_cli.rs).
+Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests are in [`crates/clickhouse-cloud-api/tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs).
 
 Required environment variables:
 
@@ -506,11 +506,10 @@ export CLICKHOUSE_CLOUD_TEST_PROVIDER=aws
 export CLICKHOUSE_CLOUD_TEST_REGION=us-east-1
 ```
 
-Run the CI test:
+Run the integration test:
 
 ```bash
-CLICKHOUSECTL_BIN=target/debug/clickhousectl \
-cargo test --test cloud_cli cloud_service_crud_lifecycle -- --ignored --nocapture --test-threads=1
+cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
 ```
 
 By default, any failed check fails the run. To keep going after `non-blocking` capability failures and collect them in a summary at the end, set:
