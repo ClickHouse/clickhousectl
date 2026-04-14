@@ -823,12 +823,12 @@ pub async fn backup_list(
         let rows: Vec<Row> = backups
             .into_iter()
             .map(|b| Row {
-                id: b.id,
-                status: b.status.to_string(),
+                id: b.id.map(|id| id.to_string()).unwrap_or_default(),
+                status: b.status.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into()),
                 size: b.size_in_bytes
                     .map(format_bytes)
                     .unwrap_or_else(|| "-".to_string()),
-                created: b.started_at.unwrap_or_else(|| "-".to_string()),
+                created: b.started_at.map(|t| t.to_rfc3339()).unwrap_or_else(|| "-".to_string()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -850,13 +850,13 @@ pub async fn backup_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&backup)?);
     } else {
-        println!("Backup: {}", backup.id);
-        println!("  Status: {}", backup.status);
+        println!("Backup: {}", backup.id.map(|id| id.to_string()).unwrap_or_default());
+        println!("  Status: {}", backup.status.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into()));
         if let Some(created) = &backup.started_at {
-            println!("  Created: {}", created);
+            println!("  Created: {}", created.to_rfc3339());
         }
         if let Some(finished) = &backup.finished_at {
-            println!("  Finished: {}", finished);
+            println!("  Finished: {}", finished.to_rfc3339());
         }
         if let Some(size) = backup.size_in_bytes {
             println!("  Size: {}", format_bytes(size));
@@ -1253,8 +1253,8 @@ pub async fn member_list(
         let rows: Vec<Row> = members
             .into_iter()
             .map(|m| Row {
-                email: m.email,
-                user_id: m.user_id,
+                email: m.email.unwrap_or_default(),
+                user_id: m.user_id.unwrap_or_default(),
                 role: m.role.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string()),
                 name: m.name.unwrap_or_default(),
             })
@@ -1277,14 +1277,27 @@ pub async fn member_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&member)?);
     } else {
-        println!("Member: {}", member.email);
-        println!("  User ID: {}", member.user_id);
-        println!("  Role: {}", member.role.as_deref().unwrap_or("-"));
+        println!(
+            "Member: {}",
+            member.email.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  User ID: {}",
+            member.user_id.as_deref().unwrap_or("-")
+        );
+        println!(
+            "  Role: {}",
+            member
+                .role
+                .as_ref()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "-".into())
+        );
         if let Some(name) = &member.name {
             println!("  Name: {}", name);
         }
         if let Some(joined) = &member.joined_at {
-            println!("  Joined: {}", joined);
+            println!("  Joined: {}", joined.to_rfc3339());
         }
     }
     Ok(())
@@ -1299,12 +1312,13 @@ pub async fn member_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let request = UpdateMemberRequest {
+    let request = clickhouse_cloud_api::models::MemberPatchRequest {
         assigned_role_ids: if role_ids.is_empty() {
             None
         } else {
             Some(role_ids.to_vec())
         },
+        role: None,
     };
 
     let member = client.update_member(&org_id, user_id, &request).await?;
@@ -1312,7 +1326,10 @@ pub async fn member_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&member)?);
     } else {
-        println!("Member {} updated", member.email);
+        println!(
+            "Member {} updated",
+            member.email.as_deref().unwrap_or("unknown")
+        );
     }
     Ok(())
 }
@@ -1363,10 +1380,13 @@ pub async fn invitation_list(
         let rows: Vec<Row> = invitations
             .into_iter()
             .map(|inv| Row {
-                email: inv.email,
-                id: inv.id,
+                email: inv.email.unwrap_or_default(),
+                id: inv.id.map(|id| id.to_string()).unwrap_or_default(),
                 role: inv.role.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string()),
-                expires: inv.expire_at.unwrap_or_else(|| "-".to_string()),
+                expires: inv
+                    .expire_at
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "-".to_string()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1383,13 +1403,14 @@ pub async fn invitation_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let request = CreateInvitationRequest {
-        email: email.to_string(),
+    let request = clickhouse_cloud_api::models::InvitationPostRequest {
+        email: Some(email.to_string()),
         assigned_role_ids: if role_ids.is_empty() {
             None
         } else {
             Some(role_ids.to_vec())
         },
+        role: None,
     };
 
     let inv = client.create_invitation(&org_id, &request).await?;
@@ -1397,7 +1418,11 @@ pub async fn invitation_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation sent to {} ({})", inv.email, inv.id);
+        println!(
+            "Invitation sent to {} ({})",
+            inv.email.as_deref().unwrap_or("unknown"),
+            inv.id.map(|id| id.to_string()).unwrap_or_default()
+        );
     }
     Ok(())
 }
@@ -1415,14 +1440,23 @@ pub async fn invitation_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation: {}", inv.id);
-        println!("  Email: {}", inv.email);
-        println!("  Role: {}", inv.role.as_deref().unwrap_or("-"));
+        println!(
+            "Invitation: {}",
+            inv.id.map(|id| id.to_string()).unwrap_or_default()
+        );
+        println!("  Email: {}", inv.email.as_deref().unwrap_or("unknown"));
+        println!(
+            "  Role: {}",
+            inv.role
+                .as_ref()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "-".into())
+        );
         if let Some(created) = &inv.created_at {
-            println!("  Created: {}", created);
+            println!("  Created: {}", created.to_rfc3339());
         }
         if let Some(expires) = &inv.expire_at {
-            println!("  Expires: {}", expires);
+            println!("  Expires: {}", expires.to_rfc3339());
         }
     }
     Ok(())

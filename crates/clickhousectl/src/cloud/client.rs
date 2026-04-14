@@ -471,13 +471,18 @@ impl CloudClient {
         .await
     }
 
-    // Backup endpoints
-    pub async fn list_backups(&self, org_id: &str, service_id: &str) -> Result<Vec<Backup>> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/backups",
-            org_id, service_id
-        ))
-        .await
+    // Backup endpoints (delegated to library client)
+    pub async fn list_backups(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::Backup>> {
+        let response = self
+            .api()
+            .backup_get_list(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn get_backup(
@@ -485,12 +490,13 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         backup_id: &str,
-    ) -> Result<Backup> {
-        self.get(&format!(
-            "/organizations/{}/services/{}/backups/{}",
-            org_id, service_id, backup_id
-        ))
-        .await
+    ) -> Result<clickhouse_cloud_api::models::Backup> {
+        let response = self
+            .api()
+            .backup_get(org_id, service_id, backup_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     // Update service
@@ -661,64 +667,99 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    // Phase 4 - Member endpoints
-    pub async fn list_members(&self, org_id: &str) -> Result<Vec<Member>> {
-        self.get(&format!("/organizations/{}/members", org_id))
+    // Phase 4 - Member endpoints (delegated to library client)
+    pub async fn list_members(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::Member>> {
+        let response = self
+            .api()
+            .member_get_list(org_id)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    pub async fn get_member(&self, org_id: &str, user_id: &str) -> Result<Member> {
-        self.get(&format!("/organizations/{}/members/{}", org_id, user_id))
+    pub async fn get_member(
+        &self,
+        org_id: &str,
+        user_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::Member> {
+        let response = self
+            .api()
+            .member_get(org_id, user_id)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn update_member(
         &self,
         org_id: &str,
         user_id: &str,
-        request: &UpdateMemberRequest,
-    ) -> Result<Member> {
-        self.patch(
-            &format!("/organizations/{}/members/{}", org_id, user_id),
-            request,
-        )
-        .await
+        request: &clickhouse_cloud_api::models::MemberPatchRequest,
+    ) -> Result<clickhouse_cloud_api::models::Member> {
+        let response = self
+            .api()
+            .member_update(org_id, user_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<()> {
-        self.delete(&format!("/organizations/{}/members/{}", org_id, user_id))
+        self.api()
+            .member_delete(org_id, user_id)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(())
     }
 
-    // Phase 4 - Invitation endpoints
-    pub async fn list_invitations(&self, org_id: &str) -> Result<Vec<Invitation>> {
-        self.get(&format!("/organizations/{}/invitations", org_id))
+    // Phase 4 - Invitation endpoints (delegated to library client)
+    pub async fn list_invitations(
+        &self,
+        org_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::Invitation>> {
+        let response = self
+            .api()
+            .invitation_get_list(org_id)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn create_invitation(
         &self,
         org_id: &str,
-        request: &CreateInvitationRequest,
-    ) -> Result<Invitation> {
-        self.post(&format!("/organizations/{}/invitations", org_id), request)
+        request: &clickhouse_cloud_api::models::InvitationPostRequest,
+    ) -> Result<clickhouse_cloud_api::models::Invitation> {
+        let response = self
+            .api()
+            .invitation_create(org_id, request)
             .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
-    pub async fn get_invitation(&self, org_id: &str, invitation_id: &str) -> Result<Invitation> {
-        self.get(&format!(
-            "/organizations/{}/invitations/{}",
-            org_id, invitation_id
-        ))
-        .await
+    pub async fn get_invitation(
+        &self,
+        org_id: &str,
+        invitation_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::Invitation> {
+        let response = self
+            .api()
+            .invitation_get(org_id, invitation_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
     }
 
     pub async fn delete_invitation(&self, org_id: &str, invitation_id: &str) -> Result<()> {
-        self.delete(&format!(
-            "/organizations/{}/invitations/{}",
-            org_id, invitation_id
-        ))
-        .await
+        self.api()
+            .invitation_delete(org_id, invitation_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(())
     }
 
     // Phase 5 - API Key endpoints

@@ -236,13 +236,6 @@ flexible_string_enum! {
 }
 
 flexible_string_enum! {
-    pub enum OrganizationRole {
-        Admin => "admin",
-        Developer => "developer",
-    }
-}
-
-flexible_string_enum! {
     pub enum ServiceTier {
         Development => "development",
         Production => "production",
@@ -396,20 +389,6 @@ flexible_string_enum! {
     }
 }
 
-flexible_string_enum! {
-    pub enum BackupStatus {
-        Done => "done",
-        Error => "error",
-        InProgress => "in_progress",
-    }
-}
-
-flexible_string_enum! {
-    pub enum BackupType {
-        Full => "full",
-        Incremental => "incremental",
-    }
-}
 
 #[allow(clippy::derivable_impls)]
 impl Default for CloudProvider {
@@ -852,59 +831,6 @@ pub struct CreatePrivateEndpointRequest {
 }
 
 // =============================================================================
-// Member types
-// =============================================================================
-
-/// Organization member
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Member {
-    pub user_id: String,
-    pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<OrganizationRole>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub joined_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_roles: Option<Vec<AssignedRole>>,
-}
-
-/// Update member request
-#[derive(Debug, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateMemberRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_role_ids: Option<Vec<String>>,
-}
-
-/// Organization invitation
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Invitation {
-    pub id: String,
-    pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<OrganizationRole>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expire_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_roles: Option<Vec<AssignedRole>>,
-}
-
-/// Create invitation request
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateInvitationRequest {
-    pub email: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub assigned_role_ids: Option<Vec<String>>,
-}
-
-// =============================================================================
 // API Key types
 // =============================================================================
 
@@ -1024,65 +950,6 @@ pub struct Activity {
     pub target_key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_update_type: Option<ActivityKeyUpdateType>,
-}
-
-/// Backup
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "bucketProvider")]
-#[allow(clippy::upper_case_acronyms)]
-pub enum BackupBucket {
-    #[serde(rename = "AWS")]
-    AWS {
-        #[serde(rename = "bucketPath")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        bucket_path: Option<String>,
-        #[serde(rename = "iamRoleArn")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        iam_role_arn: Option<String>,
-        #[serde(rename = "iamRoleSessionName")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        iam_role_session_name: Option<String>,
-    },
-    #[serde(rename = "GCP")]
-    GCP {
-        #[serde(rename = "bucketPath")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        bucket_path: Option<String>,
-        #[serde(rename = "accessKeyId")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        access_key_id: Option<String>,
-    },
-    #[serde(rename = "AZURE")]
-    AZURE {
-        #[serde(rename = "containerName")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        container_name: Option<String>,
-    },
-}
-
-/// Backup
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Backup {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub service_id: Option<String>,
-    pub status: BackupStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size_in_bytes: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_in_seconds: Option<f64>,
-    #[serde(rename = "type")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_type: Option<BackupType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backup_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bucket: Option<BackupBucket>,
 }
 
 /// Backup configuration
