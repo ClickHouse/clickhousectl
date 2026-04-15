@@ -301,6 +301,35 @@ def check_field_optionality(
     return mismatches
 
 
+def check_missing_fields(
+    spec: dict,
+    model_fields: dict[str, dict[str, bool]],
+) -> list[dict]:
+    """Find spec properties that have no corresponding Rust struct field.
+
+    Returns list of: [{schema, spec_name, field}]
+    """
+    missing = []
+    schemas = spec.get("components", {}).get("schemas", {})
+
+    for spec_name, schema in schemas.items():
+        pascal_name = pascalize(spec_name)
+        fields = model_fields.get(pascal_name)
+        if fields is None:
+            continue
+
+        props = schema.get("properties", {})
+        for prop_name in props:
+            if prop_name not in fields:
+                missing.append({
+                    "schema": pascal_name,
+                    "spec_name": spec_name,
+                    "field": prop_name,
+                })
+
+    return missing
+
+
 # ---------------------------------------------------------------------------
 # GitHub helpers
 # ---------------------------------------------------------------------------
@@ -355,6 +384,7 @@ def build_issue_body(
     missing_types: dict[str, dict],
     all_spec_schemas: dict[str, dict],
     field_mismatches: list[dict] | None = None,
+    missing_fields: list[dict] | None = None,
 ) -> str:
     lines = [
         "The live ClickHouse Cloud OpenAPI spec has operations or schemas that the",
@@ -371,6 +401,7 @@ def build_issue_body(
         f"| Missing client methods | {len(missing_ops)} |",
         f"| Extra client methods (not in spec) | {len(extra_ops)} |",
         f"| Missing model types | {len(missing_types)} |",
+        f"| Missing struct fields | {len(missing_fields or [])} |",
         f"| Field optionality mismatches | {len(field_mismatches or [])} |",
         "",
     ]
@@ -451,6 +482,22 @@ def build_issue_body(
                 "</details>",
                 "",
             ]
+
+    # ---- Missing struct fields ----
+    if missing_fields:
+        lines += [
+            "## Missing Struct Fields",
+            "",
+            "These properties exist in the OpenAPI spec but have no corresponding",
+            "field in the Rust struct. API response data for these fields is silently",
+            "dropped during deserialization.",
+            "",
+            "| Schema | Field |",
+            "|--------|-------|",
+        ]
+        for m in sorted(missing_fields, key=lambda m: (m["schema"], m["field"])):
+            lines.append(f"| `{m['schema']}` | `{m['field']}` |")
+        lines.append("")
 
     # ---- Field optionality mismatches ----
     if field_mismatches:
@@ -539,13 +586,14 @@ def main():
     missing_type_names = spec_type_names - model_types
     missing_types = {name: live_schemas[name] for name in missing_type_names}
 
-    # Compare field optionality
+    # Compare fields
     models_source = MODELS_RS.read_text()
     model_fields = parse_model_fields(models_source)
     field_mismatches = check_field_optionality(live_spec, model_fields)
+    missing_fields = check_missing_fields(live_spec, model_fields)
 
     # Report
-    total = len(missing_ops) + len(extra_op_names) + len(missing_types) + len(field_mismatches)
+    total = len(missing_ops) + len(extra_op_names) + len(missing_types) + len(field_mismatches) + len(missing_fields)
 
     print(f"Live spec:       {len(spec_method_names)} operations, {len(spec_type_names)} schemas", file=sys.stderr)
     print(f"client.rs:       {len(client_methods)} pub async fn methods", file=sys.stderr)
@@ -554,13 +602,14 @@ def main():
     print(f"Missing methods: {len(missing_ops)}", file=sys.stderr)
     print(f"Extra methods:   {len(extra_op_names)}", file=sys.stderr)
     print(f"Missing types:   {len(missing_types)}", file=sys.stderr)
+    print(f"Missing fields:  {len(missing_fields)}", file=sys.stderr)
     print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
 
     if total == 0:
         print("\nNo drift. Library fully covers the live spec.", file=sys.stderr)
         return
 
-    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas, field_mismatches)
+    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas, field_mismatches, missing_fields)
 
     if args.dry_run:
         print("\n--- Issue body (dry run) ---\n", file=sys.stderr)

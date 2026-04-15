@@ -255,6 +255,18 @@ async fn field_optionality_matches_live_spec() {
     assert_field_optionality(&spec);
 }
 
+#[test]
+fn struct_fields_cover_every_spec_property() {
+    assert_field_coverage(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn struct_fields_cover_every_live_spec_property() {
+    let spec = load_live_spec().await;
+    assert_field_coverage(&spec);
+}
+
 fn assert_field_optionality(spec: &Value) {
     let schemas = spec["components"]["schemas"].as_object().unwrap();
     let model_fields = parse_model_fields(MODELS_RS);
@@ -301,6 +313,42 @@ fn assert_field_optionality(spec: &Value) {
         "Field optionality mismatches ({} total):\n{}",
         mismatches.len(),
         mismatches.join("\n")
+    );
+}
+
+/// Assert that every property in the OpenAPI spec has a corresponding field
+/// in the Rust struct. Catches fields added or renamed in the spec that never
+/// made it into models.rs.
+fn assert_field_coverage(spec: &Value) {
+    let schemas = spec["components"]["schemas"].as_object().unwrap();
+    let model_fields = parse_model_fields(MODELS_RS);
+
+    let mut missing = Vec::new();
+
+    for (spec_name, schema) in schemas {
+        let rust_name = pascalize_identifier(spec_name);
+        let fields = match model_fields.get(&rust_name) {
+            Some(f) => f,
+            None => continue, // Missing struct — covered by models_cover_every_openapi_component_schema
+        };
+
+        let props = match schema.get("properties").and_then(Value::as_object) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        for prop_name in props.keys() {
+            if !fields.contains_key(prop_name.as_str()) {
+                missing.push(format!("{}.{}", rust_name, prop_name));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "Spec properties missing from Rust structs ({} total):\n{}",
+        missing.len(),
+        missing.join("\n")
     );
 }
 
