@@ -443,5 +443,10 @@ fn bool_from_env(name: &str) -> TestResult<bool> {
 }
 
 fn required_env(name: &str) -> TestResult<String> {
-    Ok(env::var(name).map_err(|_| format!("missing required environment variable {name}"))?)
+    let value =
+        env::var(name).map_err(|_| format!("missing required environment variable {name}"))?;
+    if value.is_empty() {
+        return Err(format!("{name} is set but empty (secrets unavailable in fork PRs?)").into());
+    }
+    Ok(value)
 }
