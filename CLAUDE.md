@@ -48,6 +48,36 @@ Typed Rust client generated from the ClickHouse Cloud OpenAPI spec. Contains:
 
 The CLI depends on this library for all cloud API calls.
 
+#### Field optionality and the OpenAPI spec
+
+The OpenAPI spec uses two different conventions for required vs optional fields:
+
+- **Schemas with a `required` array** (newer/beta endpoints) — standard OpenAPI semantics.
+- **Schemas without `required`** (GA/legacy endpoints) — optional fields start their description with `"Optional"`. All other fields are implicitly required.
+- **PATCH request schemas** — always all-optional (partial update semantics), identified by name containing "Patch" and ending with "Request".
+- **Nullable fields** (`type: ["string", "null"]` or `oneOf` with null) — always `Option<T>` in Rust, even if "required".
+
+In `models.rs`, required non-nullable fields use bare types (`T`), optional/nullable fields use `Option<T>`. All fields keep `#[serde(default)]` for robust deserialization.
+
+**Scripts:**
+
+- `scripts/resolve-field-requirements.py` — resolves required/optional for every schema field, outputs a JSON manifest. Handles both conventions + PATCH + nullable.
+- `scripts/update-models-optionality.py` — reads the spec and rewrites `models.rs` field types to match. Only converts `Option<T>` → `T`; does not convert in the reverse direction.
+
+**Validation:**
+
+- `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the spec.
+- `scripts/check-openapi-drift.py` — daily CI drift check now also reports field-level optionality mismatches.
+
+**When the spec adds proper `required` arrays to all schemas:**
+
+1. Download the updated spec: `curl -s https://api.clickhouse.cloud/v1 -o crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`
+2. Re-run: `python3 scripts/update-models-optionality.py`
+3. Fix any test assertions for fields that changed optionality.
+4. Verify: `cargo test -p clickhouse-cloud-api`
+
+The resolution logic automatically prefers `required` arrays over description parsing, so the description heuristic becomes dead code — no structural changes needed.
+
 ## Adding commands
 
 ### New local subcommand

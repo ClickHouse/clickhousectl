@@ -35,8 +35,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?
             .expect("blocking steps always return a value");
-        assert_eq!(org.id.map(|id| id.to_string()).as_deref(), Some(ctx.org_id.as_str()));
-        let current_org_name = org.name.clone().unwrap_or_default();
+        assert_eq!(org.id.to_string(), ctx.org_id);
+        let current_org_name = org.name.clone();
 
         let org_list = failures
             .run(
@@ -56,7 +56,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         assert!(
             org_list
                 .iter()
-                .any(|o| o.id.map(|id| id.to_string()).as_deref() == Some(&ctx.org_id)),
+                .any(|o| o.id.to_string() == ctx.org_id),
             "org list did not include target org {}",
             ctx.org_id
         );
@@ -77,7 +77,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         )
                         .await?;
                     let updated = resp.result.ok_or("org update returned no result")?;
-                    let updated_id = updated.id.map(|id| id.to_string()).unwrap_or_default();
+                    let updated_id = updated.id.to_string();
                     if updated_id != org_id {
                         return Err(
                             format!("org update returned unexpected org id {updated_id}").into()
@@ -133,16 +133,16 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         );
 
         let create_body = ServicePostRequest {
-            name: Some(ctx.service_name()),
-            provider: Some(ServicePostRequestProvider::Unknown(ctx.provider.clone())),
-            region: Some(ServicePostRequestRegion::Unknown(ctx.region.clone())),
-            min_replica_memory_gb: Some(base_memory_gb),
-            max_replica_memory_gb: Some(base_memory_gb),
-            num_replicas: Some(base_replicas),
-            idle_scaling: Some(true),
-            idle_timeout_minutes: Some(5.0),
-            ip_access_list: Some(vec![]),
-            tags: Some(ctx.run_tags()),
+            name: ctx.service_name(),
+            provider: ServicePostRequestProvider::Unknown(ctx.provider.clone()),
+            region: ServicePostRequestRegion::Unknown(ctx.region.clone()),
+            min_replica_memory_gb: base_memory_gb,
+            max_replica_memory_gb: base_memory_gb,
+            num_replicas: base_replicas,
+            idle_scaling: true,
+            idle_timeout_minutes: 5.0,
+            ip_access_list: vec![],
+            tags: ctx.run_tags(),
             ..Default::default()
         };
 
@@ -160,9 +160,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        let service = created.service.as_ref().expect("create returned no service");
-        let service_id = service.id.expect("service has no id").to_string();
-        let _password = created.password.clone().unwrap_or_default();
+        let service = &created.service;
+        let service_id = service.id.to_string();
+        let _password = created.password.clone();
         eprintln!("service_id: <redacted>");
         cleanup.register_service(service_id.clone());
 
@@ -188,11 +188,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                     let resp =
                                         client.instance_get(&org_id, &service_id).await?;
                                     let svc = resp.result.ok_or("service get returned no result")?;
-                                    let state = svc
-                                        .state
-                                        .as_ref()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_default();
+                                    let state = svc.state.to_string();
                                     if matches!(state.as_str(), "running" | "idle") {
                                         Ok(Some(svc))
                                     } else {
@@ -208,10 +204,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        assert_eq!(ready.name.as_deref(), Some(ctx.service_name().as_str()));
-        assert_eq!(ready.min_replica_memory_gb, Some(base_memory_gb));
-        assert_eq!(ready.max_replica_memory_gb, Some(base_memory_gb));
-        assert_eq!(ready.num_replicas, Some(base_replicas));
+        assert_eq!(ready.name, ctx.service_name());
+        assert_eq!(ready.min_replica_memory_gb, base_memory_gb);
+        assert_eq!(ready.max_replica_memory_gb, base_memory_gb);
+        assert_eq!(ready.num_replicas, base_replicas);
 
         let listed = failures
             .run(
@@ -235,7 +231,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         assert!(
             listed
                 .iter()
-                .any(|s| s.id.map(|id| id.to_string()).as_deref() == Some(&service_id)),
+                .any(|s| s.id.to_string() == service_id),
             "created service was not visible in service list"
         );
 
@@ -266,11 +262,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let resp = client.instance_get(&org_id, &service_id).await?;
                             let svc = resp.result.ok_or("service get returned no result")?;
-                            let state = svc
-                                .state
-                                .as_ref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
+                            let state = svc.state.to_string();
                             if matches!(state.as_str(), "idle" | "stopped") {
                                 Ok(Some(()))
                             } else {
@@ -308,11 +300,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let resp = client.instance_get(&org_id, &service_id).await?;
                             let svc = resp.result.ok_or("service get returned no result")?;
-                            let state = svc
-                                .state
-                                .as_ref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
+                            let state = svc.state.to_string();
                             if matches!(state.as_str(), "running" | "idle") {
                                 Ok(Some(()))
                             } else {
@@ -373,7 +361,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let resp = client.instance_get(&org_id, &service_id).await?;
                                 let svc =
                                     resp.result.ok_or("service get returned no result")?;
-                                if svc.name.as_deref() == Some(&expected_name) {
+                                if svc.name == expected_name {
                                     Ok(Some(svc))
                                 } else {
                                     Ok(None)
@@ -386,10 +374,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?
             .expect("blocking steps always return a value");
-        assert_eq!(
-            updated.name.as_deref(),
-            Some(ctx.updated_service_name().as_str())
-        );
+        assert_eq!(updated.name, ctx.updated_service_name());
 
         let renamed_list = failures
             .run(
@@ -420,12 +405,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                     .result
                                     .ok_or("service list returned no result")?;
                                 let found = services.iter().find(|s| {
-                                    s.id.map(|id| id.to_string()).as_deref() == Some(&service_id)
+                                    s.id.to_string() == service_id
                                 });
-                                if found
-                                    .and_then(|s| s.name.as_deref())
-                                    .is_some_and(|n| n == expected_name)
-                                {
+                                if found.is_some_and(|s| s.name == expected_name) {
                                     Ok(Some(services))
                                 } else {
                                     Ok(None)
@@ -440,9 +422,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         let renamed_svc = renamed_list
             .iter()
-            .find(|s| s.id.map(|id| id.to_string()).as_deref() == Some(&service_id));
+            .find(|s| s.id.to_string() == service_id);
         assert_eq!(
-            renamed_svc.and_then(|s| s.name.as_deref()),
+            renamed_svc.map(|s| s.name.as_str()),
             Some(ctx.updated_service_name().as_str())
         );
 
@@ -480,7 +462,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     async move {
                         let resp = client.instance_get(&org_id, &service_id).await?;
                         let svc = resp.result.ok_or("service get returned no result")?;
-                        let current_value = svc.enable_core_dumps.unwrap_or(false);
+                        let current_value = svc.enable_core_dumps;
                         client
                             .instance_update(
                                 &org_id,
@@ -509,11 +491,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             &service_id,
                             &ServicePatchRequest {
                                 tags: Some(InstanceTagsPatch {
-                                    add: Some(vec![ResourceTagsV1 {
+                                    add: vec![ResourceTagsV1 {
                                         key: "phase".to_string(),
                                         value: Some("updated".to_string()),
-                                    }]),
-                                    remove: None,
+                                    }],
+                                    remove: vec![],
                                 }),
                                 ..Default::default()
                             },
@@ -562,11 +544,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 &service_id,
                                 &ServicePatchRequest {
                                     ip_access_list: Some(IpAccessListPatch {
-                                        add: Some(vec![IpAccessListEntry {
-                                            source: Some(primary_ip.to_string()),
+                                        add: vec![IpAccessListEntry {
+                                            source: primary_ip.to_string(),
                                             description: Some("test primary".to_string()),
-                                        }]),
-                                        remove: None,
+                                        }],
+                                        remove: vec![],
                                     }),
                                     ..Default::default()
                                 },
@@ -605,11 +587,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 &service_id,
                                 &ServicePatchRequest {
                                     ip_access_list: Some(IpAccessListPatch {
-                                        add: Some(vec![IpAccessListEntry {
-                                            source: Some(secondary_ip.to_string()),
+                                        add: vec![IpAccessListEntry {
+                                            source: secondary_ip.to_string(),
                                             description: Some("test secondary".to_string()),
-                                        }]),
-                                        remove: None,
+                                        }],
+                                        remove: vec![],
                                     }),
                                     ..Default::default()
                                 },
@@ -663,11 +645,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 &service_id,
                                 &ServicePatchRequest {
                                     ip_access_list: Some(IpAccessListPatch {
-                                        add: None,
-                                        remove: Some(vec![IpAccessListEntry {
-                                            source: Some(primary_ip.to_string()),
+                                        add: vec![],
+                                        remove: vec![IpAccessListEntry {
+                                            source: primary_ip.to_string(),
                                             description: None,
-                                        }]),
+                                        }],
                                     }),
                                     ..Default::default()
                                 },
@@ -721,11 +703,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 &service_id,
                                 &ServicePatchRequest {
                                     ip_access_list: Some(IpAccessListPatch {
-                                        add: None,
-                                        remove: Some(vec![IpAccessListEntry {
-                                            source: Some(secondary_ip.to_string()),
+                                        add: vec![],
+                                        remove: vec![IpAccessListEntry {
+                                            source: secondary_ip.to_string(),
                                             description: None,
-                                        }]),
+                                        }],
                                     }),
                                     ..Default::default()
                                 },
@@ -874,11 +856,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let resp = client.instance_get(&org_id, &service_id).await?;
                             let svc = resp.result.ok_or("service get returned no result")?;
-                            let state = svc
-                                .state
-                                .as_ref()
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
+                            let state = svc.state.to_string();
                             if matches!(state.as_str(), "idle" | "stopped") {
                                 Ok(Some(()))
                             } else {
@@ -966,13 +944,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
 }
 
 fn has_ip_entry(svc: &Service, source: &str) -> bool {
-    svc.ip_access_list
-        .as_ref()
-        .is_some_and(|entries| {
-            entries
-                .iter()
-                .any(|e| e.source.as_deref() == Some(source))
-        })
+    svc.ip_access_list.iter().any(|e| e.source == source)
 }
 
 async fn poll_for_ip_presence(
@@ -1043,9 +1015,9 @@ async fn scale_service_and_wait(
             async move {
                 let resp = client.instance_get(&org_id, &service_id).await?;
                 let svc = resp.result.ok_or("service get returned no result")?;
-                if min_memory_gb.is_none_or(|v| svc.min_replica_memory_gb == Some(v))
-                    && max_memory_gb.is_none_or(|v| svc.max_replica_memory_gb == Some(v))
-                    && replicas.is_none_or(|v| svc.num_replicas == Some(v))
+                if min_memory_gb.is_none_or(|v| svc.min_replica_memory_gb == v)
+                    && max_memory_gb.is_none_or(|v| svc.max_replica_memory_gb == v)
+                    && replicas.is_none_or(|v| svc.num_replicas == v)
                 {
                     Ok(Some(()))
                 } else {

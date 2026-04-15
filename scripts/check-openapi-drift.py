@@ -15,6 +15,7 @@ Requires: gh CLI (authenticated), Python 3.8+
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -31,6 +32,20 @@ LIVE_SPEC_URL = os.environ.get(
 )
 ISSUE_LABEL = "openapi-drift"
 HTTP_METHODS = {"get", "put", "post", "delete", "patch", "options", "head", "trace"}
+
+# Import field requirement resolution logic from sibling script
+_spec = importlib.util.spec_from_file_location(
+    "resolve_field_requirements",
+    Path(__file__).resolve().parent / "resolve-field-requirements.py",
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+resolve_required_fields = _mod.resolve_required_fields
+
+# Regex to match serde rename value
+_RE_RENAME = re.compile(r'rename\s*=\s*"([^"]+)"')
+# Regex to match a field line (supports r#ident raw identifiers)
+_RE_FIELD = re.compile(r'^\s*pub\s+(?:r#)?(\w+)\s*:\s*(.+?),\s*$')
 
 
 def fetch_live_spec() -> dict | None:
@@ -182,6 +197,111 @@ def collect_refs(value, refs=None) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Field-level optionality checking
+# ---------------------------------------------------------------------------
+
+
+def parse_model_fields(source: str) -> dict[str, dict[str, bool]]:
+    """Parse models.rs to extract field optionality per struct.
+
+    Returns: { StructName: { specFieldName: is_option } }
+    """
+    result: dict[str, dict[str, bool]] = {}
+    lines = source.splitlines()
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].lstrip()
+
+        if line.startswith("pub struct "):
+            rest = line[len("pub struct "):]
+            match = re.match(r"[A-Za-z0-9_]+", rest)
+            if match:
+                struct_name = match.group(0)
+                i += 1
+                fields: dict[str, bool] = {}
+                pending_rename: str | None = None
+
+                while i < len(lines):
+                    line = lines[i].strip()
+                    if line == "}":
+                        break
+
+                    # Extract rename from serde attribute
+                    if line.startswith("#[serde("):
+                        m = _RE_RENAME.search(line)
+                        if m:
+                            pending_rename = m.group(1)
+
+                    # Extract field definition
+                    m = _RE_FIELD.match(lines[i])
+                    if m:
+                        rust_name = m.group(1)
+                        type_str = m.group(2).strip()
+                        is_option = type_str.startswith("Option<")
+                        spec_name = pending_rename or rust_name
+                        fields[spec_name] = is_option
+                        pending_rename = None
+
+                    i += 1
+
+                result[struct_name] = fields
+        i += 1
+
+    return result
+
+
+def check_field_optionality(
+    spec: dict,
+    model_fields: dict[str, dict[str, bool]],
+) -> list[dict]:
+    """Compare field optionality between spec and models.rs.
+
+    Returns list of mismatches: [{schema, field, expected, actual}]
+    """
+    mismatches = []
+    schemas = spec.get("components", {}).get("schemas", {})
+
+    for spec_name, schema in schemas.items():
+        pascal_name = pascalize(spec_name)
+        fields = model_fields.get(pascal_name)
+        if fields is None:
+            continue
+
+        props = schema.get("properties", {})
+        if not props:
+            continue
+
+        required_fields, _method = resolve_required_fields(spec_name, schema)
+
+        for prop_name in props:
+            if prop_name not in fields:
+                continue
+
+            is_required = prop_name in required_fields
+            is_option = fields[prop_name]
+
+            if is_required and is_option:
+                mismatches.append({
+                    "schema": pascal_name,
+                    "spec_name": spec_name,
+                    "field": prop_name,
+                    "expected": "required (T)",
+                    "actual": "Option<T>",
+                })
+            elif not is_required and not is_option:
+                mismatches.append({
+                    "schema": pascal_name,
+                    "spec_name": spec_name,
+                    "field": prop_name,
+                    "expected": "optional (Option<T>)",
+                    "actual": "T",
+                })
+
+    return mismatches
+
+
+# ---------------------------------------------------------------------------
 # GitHub helpers
 # ---------------------------------------------------------------------------
 
@@ -234,6 +354,7 @@ def build_issue_body(
     extra_ops: set[str],
     missing_types: dict[str, dict],
     all_spec_schemas: dict[str, dict],
+    field_mismatches: list[dict] | None = None,
 ) -> str:
     lines = [
         "The live ClickHouse Cloud OpenAPI spec has operations or schemas that the",
@@ -250,6 +371,7 @@ def build_issue_body(
         f"| Missing client methods | {len(missing_ops)} |",
         f"| Extra client methods (not in spec) | {len(extra_ops)} |",
         f"| Missing model types | {len(missing_types)} |",
+        f"| Field optionality mismatches | {len(field_mismatches or [])} |",
         "",
     ]
 
@@ -330,6 +452,24 @@ def build_issue_body(
                 "",
             ]
 
+    # ---- Field optionality mismatches ----
+    if field_mismatches:
+        lines += [
+            "## Field Optionality Mismatches",
+            "",
+            "These fields have incorrect `Option<T>` vs `T` types in `models.rs`.",
+            "Required non-nullable fields should be `T`; optional or nullable fields",
+            "should be `Option<T>`.",
+            "",
+            "| Schema | Field | Expected | Actual |",
+            "|--------|-------|----------|--------|",
+        ]
+        for m in sorted(field_mismatches, key=lambda m: (m["schema"], m["field"])):
+            lines.append(
+                f"| `{m['schema']}` | `{m['field']}` | {m['expected']} | {m['actual']} |"
+            )
+        lines.append("")
+
     # ---- Implementation guide ----
     lines += [
         "## Implementation Guide",
@@ -343,7 +483,11 @@ def build_issue_body(
         "   - Use `#[serde(skip_serializing_if = \"Option::is_none\")]` for optional fields",
         "   - Enums should derive `Default` and include an `#[serde(other)]` `Unknown` variant",
         "3. Add missing methods to `crates/clickhouse-cloud-api/src/client.rs`",
-        "4. Verify: `cargo test -p clickhouse-cloud-api`",
+        "4. Fix field optionality:",
+        "   ```bash",
+        "   python scripts/update-models-optionality.py",
+        "   ```",
+        "5. Verify: `cargo test -p clickhouse-cloud-api`",
         "",
     ]
 
@@ -395,8 +539,13 @@ def main():
     missing_type_names = spec_type_names - model_types
     missing_types = {name: live_schemas[name] for name in missing_type_names}
 
+    # Compare field optionality
+    models_source = MODELS_RS.read_text()
+    model_fields = parse_model_fields(models_source)
+    field_mismatches = check_field_optionality(live_spec, model_fields)
+
     # Report
-    total = len(missing_ops) + len(extra_op_names) + len(missing_types)
+    total = len(missing_ops) + len(extra_op_names) + len(missing_types) + len(field_mismatches)
 
     print(f"Live spec:       {len(spec_method_names)} operations, {len(spec_type_names)} schemas", file=sys.stderr)
     print(f"client.rs:       {len(client_methods)} pub async fn methods", file=sys.stderr)
@@ -405,12 +554,13 @@ def main():
     print(f"Missing methods: {len(missing_ops)}", file=sys.stderr)
     print(f"Extra methods:   {len(extra_op_names)}", file=sys.stderr)
     print(f"Missing types:   {len(missing_types)}", file=sys.stderr)
+    print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
 
     if total == 0:
         print("\nNo drift. Library fully covers the live spec.", file=sys.stderr)
         return
 
-    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas)
+    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas, field_mismatches)
 
     if args.dry_run:
         print("\n--- Issue body (dry run) ---\n", file=sys.stderr)

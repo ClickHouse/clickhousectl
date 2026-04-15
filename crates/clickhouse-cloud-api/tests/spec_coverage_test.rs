@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use serde_json::Value;
 
@@ -237,4 +237,213 @@ fn pascalize_identifier(value: &str) -> String {
     }
 
     output
+}
+
+// ---------------------------------------------------------------------------
+// Field-level optionality validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn field_optionality_matches_spec() {
+    assert_field_optionality(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn field_optionality_matches_live_spec() {
+    let spec = load_live_spec().await;
+    assert_field_optionality(&spec);
+}
+
+fn assert_field_optionality(spec: &Value) {
+    let schemas = spec["components"]["schemas"].as_object().unwrap();
+    let model_fields = parse_model_fields(MODELS_RS);
+
+    let mut mismatches = Vec::new();
+
+    for (spec_name, schema) in schemas {
+        let rust_name = pascalize_identifier(spec_name);
+        let fields = match model_fields.get(&rust_name) {
+            Some(f) => f,
+            None => continue, // Schema not in models — covered by other tests
+        };
+
+        let props = match schema.get("properties").and_then(Value::as_object) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let required_fields = resolve_required_fields(spec_name, schema);
+
+        for (prop_name, _prop_schema) in props {
+            let is_required = required_fields.contains(prop_name.as_str());
+            let field_info = match fields.get(prop_name.as_str()) {
+                Some(f) => f,
+                None => continue, // Field not in struct — could add a check later
+            };
+
+            if is_required && field_info.is_option {
+                mismatches.push(format!(
+                    "{}.{} should be required (T) but is Option<T>",
+                    rust_name, prop_name
+                ));
+            } else if !is_required && !field_info.is_option {
+                mismatches.push(format!(
+                    "{}.{} should be optional (Option<T>) but is T",
+                    rust_name, prop_name
+                ));
+            }
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "Field optionality mismatches ({} total):\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
+}
+
+/// Determine which fields in a schema are required AND non-nullable.
+///
+/// Resolution strategy:
+/// 1. PATCH request schemas (name contains "Patch" and ends with "Request") → all optional
+/// 2. If schema has a `required` array → use it
+/// 3. Otherwise → fields whose description does NOT start with "Optional" are required
+///
+/// Nullable fields (type: ["string", "null"] or oneOf/anyOf with null) are excluded.
+fn resolve_required_fields<'a>(schema_name: &str, schema: &'a Value) -> BTreeSet<&'a str> {
+    let props = match schema.get("properties").and_then(Value::as_object) {
+        Some(p) => p,
+        None => return BTreeSet::new(),
+    };
+
+    // PATCH schemas are always all-optional
+    if schema_name.contains("Patch") && schema_name.ends_with("Request") {
+        return BTreeSet::new();
+    }
+
+    let required_names: BTreeSet<&str> = if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        required.iter().filter_map(Value::as_str).collect()
+    } else {
+        // Description heuristic for legacy schemas
+        props
+            .iter()
+            .filter(|(_, prop)| {
+                let desc = prop
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                !desc.starts_with("Optional")
+            })
+            .map(|(name, _)| name.as_str())
+            .collect()
+    };
+
+    // Exclude nullable fields
+    required_names
+        .into_iter()
+        .filter(|name| {
+            if let Some(prop) = props.get(*name) {
+                !is_field_nullable(prop)
+            } else {
+                false
+            }
+        })
+        .collect()
+}
+
+fn is_field_nullable(prop: &Value) -> bool {
+    // type: ["string", "null"]
+    if let Some(types) = prop.get("type").and_then(Value::as_array) {
+        if types.iter().any(|t| t.as_str() == Some("null")) {
+            return true;
+        }
+    }
+    // oneOf/anyOf with a null variant
+    for key in &["oneOf", "anyOf"] {
+        if let Some(variants) = prop.get(*key).and_then(Value::as_array) {
+            if variants.iter().any(|v| v.get("type").and_then(Value::as_str) == Some("null")) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+struct FieldInfo {
+    is_option: bool,
+}
+
+/// Parse models.rs to extract struct fields with their spec names and optionality.
+///
+/// Returns: { RustStructName: { specFieldName: FieldInfo } }
+fn parse_model_fields(source: &str) -> HashMap<String, HashMap<String, FieldInfo>> {
+    let mut result: HashMap<String, HashMap<String, FieldInfo>> = HashMap::new();
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim_start();
+
+        // Detect struct start
+        if let Some(rest) = line.strip_prefix("pub struct ") {
+            if let Some(struct_name) = identifier_prefix(rest) {
+                let struct_name = struct_name.to_string();
+                i += 1;
+                let mut fields: HashMap<String, FieldInfo> = HashMap::new();
+                let mut pending_rename: Option<String> = None;
+
+                while i < lines.len() {
+                    let line = lines[i].trim();
+
+                    if line == "}" {
+                        break;
+                    }
+
+                    // Extract rename from serde attribute
+                    if line.starts_with("#[serde(") {
+                        if let Some(rename) = extract_serde_rename(line) {
+                            pending_rename = Some(rename.to_string());
+                        }
+                    }
+
+                    // Extract field definition
+                    if let Some(rest) = line.strip_prefix("pub ") {
+                        if let Some(colon_pos) = rest.find(':') {
+                            let rust_field_name = rest[..colon_pos].trim();
+                            let type_str = rest[colon_pos + 1..].trim().trim_end_matches(',');
+                            let is_option = type_str.starts_with("Option<");
+
+                            // Use rename as spec name, or fall back to rust field name
+                            // Strip r# prefix from raw identifiers (e.g., r#type -> type)
+                            let spec_name = pending_rename.take().unwrap_or_else(|| {
+                                rust_field_name
+                                    .strip_prefix("r#")
+                                    .unwrap_or(rust_field_name)
+                                    .to_string()
+                            });
+
+                            fields.insert(spec_name, FieldInfo { is_option });
+                        }
+                    }
+
+                    i += 1;
+                }
+
+                result.insert(struct_name, fields);
+            }
+        }
+
+        i += 1;
+    }
+
+    result
+}
+
+fn extract_serde_rename(serde_line: &str) -> Option<&str> {
+    let start = serde_line.find("rename = \"")?;
+    let value_start = start + "rename = \"".len();
+    let end = serde_line[value_start..].find('"')? + value_start;
+    Some(&serde_line[value_start..end])
 }

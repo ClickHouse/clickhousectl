@@ -271,7 +271,7 @@ async fn ensure_service_gone(
     match client.instance_get(org_id, service_id).await {
         Ok(resp) => {
             if let Some(svc) = resp.result {
-                let state = svc.state.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                let state = svc.state.to_string();
                 if matches!(state.as_str(), "running" | "idle" | "starting" | "awaking") {
                     eprintln!("  cleanup: stopping service before delete");
                     let _ = client
@@ -293,8 +293,7 @@ async fn ensure_service_gone(
                             let state = resp
                                 .result
                                 .as_ref()
-                                .and_then(|s| s.state.as_ref())
-                                .map(|s| s.to_string())
+                                .map(|s| s.state.to_string())
                                 .unwrap_or_default();
                             if matches!(state.as_str(), "stopped" | "idle" | "degraded" | "failed") {
                                 Ok(Some(()))

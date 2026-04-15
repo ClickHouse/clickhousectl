@@ -57,7 +57,7 @@ async fn list_organizations() {
     assert_eq!(resp.status, Some(200.0));
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
-    assert_eq!(orgs[0].name, Some("Test Org".to_string()));
+    assert_eq!(orgs[0].name, "Test Org");
 }
 
 #[tokio::test]
@@ -81,7 +81,7 @@ async fn get_organization() {
     let client = Client::with_base_url(mock_server.uri(), "my-key", "my-secret");
     let resp = client.organization_get("org-123").await.unwrap();
     let org = resp.result.unwrap();
-    assert_eq!(org.name, Some("My Org".to_string()));
+    assert_eq!(org.name, "My Org");
 }
 
 #[tokio::test]
@@ -104,7 +104,7 @@ async fn update_organization() {
     };
     let resp = c.organization_update("org-1", &body).await.unwrap();
     let org = resp.result.unwrap();
-    assert_eq!(org.name, Some("Renamed Org".to_string()));
+    assert_eq!(org.name, "Renamed Org");
 }
 
 #[tokio::test]
@@ -131,7 +131,7 @@ async fn get_usage_cost_with_query_params() {
         .await
         .unwrap();
     let cost = resp.result.unwrap();
-    assert_eq!(cost.grand_total_chc, Some(50.25));
+    assert_eq!(cost.grand_total_chc, 50.25);
 }
 
 #[tokio::test]
@@ -177,7 +177,7 @@ async fn get_private_endpoint_config() {
     let config = resp.result.unwrap();
     assert_eq!(
         config.endpoint_service_id,
-        Some("com.amazonaws.vpce.us-east-1.vpce-svc-abc".to_string())
+        "com.amazonaws.vpce.us-east-1.vpce-svc-abc"
     );
 }
 
@@ -206,7 +206,7 @@ async fn list_activities() {
     let resp = c.activity_get_list("org-1", None, None).await.unwrap();
     let activities = resp.result.unwrap();
     assert_eq!(activities.len(), 1);
-    assert_eq!(activities[0].id, Some("act-1".to_string()));
+    assert_eq!(activities[0].id, "act-1");
 }
 
 #[tokio::test]
@@ -244,7 +244,7 @@ async fn get_activity() {
 
     let resp = c.activity_get("org-1", "act-1").await.unwrap();
     let activity = resp.result.unwrap();
-    assert_eq!(activity.id, Some("act-1".to_string()));
+    assert_eq!(activity.id, "act-1");
 }
 
 // ===========================================================================
@@ -267,8 +267,8 @@ async fn create_byoc_infrastructure() {
         .await;
 
     let body = ByocInfrastructurePostRequest {
-        account_id: Some("123456789012".to_string()),
-        display_name: Some("My BYOC".to_string()),
+        account_id: "123456789012".to_string(),
+        display_name: "My BYOC".to_string(),
         ..Default::default()
     };
     let resp = c
@@ -276,7 +276,7 @@ async fn create_byoc_infrastructure() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.display_name, Some("My BYOC".to_string()));
+    assert_eq!(config.display_name, "My BYOC");
 }
 
 #[tokio::test]
@@ -301,7 +301,7 @@ async fn update_byoc_infrastructure() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.display_name, Some("Renamed BYOC".to_string()));
+    assert_eq!(config.display_name, "Renamed BYOC");
 }
 
 #[tokio::test]
@@ -344,7 +344,7 @@ async fn list_invitations() {
     let resp = c.invitation_get_list("org-1").await.unwrap();
     let invitations = resp.result.unwrap();
     assert_eq!(invitations.len(), 1);
-    assert_eq!(invitations[0].email, Some("alice@example.com".to_string()));
+    assert_eq!(invitations[0].email, "alice@example.com");
 }
 
 #[tokio::test]
@@ -367,13 +367,13 @@ async fn create_invitation() {
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let body = InvitationPostRequest {
-        email: Some("newuser@example.com".to_string()),
-        role: Some(InvitationPostRequestRole::Developer),
+        email: "newuser@example.com".to_string(),
+        role: InvitationPostRequestRole::Developer,
         ..Default::default()
     };
     let resp = client.invitation_create("org-1", &body).await.unwrap();
     let inv = resp.result.unwrap();
-    assert_eq!(inv.email, Some("newuser@example.com".to_string()));
+    assert_eq!(inv.email, "newuser@example.com");
 }
 
 #[tokio::test]
@@ -392,8 +392,8 @@ async fn get_invitation() {
 
     let resp = c.invitation_get("org-1", "inv-1").await.unwrap();
     let inv = resp.result.unwrap();
-    assert_eq!(inv.email, Some("bob@example.com".to_string()));
-    assert_eq!(inv.role, Some(InvitationRole::Admin));
+    assert_eq!(inv.email, "bob@example.com");
+    assert_eq!(inv.role, InvitationRole::Admin);
 }
 
 #[tokio::test]
@@ -437,7 +437,7 @@ async fn list_api_keys() {
     let resp = client.openapi_key_get_list("org-1").await.unwrap();
     let keys = resp.result.unwrap();
     assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0].name, Some("Production Key".to_string()));
+    assert_eq!(keys[0].name, "Production Key");
 }
 
 #[tokio::test]
@@ -460,14 +460,14 @@ async fn create_api_key() {
         .await;
 
     let body = ApiKeyPostRequest {
-        name: Some("New Key".to_string()),
+        name: "New Key".to_string(),
         ..Default::default()
     };
     let resp = c.openapi_key_create("org-1", &body).await.unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.key_id, Some("key-id-abc".to_string()));
-    assert_eq!(result.key_secret, Some("key-secret-xyz".to_string()));
-    assert_eq!(result.key.unwrap().name, Some("New Key".to_string()));
+    assert_eq!(result.key_id, "key-id-abc");
+    assert_eq!(result.key_secret, "key-secret-xyz");
+    assert_eq!(result.key.name, "New Key");
 }
 
 #[tokio::test]
@@ -487,9 +487,9 @@ async fn get_api_key() {
 
     let resp = c.openapi_key_get("org-1", "key-1").await.unwrap();
     let key = resp.result.unwrap();
-    assert_eq!(key.name, Some("My Key".to_string()));
-    assert_eq!(key.state, Some(ApiKeyState::Enabled));
-    assert_eq!(key.key_suffix, Some("abc".to_string()));
+    assert_eq!(key.name, "My Key");
+    assert_eq!(key.state, ApiKeyState::Enabled);
+    assert_eq!(key.key_suffix, "abc");
 }
 
 #[tokio::test]
@@ -513,7 +513,7 @@ async fn update_api_key() {
     };
     let resp = c.openapi_key_update("org-1", "key-1", &body).await.unwrap();
     let key = resp.result.unwrap();
-    assert_eq!(key.name, Some("Renamed Key".to_string()));
+    assert_eq!(key.name, "Renamed Key");
 }
 
 #[tokio::test]
@@ -564,8 +564,8 @@ async fn list_members() {
     let resp = client.member_get_list("org-1").await.unwrap();
     let members = resp.result.unwrap();
     assert_eq!(members.len(), 2);
-    assert_eq!(members[0].role, Some(MemberRole::Admin));
-    assert_eq!(members[1].role, Some(MemberRole::Developer));
+    assert_eq!(members[0].role, MemberRole::Admin);
+    assert_eq!(members[1].role, MemberRole::Developer);
 }
 
 #[tokio::test]
@@ -585,8 +585,8 @@ async fn get_member() {
 
     let resp = c.member_get("org-1", "user-1").await.unwrap();
     let member = resp.result.unwrap();
-    assert_eq!(member.name, Some("Alice".to_string()));
-    assert_eq!(member.role, Some(MemberRole::Admin));
+    assert_eq!(member.name, "Alice");
+    assert_eq!(member.role, MemberRole::Admin);
 }
 
 #[tokio::test]
@@ -611,7 +611,7 @@ async fn update_member() {
     };
     let resp = c.member_update("org-1", "user-1", &body).await.unwrap();
     let member = resp.result.unwrap();
-    assert_eq!(member.role, Some(MemberRole::Admin));
+    assert_eq!(member.role, MemberRole::Admin);
 }
 
 #[tokio::test]
@@ -658,9 +658,9 @@ async fn list_services() {
     let resp = client.instance_get_list("org-123", &[]).await.unwrap();
     let services = resp.result.unwrap();
     assert_eq!(services.len(), 1);
-    assert_eq!(services[0].name, Some("svc-1".to_string()));
-    assert_eq!(services[0].provider, Some(ServiceProvider::Aws));
-    assert_eq!(services[0].state, Some(ServiceState::Running));
+    assert_eq!(services[0].name, "svc-1");
+    assert_eq!(services[0].provider, ServiceProvider::Aws);
+    assert_eq!(services[0].state, ServiceState::Running);
 }
 
 #[tokio::test]
@@ -689,15 +689,15 @@ async fn create_service() {
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let body = ServicePostRequest {
-        name: Some("new-service".to_string()),
-        provider: Some(ServicePostRequestProvider::Aws),
-        region: Some(ServicePostRequestRegion::Us_east_1),
-        tier: Some(ServicePostRequestTier::Production),
+        name: "new-service".to_string(),
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Us_east_1,
+        tier: ServicePostRequestTier::Production,
         ..Default::default()
     };
     let resp = client.instance_create("org-123", &body).await.unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.password, Some("generated-password-123".to_string()));
+    assert_eq!(result.password, "generated-password-123");
 }
 
 #[tokio::test]
@@ -731,9 +731,9 @@ async fn get_service_details() {
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let resp = client.instance_get("org-1", "svc-1").await.unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.name, Some("prod-service".to_string()));
-    assert_eq!(svc.provider, Some(ServiceProvider::Gcp));
-    assert_eq!(svc.num_replicas, Some(3.0));
+    assert_eq!(svc.name, "prod-service");
+    assert_eq!(svc.provider, ServiceProvider::Gcp);
+    assert_eq!(svc.num_replicas, 3.0);
 }
 
 #[tokio::test]
@@ -757,7 +757,7 @@ async fn update_service() {
     };
     let resp = c.instance_update("org-1", "svc-1", &body).await.unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.name, Some("renamed-svc".to_string()));
+    assert_eq!(svc.name, "renamed-svc");
 }
 
 #[tokio::test]
@@ -805,7 +805,7 @@ async fn update_service_state() {
         .await
         .unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.state, Some(ServiceState::Stopping));
+    assert_eq!(svc.state, ServiceState::Stopping);
 }
 
 #[tokio::test]
@@ -833,7 +833,7 @@ async fn update_service_password() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.password, Some("new-password-abc".to_string()));
+    assert_eq!(result.password, "new-password-abc");
 }
 
 // ===========================================================================
@@ -868,7 +868,7 @@ async fn update_replica_scaling() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.num_replicas, Some(5.0));
+    assert_eq!(result.num_replicas, 5.0);
 }
 
 #[tokio::test]
@@ -896,7 +896,7 @@ async fn update_scaling_deprecated() {
         .await
         .unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.num_replicas, Some(3.0));
+    assert_eq!(svc.num_replicas, 3.0);
 }
 
 #[tokio::test]
@@ -914,15 +914,15 @@ async fn create_private_endpoint() {
         .await;
 
     let body = ServicPrivateEndpointePostRequest {
-        id: Some("vpce-abc".to_string()),
-        description: Some("My PE".to_string()),
+        id: "vpce-abc".to_string(),
+        description: "My PE".to_string(),
     };
     let resp = c
         .instance_private_endpoint_create("org-1", "svc-1", &body)
         .await
         .unwrap();
     let pe = resp.result.unwrap();
-    assert_eq!(pe.description, Some("My PE".to_string()));
+    assert_eq!(pe.description, "My PE");
 }
 
 #[tokio::test]
@@ -943,10 +943,10 @@ async fn get_private_endpoint_config_for_service() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.endpoint_service_id, Some("vpce-svc-abc".to_string()));
+    assert_eq!(config.endpoint_service_id, "vpce-svc-abc");
     assert_eq!(
         config.private_dns_hostname,
-        Some("svc-1.private.clickhouse.cloud".to_string())
+        "svc-1.private.clickhouse.cloud"
     );
 }
 
@@ -1010,8 +1010,8 @@ async fn get_query_endpoint() {
         .await
         .unwrap();
     let qe = resp.result.unwrap();
-    assert_eq!(qe.id, Some("qe-1".to_string()));
-    assert_eq!(qe.allowed_origins, Some("*".to_string()));
+    assert_eq!(qe.id, "qe-1");
+    assert_eq!(qe.allowed_origins, "*");
 }
 
 #[tokio::test]
@@ -1030,8 +1030,8 @@ async fn upsert_query_endpoint() {
         .await;
 
     let body = InstanceServiceQueryApiEndpointsPostRequest {
-        allowed_origins: Some("https://example.com".to_string()),
-        roles: Some(vec!["reader".to_string()]),
+        allowed_origins: "https://example.com".to_string(),
+        roles: vec!["reader".to_string()],
         ..Default::default()
     };
     let resp = c
@@ -1041,7 +1041,7 @@ async fn upsert_query_endpoint() {
     let qe = resp.result.unwrap();
     assert_eq!(
         qe.allowed_origins,
-        Some("https://example.com".to_string())
+        "https://example.com"
     );
 }
 
@@ -1094,8 +1094,8 @@ async fn list_backups() {
     let resp = client.backup_get_list("org-1", "svc-1").await.unwrap();
     let backups = resp.result.unwrap();
     assert_eq!(backups.len(), 1);
-    assert_eq!(backups[0].status, Some(BackupStatus::Done));
-    assert_eq!(backups[0].r#type, Some(BackupType::Full));
+    assert_eq!(backups[0].status, BackupStatus::Done);
+    assert_eq!(backups[0].r#type, BackupType::Full);
 }
 
 #[tokio::test]
@@ -1115,8 +1115,8 @@ async fn get_single_backup() {
 
     let resp = c.backup_get("org-1", "svc-1", "bak-1").await.unwrap();
     let backup = resp.result.unwrap();
-    assert_eq!(backup.status, Some(BackupStatus::Done));
-    assert_eq!(backup.size_in_bytes, Some(2048.0));
+    assert_eq!(backup.status, BackupStatus::Done);
+    assert_eq!(backup.size_in_bytes, 2048.0);
 }
 
 #[tokio::test]
@@ -1138,8 +1138,8 @@ async fn get_backup_configuration() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.backup_period_in_hours, Some(24.0));
-    assert_eq!(config.backup_start_time, Some("02:00".to_string()));
+    assert_eq!(config.backup_period_in_hours, 24.0);
+    assert_eq!(config.backup_start_time, "02:00");
 }
 
 #[tokio::test]
@@ -1173,7 +1173,7 @@ async fn update_backup_configuration() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.backup_period_in_hours, Some(12.0));
+    assert_eq!(config.backup_period_in_hours, 12.0);
 }
 
 // ===========================================================================
@@ -1216,7 +1216,7 @@ async fn create_backup_bucket() {
 
     let body = BackupBucketPostRequest::AwsBackupBucketPostRequestV1(
         AwsBackupBucketPostRequestV1 {
-            bucket_path: Some("s3://new-bucket".to_string()),
+            bucket_path: "s3://new-bucket".to_string(),
             ..Default::default()
         },
     );
@@ -1244,7 +1244,7 @@ async fn update_backup_bucket() {
 
     let body = BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1(
         AwsBackupBucketPatchRequestV1 {
-            bucket_path: Some("s3://updated-bucket".to_string()),
+            bucket_path: "s3://updated-bucket".to_string(),
             ..Default::default()
         },
     );
@@ -1292,7 +1292,7 @@ async fn list_click_pipes() {
     let resp = c.click_pipe_get_list("org-1", "svc-1").await.unwrap();
     let pipes = resp.result.unwrap();
     assert_eq!(pipes.len(), 1);
-    assert_eq!(pipes[0].name, Some("kafka-pipe".to_string()));
+    assert_eq!(pipes[0].name, "kafka-pipe");
 }
 
 #[tokio::test]
@@ -1311,7 +1311,7 @@ async fn create_click_pipe() {
         .await;
 
     let body = ClickPipePostRequest {
-        name: Some("new-pipe".to_string()),
+        name: "new-pipe".to_string(),
         ..Default::default()
     };
     let resp = c
@@ -1319,7 +1319,7 @@ async fn create_click_pipe() {
         .await
         .unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.name, Some("new-pipe".to_string()));
+    assert_eq!(pipe.name, "new-pipe");
 }
 
 #[tokio::test]
@@ -1341,7 +1341,7 @@ async fn get_click_pipe() {
         .await
         .unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.name, Some("my-pipe".to_string()));
+    assert_eq!(pipe.name, "my-pipe");
 }
 
 #[tokio::test]
@@ -1368,7 +1368,7 @@ async fn update_click_pipe() {
         .await
         .unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.name, Some("renamed-pipe".to_string()));
+    assert_eq!(pipe.name, "renamed-pipe");
 }
 
 #[tokio::test]
@@ -1411,7 +1411,7 @@ async fn update_click_pipe_state() {
         .await
         .unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.state, Some(ClickPipeState::Stopped));
+    assert_eq!(pipe.state, ClickPipeState::Stopped);
 }
 
 #[tokio::test]
@@ -1499,8 +1499,8 @@ async fn get_cdc_scaling() {
         .await
         .unwrap();
     let scaling = resp.result.unwrap();
-    assert_eq!(scaling.replica_cpu_millicores, Some(2000));
-    assert_eq!(scaling.replica_memory_gb, Some(8.0));
+    assert_eq!(scaling.replica_cpu_millicores, 2000);
+    assert_eq!(scaling.replica_memory_gb, 8.0);
 }
 
 #[tokio::test]
@@ -1526,7 +1526,7 @@ async fn update_cdc_scaling() {
         .await
         .unwrap();
     let scaling = resp.result.unwrap();
-    assert_eq!(scaling.replica_cpu_millicores, Some(4000));
+    assert_eq!(scaling.replica_cpu_millicores, 4000);
 }
 
 // ===========================================================================
@@ -1555,7 +1555,7 @@ async fn list_reverse_private_endpoints() {
         .unwrap();
     let endpoints = resp.result.unwrap();
     assert_eq!(endpoints.len(), 1);
-    assert_eq!(endpoints[0].description, Some("MSK endpoint".to_string()));
+    assert_eq!(endpoints[0].description, "MSK endpoint");
 }
 
 #[tokio::test]
@@ -1574,7 +1574,7 @@ async fn create_reverse_private_endpoint() {
         .await;
 
     let body = CreateReversePrivateEndpoint {
-        description: Some("New RPE".to_string()),
+        description: "New RPE".to_string(),
         ..Default::default()
     };
     let resp = c
@@ -1582,7 +1582,7 @@ async fn create_reverse_private_endpoint() {
         .await
         .unwrap();
     let rpe = resp.result.unwrap();
-    assert_eq!(rpe.description, Some("New RPE".to_string()));
+    assert_eq!(rpe.description, "New RPE");
 }
 
 #[tokio::test]
@@ -1604,7 +1604,7 @@ async fn get_reverse_private_endpoint() {
         .await
         .unwrap();
     let rpe = resp.result.unwrap();
-    assert_eq!(rpe.description, Some("My RPE".to_string()));
+    assert_eq!(rpe.description, "My RPE");
 }
 
 #[tokio::test]
@@ -1929,8 +1929,8 @@ async fn create_postgres_service() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, Some("pg-svc".to_string()));
-    assert_eq!(pg.password, Some("generated-pw".to_string()));
+    assert_eq!(pg.name, "pg-svc");
+    assert_eq!(pg.password, "generated-pw");
 }
 
 #[tokio::test]
@@ -1952,7 +1952,7 @@ async fn list_postgres_services() {
     let resp = c.postgres_service_get_list("org-1").await.unwrap();
     let services = resp.result.unwrap();
     assert_eq!(services.len(), 1);
-    assert_eq!(services[0].name, Some("pg-1".to_string()));
+    assert_eq!(services[0].name, "pg-1");
 }
 
 #[tokio::test]
@@ -1972,10 +1972,10 @@ async fn get_postgres_service() {
 
     let resp = c.postgres_service_get("org-1", "pg-1").await.unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, Some("pg-1".to_string()));
+    assert_eq!(pg.name, "pg-1");
     assert_eq!(
         pg.connection_string,
-        Some("postgres://user@host/db".to_string())
+        "postgres://user@host/db"
     );
 }
 
@@ -2002,7 +2002,7 @@ async fn update_postgres_service() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, Some("pg-renamed".to_string()));
+    assert_eq!(pg.name, "pg-renamed");
 }
 
 #[tokio::test]
@@ -2035,14 +2035,14 @@ async fn update_postgres_service_state() {
         .await;
 
     let body = PostgresServiceSetState {
-        command: Some(PostgresServiceSetStateCommand::Restart),
+        command: PostgresServiceSetStateCommand::Restart,
     };
     let resp = c
         .postgres_service_patch_state("org-1", "pg-1", &body)
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, Some("pg-1".to_string()));
+    assert_eq!(pg.name, "pg-1");
 }
 
 #[tokio::test]
@@ -2059,14 +2059,14 @@ async fn set_postgres_password() {
         .await;
 
     let body = PostgresServiceSetPassword {
-        password: Some("new-pg-password".to_string()),
+        password: "new-pg-password".to_string(),
     };
     let resp = c
         .postgres_service_set_password("org-1", "pg-1", &body)
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.password, Some("new-pg-password".to_string()));
+    assert_eq!(result.password, "new-pg-password");
 }
 
 #[tokio::test]
@@ -2109,7 +2109,7 @@ async fn get_postgres_config() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(100));
+    assert_eq!(config.pg_config.max_connections, 100);
 }
 
 #[tokio::test]
@@ -2129,7 +2129,7 @@ async fn replace_postgres_config() {
 
     let body = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(200),
+            max_connections: 200,
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig {},
@@ -2140,7 +2140,7 @@ async fn replace_postgres_config() {
         .unwrap();
     let result = resp.result.unwrap();
     assert_eq!(result.message, Some("Configuration updated".to_string()));
-    assert_eq!(result.pg_config.max_connections, Some(200));
+    assert_eq!(result.pg_config.max_connections, 200);
 }
 
 #[tokio::test]
@@ -2160,7 +2160,7 @@ async fn patch_postgres_config() {
 
     let body = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(150),
+            max_connections: 150,
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig {},
@@ -2170,7 +2170,7 @@ async fn patch_postgres_config() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.pg_config.max_connections, Some(150));
+    assert_eq!(result.pg_config.max_connections, 150);
 }
 
 #[tokio::test]
@@ -2197,7 +2197,7 @@ async fn create_postgres_read_replica() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.is_primary, Some(false));
+    assert!(!pg.is_primary);
 }
 
 #[tokio::test]
@@ -2225,7 +2225,7 @@ async fn restore_postgres_service() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, Some("pg-1-restored".to_string()));
+    assert_eq!(pg.name, "pg-1-restored");
 }
 
 // ===========================================================================
@@ -2255,7 +2255,7 @@ async fn bearer_auth_sends_token() {
     let resp = client.organization_get_list().await.unwrap();
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
-    assert_eq!(orgs[0].name, Some("Bearer Org".to_string()));
+    assert_eq!(orgs[0].name, "Bearer Org");
 }
 
 #[tokio::test]
@@ -2363,7 +2363,7 @@ async fn api_error_403_forbidden() {
         .await;
 
     let body = ServicePostRequest {
-        name: Some("test".to_string()),
+        name: "test".to_string(),
         ..Default::default()
     };
     let err = c.instance_create("org-1", &body).await.unwrap_err();
@@ -2691,7 +2691,7 @@ async fn usage_cost_with_filters() {
         .await
         .unwrap();
     let cost = resp.result.unwrap();
-    assert_eq!(cost.grand_total_chc, Some(10.0));
+    assert_eq!(cost.grand_total_chc, 10.0);
 }
 
 #[tokio::test]

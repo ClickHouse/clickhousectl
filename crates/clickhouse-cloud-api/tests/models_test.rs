@@ -11,27 +11,29 @@ fn deserialize_organization() {
         "enableCoreDumps": false
     }"#;
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.name, Some("My Organization".to_string()));
+    assert_eq!(org.name, "My Organization");
     assert_eq!(
         org.id,
-        Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap())
+        "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+            .parse::<uuid::Uuid>()
+            .unwrap()
     );
-    assert_eq!(org.enable_core_dumps, Some(false));
+    assert!(!org.enable_core_dumps);
 }
 
 #[test]
 fn serialize_organization() {
     let org = Organization {
-        id: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap()),
-        name: Some("Test Org".to_string()),
+        id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap(),
+        name: "Test Org".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&org).unwrap();
     assert_eq!(json["name"], "Test Org");
     assert_eq!(json["id"], "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
-    // None fields should be omitted
-    assert!(json.get("createdAt").is_none());
-    assert!(json.get("enableCoreDumps").is_none());
+    // Default fields are still serialized (no skip_serializing_if on required fields)
+    assert!(json.get("createdAt").is_some());
+    assert!(json.get("enableCoreDumps").is_some());
 }
 
 #[test]
@@ -55,8 +57,8 @@ fn deserialize_api_response_with_org_list() {
     assert_eq!(resp.request_id, Some("req-uuid-123".to_string()));
     let result = resp.result.unwrap();
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].name, Some("Org 1".to_string()));
-    assert_eq!(result[1].name, Some("Org 2".to_string()));
+    assert_eq!(result[0].name, "Org 1");
+    assert_eq!(result[1].name, "Org 2");
 }
 
 #[test]
@@ -106,32 +108,32 @@ fn deserialize_service() {
         "tags": []
     }"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.name, Some("my-service".to_string()));
-    assert_eq!(svc.provider, Some(ServiceProvider::Aws));
-    assert_eq!(svc.region, Some(ServiceRegion::Us_east_1));
-    assert_eq!(svc.state, Some(ServiceState::Running));
-    assert_eq!(svc.tier, Some(ServiceTier::Production));
-    assert_eq!(svc.num_replicas, Some(3.0));
-    assert_eq!(svc.idle_scaling, Some(true));
-    assert_eq!(svc.is_primary, Some(true));
+    assert_eq!(svc.name, "my-service");
+    assert_eq!(svc.provider, ServiceProvider::Aws);
+    assert_eq!(svc.region, ServiceRegion::Us_east_1);
+    assert_eq!(svc.state, ServiceState::Running);
+    assert_eq!(svc.tier, ServiceTier::Production);
+    assert_eq!(svc.num_replicas, 3.0);
+    assert!(svc.idle_scaling);
+    assert!(svc.is_primary);
 }
 
 #[test]
 fn serialize_service_post_request() {
     let req = ServicePostRequest {
-        name: Some("new-service".to_string()),
-        provider: Some(ServicePostRequestProvider::Aws),
-        region: Some(ServicePostRequestRegion::Us_east_1),
-        tier: Some(ServicePostRequestTier::Production),
-        min_total_memory_gb: Some(24.0),
-        max_total_memory_gb: Some(48.0),
-        num_replicas: Some(3.0),
-        idle_scaling: Some(true),
-        idle_timeout_minutes: Some(5.0),
-        ip_access_list: Some(vec![IpAccessListEntry {
-            source: Some("0.0.0.0/0".to_string()),
+        name: "new-service".to_string(),
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Us_east_1,
+        tier: ServicePostRequestTier::Production,
+        min_total_memory_gb: 24.0,
+        max_total_memory_gb: 48.0,
+        num_replicas: 3.0,
+        idle_scaling: true,
+        idle_timeout_minutes: 5.0,
+        ip_access_list: vec![IpAccessListEntry {
+            source: "0.0.0.0/0".to_string(),
             description: Some("Anywhere".to_string()),
-        }]),
+        }],
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -157,10 +159,10 @@ fn deserialize_backup() {
         "backupName": "backup-2024-06-01"
     }"#;
     let backup: Backup = serde_json::from_str(json).unwrap();
-    assert_eq!(backup.status, Some(BackupStatus::Done));
-    assert_eq!(backup.r#type, Some(BackupType::Full));
-    assert_eq!(backup.size_in_bytes, Some(1073741824.0));
-    assert_eq!(backup.duration_in_seconds, Some(300.0));
+    assert_eq!(backup.status, BackupStatus::Done);
+    assert_eq!(backup.r#type, BackupType::Full);
+    assert_eq!(backup.size_in_bytes, 1073741824.0);
+    assert_eq!(backup.duration_in_seconds, 300.0);
 }
 
 #[test]
@@ -174,8 +176,8 @@ fn deserialize_api_key() {
         "expireAt": "2025-01-01T00:00:00Z"
     }"#;
     let key: ApiKey = serde_json::from_str(json).unwrap();
-    assert_eq!(key.name, Some("My API Key".to_string()));
-    assert_eq!(key.state, Some(ApiKeyState::Enabled));
+    assert_eq!(key.name, "My API Key");
+    assert_eq!(key.state, ApiKeyState::Enabled);
 }
 
 #[test]
@@ -189,8 +191,8 @@ fn deserialize_clickpipe() {
         "updatedAt": "2024-06-01T01:00:00Z"
     }"#;
     let pipe: ClickPipe = serde_json::from_str(json).unwrap();
-    assert_eq!(pipe.name, Some("my-pipe".to_string()));
-    assert_eq!(pipe.state, Some(ClickPipeState::Running));
+    assert_eq!(pipe.name, "my-pipe");
+    assert_eq!(pipe.state, ClickPipeState::Running);
 }
 
 #[test]
@@ -203,9 +205,9 @@ fn deserialize_member() {
         "joinedAt": "2024-01-01T00:00:00Z"
     }"#;
     let member: Member = serde_json::from_str(json).unwrap();
-    assert_eq!(member.name, Some("John Doe".to_string()));
-    assert_eq!(member.email, Some("john@example.com".to_string()));
-    assert_eq!(member.role, Some(MemberRole::Admin));
+    assert_eq!(member.name, "John Doe");
+    assert_eq!(member.email, "john@example.com");
+    assert_eq!(member.role, MemberRole::Admin);
 }
 
 #[test]
@@ -217,8 +219,8 @@ fn deserialize_invitation() {
         "createdAt": "2024-06-01T00:00:00Z"
     }"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
-    assert_eq!(inv.email, Some("new@example.com".to_string()));
-    assert_eq!(inv.role, Some(InvitationRole::Developer));
+    assert_eq!(inv.email, "new@example.com");
+    assert_eq!(inv.role, InvitationRole::Developer);
 }
 
 #[test]
@@ -229,9 +231,9 @@ fn deserialize_backup_configuration() {
         "backupStartTime": "02:00"
     }"#;
     let config: BackupConfiguration = serde_json::from_str(json).unwrap();
-    assert_eq!(config.backup_period_in_hours, Some(24.0));
-    assert_eq!(config.backup_retention_period_in_hours, Some(168.0));
-    assert_eq!(config.backup_start_time, Some("02:00".to_string()));
+    assert_eq!(config.backup_period_in_hours, 24.0);
+    assert_eq!(config.backup_retention_period_in_hours, 168.0);
+    assert_eq!(config.backup_start_time, "02:00");
 }
 
 #[test]
@@ -254,7 +256,7 @@ fn deserialize_usage_cost() {
         "grandTotalCHC": 50.25
     }"#;
     let cost: UsageCost = serde_json::from_str(json).unwrap();
-    assert_eq!(cost.grand_total_chc, Some(50.25));
+    assert_eq!(cost.grand_total_chc, 50.25);
 }
 
 #[test]
@@ -277,21 +279,19 @@ fn deserialize_private_endpoint_config() {
         "privateDnsHostname": "abc.vpce.clickhouse.cloud"
     }"#;
     let config: PrivateEndpointConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(
-        config.endpoint_service_id,
-        Some("vpce-svc-123456".to_string())
-    );
+    assert_eq!(config.endpoint_service_id, "vpce-svc-123456");
 }
 
 #[test]
-fn empty_optional_fields_omitted() {
+fn required_fields_always_serialized() {
     let org = Organization {
-        name: Some("Test".to_string()),
+        name: "Test".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&org).unwrap();
-    assert!(json.get("id").is_none());
-    assert!(json.get("createdAt").is_none());
+    // Required fields are always present (even with default values)
+    assert!(json.get("id").is_some());
+    assert!(json.get("createdAt").is_some());
     assert_eq!(json["name"], "Test");
 }
 
@@ -303,15 +303,15 @@ fn deserialize_service_endpoint() {
         "port": 9440
     }"#;
     let ep: ServiceEndpoint = serde_json::from_str(json).unwrap();
-    assert_eq!(ep.protocol, Some(ServiceEndpointProtocol::Nativesecure));
-    assert_eq!(ep.host, Some("abc123.clickhouse.cloud".to_string()));
-    assert_eq!(ep.port, Some(9440.0));
+    assert_eq!(ep.protocol, ServiceEndpointProtocol::Nativesecure);
+    assert_eq!(ep.host, "abc123.clickhouse.cloud");
+    assert_eq!(ep.port, 9440.0);
 }
 
 #[test]
 fn serialize_api_key_post_request() {
     let req = ApiKeyPostRequest {
-        name: Some("test-key".to_string()),
+        name: "test-key".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -329,7 +329,7 @@ fn deserialize_clickstack_dashboard_response() {
         "updatedAt": "2024-01-02T00:00:00Z"
     }"#;
     let dash: ClickStackDashboardResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(dash.name, Some("My Dashboard".to_string()));
+    assert_eq!(dash.name, "My Dashboard");
 }
 
 #[test]
@@ -395,16 +395,16 @@ fn deserialize_activity() {
         "createdAt": "2024-06-01T00:00:00Z"
     }"#;
     let activity: Activity = serde_json::from_str(json).unwrap();
-    assert_eq!(activity.actor_type, Some(ActivityActortype::Api));
+    assert_eq!(activity.actor_type, ActivityActortype::Api);
 }
 
 #[test]
-fn default_struct_all_none() {
+fn default_struct_has_defaults() {
     let svc = Service::default();
-    assert!(svc.id.is_none());
-    assert!(svc.name.is_none());
-    assert!(svc.provider.is_none());
-    assert!(svc.state.is_none());
+    assert_eq!(svc.id, uuid::Uuid::default());
+    assert_eq!(svc.name, "");
+    assert_eq!(svc.provider, ServiceProvider::default());
+    assert_eq!(svc.state, ServiceState::default());
 }
 
 #[test]
@@ -417,7 +417,7 @@ fn deserialize_postgres_service() {
         "state": "running"
     }"#;
     let pg: PostgresService = serde_json::from_str(json).unwrap();
-    assert_eq!(pg.name, Some("my-postgres".to_string()));
+    assert_eq!(pg.name, "my-postgres");
 }
 
 #[test]
@@ -425,7 +425,7 @@ fn unknown_enum_variant_deserializes() {
     // An unknown service state from the API should deserialize into Unknown(String)
     let json = r#"{"state": "brand-new-state"}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.state, Some(ServiceState::Unknown("brand-new-state".to_string())));
+    assert_eq!(svc.state, ServiceState::Unknown("brand-new-state".to_string()));
 }
 
 #[test]
@@ -484,7 +484,7 @@ fn api_response_extra_fields_ignored() {
     let resp: ApiResponse<Organization> = serde_json::from_str(json).unwrap();
     assert_eq!(resp.status, Some(200.0));
     let org = resp.result.unwrap();
-    assert_eq!(org.name, Some("Test".to_string()));
+    assert_eq!(org.name, "Test");
 }
 
 #[test]
@@ -642,7 +642,7 @@ fn serialize_postgres_service_post_request() {
 #[test]
 fn serialize_postgres_service_set_state() {
     let req = PostgresServiceSetState {
-        command: Some(PostgresServiceSetStateCommand::Restart),
+        command: PostgresServiceSetStateCommand::Restart,
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["command"], "restart");
@@ -651,7 +651,7 @@ fn serialize_postgres_service_set_state() {
 #[test]
 fn serialize_postgres_service_set_password() {
     let req = PostgresServiceSetPassword {
-        password: Some("s3cur3".to_string()),
+        password: "s3cur3".to_string(),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["password"], "s3cur3");
@@ -672,8 +672,8 @@ fn serialize_postgres_read_replica_request() {
 #[test]
 fn serialize_byoc_infrastructure_post_request() {
     let req = ByocInfrastructurePostRequest {
-        account_id: Some("123456789012".to_string()),
-        display_name: Some("My BYOC".to_string()),
+        account_id: "123456789012".to_string(),
+        display_name: "My BYOC".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -693,8 +693,8 @@ fn serialize_byoc_infrastructure_patch_request() {
 #[test]
 fn serialize_invitation_post_request() {
     let req = InvitationPostRequest {
-        email: Some("alice@example.com".to_string()),
-        role: Some(InvitationPostRequestRole::Developer),
+        email: "alice@example.com".to_string(),
+        role: InvitationPostRequestRole::Developer,
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -727,7 +727,7 @@ fn serialize_clickpipe_patch_request() {
 #[test]
 fn serialize_create_reverse_private_endpoint() {
     let req = CreateReversePrivateEndpoint {
-        description: Some("Test RPE".to_string()),
+        description: "Test RPE".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -737,8 +737,8 @@ fn serialize_create_reverse_private_endpoint() {
 #[test]
 fn serialize_instance_query_endpoint_post_request() {
     let req = InstanceServiceQueryApiEndpointsPostRequest {
-        allowed_origins: Some("https://example.com".to_string()),
-        roles: Some(vec!["reader".to_string()]),
+        allowed_origins: "https://example.com".to_string(),
+        roles: vec!["reader".to_string()],
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -749,8 +749,8 @@ fn serialize_instance_query_endpoint_post_request() {
 #[test]
 fn serialize_servic_private_endpointe_post_request() {
     let req = ServicPrivateEndpointePostRequest {
-        id: Some("vpce-abc".to_string()),
-        description: Some("My PE".to_string()),
+        id: "vpce-abc".to_string(),
+        description: "My PE".to_string(),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["id"], "vpce-abc");
@@ -761,7 +761,7 @@ fn serialize_servic_private_endpointe_post_request() {
 fn serialize_postgres_instance_config() {
     let config = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(200),
+            max_connections: 200,
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig {},
@@ -779,74 +779,74 @@ fn serialize_postgres_instance_config() {
 fn organization_ignores_extra_fields() {
     let json = r#"{"name":"Test","brandNewField":"surprise","anotherNew":42}"#;
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.name, Some("Test".to_string()));
+    assert_eq!(org.name, "Test");
 }
 
 #[test]
 fn service_ignores_extra_fields() {
     let json = r#"{"name":"svc","state":"running","futureField":"v2","nested":{"a":1}}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.name, Some("svc".to_string()));
-    assert_eq!(svc.state, Some(ServiceState::Running));
+    assert_eq!(svc.name, "svc");
+    assert_eq!(svc.state, ServiceState::Running);
 }
 
 #[test]
 fn clickpipe_ignores_extra_fields() {
     let json = r#"{"name":"pipe","state":"Running","newFeatureFlag":true}"#;
     let pipe: ClickPipe = serde_json::from_str(json).unwrap();
-    assert_eq!(pipe.name, Some("pipe".to_string()));
-    assert_eq!(pipe.state, Some(ClickPipeState::Running));
+    assert_eq!(pipe.name, "pipe");
+    assert_eq!(pipe.state, ClickPipeState::Running);
 }
 
 #[test]
 fn backup_ignores_extra_fields() {
     let json = r#"{"status":"done","type":"full","compressionRatio":0.85}"#;
     let backup: Backup = serde_json::from_str(json).unwrap();
-    assert_eq!(backup.status, Some(BackupStatus::Done));
+    assert_eq!(backup.status, BackupStatus::Done);
 }
 
 #[test]
 fn api_key_ignores_extra_fields() {
     let json = r#"{"name":"key","state":"enabled","rotationPolicy":"weekly"}"#;
     let key: ApiKey = serde_json::from_str(json).unwrap();
-    assert_eq!(key.name, Some("key".to_string()));
-    assert_eq!(key.state, Some(ApiKeyState::Enabled));
+    assert_eq!(key.name, "key");
+    assert_eq!(key.state, ApiKeyState::Enabled);
 }
 
 #[test]
 fn member_ignores_extra_fields() {
     let json = r#"{"name":"Alice","role":"admin","department":"eng","mfa":true}"#;
     let m: Member = serde_json::from_str(json).unwrap();
-    assert_eq!(m.name, Some("Alice".to_string()));
-    assert_eq!(m.role, Some(MemberRole::Admin));
+    assert_eq!(m.name, "Alice");
+    assert_eq!(m.role, MemberRole::Admin);
 }
 
 #[test]
 fn invitation_ignores_extra_fields() {
     let json = r#"{"email":"a@b.com","role":"developer","expiresIn":"7d"}"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
-    assert_eq!(inv.email, Some("a@b.com".to_string()));
+    assert_eq!(inv.email, "a@b.com");
 }
 
 #[test]
 fn postgres_service_ignores_extra_fields() {
     let json = r#"{"name":"pg","state":"running","maintenanceWindow":"sun-02:00"}"#;
     let pg: PostgresService = serde_json::from_str(json).unwrap();
-    assert_eq!(pg.name, Some("pg".to_string()));
+    assert_eq!(pg.name, "pg");
 }
 
 #[test]
 fn activity_ignores_extra_fields() {
     let json = r#"{"actorType":"user","sourceIp":"1.2.3.4"}"#;
     let a: Activity = serde_json::from_str(json).unwrap();
-    assert_eq!(a.actor_type, Some(ActivityActortype::User));
+    assert_eq!(a.actor_type, ActivityActortype::User);
 }
 
 #[test]
 fn backup_configuration_ignores_extra_fields() {
     let json = r#"{"backupPeriodInHours":24,"backupRetentionPeriodInHours":168,"compressionEnabled":true}"#;
     let c: BackupConfiguration = serde_json::from_str(json).unwrap();
-    assert_eq!(c.backup_period_in_hours, Some(24.0));
+    assert_eq!(c.backup_period_in_hours, 24.0);
 }
 
 // ===========================================================================
@@ -859,65 +859,68 @@ fn service_minimal_response() {
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(
         svc.id,
-        Some("11111111-2222-3333-4444-555555555555".parse().unwrap())
+        "11111111-2222-3333-4444-555555555555"
+            .parse::<uuid::Uuid>()
+            .unwrap()
     );
-    assert!(svc.name.is_none());
-    assert!(svc.provider.is_none());
-    assert!(svc.state.is_none());
-    assert!(svc.endpoints.is_none());
+    // Missing fields get their default values
+    assert_eq!(svc.name, "");
+    assert_eq!(svc.provider, ServiceProvider::default());
+    assert_eq!(svc.state, ServiceState::default());
+    assert!(svc.endpoints.is_empty());
 }
 
 #[test]
 fn service_empty_object() {
     let svc: Service = serde_json::from_str("{}").unwrap();
-    assert!(svc.id.is_none());
-    assert!(svc.name.is_none());
+    assert_eq!(svc.id, uuid::Uuid::default());
+    assert_eq!(svc.name, "");
 }
 
 #[test]
 fn organization_minimal_response() {
     let org: Organization = serde_json::from_str(r#"{"name":"X"}"#).unwrap();
-    assert_eq!(org.name, Some("X".to_string()));
-    assert!(org.id.is_none());
-    assert!(org.created_at.is_none());
+    assert_eq!(org.name, "X");
+    assert_eq!(org.id, uuid::Uuid::default());
+    assert_eq!(org.created_at, chrono::DateTime::<chrono::Utc>::default());
 }
 
 #[test]
 fn clickpipe_minimal_response() {
     let pipe: ClickPipe = serde_json::from_str("{}").unwrap();
-    assert!(pipe.id.is_none());
-    assert!(pipe.name.is_none());
-    assert!(pipe.state.is_none());
+    assert_eq!(pipe.id, uuid::Uuid::default());
+    assert_eq!(pipe.name, "");
+    assert_eq!(pipe.state, ClickPipeState::default());
 }
 
 #[test]
 fn postgres_service_minimal_response() {
     let pg: PostgresService = serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
-    assert!(pg.name.is_none());
-    assert!(pg.state.is_none());
+    assert_eq!(pg.name, "");
+    assert_eq!(pg.state, PgStateProperty::default());
 }
 
 #[test]
 fn backup_minimal_response() {
     let b: Backup = serde_json::from_str("{}").unwrap();
-    assert!(b.id.is_none());
-    assert!(b.status.is_none());
-    assert!(b.size_in_bytes.is_none());
+    assert_eq!(b.id, uuid::Uuid::default());
+    assert_eq!(b.status, BackupStatus::default());
+    assert_eq!(b.size_in_bytes, 0.0);
 }
 
 #[test]
 fn api_key_minimal_response() {
     let k: ApiKey = serde_json::from_str(r#"{"name":"k"}"#).unwrap();
-    assert_eq!(k.name, Some("k".to_string()));
-    assert!(k.id.is_none());
-    assert!(k.state.is_none());
+    assert_eq!(k.name, "k");
+    assert_eq!(k.id, uuid::Uuid::default());
+    assert_eq!(k.state, ApiKeyState::default());
 }
 
 #[test]
 fn clickstack_dashboard_minimal_response() {
     let d: ClickStackDashboardResponse = serde_json::from_str("{}").unwrap();
-    assert!(d.id.is_none());
-    assert!(d.name.is_none());
+    assert_eq!(d.id, "");
+    assert_eq!(d.name, "");
 }
 
 // ===========================================================================
@@ -933,8 +936,8 @@ fn deserialize_aws_backup_bucket() {
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
     let b: AwsBackupBucket = serde_json::from_str(json).unwrap();
-    assert_eq!(b.bucket_path, Some("s3://my-bucket/prefix".to_string()));
-    assert_eq!(b.iam_role_arn, Some("arn:aws:iam::123:role/backup".to_string()));
+    assert_eq!(b.bucket_path, "s3://my-bucket/prefix");
+    assert_eq!(b.iam_role_arn, "arn:aws:iam::123:role/backup");
 }
 
 #[test]
@@ -948,8 +951,8 @@ fn deserialize_backup_bucket_untagged_aws() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::AwsBackupBucket(_)));
     if let BackupBucket::AwsBackupBucket(aws) = b {
-        assert_eq!(aws.bucket_path, Some("s3://my-bucket/prefix".to_string()));
-        assert_eq!(aws.iam_role_arn, Some("arn:aws:iam::123:role/backup".to_string()));
+        assert_eq!(aws.bucket_path, "s3://my-bucket/prefix");
+        assert_eq!(aws.iam_role_arn, "arn:aws:iam::123:role/backup");
     }
 }
 
@@ -998,10 +1001,9 @@ fn deserialize_service_post_response() {
         "password": "gen-pw-123"
     }"#;
     let resp: ServicePostResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.password, Some("gen-pw-123".to_string()));
-    let svc = resp.service.unwrap();
-    assert_eq!(svc.name, Some("new-svc".to_string()));
-    assert_eq!(svc.state, Some(ServiceState::Provisioning));
+    assert_eq!(resp.password, "gen-pw-123");
+    assert_eq!(resp.service.name, "new-svc");
+    assert_eq!(resp.service.state, ServiceState::Provisioning);
 }
 
 #[test]
@@ -1020,9 +1022,8 @@ fn deserialize_usage_cost_with_records() {
         "grandTotalCHC": 35.5
     }"#;
     let cost: UsageCost = serde_json::from_str(json).unwrap();
-    assert_eq!(cost.grand_total_chc, Some(35.5));
-    let costs = cost.costs.unwrap();
-    assert_eq!(costs.len(), 2);
+    assert_eq!(cost.grand_total_chc, 35.5);
+    assert_eq!(cost.costs.len(), 2);
 }
 
 #[test]
@@ -1035,7 +1036,7 @@ fn deserialize_postgres_instance_config() {
         "pgBouncerConfig": {}
     }"#;
     let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(200));
+    assert_eq!(config.pg_config.max_connections, 200);
 }
 
 #[test]
@@ -1046,8 +1047,8 @@ fn deserialize_reverse_private_endpoint() {
         "status": "available"
     }"#;
     let rpe: ReversePrivateEndpoint = serde_json::from_str(json).unwrap();
-    assert_eq!(rpe.description, Some("MSK endpoint".to_string()));
-    assert!(rpe.status.is_some());
+    assert_eq!(rpe.description, "MSK endpoint");
+    assert_eq!(rpe.status, ReversePrivateEndpointStatus::Other("available".to_string()));
 }
 
 #[test]
@@ -1059,8 +1060,8 @@ fn deserialize_clickpipe_kafka_source() {
         "securityProtocol": "SASL_SSL"
     }"#;
     let src: ClickPipeKafkaSource = serde_json::from_str(json).unwrap();
-    assert_eq!(src.brokers, Some("broker1:9092,broker2:9092".to_string()));
-    assert_eq!(src.topics, Some("my-topic".to_string()));
+    assert_eq!(src.brokers, "broker1:9092,broker2:9092");
+    assert_eq!(src.topics, "my-topic");
 }
 
 #[test]
@@ -1075,11 +1076,10 @@ fn deserialize_clickpipe_destination() {
         ]
     }"#;
     let dest: ClickPipeDestination = serde_json::from_str(json).unwrap();
-    assert_eq!(dest.database, Some("default".to_string()));
-    assert_eq!(dest.table, Some("events".to_string()));
-    let cols = dest.columns.unwrap();
-    assert_eq!(cols.len(), 2);
-    assert_eq!(cols[0].name, Some("id".to_string()));
+    assert_eq!(dest.database, "default");
+    assert_eq!(dest.table, "events");
+    assert_eq!(dest.columns.len(), 2);
+    assert_eq!(dest.columns[0].name, "id");
 }
 
 #[test]
@@ -1089,6 +1089,6 @@ fn deserialize_clickpipe_scaling() {
         "concurrency": 2
     }"#;
     let s: ClickPipeScaling = serde_json::from_str(json).unwrap();
-    assert_eq!(s.replicas, Some(3));
-    assert_eq!(s.concurrency, Some(2));
+    assert_eq!(s.replicas, 3);
+    assert_eq!(s.concurrency, 2);
 }
