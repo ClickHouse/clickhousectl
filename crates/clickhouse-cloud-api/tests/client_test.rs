@@ -2273,7 +2273,7 @@ async fn set_bearer_token_updates_token() {
         .await;
 
     let mut client = Client::with_bearer_token(mock_server.uri(), "old-token");
-    client.set_bearer_token("refreshed-token");
+    client.set_bearer_token("refreshed-token").unwrap();
     let resp = client.organization_get_list().await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);
 }
@@ -2314,10 +2314,13 @@ async fn with_http_client_bearer_auth() {
 }
 
 #[test]
-#[should_panic(expected = "set_bearer_token called on a Basic-auth client")]
-fn set_bearer_token_panics_on_basic_auth() {
+fn set_bearer_token_errors_on_basic_auth() {
     let mut client = Client::new("key", "secret");
-    client.set_bearer_token("token");
+    let err = client.set_bearer_token("token").unwrap_err();
+    assert!(
+        err.to_string().contains("auth mismatch"),
+        "unexpected error: {err}"
+    );
 }
 
 // ===========================================================================

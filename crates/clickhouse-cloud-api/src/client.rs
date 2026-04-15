@@ -99,11 +99,16 @@ impl Client {
     /// Replace the Bearer token without rebuilding the client.
     ///
     /// Useful for refreshing an expired OAuth token.
-    /// Panics if the client is not using Bearer auth.
-    pub fn set_bearer_token(&mut self, token: impl Into<String>) {
+    /// Returns an error if the client is using Basic auth.
+    pub fn set_bearer_token(&mut self, token: impl Into<String>) -> Result<(), Error> {
         match &mut self.auth {
-            Auth::Bearer { token: t } => *t = token.into(),
-            Auth::Basic { .. } => panic!("set_bearer_token called on a Basic-auth client"),
+            Auth::Bearer { token: t } => {
+                *t = token.into();
+                Ok(())
+            }
+            Auth::Basic { .. } => Err(Error::AuthMismatch(
+                "set_bearer_token called on a Basic-auth client".into(),
+            )),
         }
     }
 

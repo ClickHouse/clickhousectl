@@ -14,4 +14,8 @@ pub enum Error {
     /// API returned an error response.
     #[error("API error (status {status}): {message}")]
     Api { status: u16, message: String },
+
+    /// Operation requires a different auth mode than the client was configured with.
+    #[error("auth mismatch: {0}")]
+    AuthMismatch(String),
 }
