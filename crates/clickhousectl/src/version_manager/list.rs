@@ -189,7 +189,7 @@ fn compare_part(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Compares two version strings for sorting.
 /// Missing parts are treated as 0, so "20.3" < "20.3.1" and "20.3.0" == "20.3".
-fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let a_parts: Vec<&str> = a.split('.').collect();
     let b_parts: Vec<&str> = b.split('.').collect();
     let max_len = a_parts.len().max(b_parts.len());

@@ -262,6 +262,9 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
 /// Prefers stable/lts tags, but falls back to any tagged version (e.g. "-new")
 /// so that pre-release or newly-tagged versions can still be resolved.
 fn parse_version_refs(refs: &[GitRef], prefix: &str) -> Result<VersionEntry> {
+    use super::list::compare_versions;
+    use std::cmp::Ordering;
+
     let mut best: Option<VersionEntry> = None;
     let mut any: Option<VersionEntry> = None;
     for git_ref in refs {
@@ -271,12 +274,20 @@ fn parse_version_refs(refs: &[GitRef], prefix: &str) -> Result<VersionEntry> {
         if let Some(dash_pos) = tag.rfind('-') {
             let version = &tag[..dash_pos];
             let suffix = &tag[dash_pos + 1..];
+            let is_higher = |current: &Option<VersionEntry>| match current {
+                Some(existing) => {
+                    compare_versions(version, &existing.version) == Ordering::Greater
+                }
+                None => true,
+            };
             if let Some(channel) = Channel::from_tag_suffix(suffix) {
-                best = Some(VersionEntry {
-                    version: version.to_string(),
-                    channel,
-                });
-            } else {
+                if is_higher(&best) {
+                    best = Some(VersionEntry {
+                        version: version.to_string(),
+                        channel,
+                    });
+                }
+            } else if is_higher(&any) {
                 any = Some(VersionEntry {
                     version: version.to_string(),
                     channel: Channel::Stable,
@@ -409,14 +420,25 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_version_refs_takes_last_stable() {
-        // Multiple stable tags — takes the last one (highest in sorted GH response)
+    fn test_parse_version_refs_picks_highest_stable() {
+        // Multiple stable tags — picks the semantically highest version
         let refs = vec![
             make_ref("refs/tags/v25.12.1.10-stable"),
             make_ref("refs/tags/v25.12.9.61-stable"),
         ];
         let entry = parse_version_refs(&refs, "25.12").unwrap();
         assert_eq!(entry.version, "25.12.9.61");
+    }
+
+    #[test]
+    fn test_parse_version_refs_unordered_picks_highest() {
+        // Higher patch version appears before lower — must still pick the higher one
+        let refs = vec![
+            make_ref("refs/tags/v25.12.10.5-stable"),
+            make_ref("refs/tags/v25.12.9.61-stable"),
+        ];
+        let entry = parse_version_refs(&refs, "25.12").unwrap();
+        assert_eq!(entry.version, "25.12.10.5");
     }
 
     #[test]
