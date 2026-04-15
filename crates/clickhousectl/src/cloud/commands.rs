@@ -697,7 +697,7 @@ fn build_create_service_request(
             None => ServicePostRequestReleasechannel::default(),
         },
         tags: parse_tags(&opts.tags)?.unwrap_or_default(),
-        data_warehouse_id: opts.data_warehouse_id.clone().unwrap_or_default(),
+        data_warehouse_id: opts.data_warehouse_id.clone(),
         is_readonly: opts.is_readonly,
         encryption_key: opts.encryption_key.clone(),
         encryption_assumed_role_identifier: opts.encryption_role.clone(),

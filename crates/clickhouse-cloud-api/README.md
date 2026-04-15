@@ -74,3 +74,9 @@ The `spec_coverage_test` suite checks three things against the checked-in spec:
 3. Every field's `Option<T>` vs `T` matches the spec's required/optional semantics
 
 There are also `#[ignore]`d variants that run the same checks against the live spec.
+
+### Optionality exemptions
+
+Occasionally the spec marks a field as required but the API actually treats it as optional (e.g. sending an empty string triggers a `400 BAD_REQUEST`). In these cases we override the field to `Option<T>` in `models.rs` and add the field to the `OPTIONALITY_EXEMPTIONS` list in `spec_coverage_test.rs`.
+
+The test prints a `NOTE:` line for every exemption that fires, and **fails** if an exemption becomes stale (i.e. the spec was corrected upstream and the override is no longer needed). To add a new exemption, add a `("RustStructName", "specFieldName")` entry to the constant with a comment explaining why.

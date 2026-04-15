@@ -10453,8 +10453,8 @@ pub struct ServicePostRequest {
     pub byoc_id: String,
     #[serde(rename = "complianceType", default)]
     pub compliance_type: ServicePostRequestCompliancetype,
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: String,
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none", default)]
+    pub data_warehouse_id: Option<String>,
     #[serde(rename = "enableCoreDumps", default)]
     pub enable_core_dumps: bool,
     #[serde(rename = "encryptionAssumedRoleIdentifier", skip_serializing_if = "Option::is_none", default)]

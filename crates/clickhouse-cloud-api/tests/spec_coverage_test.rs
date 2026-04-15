@@ -267,10 +267,26 @@ async fn struct_fields_cover_every_live_spec_property() {
     assert_field_coverage(&spec);
 }
 
+/// Fields where our `Option<T>` vs `T` intentionally disagrees with the spec.
+///
+/// The spec sometimes marks fields as required when the API actually treats them
+/// as optional (e.g. sending an empty string triggers a 400). Each entry is
+/// `("RustStructName", "specFieldName")` with a comment explaining why the
+/// override exists. When the spec is corrected upstream, remove the entry —
+/// the test will confirm the fix by passing without it.
+const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
+    // Spec says required, but the API rejects empty strings with:
+    //   "BAD_REQUEST: request body.dataWarehouseId: Invalid data warehouse id"
+    // The field is only meaningful when creating a service inside a data warehouse.
+    ("ServicePostRequest", "dataWarehouseId"),
+];
+
 fn assert_field_optionality(spec: &Value) {
     let schemas = spec["components"]["schemas"].as_object().unwrap();
     let model_fields = parse_model_fields(MODELS_RS);
 
+    let exemptions: BTreeSet<(&str, &str)> = OPTIONALITY_EXEMPTIONS.iter().copied().collect();
+    let mut exemptions_hit: BTreeSet<(&str, &str)> = BTreeSet::new();
     let mut mismatches = Vec::new();
 
     for (spec_name, schema) in schemas {
@@ -294,12 +310,37 @@ fn assert_field_optionality(spec: &Value) {
                 None => continue, // Field not in struct — could add a check later
             };
 
+            let would_mismatch = (is_required && field_info.is_option)
+                || (!is_required && !field_info.is_option);
+
+            if !would_mismatch {
+                continue;
+            }
+
+            // Check if this mismatch is exempted. We need to borrow rust_name
+            // as &str for the lookup.
+            if exemptions.iter().any(|(s, f)| *s == rust_name && *f == prop_name.as_str()) {
+                exemptions_hit.insert(
+                    *exemptions.iter().find(|(s, f)| *s == rust_name && *f == prop_name.as_str()).unwrap()
+                );
+                let direction = if is_required {
+                    "spec=required, model=Option<T>"
+                } else {
+                    "spec=optional, model=T"
+                };
+                eprintln!(
+                    "NOTE: {}.{} optionality exempted ({}) — see OPTIONALITY_EXEMPTIONS",
+                    rust_name, prop_name, direction
+                );
+                continue;
+            }
+
             if is_required && field_info.is_option {
                 mismatches.push(format!(
                     "{}.{} should be required (T) but is Option<T>",
                     rust_name, prop_name
                 ));
-            } else if !is_required && !field_info.is_option {
+            } else {
                 mismatches.push(format!(
                     "{}.{} should be optional (Option<T>) but is T",
                     rust_name, prop_name
@@ -307,6 +348,24 @@ fn assert_field_optionality(spec: &Value) {
             }
         }
     }
+
+    // Detect stale exemptions — entries that no longer trigger a mismatch
+    let stale: Vec<_> = exemptions
+        .difference(&exemptions_hit)
+        .map(|(s, f)| format!("({}, {})", s, f))
+        .collect();
+    if !stale.is_empty() {
+        eprintln!(
+            "NOTE: {} stale optionality exemption(s) can be removed: {}",
+            stale.len(),
+            stale.join(", ")
+        );
+    }
+    assert!(
+        stale.is_empty(),
+        "Stale OPTIONALITY_EXEMPTIONS (spec now agrees with model):\n{}",
+        stale.join("\n")
+    );
 
     assert!(
         mismatches.is_empty(),

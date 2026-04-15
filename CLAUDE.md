@@ -69,6 +69,10 @@ In `models.rs`, required non-nullable fields use bare types (`T`), optional/null
 - `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the spec.
 - `scripts/check-openapi-drift.py` — daily CI drift check now also reports field-level optionality mismatches.
 
+**Optionality exemptions:**
+
+Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are overridden to `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
+
 **When the spec adds proper `required` arrays to all schemas:**
 
 1. Download the updated spec: `curl -s https://api.clickhouse.cloud/v1 -o crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`
