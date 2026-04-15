@@ -251,7 +251,7 @@ async fn start_server(
     server::recover_current_project_servers();
 
     // Resolve server name and check for collisions before any downloads
-    let server_name = server::resolve_name(name.as_deref());
+    let server_name = server::resolve_name(name.as_deref())?;
 
     if name.is_some() && server::is_server_running(&server_name) {
         return Err(Error::ServerAlreadyRunning(server_name));
@@ -541,6 +541,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             if global {
                 stop_server_global(&name, project.as_deref(), json)
             } else {
+                server::validate_server_name(&name)?;
+
                 // Recover orphaned servers so we can stop processes
                 // that lost their metadata files.
                 server::recover_current_project_servers();
@@ -569,6 +571,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
         ServerCommands::Remove { name } => {
+            server::validate_server_name(&name)?;
+
             // Recover orphaned servers so we correctly detect a running
             // process even when its metadata file is missing.
             server::recover_current_project_servers();
