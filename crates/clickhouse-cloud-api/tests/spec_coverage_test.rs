@@ -274,15 +274,34 @@ async fn struct_fields_cover_every_live_spec_property() {
 /// `("RustStructName", "specFieldName")` with a comment explaining why the
 /// override exists. When the spec is corrected upstream, remove the entry —
 /// the test will confirm the fix by passing without it.
+/// Fields where our `Option<T>` vs `T` intentionally disagrees with the spec.
+///
+/// The OpenAPI spec marks most ServicePostRequest fields as required (via the
+/// description-heuristic — none start with "Optional"), but the API actually
+/// treats them as optional. Sending zero-value defaults for these fields causes
+/// 400 errors (invalid UUIDs, conflicting memory params, unsupported tiers, etc.).
+/// Only `name`, `provider`, and `region` are truly required.
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
-    // Spec says required, but the API rejects empty strings with:
-    //   "BAD_REQUEST: request body.byocId: Invalid uuid"
-    // The field is only meaningful when creating a BYOC service.
     ("ServicePostRequest", "byocId"),
-    // Spec says required, but the API rejects empty strings with:
-    //   "BAD_REQUEST: request body.dataWarehouseId: Invalid data warehouse id"
-    // The field is only meaningful when creating a service inside a data warehouse.
+    ("ServicePostRequest", "complianceType"),
     ("ServicePostRequest", "dataWarehouseId"),
+    ("ServicePostRequest", "enableCoreDumps"),
+    ("ServicePostRequest", "endpoints"),
+    ("ServicePostRequest", "hasTransparentDataEncryption"),
+    ("ServicePostRequest", "idleScaling"),
+    ("ServicePostRequest", "idleTimeoutMinutes"),
+    ("ServicePostRequest", "isReadonly"),
+    ("ServicePostRequest", "maxReplicaMemoryGb"),
+    ("ServicePostRequest", "maxTotalMemoryGb"),
+    ("ServicePostRequest", "minReplicaMemoryGb"),
+    ("ServicePostRequest", "minTotalMemoryGb"),
+    ("ServicePostRequest", "numReplicas"),
+    ("ServicePostRequest", "privateEndpointIds"),
+    ("ServicePostRequest", "privatePreviewTermsChecked"),
+    ("ServicePostRequest", "profile"),
+    ("ServicePostRequest", "releaseChannel"),
+    ("ServicePostRequest", "tags"),
+    ("ServicePostRequest", "tier"),
 ];
 
 fn assert_field_optionality(spec: &Value) {

@@ -136,13 +136,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             name: ctx.service_name(),
             provider: ServicePostRequestProvider::Unknown(ctx.provider.clone()),
             region: ServicePostRequestRegion::Unknown(ctx.region.clone()),
-            min_replica_memory_gb: base_memory_gb,
-            max_replica_memory_gb: base_memory_gb,
-            num_replicas: base_replicas,
-            idle_scaling: true,
-            idle_timeout_minutes: 5.0,
-            ip_access_list: vec![],
-            tags: ctx.run_tags(),
+            min_replica_memory_gb: Some(base_memory_gb),
+            max_replica_memory_gb: Some(base_memory_gb),
+            num_replicas: Some(base_replicas),
+            idle_scaling: Some(true),
+            idle_timeout_minutes: Some(5.0),
+            tags: Some(ctx.run_tags()),
             ..Default::default()
         };
 

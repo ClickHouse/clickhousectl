@@ -11,7 +11,7 @@ use clickhouse_cloud_api::models::{
     ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
     ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
     ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
-    ServicePostRequestTier, ServiceReplicaScalingPatchRequest,
+    ServiceReplicaScalingPatchRequest,
     ServiceStatePatchRequestCommand, ServicPrivateEndpointePostRequest,
 };
 use std::io::{IsTerminal, Write};
@@ -677,11 +677,11 @@ fn build_create_service_request(
             KNOWN_REGIONS,
         )?,
         ip_access_list,
-        min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from).unwrap_or_default(),
-        max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from).unwrap_or_default(),
-        num_replicas: opts.num_replicas.map(f64::from).unwrap_or_default(),
-        idle_scaling: opts.idle_scaling.unwrap_or_default(),
-        idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from).unwrap_or_default(),
+        min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
+        max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
+        num_replicas: opts.num_replicas.map(f64::from),
+        idle_scaling: opts.idle_scaling,
+        idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
         backup_id: opts
             .backup_id
             .as_deref()
@@ -689,44 +689,44 @@ fn build_create_service_request(
             .transpose()
             .map_err(|e| format!("invalid backup_id: {}", e))?,
         release_channel: match opts.release_channel.as_deref() {
-            Some(value) => parse_serde_enum::<ServicePostRequestReleasechannel>(
+            Some(value) => Some(parse_serde_enum::<ServicePostRequestReleasechannel>(
                 value,
                 "release_channel",
                 KNOWN_RELEASE_CHANNELS,
-            )?,
-            None => ServicePostRequestReleasechannel::default(),
+            )?),
+            None => None,
         },
-        tags: parse_tags(&opts.tags)?.unwrap_or_default(),
+        tags: parse_tags(&opts.tags)?,
         data_warehouse_id: opts.data_warehouse_id.clone(),
-        is_readonly: opts.is_readonly,
+        is_readonly: if opts.is_readonly { Some(true) } else { None },
         encryption_key: opts.encryption_key.clone(),
         encryption_assumed_role_identifier: opts.encryption_role.clone(),
-        has_transparent_data_encryption: opts.enable_tde,
+        has_transparent_data_encryption: if opts.enable_tde { Some(true) } else { None },
         compliance_type: match opts.compliance_type.as_deref() {
-            Some(value) => parse_serde_enum::<ServicePostRequestCompliancetype>(
+            Some(value) => Some(parse_serde_enum::<ServicePostRequestCompliancetype>(
                 value,
                 "compliance_type",
                 KNOWN_COMPLIANCE_TYPES,
-            )?,
-            None => ServicePostRequestCompliancetype::default(),
+            )?),
+            None => None,
         },
         profile: match opts.profile.as_deref() {
-            Some(value) => parse_serde_enum::<ServicePostRequestProfile>(
+            Some(value) => Some(parse_serde_enum::<ServicePostRequestProfile>(
                 value,
                 "profile",
                 KNOWN_PROFILES,
-            )?,
-            None => ServicePostRequestProfile::default(),
+            )?),
+            None => None,
         },
-        private_preview_terms_checked: opts.private_preview_terms_checked,
-        endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?.unwrap_or_default(),
-        enable_core_dumps: opts.enable_core_dumps.unwrap_or_default(),
+        private_preview_terms_checked: if opts.private_preview_terms_checked { Some(true) } else { None },
+        endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
+        enable_core_dumps: opts.enable_core_dumps,
         // Fields not exposed in CLI
         byoc_id: None,
-        max_total_memory_gb: 0.0,
-        min_total_memory_gb: 0.0,
-        private_endpoint_ids: vec![],
-        tier: ServicePostRequestTier::default(),
+        max_total_memory_gb: None,
+        min_total_memory_gb: None,
+        private_endpoint_ids: None,
+        tier: None,
     })
 }
 

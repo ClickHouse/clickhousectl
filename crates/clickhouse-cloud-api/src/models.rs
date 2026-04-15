@@ -10451,56 +10451,56 @@ pub struct ServicePostRequest {
     pub backup_id: Option<uuid::Uuid>,
     #[serde(rename = "byocId", skip_serializing_if = "Option::is_none", default)]
     pub byoc_id: Option<String>,
-    #[serde(rename = "complianceType", default)]
-    pub compliance_type: ServicePostRequestCompliancetype,
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none", default)]
+    pub compliance_type: Option<ServicePostRequestCompliancetype>,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none", default)]
     pub data_warehouse_id: Option<String>,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none", default)]
+    pub enable_core_dumps: Option<bool>,
     #[serde(rename = "encryptionAssumedRoleIdentifier", skip_serializing_if = "Option::is_none", default)]
     pub encryption_assumed_role_identifier: Option<String>,
     #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none", default)]
     pub encryption_key: Option<String>,
-    #[serde(default)]
-    pub endpoints: Vec<ServiceEndpointChange>,
-    #[serde(rename = "hasTransparentDataEncryption", default)]
-    pub has_transparent_data_encryption: bool,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: f64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub endpoints: Option<Vec<ServiceEndpointChange>>,
+    #[serde(rename = "hasTransparentDataEncryption", skip_serializing_if = "Option::is_none", default)]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none", default)]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none", default)]
+    pub idle_timeout_minutes: Option<f64>,
     #[serde(rename = "ipAccessList", default)]
     pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "isReadonly", default)]
-    pub is_readonly: bool,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxTotalMemoryGb", default)]
-    pub max_total_memory_gb: f64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minTotalMemoryGb", default)]
-    pub min_total_memory_gb: f64,
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none", default)]
+    pub is_readonly: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub max_total_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub min_total_memory_gb: Option<f64>,
     #[serde(default)]
     pub name: String,
-    #[serde(rename = "numReplicas", default)]
-    pub num_replicas: f64,
-    #[serde(rename = "privateEndpointIds", default)]
-    pub private_endpoint_ids: Vec<String>,
-    #[serde(rename = "privatePreviewTermsChecked", default)]
-    pub private_preview_terms_checked: bool,
-    #[serde(default)]
-    pub profile: ServicePostRequestProfile,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub num_replicas: Option<f64>,
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none", default)]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(rename = "privatePreviewTermsChecked", skip_serializing_if = "Option::is_none", default)]
+    pub private_preview_terms_checked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub profile: Option<ServicePostRequestProfile>,
     #[serde(default)]
     pub provider: ServicePostRequestProvider,
     #[serde(default)]
     pub region: ServicePostRequestRegion,
-    #[serde(rename = "releaseChannel", default)]
-    pub release_channel: ServicePostRequestReleasechannel,
-    #[serde(default)]
-    pub tags: Vec<ResourceTagsV1>,
-    #[serde(default)]
-    pub tier: ServicePostRequestTier,
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none", default)]
+    pub release_channel: Option<ServicePostRequestReleasechannel>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<ResourceTagsV1>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tier: Option<ServicePostRequestTier>,
 }
 
 /// `ServicePostResponse` from the ClickHouse Cloud API.

@@ -692,7 +692,7 @@ async fn create_service() {
         name: "new-service".to_string(),
         provider: ServicePostRequestProvider::Aws,
         region: ServicePostRequestRegion::Us_east_1,
-        tier: ServicePostRequestTier::Production,
+        tier: Some(ServicePostRequestTier::Production),
         ..Default::default()
     };
     let resp = client.instance_create("org-123", &body).await.unwrap();
