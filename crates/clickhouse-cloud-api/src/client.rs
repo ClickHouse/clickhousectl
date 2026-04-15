@@ -966,7 +966,7 @@ impl Client {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let body_text = resp.text().await.unwrap_or_default();
+            let body_text = resp.text().await?;
             return Err(Error::Api {
                 status: status.as_u16(),
                 message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
@@ -2036,7 +2036,7 @@ impl Client {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let body_text = resp.text().await.unwrap_or_default();
+            let body_text = resp.text().await?;
             return Err(Error::Api {
                 status: status.as_u16(),
                 message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
