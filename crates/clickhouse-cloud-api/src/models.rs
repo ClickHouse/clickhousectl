@@ -6417,7 +6417,9 @@ impl std::fmt::Display for PgConfigWalCompression {
 }
 
 /// `BackupBucket` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucket {
     AwsBackupBucket(AwsBackupBucket),
@@ -6425,6 +6427,27 @@ pub enum BackupBucket {
     AzureBackupBucket(AzureBackupBucket),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for BackupBucket {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("bucketProvider").and_then(|v| v.as_str()) {
+            Some("AWS") => serde_json::from_value(value)
+                .map(BackupBucket::AwsBackupBucket)
+                .map_err(serde::de::Error::custom),
+            Some("GCP") => serde_json::from_value(value)
+                .map(BackupBucket::GcpBackupBucket)
+                .map_err(serde::de::Error::custom),
+            Some("AZURE") => serde_json::from_value(value)
+                .map(BackupBucket::AzureBackupBucket)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(BackupBucket::Unknown(value.to_string())),
+        }
+    }
 }
 
 impl std::fmt::Display for BackupBucket {
@@ -6439,7 +6462,9 @@ impl std::fmt::Display for BackupBucket {
 }
 
 /// `BackupBucketPatchRequest` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketPatchRequest {
     AwsBackupBucketPatchRequestV1(AwsBackupBucketPatchRequestV1),
@@ -6447,6 +6472,27 @@ pub enum BackupBucketPatchRequest {
     AzureBackupBucketPatchRequestV1(AzureBackupBucketPatchRequestV1),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for BackupBucketPatchRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("bucketProvider").and_then(|v| v.as_str()) {
+            Some("AWS") => serde_json::from_value(value)
+                .map(BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1)
+                .map_err(serde::de::Error::custom),
+            Some("GCP") => serde_json::from_value(value)
+                .map(BackupBucketPatchRequest::GcpBackupBucketPatchRequestV1)
+                .map_err(serde::de::Error::custom),
+            Some("AZURE") => serde_json::from_value(value)
+                .map(BackupBucketPatchRequest::AzureBackupBucketPatchRequestV1)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(BackupBucketPatchRequest::Unknown(value.to_string())),
+        }
+    }
 }
 
 impl std::fmt::Display for BackupBucketPatchRequest {
@@ -6461,7 +6507,9 @@ impl std::fmt::Display for BackupBucketPatchRequest {
 }
 
 /// `BackupBucketPostRequest` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketPostRequest {
     AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1),
@@ -6469,6 +6517,27 @@ pub enum BackupBucketPostRequest {
     AzureBackupBucketPostRequestV1(AzureBackupBucketPostRequestV1),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for BackupBucketPostRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("bucketProvider").and_then(|v| v.as_str()) {
+            Some("AWS") => serde_json::from_value(value)
+                .map(BackupBucketPostRequest::AwsBackupBucketPostRequestV1)
+                .map_err(serde::de::Error::custom),
+            Some("GCP") => serde_json::from_value(value)
+                .map(BackupBucketPostRequest::GcpBackupBucketPostRequestV1)
+                .map_err(serde::de::Error::custom),
+            Some("AZURE") => serde_json::from_value(value)
+                .map(BackupBucketPostRequest::AzureBackupBucketPostRequestV1)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(BackupBucketPostRequest::Unknown(value.to_string())),
+        }
+    }
 }
 
 impl std::fmt::Display for BackupBucketPostRequest {
@@ -6483,7 +6552,9 @@ impl std::fmt::Display for BackupBucketPostRequest {
 }
 
 /// `BackupBucketProperties` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketProperties {
     AwsBackupBucketProperties(AwsBackupBucketProperties),
@@ -6491,6 +6562,27 @@ pub enum BackupBucketProperties {
     AzureBackupBucketProperties(AzureBackupBucketProperties),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
+}
+
+impl<'de> Deserialize<'de> for BackupBucketProperties {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("bucketProvider").and_then(|v| v.as_str()) {
+            Some("AWS") => serde_json::from_value(value)
+                .map(BackupBucketProperties::AwsBackupBucketProperties)
+                .map_err(serde::de::Error::custom),
+            Some("GCP") => serde_json::from_value(value)
+                .map(BackupBucketProperties::GcpBackupBucketProperties)
+                .map_err(serde::de::Error::custom),
+            Some("AZURE") => serde_json::from_value(value)
+                .map(BackupBucketProperties::AzureBackupBucketProperties)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(BackupBucketProperties::Unknown(value.to_string())),
+        }
+    }
 }
 
 impl std::fmt::Display for BackupBucketProperties {

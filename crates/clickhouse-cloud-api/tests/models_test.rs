@@ -931,7 +931,7 @@ fn clickstack_dashboard_minimal_response() {
 fn deserialize_aws_backup_bucket() {
     let json = r#"{
         "bucketPath": "s3://my-bucket/prefix",
-        "bucketProvider": "aws_s3",
+        "bucketProvider": "AWS",
         "iamRoleArn": "arn:aws:iam::123:role/backup",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
@@ -941,10 +941,10 @@ fn deserialize_aws_backup_bucket() {
 }
 
 #[test]
-fn deserialize_backup_bucket_untagged_aws() {
+fn deserialize_backup_bucket_dispatches_aws() {
     let json = r#"{
         "bucketPath": "s3://my-bucket/prefix",
-        "bucketProvider": "aws_s3",
+        "bucketProvider": "AWS",
         "iamRoleArn": "arn:aws:iam::123:role/backup",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
@@ -956,38 +956,45 @@ fn deserialize_backup_bucket_untagged_aws() {
     }
 }
 
-// BUG: GCP and Azure blobs silently deserialize as AwsBackupBucket because:
-// 1. All AwsBackupBucket fields are Option with #[serde(default)]
-// 2. The inner AwsBackupBucketBucketprovider enum has an Unknown(String) catch-all
-// So the AWS variant (tried first by serde untagged) always succeeds, swallowing
-// "gcs"/"azure_blob_storage" into Unknown(...) and ignoring provider-specific fields.
-// These tests document the current broken behavior. Fixing requires either removing
-// the Unknown catch-all from the inner enums, or switching to an internally/adjacently
-// tagged representation.
-
 #[test]
-fn deserialize_backup_bucket_untagged_gcp_dispatches_to_aws() {
+fn deserialize_backup_bucket_dispatches_gcp() {
     let json = r#"{
         "accessKeyId": "GOOG1234567890",
         "bucketPath": "gs://my-gcp-bucket/prefix",
-        "bucketProvider": "gcs",
+        "bucketProvider": "GCP",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
     let b: BackupBucket = serde_json::from_str(json).unwrap();
-    // Should be GcpBackupBucket, but AWS variant swallows it
-    assert!(matches!(b, BackupBucket::AwsBackupBucket(_)));
+    assert!(matches!(b, BackupBucket::GcpBackupBucket(_)));
+    if let BackupBucket::GcpBackupBucket(gcp) = b {
+        assert_eq!(gcp.access_key_id, "GOOG1234567890");
+        assert_eq!(gcp.bucket_path, "gs://my-gcp-bucket/prefix");
+    }
 }
 
 #[test]
-fn deserialize_backup_bucket_untagged_azure_dispatches_to_aws() {
+fn deserialize_backup_bucket_dispatches_azure() {
     let json = r#"{
-        "bucketProvider": "azure_blob_storage",
+        "bucketProvider": "AZURE",
         "containerName": "my-container",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
     let b: BackupBucket = serde_json::from_str(json).unwrap();
-    // Should be AzureBackupBucket, but AWS variant swallows it
-    assert!(matches!(b, BackupBucket::AwsBackupBucket(_)));
+    assert!(matches!(b, BackupBucket::AzureBackupBucket(_)));
+    if let BackupBucket::AzureBackupBucket(azure) = b {
+        assert_eq!(azure.container_name, "my-container");
+    }
+}
+
+#[test]
+fn deserialize_backup_bucket_unknown_provider() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue",
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    }"#;
+    let b: BackupBucket = serde_json::from_str(json).unwrap();
+    assert!(matches!(b, BackupBucket::Unknown(_)));
 }
 
 #[test]
