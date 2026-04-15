@@ -140,9 +140,11 @@ async fn resolve_minor(major: u32, minor: u32, platform: &Platform) -> Result<Re
 
 /// `install 25.12.9.61` — exact version, needs channel from GH API
 async fn resolve_exact(version: &str, platform: &Platform) -> Result<ResolvedVersion> {
-    // Use matching-refs to find the exact tag and its channel
-    // For "25.12.9.61", search refs matching "v25.12.9.61" — should return the exact tag
-    let channel = find_exact_channel(version).await.unwrap_or(Channel::Stable);
+    // Use matching-refs to find the exact tag and its channel.
+    // For "25.12.9.61", search refs matching "v25.12.9.61" — should return the exact tag.
+    // Fail fast if the lookup fails: a wrong channel produces a broken download URL,
+    // and silently guessing Stable could fetch the wrong artifact.
+    let channel = find_exact_channel(version).await?;
     Ok(fallback_source(version, channel, platform))
 }
 
