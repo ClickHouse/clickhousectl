@@ -21,11 +21,11 @@ pub fn init() -> Result<()> {
     let dir = local_dir();
 
     if is_initialized() {
-        println!("Already initialized at {}", dir.display());
+        eprintln!("Already initialized at {}", dir.display());
     } else {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join(".gitignore"), "*\n")?;
-        println!("Initialized ClickHouse project in {}", dir.display());
+        eprintln!("Initialized ClickHouse project in {}", dir.display());
     }
 
     create_project_scaffold()?;
@@ -48,7 +48,7 @@ fn create_project_scaffold() -> Result<()> {
     }
 
     if created {
-        println!(
+        eprintln!(
             "Created project scaffold in {}/ (tables, materialized_views, queries, seed)",
             dir.display()
         );
