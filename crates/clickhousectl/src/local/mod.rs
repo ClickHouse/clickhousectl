@@ -289,21 +289,30 @@ async fn start_server(
             http_port, tcp_port
         );
     }
-    // Check if the user passed their own config in the trailing args (after --).
-    // If not, we inject our managed data directory and --path flag.
-    // If they did, we leave ClickHouse to use their config as-is.
-    let has_config = args
+    // Reject --config-file / -C in passthrough args. A custom config file
+    // redirects where ClickHouse stores data, which breaks the managed
+    // server lifecycle (list, stop, remove, dotenv all rely on the data
+    // directory living under .clickhouse/servers/<name>/). Individual
+    // --setting=value flags are fine — they don't change the data directory.
+    // Users who need a fully custom config should run `clickhouse server` directly.
+    if args
         .iter()
-        .any(|a| a.starts_with("--config-file") || a.starts_with("-C"));
+        .any(|a| a.starts_with("--config-file") || a.starts_with("-C"))
+    {
+        return Err(Error::Exec(
+            "--config-file / -C cannot be passed through to managed servers. \
+             Individual --setting=value flags are supported. \
+             For a fully custom config, run `clickhouse server` directly."
+                .into(),
+        ));
+    }
 
     let mut cmd = Command::new(&binary);
     cmd.arg("server");
 
-    if !has_config {
-        server::ensure_server_data_dir(&server_name)?;
-        cmd.current_dir(server::server_data_dir(&server_name));
-        cmd.args(init::server_flags());
-    }
+    server::ensure_server_data_dir(&server_name)?;
+    cmd.current_dir(server::server_data_dir(&server_name));
+    cmd.args(init::server_flags());
 
     cmd.args(server::port_flags(http_port, tcp_port));
     cmd.args(&args);
