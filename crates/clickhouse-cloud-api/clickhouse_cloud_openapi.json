@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-712061",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-724606",
       "email": "support@clickhouse.com"
     }
   },
@@ -438,7 +438,11 @@
                 "type": "string"
               }
             },
-            "example": "tag:Environment=Production&filter=tag:Department=Engineering&filter=tag:isActive"
+            "example": [
+              "tag:Environment=Production",
+              "tag:Department=Engineering",
+              "tag:isActive"
+            ]
           }
         ],
         "responses": {
@@ -4757,7 +4761,11 @@
                 "type": "string"
               }
             },
-            "example": "filter=tag:Environment=Production&filter=tag:Department=Engineering&filter=tag:isActive"
+            "example": [
+              "tag:Environment=Production",
+              "tag:Department=Engineering",
+              "tag:isActive"
+            ]
           }
         ],
         "responses": {
@@ -17697,7 +17705,7 @@
           "url": {
             "description": "Slack incoming webhook URL",
             "type": "string",
-            "example": "https://hooks.example.com/services/your-slack-webhook-url"
+            "example": "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
           },
           "description": {
             "description": "Webhook description, shown in the UI",
@@ -18421,10 +18429,6 @@
             "description": "The id of the SCIM resource representing the user's manager.",
             "type": "string"
           },
-          "$ref": {
-            "description": "The URI of the SCIM resource representing the user's manager.",
-            "type": "string"
-          },
           "displayName": {
             "description": "The displayName of the user's manager.",
             "type": "string"
@@ -19009,6 +19013,448 @@
           "Resources"
         ]
       },
+      "ScimBooleanFeature": {
+        "properties": {
+          "supported": {
+            "description": "Whether the feature is supported.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
+        ]
+      },
+      "ScimServiceProviderConfigPatch": {
+        "properties": {
+          "supported": {
+            "description": "Whether PATCH is supported.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "supported"
+        ]
+      },
+      "ScimServiceProviderConfigBulk": {
+        "properties": {
+          "supported": {
+            "description": "Whether bulk operations are supported.",
+            "type": "boolean"
+          },
+          "maxOperations": {
+            "description": "Maximum number of bulk operations per request.",
+            "type": "integer"
+          },
+          "maxPayloadSize": {
+            "description": "Maximum payload size for bulk requests in bytes.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "supported",
+          "maxOperations",
+          "maxPayloadSize"
+        ]
+      },
+      "ScimServiceProviderConfigFilter": {
+        "properties": {
+          "supported": {
+            "description": "Whether filter is supported.",
+            "type": "boolean"
+          },
+          "maxResults": {
+            "description": "Maximum number of results per filter query.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "supported",
+          "maxResults"
+        ]
+      },
+      "ScimAuthenticationScheme": {
+        "properties": {
+          "type": {
+            "description": "The authentication scheme type (e.g., \"httpbasic\", \"oauthbearertoken\").",
+            "type": "string"
+          },
+          "name": {
+            "description": "The common authentication scheme name.",
+            "type": "string"
+          },
+          "description": {
+            "description": "A description of the authentication scheme.",
+            "type": "string"
+          },
+          "specUri": {
+            "description": "An HTTP-addressable URL pointing to the scheme specification.",
+            "type": "string"
+          },
+          "primary": {
+            "description": "A Boolean value indicating the primary authentication scheme.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "type",
+          "name",
+          "description"
+        ]
+      },
+      "ScimServiceProviderConfigMeta": {
+        "properties": {
+          "resourceType": {
+            "description": "The resource type of this resource.",
+            "type": "string"
+          },
+          "location": {
+            "description": "The URI of this resource.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resourceType",
+          "location"
+        ]
+      },
+      "ScimServiceProviderConfig": {
+        "properties": {
+          "schemas": {
+            "type": "array",
+            "description": "SCIM schema URIs.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "documentationUri": {
+            "description": "URI of the service documentation.",
+            "type": "string"
+          },
+          "patch": {
+            "$ref": "#/components/schemas/ScimServiceProviderConfigPatch"
+          },
+          "bulk": {
+            "$ref": "#/components/schemas/ScimServiceProviderConfigBulk"
+          },
+          "filter": {
+            "$ref": "#/components/schemas/ScimServiceProviderConfigFilter"
+          },
+          "changePassword": {
+            "$ref": "#/components/schemas/ScimBooleanFeature"
+          },
+          "sort": {
+            "$ref": "#/components/schemas/ScimBooleanFeature"
+          },
+          "etag": {
+            "$ref": "#/components/schemas/ScimBooleanFeature"
+          },
+          "authenticationSchemes": {
+            "type": "array",
+            "description": "Supported authentication schemes.",
+            "items": {
+              "$ref": "#/components/schemas/ScimAuthenticationScheme"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ScimServiceProviderConfigMeta"
+          }
+        },
+        "required": [
+          "schemas",
+          "patch",
+          "bulk",
+          "filter",
+          "changePassword",
+          "sort",
+          "etag",
+          "authenticationSchemes",
+          "meta"
+        ]
+      },
+      "ScimSchemaExtension": {
+        "properties": {
+          "schema": {
+            "description": "The URI of a schema extension.",
+            "type": "string"
+          },
+          "required": {
+            "description": "Whether the schema extension is required.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema",
+          "required"
+        ]
+      },
+      "ScimResourceTypeMeta": {
+        "properties": {
+          "resourceType": {
+            "description": "The resource type.",
+            "type": "string"
+          },
+          "location": {
+            "description": "The URI of this resource.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resourceType",
+          "location"
+        ]
+      },
+      "ScimResourceType": {
+        "properties": {
+          "schemas": {
+            "type": "array",
+            "description": "SCIM schema URIs.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "description": "The resource type ID.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The resource type name.",
+            "type": "string"
+          },
+          "endpoint": {
+            "description": "The endpoint path for this resource type.",
+            "type": "string"
+          },
+          "description": {
+            "description": "A description of the resource type.",
+            "type": "string"
+          },
+          "schema": {
+            "description": "The primary schema URI for this resource type.",
+            "type": "string"
+          },
+          "schemaExtensions": {
+            "type": "array",
+            "description": "Optional schema extensions for this resource type.",
+            "items": {
+              "$ref": "#/components/schemas/ScimSchemaExtension"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ScimResourceTypeMeta"
+          }
+        },
+        "required": [
+          "schemas",
+          "id",
+          "name",
+          "endpoint",
+          "description",
+          "schema",
+          "schemaExtensions",
+          "meta"
+        ]
+      },
+      "ScimResourceTypeListResponse": {
+        "properties": {
+          "schemas": {
+            "type": "array",
+            "description": "SCIM schema URIs.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "totalResults": {
+            "description": "Total number of resource types.",
+            "type": "integer"
+          },
+          "itemsPerPage": {
+            "description": "Number of resources per page.",
+            "type": "integer"
+          },
+          "startIndex": {
+            "description": "1-based start index.",
+            "type": "integer"
+          },
+          "Resources": {
+            "type": "array",
+            "description": "Array of resource type definitions.",
+            "items": {
+              "$ref": "#/components/schemas/ScimResourceType"
+            }
+          }
+        },
+        "required": [
+          "schemas",
+          "totalResults",
+          "itemsPerPage",
+          "startIndex",
+          "Resources"
+        ]
+      },
+      "ScimSchemaMeta": {
+        "properties": {
+          "resourceType": {
+            "description": "The resource type.",
+            "type": "string"
+          },
+          "location": {
+            "description": "The URI of this schema.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resourceType",
+          "location"
+        ]
+      },
+      "ScimSchemaAttribute": {
+        "properties": {
+          "name": {
+            "description": "The attribute name.",
+            "type": "string"
+          },
+          "type": {
+            "description": "The attribute type (e.g., \"string\", \"boolean\", \"complex\").",
+            "type": "string"
+          },
+          "subAttributes": {
+            "type": "array",
+            "description": "Sub-attributes for complex attributes.",
+            "items": {
+              "$ref": "#/components/schemas/ScimSchemaAttribute"
+            }
+          },
+          "multiValued": {
+            "description": "Whether the attribute can have multiple values.",
+            "type": "boolean"
+          },
+          "description": {
+            "description": "A human-readable description of the attribute.",
+            "type": "string"
+          },
+          "required": {
+            "description": "Whether the attribute is required.",
+            "type": "boolean"
+          },
+          "caseExact": {
+            "description": "Whether the string attribute is case sensitive.",
+            "type": "boolean"
+          },
+          "mutability": {
+            "description": "The circumstances under which the value of the attribute can be (re)defined.",
+            "type": "string"
+          },
+          "returned": {
+            "description": "The circumstances under which an attribute and associated values are returned.",
+            "type": "string"
+          },
+          "uniqueness": {
+            "description": "How the service provider enforces uniqueness of attribute values.",
+            "type": "string"
+          },
+          "referenceTypes": {
+            "type": "array",
+            "description": "A multi-valued array of JSON strings.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "canonicalValues": {
+            "type": "array",
+            "description": "A collection of suggested canonical values that MAY be used.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "multiValued",
+          "description",
+          "required",
+          "mutability",
+          "returned"
+        ]
+      },
+      "ScimSchema": {
+        "properties": {
+          "schemas": {
+            "type": "array",
+            "description": "SCIM schema URIs.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "id": {
+            "description": "The unique URI of the schema.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The schema name.",
+            "type": "string"
+          },
+          "description": {
+            "description": "A description of the schema.",
+            "type": "string"
+          },
+          "attributes": {
+            "type": "array",
+            "description": "Service provider attributes comprising the schema.",
+            "items": {
+              "$ref": "#/components/schemas/ScimSchemaAttribute"
+            }
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ScimSchemaMeta"
+          }
+        },
+        "required": [
+          "schemas",
+          "id",
+          "name",
+          "description",
+          "attributes",
+          "meta"
+        ]
+      },
+      "ScimSchemaListResponse": {
+        "properties": {
+          "schemas": {
+            "type": "array",
+            "description": "SCIM schema URIs.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "totalResults": {
+            "description": "Total number of schemas.",
+            "type": "integer"
+          },
+          "itemsPerPage": {
+            "description": "Number of schemas per page.",
+            "type": "integer"
+          },
+          "startIndex": {
+            "description": "1-based start index.",
+            "type": "integer"
+          },
+          "Resources": {
+            "type": "array",
+            "description": "Array of schema definitions.",
+            "items": {
+              "$ref": "#/components/schemas/ScimSchema"
+            }
+          }
+        },
+        "required": [
+          "schemas",
+          "totalResults",
+          "itemsPerPage",
+          "startIndex",
+          "Resources"
+        ]
+      },
       "ApiKey": {
         "properties": {
           "id": {
@@ -19350,7 +19796,7 @@
         "additionalProperties": false,
         "minProperties": 1,
         "example": {
-          "max_connections": "100"
+          "max_connections": 100
         }
       },
       "pgBouncerConfig": {

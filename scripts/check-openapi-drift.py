@@ -27,6 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "client.rs"
 MODELS_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "models.rs"
+SNAPSHOT_JSON = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "clickhouse_cloud_openapi.json"
 LIVE_SPEC_URL = os.environ.get(
     "CLICKHOUSE_OPENAPI_SPEC_URL", "https://api.clickhouse.cloud/v1"
 )
@@ -301,6 +302,35 @@ def check_field_optionality(
     return mismatches
 
 
+def check_snapshot_staleness(live_spec: dict) -> dict:
+    """Compare the committed snapshot against the live spec.
+
+    Returns a dict with 'added_ops', 'removed_ops', 'added_schemas',
+    'removed_schemas' keys (all sets of names). Empty sets mean no drift.
+    """
+    result = {"added_ops": set(), "removed_ops": set(), "added_schemas": set(), "removed_schemas": set()}
+
+    if not SNAPSHOT_JSON.exists():
+        return result
+
+    try:
+        snapshot = json.loads(SNAPSHOT_JSON.read_text())
+    except (json.JSONDecodeError, OSError):
+        return result
+
+    snap_ops = set(spec_operations(snapshot).keys())
+    live_ops = set(spec_operations(live_spec).keys())
+    result["added_ops"] = live_ops - snap_ops
+    result["removed_ops"] = snap_ops - live_ops
+
+    snap_schemas = set(spec_schema_names(snapshot).keys())
+    live_schemas = set(spec_schema_names(live_spec).keys())
+    result["added_schemas"] = live_schemas - snap_schemas
+    result["removed_schemas"] = snap_schemas - live_schemas
+
+    return result
+
+
 def check_missing_fields(
     spec: dict,
     model_fields: dict[str, dict[str, bool]],
@@ -385,7 +415,11 @@ def build_issue_body(
     all_spec_schemas: dict[str, dict],
     field_mismatches: list[dict] | None = None,
     missing_fields: list[dict] | None = None,
+    snapshot_staleness: dict | None = None,
 ) -> str:
+    snap = snapshot_staleness or {}
+    snap_total = sum(len(snap.get(k, set())) for k in ("added_ops", "removed_ops", "added_schemas", "removed_schemas"))
+
     lines = [
         "The live ClickHouse Cloud OpenAPI spec has operations or schemas that the",
         "Rust library (`client.rs` / `models.rs`) does not cover yet.",
@@ -403,6 +437,7 @@ def build_issue_body(
         f"| Missing model types | {len(missing_types)} |",
         f"| Missing struct fields | {len(missing_fields or [])} |",
         f"| Field optionality mismatches | {len(field_mismatches or [])} |",
+        f"| Stale snapshot changes | {snap_total} |",
         "",
     ]
 
@@ -517,6 +552,37 @@ def build_issue_body(
             )
         lines.append("")
 
+    # ---- Stale snapshot ----
+    if snap_total > 0:
+        lines += [
+            "## Stale Snapshot",
+            "",
+            "The committed `clickhouse_cloud_openapi.json` is behind the live spec.",
+            "Tests that run against the snapshot may pass even though the library is",
+            "missing coverage for new endpoints or schemas.",
+            "",
+        ]
+        if snap.get("added_ops"):
+            lines.append("**New operations in live spec (not in snapshot):**")
+            for name in sorted(snap["added_ops"]):
+                lines.append(f"- `{name}`")
+            lines.append("")
+        if snap.get("removed_ops"):
+            lines.append("**Operations removed from live spec (still in snapshot):**")
+            for name in sorted(snap["removed_ops"]):
+                lines.append(f"- `{name}`")
+            lines.append("")
+        if snap.get("added_schemas"):
+            lines.append("**New schemas in live spec (not in snapshot):**")
+            for name in sorted(snap["added_schemas"]):
+                lines.append(f"- `{name}`")
+            lines.append("")
+        if snap.get("removed_schemas"):
+            lines.append("**Schemas removed from live spec (still in snapshot):**")
+            for name in sorted(snap["removed_schemas"]):
+                lines.append(f"- `{name}`")
+            lines.append("")
+
     # ---- Implementation guide ----
     lines += [
         "## Implementation Guide",
@@ -592,8 +658,12 @@ def main():
     field_mismatches = check_field_optionality(live_spec, model_fields)
     missing_fields = check_missing_fields(live_spec, model_fields)
 
+    # Check committed snapshot staleness
+    snapshot_staleness = check_snapshot_staleness(live_spec)
+    snap_total = sum(len(v) for v in snapshot_staleness.values())
+
     # Report
-    total = len(missing_ops) + len(extra_op_names) + len(missing_types) + len(field_mismatches) + len(missing_fields)
+    total = len(missing_ops) + len(extra_op_names) + len(missing_types) + len(field_mismatches) + len(missing_fields) + snap_total
 
     print(f"Live spec:       {len(spec_method_names)} operations, {len(spec_type_names)} schemas", file=sys.stderr)
     print(f"client.rs:       {len(client_methods)} pub async fn methods", file=sys.stderr)
@@ -604,12 +674,13 @@ def main():
     print(f"Missing types:   {len(missing_types)}", file=sys.stderr)
     print(f"Missing fields:  {len(missing_fields)}", file=sys.stderr)
     print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
+    print(f"Stale snapshot:  {snap_total}", file=sys.stderr)
 
     if total == 0:
         print("\nNo drift. Library fully covers the live spec.", file=sys.stderr)
         return
 
-    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas, field_mismatches, missing_fields)
+    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas, field_mismatches, missing_fields, snapshot_staleness)
 
     if args.dry_run:
         print("\n--- Issue body (dry run) ---\n", file=sys.stderr)
