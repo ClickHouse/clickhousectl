@@ -380,12 +380,20 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_query_endpoint(&self, org_id: &str, service_id: &str) -> Result<()> {
-        self.api()
+    pub async fn delete_query_endpoint(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<DeleteResponse> {
+        let response = self
+            .api()
             .instance_query_endpoint_delete(org_id, service_id)
             .await
             .map_err(|e| self.convert_error(e))?;
-        Ok(())
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
+        })
     }
 
     // Private endpoint (delegated to library client)
@@ -512,12 +520,16 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<()> {
-        self.api()
+    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<DeleteResponse> {
+        let response = self
+            .api()
             .member_delete(org_id, user_id)
             .await
             .map_err(|e| self.convert_error(e))?;
-        Ok(())
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
+        })
     }
 
     // Phase 4 - Invitation endpoints (delegated to library client)
@@ -559,12 +571,20 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_invitation(&self, org_id: &str, invitation_id: &str) -> Result<()> {
-        self.api()
+    pub async fn delete_invitation(
+        &self,
+        org_id: &str,
+        invitation_id: &str,
+    ) -> Result<DeleteResponse> {
+        let response = self
+            .api()
             .invitation_delete(org_id, invitation_id)
             .await
             .map_err(|e| self.convert_error(e))?;
-        Ok(())
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
+        })
     }
 
     // Phase 5 - API Key endpoints (delegated to library client)
@@ -620,12 +640,16 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<()> {
-        self.api()
+    pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<DeleteResponse> {
+        let response = self
+            .api()
             .openapi_key_delete(org_id, key_id)
             .await
             .map_err(|e| self.convert_error(e))?;
-        Ok(())
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
+        })
     }
 
     // Phase 6 - Activity endpoints

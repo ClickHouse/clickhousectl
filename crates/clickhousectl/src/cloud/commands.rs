@@ -1214,11 +1214,16 @@ pub async fn query_endpoint_delete(
     client: &CloudClient,
     service_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_query_endpoint(&org_id, service_id).await?;
-    println!("Query endpoint deleted for service {}", service_id);
+    let response = client.delete_query_endpoint(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Query endpoint deleted for service {}", service_id);
+    }
     Ok(())
 }
 
@@ -1466,11 +1471,16 @@ pub async fn member_remove(
     client: &CloudClient,
     user_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_member(&org_id, user_id).await?;
-    println!("Member {} removed", user_id);
+    let response = client.delete_member(&org_id, user_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Member {} removed", user_id);
+    }
     Ok(())
 }
 
@@ -1574,11 +1584,16 @@ pub async fn invitation_delete(
     client: &CloudClient,
     invitation_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_invitation(&org_id, invitation_id).await?;
-    println!("Invitation {} deleted", invitation_id);
+    let response = client.delete_invitation(&org_id, invitation_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Invitation {} deleted", invitation_id);
+    }
     Ok(())
 }
 
@@ -1715,11 +1730,16 @@ pub async fn key_delete(
     client: &CloudClient,
     key_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_api_key(&org_id, key_id).await?;
-    println!("API key {} deleted", key_id);
+    let response = client.delete_api_key(&org_id, key_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("API key {} deleted", key_id);
+    }
     Ok(())
 }
 
