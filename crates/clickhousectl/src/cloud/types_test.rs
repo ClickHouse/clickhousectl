@@ -49,16 +49,15 @@ fn test_activity_deserialize() {
         "userAgent": "clickhousectl/0.1.0"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
-    assert_eq!(act.id.as_deref(), Some("act-1"));
-    assert_eq!(act.r#type.as_ref().unwrap().to_string(), "service_create");
-    assert_eq!(act.actor_type.as_ref().unwrap().to_string(), "user");
-    assert_eq!(act.actor_id.as_deref(), Some("user-5"));
-    assert!(act.created_at.is_some());
-    assert_eq!(act.actor_details.as_deref(), Some("Alice Smith"));
-    assert_eq!(act.actor_ip_address.as_deref(), Some("1.2.3.4"));
-    assert_eq!(act.organization_id.as_deref(), Some("org-1"));
-    assert_eq!(act.service_id.as_deref(), Some("svc-1"));
-    assert_eq!(act.user_agent.as_deref(), Some("clickhousectl/0.1.0"));
+    assert_eq!(act.id, "act-1");
+    assert_eq!(act.r#type.to_string(), "service_create");
+    assert_eq!(act.actor_type.to_string(), "user");
+    assert_eq!(act.actor_id, "user-5");
+    assert_eq!(act.actor_details, "Alice Smith");
+    assert_eq!(act.actor_ip_address, "1.2.3.4");
+    assert_eq!(act.organization_id, "org-1");
+    assert_eq!(act.service_id, "svc-1");
+    assert_eq!(act.user_agent, "clickhousectl/0.1.0");
 }
 
 #[test]
@@ -72,9 +71,9 @@ fn test_activity_key_update() {
         "keyUpdateType": "state-changed"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
-    assert_eq!(act.r#type.as_ref().unwrap().to_string(), "openapi_key_update");
-    assert_eq!(act.target_key_id.as_deref(), Some("key-1"));
-    assert_eq!(act.key_update_type.as_ref().unwrap().to_string(), "state-changed");
+    assert_eq!(act.r#type.to_string(), "openapi_key_update");
+    assert_eq!(act.target_key_id, "key-1");
+    assert_eq!(act.key_update_type.to_string(), "state-changed");
 }
 
 #[test]
@@ -85,11 +84,11 @@ fn test_activity_minimal() {
         "type": "user_login"
     });
     let act: Activity = serde_json::from_value(json).unwrap();
-    assert_eq!(act.id.as_deref(), Some("act-3"));
-    assert_eq!(act.r#type.as_ref().unwrap().to_string(), "user_login");
-    assert!(act.actor_type.is_none());
-    assert!(act.actor_details.is_none());
-    assert!(act.service_id.is_none());
+    assert_eq!(act.id, "act-3");
+    assert_eq!(act.r#type.to_string(), "user_login");
+    // Fields not present in JSON get their default values
+    assert_eq!(act.actor_details, "");
+    assert_eq!(act.service_id, "");
 }
 
 // ── Comprehensive enum value tests (from OpenAPI spec) ──────────────
@@ -151,7 +150,7 @@ fn test_activity_type_values() {
     for t in &types {
         let json = serde_json::json!({"id": "act-1", "type": t});
         let act: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(act.r#type.as_ref().unwrap().to_string(), *t);
+        assert_eq!(act.r#type.to_string(), *t);
     }
 }
 
@@ -162,7 +161,7 @@ fn test_activity_actor_type_values() {
         let json =
             serde_json::json!({"id": "act-1", "type": "user_login", "actorType": actor_type});
         let act: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(act.actor_type.as_ref().unwrap().to_string(), *actor_type);
+        assert_eq!(act.actor_type.to_string(), *actor_type);
     }
 }
 
@@ -189,6 +188,6 @@ fn test_activity_key_update_type_values() {
             "keyUpdateType": t
         });
         let act: Activity = serde_json::from_value(json).unwrap();
-        assert_eq!(act.key_update_type.as_ref().unwrap().to_string(), *t);
+        assert_eq!(act.key_update_type.to_string(), *t);
     }
 }

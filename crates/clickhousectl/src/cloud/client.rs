@@ -691,12 +691,7 @@ impl CloudClient {
             0 => Err(CloudError {
                 message: "No organization found for this API key".into(),
             }),
-            1 => {
-                let id = orgs[0].id.as_ref().ok_or_else(|| CloudError {
-                    message: "Organization missing ID".into(),
-                })?;
-                Ok(id.to_string())
-            }
+            1 => Ok(orgs[0].id.to_string()),
             _ => Err(CloudError {
                 message: "Multiple organizations found. Specify --org-id to choose one. \
                           Use `clickhousectl cloud org list` to see your organizations."
