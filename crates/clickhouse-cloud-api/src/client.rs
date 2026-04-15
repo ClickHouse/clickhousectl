@@ -738,11 +738,17 @@ impl Client {
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
+        let body_text = resp.text().await?;
         if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Api { status: status.as_u16(), message: text });
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
         }
-        Ok(resp.text().await?)
+        Ok(body_text)
     }
 
     /// Get PostgreSQL service configuration

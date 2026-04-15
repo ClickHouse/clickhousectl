@@ -2482,7 +2482,9 @@ async fn api_error_on_postgres_certs_endpoint() {
 
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/caCertificates"))
-        .respond_with(ResponseTemplate::new(404).set_body_string("Not found"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "Postgres service not found"
+        })))
         .mount(&s)
         .await;
 
@@ -2491,8 +2493,9 @@ async fn api_error_on_postgres_certs_endpoint() {
         .await
         .unwrap_err();
     match err {
-        clickhouse_cloud_api::Error::Api { status, .. } => {
+        clickhouse_cloud_api::Error::Api { status, message } => {
             assert_eq!(status, 404);
+            assert_eq!(message, "Postgres service not found");
         }
         other => panic!("Expected Api error, got: {:?}", other),
     }
