@@ -477,8 +477,13 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     cloud::commands::query_endpoint_create(&client, &service_id, opts, json).await
                 }
                 QueryEndpointCommands::Delete { service_id, org_id } => {
-                    cloud::commands::query_endpoint_delete(&client, &service_id, org_id.as_deref())
-                        .await
+                    cloud::commands::query_endpoint_delete(
+                        &client,
+                        &service_id,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
                 }
             },
             ServiceCommands::PrivateEndpoint { command } => match command {
@@ -590,7 +595,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .await
             }
             MemberCommands::Remove { user_id, org_id } => {
-                cloud::commands::member_remove(&client, &user_id, org_id.as_deref()).await
+                cloud::commands::member_remove(&client, &user_id, org_id.as_deref(), json).await
             }
         },
         CloudCommands::Invitation { command } => match command {
@@ -622,7 +627,13 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 invitation_id,
                 org_id,
             } => {
-                cloud::commands::invitation_delete(&client, &invitation_id, org_id.as_deref()).await
+                cloud::commands::invitation_delete(
+                    &client,
+                    &invitation_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
             }
         },
         CloudCommands::Key { command } => match command {
@@ -676,7 +687,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 cloud::commands::key_update(&client, &key_id, opts, json).await
             }
             KeyCommands::Delete { key_id, org_id } => {
-                cloud::commands::key_delete(&client, &key_id, org_id.as_deref()).await
+                cloud::commands::key_delete(&client, &key_id, org_id.as_deref(), json).await
             }
         },
         CloudCommands::Activity { command } => match command {

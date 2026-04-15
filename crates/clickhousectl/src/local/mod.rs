@@ -251,7 +251,7 @@ async fn start_server(
     server::recover_current_project_servers();
 
     // Resolve server name and check for collisions before any downloads
-    let server_name = server::resolve_name(name.as_deref());
+    let server_name = server::resolve_name(name.as_deref())?;
 
     if name.is_some() && server::is_server_running(&server_name) {
         return Err(Error::ServerAlreadyRunning(server_name));
@@ -289,21 +289,30 @@ async fn start_server(
             http_port, tcp_port
         );
     }
-    // Check if the user passed their own config in the trailing args (after --).
-    // If not, we inject our managed data directory and --path flag.
-    // If they did, we leave ClickHouse to use their config as-is.
-    let has_config = args
+    // Reject --config-file / -C in passthrough args. A custom config file
+    // redirects where ClickHouse stores data, which breaks the managed
+    // server lifecycle (list, stop, remove, dotenv all rely on the data
+    // directory living under .clickhouse/servers/<name>/). Individual
+    // --setting=value flags are fine — they don't change the data directory.
+    // Users who need a fully custom config should run `clickhouse server` directly.
+    if args
         .iter()
-        .any(|a| a.starts_with("--config-file") || a.starts_with("-C"));
+        .any(|a| a.starts_with("--config-file") || a.starts_with("-C"))
+    {
+        return Err(Error::Exec(
+            "--config-file / -C cannot be passed through to managed servers. \
+             Individual --setting=value flags are supported. \
+             For a fully custom config, run `clickhouse server` directly."
+                .into(),
+        ));
+    }
 
     let mut cmd = Command::new(&binary);
     cmd.arg("server");
 
-    if !has_config {
-        server::ensure_server_data_dir(&server_name)?;
-        cmd.current_dir(server::server_data_dir(&server_name));
-        cmd.args(init::server_flags());
-    }
+    server::ensure_server_data_dir(&server_name)?;
+    cmd.current_dir(server::server_data_dir(&server_name));
+    cmd.args(init::server_flags());
 
     cmd.args(server::port_flags(http_port, tcp_port));
     cmd.args(&args);
@@ -541,6 +550,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             if global {
                 stop_server_global(&name, project.as_deref(), json)
             } else {
+                server::validate_server_name(&name)?;
+
                 // Recover orphaned servers so we can stop processes
                 // that lost their metadata files.
                 server::recover_current_project_servers();
@@ -569,6 +580,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
         ServerCommands::Remove { name } => {
+            server::validate_server_name(&name)?;
+
             // Recover orphaned servers so we correctly detect a running
             // process even when its metadata file is missing.
             server::recover_current_project_servers();

@@ -36,6 +36,23 @@ pub struct ServerEntry {
     pub info: Option<ServerInfo>,
 }
 
+/// Validate that a server name is safe for use in path operations.
+/// Rejects names containing path separators, `..` components, or null bytes.
+pub fn validate_server_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name == "."
+        || name == ".."
+        || name.contains("../")
+        || name.contains("..\\")
+    {
+        return Err(Error::InvalidServerName(name.to_string()));
+    }
+    Ok(())
+}
+
 /// Directory where server tracking files and data live: .clickhouse/servers/
 fn servers_dir() -> PathBuf {
     init::local_dir().join("servers")
@@ -217,14 +234,18 @@ pub fn kill_server(name: &str) -> Result<()> {
 
 /// Resolve the server name: use provided name, "default" if none and no default running,
 /// or generate a random name if "default" is already running.
-pub fn resolve_name(name: Option<&str>) -> String {
+/// Returns an error if the provided name contains path traversal characters.
+pub fn resolve_name(name: Option<&str>) -> Result<String> {
     match name {
-        Some(n) => n.to_string(),
+        Some(n) => {
+            validate_server_name(n)?;
+            Ok(n.to_string())
+        }
         None => {
             if is_server_running("default") {
-                generate_random_name()
+                Ok(generate_random_name())
             } else {
-                "default".to_string()
+                Ok("default".to_string())
             }
         }
     }

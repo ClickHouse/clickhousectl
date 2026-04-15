@@ -1,9 +1,66 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, Credentials};
-use crate::cloud::types::*;
+use clickhouse_cloud_api::models::{
+    ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
+    BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
+    InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
+    IpAccessListPatch, OrganizationPatchPrivateEndpoint,
+    OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1, Service,
+    ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
+    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
+    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
+    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
+    ServiceReplicaScalingPatchRequest,
+    ServiceStatePatchRequestCommand, ServicPrivateEndpointePostRequest,
+};
 use std::io::{IsTerminal, Write};
-use std::str::FromStr;
 use tabled::{Table, Tabled, settings::Style};
+
+/// Known provider values for client-side validation (from OpenAPI spec).
+const KNOWN_PROVIDERS: &[&str] = &["aws", "gcp", "azure"];
+
+/// Known region values for client-side validation (from OpenAPI spec).
+const KNOWN_REGIONS: &[&str] = &[
+    "ap-northeast-1",
+    "ap-northeast-2",
+    "ap-south-1",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "eu-central-1",
+    "eu-west-1",
+    "eu-west-2",
+    "il-central-1",
+    "us-east-1",
+    "us-east-2",
+    "us-west-2",
+    "us-east1",
+    "us-central1",
+    "europe-west4",
+    "asia-southeast1",
+    "asia-northeast1",
+    "eastus",
+    "eastus2",
+    "westus3",
+    "germanywestcentral",
+    "centralus",
+];
+
+/// Known release channel values for client-side validation (from OpenAPI spec).
+const KNOWN_RELEASE_CHANNELS: &[&str] = &["slow", "default", "fast"];
+
+/// Known compliance type values for client-side validation (from OpenAPI spec).
+const KNOWN_COMPLIANCE_TYPES: &[&str] = &["hipaa", "pci"];
+
+/// Known service profile values for client-side validation (from OpenAPI spec).
+const KNOWN_PROFILES: &[&str] = &[
+    "v1-default",
+    "v1-highmem-xs",
+    "v1-highmem-s",
+    "v1-highmem-m",
+    "v1-highmem-l",
+    "v1-highmem-xl",
+];
 
 /// Resolve org ID from explicit arg or auto-detect
 async fn resolve_org_id(
@@ -27,7 +84,10 @@ async fn resolve_service(
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
-            let matches: Vec<_> = services.into_iter().filter(|s| s.name == name).collect();
+            let matches: Vec<_> = services
+                .into_iter()
+                .filter(|s| s.name == name)
+                .collect();
             match matches.len() {
                 0 => Err(format!("no service found with name '{}'", name).into()),
                 1 => Ok(matches.into_iter().next().unwrap()),
@@ -44,21 +104,35 @@ async fn resolve_service(
     }
 }
 
-fn parse_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Error>>
-where
-    T: FromStr<Err = String>,
-{
-    T::from_str(value).map_err(|err| format!("invalid {}: {}", field, err).into())
+/// Parse a string into a library enum via serde deserialization, with client-side
+/// validation against a known-values list. Library enums have an `Unknown(String)`
+/// catch-all that prevents serde from ever failing, so we validate first.
+fn parse_serde_enum<T: serde::de::DeserializeOwned>(
+    value: &str,
+    field: &str,
+    known_values: &[&str],
+) -> Result<T, Box<dyn std::error::Error>> {
+    if !known_values.contains(&value) {
+        return Err(format!(
+            "invalid {}: unknown value '{}', expected one of: {}",
+            field,
+            value,
+            known_values.join(", ")
+        )
+        .into());
+    }
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|e| format!("invalid {}: {}", field, e).into())
 }
 
-fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
+fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
     match value.split_once('=') {
         Some((key, tag_value)) => {
             let key = key.trim();
             if key.is_empty() {
                 Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
             } else {
-                Ok(ResourceTag {
+                Ok(ResourceTagsV1 {
                     key: key.to_string(),
                     value: Some(tag_value.to_string()),
                 })
@@ -69,7 +143,7 @@ fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
             if key.is_empty() {
                 Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
             } else {
-                Ok(ResourceTag {
+                Ok(ResourceTagsV1 {
                     key: key.to_string(),
                     value: None,
                 })
@@ -78,7 +152,9 @@ fn parse_tag(value: &str) -> Result<ResourceTag, Box<dyn std::error::Error>> {
     }
 }
 
-fn parse_tags(values: &[String]) -> Result<Option<Vec<ResourceTag>>, Box<dyn std::error::Error>> {
+fn parse_tags(
+    values: &[String],
+) -> Result<Option<Vec<ResourceTagsV1>>, Box<dyn std::error::Error>> {
     if values.is_empty() {
         Ok(None)
     } else {
@@ -91,11 +167,11 @@ fn parse_tags(values: &[String]) -> Result<Option<Vec<ResourceTag>>, Box<dyn std
     }
 }
 
-fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessEntry>> {
+fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
     (!values.is_empty()).then(|| {
         values
             .iter()
-            .map(|value| IpAccessEntry {
+            .map(|value| IpAccessListEntry {
                 source: value.clone(),
                 description: None,
             })
@@ -103,13 +179,16 @@ fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessEntry>> {
     })
 }
 
-fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAccessListPatch> {
+fn parse_ip_access_list_patch(
+    add: &[String],
+    remove: &[String],
+) -> Option<IpAccessListPatch> {
     let patch = IpAccessListPatch {
-        add: parse_ip_access_entries(add),
-        remove: parse_ip_access_entries(remove),
+        add: parse_ip_access_entries(add).unwrap_or_default(),
+        remove: parse_ip_access_entries(remove).unwrap_or_default(),
     };
 
-    (patch.add.is_some() || patch.remove.is_some()).then_some(patch)
+    (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
 }
 
 fn parse_private_endpoint_ids_patch(
@@ -117,11 +196,11 @@ fn parse_private_endpoint_ids_patch(
     remove: &[String],
 ) -> Option<InstancePrivateEndpointsPatch> {
     let patch = InstancePrivateEndpointsPatch {
-        add: (!add.is_empty()).then(|| add.to_vec()),
-        remove: (!remove.is_empty()).then(|| remove.to_vec()),
+        add: if add.is_empty() { vec![] } else { add.to_vec() },
+        remove: if remove.is_empty() { vec![] } else { remove.to_vec() },
     };
 
-    (patch.add.is_some() || patch.remove.is_some()).then_some(patch)
+    (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
 }
 
 fn parse_service_endpoint_changes(
@@ -132,14 +211,22 @@ fn parse_service_endpoint_changes(
 
     for protocol in enable {
         changes.push(ServiceEndpointChange {
-            protocol: parse_enum(protocol, "endpoint")?,
+            protocol: parse_serde_enum::<ServiceEndpointChangeProtocol>(
+                protocol,
+                "endpoint",
+                &["mysql"],
+            )?,
             enabled: true,
         });
     }
 
     for protocol in disable {
         changes.push(ServiceEndpointChange {
-            protocol: parse_enum(protocol, "endpoint")?,
+            protocol: parse_serde_enum::<ServiceEndpointChangeProtocol>(
+                protocol,
+                "endpoint",
+                &["mysql"],
+            )?,
             enabled: false,
         });
     }
@@ -152,21 +239,21 @@ fn parse_instance_tags_patch(
     remove: &[String],
 ) -> Result<Option<InstanceTagsPatch>, Box<dyn std::error::Error>> {
     let patch = InstanceTagsPatch {
-        add: parse_tags(add)?,
-        remove: parse_tags(remove)?,
+        add: parse_tags(add)?.unwrap_or_default(),
+        remove: parse_tags(remove)?.unwrap_or_default(),
     };
 
-    Ok((patch.add.is_some() || patch.remove.is_some()).then_some(patch))
+    Ok((!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch))
 }
 
 fn parse_org_private_endpoint_remove(
     value: &str,
 ) -> Result<OrganizationPatchPrivateEndpoint, Box<dyn std::error::Error>> {
     let mut endpoint = OrganizationPatchPrivateEndpoint {
-        id: None,
+        id: String::new(),
         description: None,
-        cloud_provider: None,
-        region: None,
+        cloud_provider: OrganizationPatchPrivateEndpointCloudprovider::default(),
+        region: OrganizationPatchPrivateEndpointRegion::default(),
     };
 
     for (index, part) in value.split(',').enumerate() {
@@ -176,7 +263,7 @@ fn parse_org_private_endpoint_remove(
         }
 
         if index == 0 && !part.contains('=') {
-            endpoint.id = Some(part.to_string());
+            endpoint.id = part.to_string();
             continue;
         }
 
@@ -185,12 +272,22 @@ fn parse_org_private_endpoint_remove(
             .ok_or_else(|| format!("invalid remove-private-endpoint segment '{}'", part))?;
 
         match key {
-            "id" => endpoint.id = Some(raw_value.to_string()),
+            "id" => endpoint.id = raw_value.to_string(),
             "description" => endpoint.description = Some(raw_value.to_string()),
             "cloud-provider" => {
-                endpoint.cloud_provider = Some(parse_enum(raw_value, "cloud_provider")?)
+                endpoint.cloud_provider =
+                    serde_json::from_value::<OrganizationPatchPrivateEndpointCloudprovider>(
+                        serde_json::Value::String(raw_value.to_string()),
+                    )
+                    .expect("enum with Unknown variant should always deserialize");
             }
-            "region" => endpoint.region = Some(parse_enum(raw_value, "region")?),
+            "region" => {
+                endpoint.region =
+                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
+                        serde_json::Value::String(raw_value.to_string()),
+                    )
+                    .expect("enum with Unknown variant should always deserialize");
+            }
             _ => {
                 return Err(format!(
                     "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
@@ -217,7 +314,8 @@ fn parse_org_private_endpoints_patch(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Some(OrganizationPrivateEndpointsPatch {
-        remove: Some(endpoints),
+        add: vec![],
+        remove: endpoints,
     }))
 }
 
@@ -225,19 +323,85 @@ fn parse_api_key_hash_data(
     key_id_hash: Option<&str>,
     key_id_suffix: Option<&str>,
     key_secret_hash: Option<&str>,
-) -> Result<Option<ApiKeyHashData>, Box<dyn std::error::Error>> {
+) -> Result<Option<clickhouse_cloud_api::models::ApiKeyHashData>, Box<dyn std::error::Error>> {
     match (key_id_hash, key_id_suffix, key_secret_hash) {
         (None, None, None) => Ok(None),
-        (Some(key_id_hash), Some(key_id_suffix), Some(key_secret_hash)) => Ok(Some(ApiKeyHashData {
-            key_id_hash: key_id_hash.to_string(),
-            key_id_suffix: key_id_suffix.to_string(),
-            key_secret_hash: key_secret_hash.to_string(),
-        })),
+        (Some(key_id_hash), Some(key_id_suffix), Some(key_secret_hash)) => {
+            Ok(Some(clickhouse_cloud_api::models::ApiKeyHashData {
+                key_id_hash: key_id_hash.to_string(),
+                key_id_suffix: key_id_suffix.to_string(),
+                key_secret_hash: key_secret_hash.to_string(),
+            }))
+        }
         _ => Err(
             "pre-hashed API key input requires --hash-key-id, --hash-key-id-suffix, and --hash-key-secret together"
                 .into(),
         ),
     }
+}
+
+fn parse_ip_access_entries_lib(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
+    (!values.is_empty()).then(|| {
+        values
+            .iter()
+            .map(|value| IpAccessListEntry {
+                source: value.clone(),
+                description: None,
+            })
+            .collect()
+    })
+}
+
+fn parse_uuid_list(values: &[String], field: &str) -> Result<Vec<uuid::Uuid>, Box<dyn std::error::Error>> {
+    values
+        .iter()
+        .map(|s| {
+            uuid::Uuid::parse_str(s)
+                .map_err(|e| format!("invalid {} UUID '{}': {}", field, s, e).into())
+        })
+        .collect()
+}
+
+fn parse_api_key_state_post(
+    value: &str,
+) -> Result<ApiKeyPostRequestState, Box<dyn std::error::Error>> {
+    match value {
+        "enabled" => Ok(ApiKeyPostRequestState::Enabled),
+        "disabled" => Ok(ApiKeyPostRequestState::Disabled),
+        _ => Err(format!(
+            "invalid state: unknown value '{}', expected one of: enabled, disabled",
+            value
+        )
+        .into()),
+    }
+}
+
+fn parse_api_key_state_patch(
+    value: &str,
+) -> Result<ApiKeyPatchRequestState, Box<dyn std::error::Error>> {
+    match value {
+        "enabled" => Ok(ApiKeyPatchRequestState::Enabled),
+        "disabled" => Ok(ApiKeyPatchRequestState::Disabled),
+        _ => Err(format!(
+            "invalid state: unknown value '{}', expected one of: enabled, disabled",
+            value
+        )
+        .into()),
+    }
+}
+
+fn parse_expire_at(
+    value: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, Box<dyn std::error::Error>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| {
+            format!(
+                "invalid expire_at '{}': expected ISO 8601 / RFC 3339 format (e.g. 2025-12-31T23:59:59Z): {}",
+                value, e
+            )
+            .into()
+        })
 }
 
 pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -260,8 +424,8 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
         let rows: Vec<Row> = orgs
             .into_iter()
             .map(|o| Row {
-                name: o.name,
-                id: o.id,
+                name: o.name.clone(),
+                id: o.id.to_string(),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -281,9 +445,7 @@ pub async fn org_get(
     } else {
         println!("Organization: {}", org.name);
         println!("  ID: {}", org.id);
-        if let Some(created) = org.created_at {
-            println!("  Created: {}", created);
-        }
+        println!("  Created: {}", org.created_at.to_rfc3339());
     }
     Ok(())
 }
@@ -329,13 +491,14 @@ pub async fn service_list(
             .map(|svc| {
                 let endpoint = svc
                     .endpoints
-                    .as_ref()
-                    .and_then(|eps| eps.first())
-                    .map(|e| format!("{}:{}", e.host, e.port))
+                    .first()
+                    .map(|e| {
+                        format!("{}:{}", e.host, e.port)
+                    })
                     .unwrap_or_else(|| "-".to_string());
                 Row {
-                    name: svc.name,
-                    id: svc.id,
+                    name: svc.name.clone(),
+                    id: svc.id.to_string(),
                     state: svc.state.to_string(),
                     provider: svc.provider.to_string(),
                     region: svc.region.to_string(),
@@ -366,21 +529,22 @@ pub async fn service_get(
         println!("  State: {}", svc.state);
         println!("  Provider: {}", svc.provider);
         println!("  Region: {}", svc.region);
-        if let Some(tier) = &svc.tier {
-            println!("  Tier: {}", tier);
-        }
-        if let Some(idle) = svc.idle_scaling {
-            println!("  Idle Scaling: {}", idle);
-        }
-        if let Some(endpoints) = &svc.endpoints {
+        println!("  Tier: {}", svc.tier);
+        println!("  Idle Scaling: {}", svc.idle_scaling);
+        if !svc.endpoints.is_empty() {
             println!("  Endpoints:");
-            for ep in endpoints {
-                println!("    {} - {}:{}", ep.protocol, ep.host, ep.port);
+            for ep in &svc.endpoints {
+                println!(
+                    "    {} - {}:{}",
+                    ep.protocol,
+                    ep.host,
+                    ep.port
+                );
             }
         }
-        if let Some(ip_list) = &svc.ip_access_list {
+        if !svc.ip_access_list.is_empty() {
             println!("  IP Access List:");
-            for ip in ip_list {
+            for ip in &svc.ip_access_list {
                 let desc = ip.description.as_deref().unwrap_or("");
                 println!("    {} {}", ip.source, desc);
             }
@@ -490,58 +654,86 @@ pub struct BackupConfigUpdateOptions {
 
 fn build_create_service_request(
     opts: &CreateServiceOptions,
-) -> Result<CreateServiceRequest, Box<dyn std::error::Error>> {
+) -> Result<ServicePostRequest, Box<dyn std::error::Error>> {
     let ip_access_list = if opts.ip_allow.is_empty() {
-        Some(vec![IpAccessEntry {
+        vec![IpAccessListEntry {
             source: "0.0.0.0/0".to_string(),
             description: Some("Allow all (created by clickhousectl)".to_string()),
-        }])
+        }]
     } else {
-        parse_ip_access_entries(&opts.ip_allow)
+        parse_ip_access_entries(&opts.ip_allow).unwrap_or_default()
     };
 
-    Ok(CreateServiceRequest {
+    Ok(ServicePostRequest {
         name: opts.name.clone(),
-        provider: parse_enum(&opts.provider, "provider")?,
-        region: parse_enum(&opts.region, "region")?,
+        provider: parse_serde_enum::<ServicePostRequestProvider>(
+            &opts.provider,
+            "provider",
+            KNOWN_PROVIDERS,
+        )?,
+        region: parse_serde_enum::<ServicePostRequestRegion>(
+            &opts.region,
+            "region",
+            KNOWN_REGIONS,
+        )?,
         ip_access_list,
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
         num_replicas: opts.num_replicas.map(f64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
-        backup_id: opts.backup_id.clone(),
-        release_channel: opts
-            .release_channel
+        backup_id: opts
+            .backup_id
             .as_deref()
-            .map(|value| parse_enum(value, "release_channel"))
-            .transpose()?,
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|e| format!("invalid backup_id: {}", e))?,
+        release_channel: match opts.release_channel.as_deref() {
+            Some(value) => Some(parse_serde_enum::<ServicePostRequestReleasechannel>(
+                value,
+                "release_channel",
+                KNOWN_RELEASE_CHANNELS,
+            )?),
+            None => None,
+        },
         tags: parse_tags(&opts.tags)?,
         data_warehouse_id: opts.data_warehouse_id.clone(),
-        is_readonly: opts.is_readonly.then_some(true),
+        is_readonly: if opts.is_readonly { Some(true) } else { None },
         encryption_key: opts.encryption_key.clone(),
         encryption_assumed_role_identifier: opts.encryption_role.clone(),
-        has_transparent_data_encryption: opts.enable_tde.then_some(true),
-        compliance_type: opts
-            .compliance_type
-            .as_deref()
-            .map(|value| parse_enum(value, "compliance_type"))
-            .transpose()?,
-        profile: opts
-            .profile
-            .as_deref()
-            .map(|value| parse_enum(value, "profile"))
-            .transpose()?,
-        private_preview_terms_checked: opts.private_preview_terms_checked.then_some(true),
+        has_transparent_data_encryption: if opts.enable_tde { Some(true) } else { None },
+        compliance_type: match opts.compliance_type.as_deref() {
+            Some(value) => Some(parse_serde_enum::<ServicePostRequestCompliancetype>(
+                value,
+                "compliance_type",
+                KNOWN_COMPLIANCE_TYPES,
+            )?),
+            None => None,
+        },
+        profile: match opts.profile.as_deref() {
+            Some(value) => Some(parse_serde_enum::<ServicePostRequestProfile>(
+                value,
+                "profile",
+                KNOWN_PROFILES,
+            )?),
+            None => None,
+        },
+        private_preview_terms_checked: if opts.private_preview_terms_checked { Some(true) } else { None },
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
+        // Fields not exposed in CLI
+        byoc_id: None,
+        max_total_memory_gb: None,
+        min_total_memory_gb: None,
+        private_endpoint_ids: None,
+        tier: None,
     })
 }
 
 fn build_update_service_request(
     opts: &ServiceUpdateOptions,
-) -> Result<UpdateServiceRequest, Box<dyn std::error::Error>> {
-    Ok(UpdateServiceRequest {
+) -> Result<ServicePatchRequest, Box<dyn std::error::Error>> {
+    Ok(ServicePatchRequest {
         name: opts.name.clone(),
         ip_access_list: parse_ip_access_list_patch(&opts.add_ip_allow, &opts.remove_ip_allow),
         private_endpoint_ids: parse_private_endpoint_ids_patch(
@@ -551,7 +743,13 @@ fn build_update_service_request(
         release_channel: opts
             .release_channel
             .as_deref()
-            .map(|value| parse_enum(value, "release_channel"))
+            .map(|value| {
+                parse_serde_enum::<ServicePatchRequestReleasechannel>(
+                    value,
+                    "release_channel",
+                    KNOWN_RELEASE_CHANNELS,
+                )
+            })
             .transpose()?,
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         transparent_data_encryption_key_id: opts.transparent_data_encryption_key_id.clone(),
@@ -571,18 +769,18 @@ fn build_service_password_patch_request(
 
 fn build_query_endpoint_create_request(
     opts: &QueryEndpointCreateOptions,
-) -> CreateQueryEndpointRequest {
-    CreateQueryEndpointRequest {
-        roles: (!opts.roles.is_empty()).then(|| opts.roles.clone()),
-        open_api_keys: (!opts.open_api_keys.is_empty()).then(|| opts.open_api_keys.clone()),
-        allowed_origins: opts.allowed_origins.clone(),
+) -> InstanceServiceQueryApiEndpointsPostRequest {
+    InstanceServiceQueryApiEndpointsPostRequest {
+        roles: opts.roles.clone(),
+        open_api_keys: opts.open_api_keys.clone(),
+        allowed_origins: opts.allowed_origins.clone().unwrap_or_default(),
     }
 }
 
 fn build_org_update_request(
     opts: &OrgUpdateOptions,
-) -> Result<UpdateOrgRequest, Box<dyn std::error::Error>> {
-    Ok(UpdateOrgRequest {
+) -> Result<OrganizationPatchRequest, Box<dyn std::error::Error>> {
+    Ok(OrganizationPatchRequest {
         name: opts.name.clone(),
         private_endpoints: parse_org_private_endpoints_patch(&opts.remove_private_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
@@ -591,45 +789,58 @@ fn build_org_update_request(
 
 fn build_api_key_create_request(
     opts: &KeyCreateOptions,
-) -> Result<CreateApiKeyRequest, Box<dyn std::error::Error>> {
-    Ok(CreateApiKeyRequest {
+) -> Result<ApiKeyPostRequest, Box<dyn std::error::Error>> {
+    Ok(ApiKeyPostRequest {
         name: opts.name.clone(),
-        expire_at: opts.expires_at.clone(),
-        state: opts
-            .state
+        expire_at: opts
+            .expires_at
             .as_deref()
-            .map(|value| parse_enum(value, "state"))
+            .map(parse_expire_at)
             .transpose()?,
-        assigned_role_ids: (!opts.role_ids.is_empty()).then(|| opts.role_ids.clone()),
-        ip_access_list: parse_ip_access_entries(&opts.ip_allow),
+        state: match opts.state.as_deref() {
+            Some(value) => parse_api_key_state_post(value)?,
+            None => ApiKeyPostRequestState::default(),
+        },
+        assigned_role_ids: parse_uuid_list(&opts.role_ids, "role_id")?,
+        ip_access_list: parse_ip_access_entries_lib(&opts.ip_allow).unwrap_or_default(),
         hash_data: parse_api_key_hash_data(
             opts.hash_key_id.as_deref(),
             opts.hash_key_id_suffix.as_deref(),
             opts.hash_key_secret.as_deref(),
-        )?,
+        )?.unwrap_or_default(),
+        roles: vec![],
     })
 }
 
 fn build_api_key_update_request(
     opts: &KeyUpdateOptions,
-) -> Result<UpdateApiKeyRequest, Box<dyn std::error::Error>> {
-    Ok(UpdateApiKeyRequest {
+) -> Result<ApiKeyPatchRequest, Box<dyn std::error::Error>> {
+    Ok(ApiKeyPatchRequest {
         name: opts.name.clone(),
-        assigned_role_ids: (!opts.role_ids.is_empty()).then(|| opts.role_ids.clone()),
-        expire_at: opts.expires_at.clone(),
+        assigned_role_ids: if opts.role_ids.is_empty() {
+            None
+        } else {
+            Some(parse_uuid_list(&opts.role_ids, "role_id")?)
+        },
+        expire_at: opts
+            .expires_at
+            .as_deref()
+            .map(parse_expire_at)
+            .transpose()?,
         state: opts
             .state
             .as_deref()
-            .map(|value| parse_enum(value, "state"))
+            .map(parse_api_key_state_patch)
             .transpose()?,
-        ip_access_list: parse_ip_access_entries(&opts.ip_allow),
+        ip_access_list: parse_ip_access_entries_lib(&opts.ip_allow),
+        roles: None,
     })
 }
 
 fn build_backup_config_update_request(
     opts: &BackupConfigUpdateOptions,
-) -> UpdateBackupConfigRequest {
-    UpdateBackupConfigRequest {
+) -> BackupConfigurationPatchRequest {
+    BackupConfigurationPatchRequest {
         backup_period_in_hours: opts.backup_period_hours.map(f64::from),
         backup_retention_period_in_hours: opts.backup_retention_period_hours.map(f64::from),
         backup_start_time: opts.backup_start_time.clone(),
@@ -651,32 +862,27 @@ pub async fn service_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
+        let svc = response.service;
+        let password = response.password;
+
         println!("Service created successfully!");
         println!();
-        println!("Service: {}", response.service.name);
-        println!("  ID: {}", response.service.id);
-        println!("  State: {}", response.service.state);
-        println!("  Provider: {}", response.service.provider);
-        println!("  Region: {}", response.service.region);
-        if let Some(replicas) = response.service.num_replicas {
-            println!("  Replicas: {}", replicas);
-        }
-        if let Some(min_mem) = response.service.min_replica_memory_gb {
-            println!("  Min Memory/Replica: {} GB", min_mem);
-        }
-        if let Some(max_mem) = response.service.max_replica_memory_gb {
-            println!("  Max Memory/Replica: {} GB", max_mem);
-        }
-        if let Some(endpoints) = &response.service.endpoints
-            && let Some(ep) = endpoints.first()
-        {
+        println!("Service: {}", svc.name);
+        println!("  ID: {}", svc.id);
+        println!("  State: {}", svc.state);
+        println!("  Provider: {}", svc.provider);
+        println!("  Region: {}", svc.region);
+        println!("  Replicas: {}", svc.num_replicas);
+        println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
+        println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
+        if let Some(ep) = svc.endpoints.first() {
             println!("  Host: {}", ep.host);
             println!("  Port: {}", ep.port);
         }
         println!();
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
-        println!("  Password: {}", response.password);
+        println!("  Password: {}", password);
     }
     Ok(())
 }
@@ -696,7 +902,7 @@ pub async fn service_delete(
         if matches!(state.as_str(), "running" | "idle" | "starting") {
             eprintln!("Stopping service {} before deletion...", service_id);
             client
-                .change_service_state(&org_id, service_id, ServiceStateCommand::Stop)
+                .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
                 .await?;
 
             // Poll until the service is stopped
@@ -737,13 +943,17 @@ pub async fn service_start(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
-        .change_service_state(&org_id, service_id, ServiceStateCommand::Start)
+        .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Start)
         .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} starting (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} starting (state: {})",
+            svc.name,
+            svc.state
+        );
     }
     Ok(())
 }
@@ -757,13 +967,17 @@ pub async fn service_stop(
     let org_id = resolve_org_id(client, org_id).await?;
 
     let svc = client
-        .change_service_state(&org_id, service_id, ServiceStateCommand::Stop)
+        .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
         .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} stopping (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} stopping (state: {})",
+            svc.name,
+            svc.state
+        );
     }
     Ok(())
 }
@@ -799,12 +1013,10 @@ pub async fn backup_list(
         let rows: Vec<Row> = backups
             .into_iter()
             .map(|b| Row {
-                id: b.id,
+                id: b.id.to_string(),
                 status: b.status.to_string(),
-                size: b.size_in_bytes
-                    .map(format_bytes)
-                    .unwrap_or_else(|| "-".to_string()),
-                created: b.started_at.unwrap_or_else(|| "-".to_string()),
+                size: format_bytes(b.size_in_bytes),
+                created: b.started_at.to_rfc3339(),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -828,15 +1040,9 @@ pub async fn backup_get(
     } else {
         println!("Backup: {}", backup.id);
         println!("  Status: {}", backup.status);
-        if let Some(created) = &backup.started_at {
-            println!("  Created: {}", created);
-        }
-        if let Some(finished) = &backup.finished_at {
-            println!("  Finished: {}", finished);
-        }
-        if let Some(size) = backup.size_in_bytes {
-            println!("  Size: {}", format_bytes(size));
-        }
+        println!("  Created: {}", backup.started_at.to_rfc3339());
+        println!("  Finished: {}", backup.finished_at.to_rfc3339());
+        println!("  Size: {}", format_bytes(backup.size_in_bytes));
     }
     Ok(())
 }
@@ -913,7 +1119,7 @@ pub async fn service_scale(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
-    let request = ReplicaScalingRequest {
+    let request = ServiceReplicaScalingPatchRequest {
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
         num_replicas: opts.num_replicas.map(f64::from),
@@ -929,15 +1135,9 @@ pub async fn service_scale(
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
         println!("Service {} scaling updated", svc.name);
-        if let Some(min) = svc.min_replica_memory_gb {
-            println!("  Min Memory/Replica: {} GB", min);
-        }
-        if let Some(max) = svc.max_replica_memory_gb {
-            println!("  Max Memory/Replica: {} GB", max);
-        }
-        if let Some(n) = svc.num_replicas {
-            println!("  Replicas: {}", n);
-        }
+        println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
+        println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
+        println!("  Replicas: {}", svc.num_replicas);
     }
     Ok(())
 }
@@ -956,10 +1156,10 @@ pub async fn service_reset_password(
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("Password reset for service {}", service_id);
-        if let Some(password) = resp.password {
-            println!("  New password: {}", password);
-        } else {
+        if resp.password.is_empty() {
             println!("  Password hash updated; no plaintext password returned");
+        } else {
+            println!("  New password: {}", resp.password);
         }
     }
     Ok(())
@@ -979,18 +1179,10 @@ pub async fn query_endpoint_get(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Query endpoint for service {}", service_id);
-        if let Some(id) = &ep.id {
-            println!("  ID: {}", id);
-        }
-        if let Some(roles) = &ep.roles {
-            println!("  Roles: {}", roles.join(", "));
-        }
-        if let Some(keys) = &ep.open_api_keys {
-            println!("  OpenAPI Keys: {}", keys.join(", "));
-        }
-        if let Some(origins) = &ep.allowed_origins {
-            println!("  Allowed Origins: {}", origins);
-        }
+        println!("  ID: {}", ep.id);
+        println!("  Roles: {}", ep.roles.join(", "));
+        println!("  OpenAPI Keys: {}", ep.open_api_keys.join(", "));
+        println!("  Allowed Origins: {}", ep.allowed_origins);
     }
     Ok(())
 }
@@ -1012,12 +1204,8 @@ pub async fn query_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Query endpoint created for service {}", service_id);
-        if let Some(id) = &ep.id {
-            println!("  ID: {}", id);
-        }
-        if let Some(roles) = &ep.roles {
-            println!("  Roles: {}", roles.join(", "));
-        }
+        println!("  ID: {}", ep.id);
+        println!("  Roles: {}", ep.roles.join(", "));
     }
     Ok(())
 }
@@ -1026,11 +1214,16 @@ pub async fn query_endpoint_delete(
     client: &CloudClient,
     service_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_query_endpoint(&org_id, service_id).await?;
-    println!("Query endpoint deleted for service {}", service_id);
+    let response = client.delete_query_endpoint(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Query endpoint deleted for service {}", service_id);
+    }
     Ok(())
 }
 
@@ -1044,9 +1237,9 @@ pub async fn private_endpoint_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let request = CreatePrivateEndpointRequest {
+    let request = ServicPrivateEndpointePostRequest {
         id: endpoint_id.to_string(),
-        description: description.map(String::from),
+        description: description.map(String::from).unwrap_or_default(),
     };
 
     let ep = client
@@ -1057,12 +1250,8 @@ pub async fn private_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Private endpoint created for service {}", service_id);
-        if let Some(id) = &ep.id {
-            println!("  Endpoint ID: {}", id);
-        }
-        if let Some(desc) = &ep.description {
-            println!("  Description: {}", desc);
-        }
+        println!("  Endpoint ID: {}", ep.id);
+        println!("  Description: {}", ep.description);
     }
     Ok(())
 }
@@ -1105,7 +1294,11 @@ pub async fn org_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!("Organization updated: {} ({})", org.name, org.id);
+        println!(
+            "Organization updated: {} ({})",
+            org.name,
+            org.id
+        );
     }
     Ok(())
 }
@@ -1150,43 +1343,31 @@ pub async fn org_usage(
     if json {
         println!("{}", serde_json::to_string_pretty(&usage)?);
     } else {
-        if let Some(total) = usage.grand_total_chc {
-            println!("Grand Total: {:.2} CHC", total);
-        }
-        if let Some(costs) = &usage.costs {
-            if costs.is_empty() {
-                println!("No usage cost records found");
-                return Ok(());
-            }
-
-            #[derive(Tabled)]
-            struct Row {
-                #[tabled(rename = "Entity")]
-                entity: String,
-                #[tabled(rename = "Date")]
-                date: String,
-                #[tabled(rename = "Total (CHC)")]
-                total: String,
-            }
-            let rows: Vec<Row> = costs
-                .iter()
-                .map(|cost| Row {
-                    entity: cost
-                        .entity_name
-                        .as_deref()
-                        .unwrap_or("-")
-                        .to_string(),
-                    date: cost.date.as_deref().unwrap_or("-").to_string(),
-                    total: cost
-                        .total_chc
-                        .map(|v| format!("{:.2}", v))
-                        .unwrap_or_else(|| "-".to_string()),
-                })
-                .collect();
-            println!("{}", Table::new(rows).with(Style::rounded()));
-        } else {
+        println!("Grand Total: {:.2} CHC", usage.grand_total_chc);
+        if usage.costs.is_empty() {
             println!("No usage cost records found");
+            return Ok(());
         }
+
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Entity")]
+            entity: String,
+            #[tabled(rename = "Date")]
+            date: String,
+            #[tabled(rename = "Total (CHC)")]
+            total: String,
+        }
+        let rows: Vec<Row> = usage
+            .costs
+            .iter()
+            .map(|cost| Row {
+                entity: cost.entity_name.clone(),
+                date: cost.date.clone(),
+                total: format!("{:.2}", cost.total_chc),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::rounded()));
     }
     Ok(())
 }
@@ -1225,10 +1406,10 @@ pub async fn member_list(
         let rows: Vec<Row> = members
             .into_iter()
             .map(|m| Row {
-                email: m.email,
-                user_id: m.user_id,
-                role: m.role.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string()),
-                name: m.name.unwrap_or_default(),
+                email: m.email.clone(),
+                user_id: m.user_id.clone(),
+                role: m.role.to_string(),
+                name: m.name.clone(),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1251,13 +1432,9 @@ pub async fn member_get(
     } else {
         println!("Member: {}", member.email);
         println!("  User ID: {}", member.user_id);
-        println!("  Role: {}", member.role.as_deref().unwrap_or("-"));
-        if let Some(name) = &member.name {
-            println!("  Name: {}", name);
-        }
-        if let Some(joined) = &member.joined_at {
-            println!("  Joined: {}", joined);
-        }
+        println!("  Role: {}", member.role);
+        println!("  Name: {}", member.name);
+        println!("  Joined: {}", member.joined_at.to_rfc3339());
     }
     Ok(())
 }
@@ -1271,12 +1448,13 @@ pub async fn member_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let request = UpdateMemberRequest {
+    let request = clickhouse_cloud_api::models::MemberPatchRequest {
         assigned_role_ids: if role_ids.is_empty() {
             None
         } else {
             Some(role_ids.to_vec())
         },
+        role: None,
     };
 
     let member = client.update_member(&org_id, user_id, &request).await?;
@@ -1293,11 +1471,16 @@ pub async fn member_remove(
     client: &CloudClient,
     user_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_member(&org_id, user_id).await?;
-    println!("Member {} removed", user_id);
+    let response = client.delete_member(&org_id, user_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Member {} removed", user_id);
+    }
     Ok(())
 }
 
@@ -1335,10 +1518,10 @@ pub async fn invitation_list(
         let rows: Vec<Row> = invitations
             .into_iter()
             .map(|inv| Row {
-                email: inv.email,
-                id: inv.id,
-                role: inv.role.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string()),
-                expires: inv.expire_at.unwrap_or_else(|| "-".to_string()),
+                email: inv.email.clone(),
+                id: inv.id.to_string(),
+                role: inv.role.to_string(),
+                expires: inv.expire_at.to_rfc3339(),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1355,13 +1538,10 @@ pub async fn invitation_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    let request = CreateInvitationRequest {
+    let request = clickhouse_cloud_api::models::InvitationPostRequest {
         email: email.to_string(),
-        assigned_role_ids: if role_ids.is_empty() {
-            None
-        } else {
-            Some(role_ids.to_vec())
-        },
+        assigned_role_ids: role_ids.iter().map(|s| s.to_string()).collect(),
+        role: clickhouse_cloud_api::models::InvitationPostRequestRole::default(),
     };
 
     let inv = client.create_invitation(&org_id, &request).await?;
@@ -1369,7 +1549,11 @@ pub async fn invitation_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation sent to {} ({})", inv.email, inv.id);
+        println!(
+            "Invitation sent to {} ({})",
+            inv.email,
+            inv.id
+        );
     }
     Ok(())
 }
@@ -1389,13 +1573,9 @@ pub async fn invitation_get(
     } else {
         println!("Invitation: {}", inv.id);
         println!("  Email: {}", inv.email);
-        println!("  Role: {}", inv.role.as_deref().unwrap_or("-"));
-        if let Some(created) = &inv.created_at {
-            println!("  Created: {}", created);
-        }
-        if let Some(expires) = &inv.expire_at {
-            println!("  Expires: {}", expires);
-        }
+        println!("  Role: {}", inv.role);
+        println!("  Created: {}", inv.created_at.to_rfc3339());
+        println!("  Expires: {}", inv.expire_at.to_rfc3339());
     }
     Ok(())
 }
@@ -1404,11 +1584,16 @@ pub async fn invitation_delete(
     client: &CloudClient,
     invitation_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_invitation(&org_id, invitation_id).await?;
-    println!("Invitation {} deleted", invitation_id);
+    let response = client.delete_invitation(&org_id, invitation_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Invitation {} deleted", invitation_id);
+    }
     Ok(())
 }
 
@@ -1446,10 +1631,13 @@ pub async fn key_list(
         let rows: Vec<Row> = keys
             .into_iter()
             .map(|k| Row {
-                name: k.name,
-                id: k.id,
+                name: k.name.clone(),
+                id: k.id.to_string(),
                 state: k.state.to_string(),
-                expires: k.expire_at.unwrap_or_else(|| "never".to_string()),
+                expires: k
+                    .expire_at
+                    .map(|t| t.to_rfc3339())
+                    .unwrap_or_else(|| "never".into()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1474,13 +1662,13 @@ pub async fn key_create(
     } else {
         println!("API key created!");
         println!("  Name: {}", resp.key.name);
-        if let Some(key_id) = &resp.key_id {
-            println!("  Key ID: {}", key_id);
+        if !resp.key_id.is_empty() {
+            println!("  Key ID: {}", resp.key_id);
         }
-        if let Some(key_secret) = &resp.key_secret {
-            println!("  Key Secret: {}", key_secret);
+        if !resp.key_secret.is_empty() {
+            println!("  Key Secret: {}", resp.key_secret);
         }
-        if resp.key_id.is_some() || resp.key_secret.is_some() {
+        if !resp.key_id.is_empty() || !resp.key_secret.is_empty() {
             println!();
             println!("Save the key secret now — it will not be shown again.");
         } else {
@@ -1506,14 +1694,10 @@ pub async fn key_get(
         println!("API Key: {}", key.name);
         println!("  ID: {}", key.id);
         println!("  State: {}", key.state);
-        if let Some(roles) = &key.roles {
-            println!("  Roles: {}", roles.join(", "));
-        }
-        if let Some(created) = &key.created_at {
-            println!("  Created: {}", created);
-        }
+        println!("  Roles: {}", key.roles.join(", "));
+        println!("  Created: {}", key.created_at.to_rfc3339());
         if let Some(expires) = &key.expire_at {
-            println!("  Expires: {}", expires);
+            println!("  Expires: {}", expires.to_rfc3339());
         }
     }
     Ok(())
@@ -1546,11 +1730,16 @@ pub async fn key_delete(
     client: &CloudClient,
     key_id: &str,
     org_id: Option<&str>,
+    json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    client.delete_api_key(&org_id, key_id).await?;
-    println!("API key {} deleted", key_id);
+    let response = client.delete_api_key(&org_id, key_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("API key {} deleted", key_id);
+    }
     Ok(())
 }
 
@@ -1588,9 +1777,9 @@ pub async fn activity_list(
         let rows: Vec<Row> = activities
             .into_iter()
             .map(|a| Row {
-                id: a.id,
-                activity_type: a.activity_type.to_string(),
-                created: a.created_at.unwrap_or_else(|| "-".to_string()),
+                id: a.id.clone(),
+                activity_type: a.r#type.to_string(),
+                created: a.created_at.to_rfc3339(),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::rounded()));
@@ -1612,16 +1801,10 @@ pub async fn activity_get(
         println!("{}", serde_json::to_string_pretty(&activity)?);
     } else {
         println!("Activity: {}", activity.id);
-        println!("  Type: {}", activity.activity_type);
-        if let Some(actor_type) = &activity.actor_type {
-            println!("  Actor Type: {}", actor_type);
-        }
-        if let Some(actor_id) = &activity.actor_id {
-            println!("  Actor ID: {}", actor_id);
-        }
-        if let Some(created) = &activity.created_at {
-            println!("  Created: {}", created);
-        }
+        println!("  Type: {}", activity.r#type);
+        println!("  Actor Type: {}", activity.actor_type);
+        println!("  Actor ID: {}", activity.actor_id);
+        println!("  Created: {}", activity.created_at.to_rfc3339());
     }
     Ok(())
 }
@@ -1644,15 +1827,9 @@ pub async fn backup_config_get(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Backup configuration for service {}", service_id);
-        if let Some(hours) = config.backup_period_in_hours {
-            println!("  Backup period: {} hours", hours);
-        }
-        if let Some(hours) = config.backup_retention_period_in_hours {
-            println!("  Retention: {} hours", hours);
-        }
-        if let Some(time) = &config.backup_start_time {
-            println!("  Start time: {}", time);
-        }
+        println!("  Backup period: {} hours", config.backup_period_in_hours);
+        println!("  Retention: {} hours", config.backup_retention_period_in_hours);
+        println!("  Start time: {}", config.backup_start_time);
     }
     Ok(())
 }
@@ -1674,15 +1851,9 @@ pub async fn backup_config_update(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Backup configuration updated for service {}", service_id);
-        if let Some(hours) = config.backup_period_in_hours {
-            println!("  Backup period: {} hours", hours);
-        }
-        if let Some(hours) = config.backup_retention_period_in_hours {
-            println!("  Retention: {} hours", hours);
-        }
-        if let Some(time) = &config.backup_start_time {
-            println!("  Start time: {}", time);
-        }
+        println!("  Backup period: {} hours", config.backup_period_in_hours);
+        println!("  Retention: {} hours", config.backup_retention_period_in_hours);
+        println!("  Start time: {}", config.backup_start_time);
     }
     Ok(())
 }
@@ -1731,11 +1902,8 @@ pub async fn service_client(
     // Find the nativesecure endpoint
     let endpoint = svc
         .endpoints
-        .as_ref()
-        .and_then(|eps| {
-            eps.iter()
-                .find(|e| e.protocol == ServiceEndpointProtocol::NativeSecure)
-        })
+        .iter()
+        .find(|e| e.protocol == ServiceEndpointProtocol::Nativesecure)
         .ok_or_else(|| {
             format!(
                 "service '{}' has no nativesecure endpoint — is it running?",
@@ -1747,7 +1915,7 @@ pub async fn service_client(
     let port = endpoint.port as u16;
 
     // Determine which client version to use
-    let service_version = svc.clickhouse_version.as_deref();
+    let service_version = Some(svc.clickhouse_version.as_str());
     let version = if opts.allow_mismatched_client_version {
         // Try to use the local default version
         match version_manager::get_default_version() {
@@ -1778,12 +1946,16 @@ pub async fn service_client(
         return Err(format!("clickhouse binary not found at {}", binary.display()).into());
     }
 
+    // Extract name/id as strings for use in messages and API calls
+    let svc_name = &svc.name;
+    let svc_id = svc.id.to_string();
+
     // Resolve password: --generate-password > --password > env var > TTY prompt
     let password = if opts.generate_password {
-        eprintln!("Generating new password for service '{}'...", svc.name);
+        eprintln!("Generating new password for service '{}'...", svc_name);
         let request = ServicePasswordPatchRequest::default();
-        let resp = client.reset_password(&org_id, &svc.id, &request).await?;
-        let new_password = resp.password.ok_or("API did not return a password")?;
+        let resp = client.reset_password(&org_id, &svc_id, &request).await?;
+        let new_password = resp.password;
         // Wait in case of any delay in password propagation
         eprintln!("Waiting for password to propagate...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -1803,7 +1975,7 @@ pub async fn service_client(
     };
 
     // Build and exec the clickhouse-client command
-    eprintln!("Connecting to {} ({}:{})...", svc.name, host, port);
+    eprintln!("Connecting to {} ({}:{})...", svc_name, host, port);
 
     let mut cmd = std::process::Command::new(&binary);
     cmd.arg("client")
@@ -1889,7 +2061,7 @@ mod tests {
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(10),
             ip_allow: vec!["10.0.0.0/8".to_string()],
-            backup_id: Some("backup-1".to_string()),
+            backup_id: Some("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()),
             release_channel: Some("fast".to_string()),
             data_warehouse_id: Some("dw-1".to_string()),
             is_readonly: true,
@@ -1912,6 +2084,7 @@ mod tests {
         assert_eq!(json["endpoints"][0]["protocol"], "mysql");
         assert_eq!(json["privatePreviewTermsChecked"], true);
         assert_eq!(json["enableCoreDumps"], true);
+        // Fields not exposed in CLI are omitted from the JSON
         assert!(json.get("byocId").is_none());
     }
 
@@ -2046,7 +2219,7 @@ mod tests {
     fn build_api_key_requests_support_hashes_and_ip_allowlists() {
         let create_opts = KeyCreateOptions {
             name: "ci-key".to_string(),
-            role_ids: vec!["role-1".to_string()],
+            role_ids: vec!["a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()],
             expires_at: Some("2025-12-31T23:59:59Z".to_string()),
             state: Some("enabled".to_string()),
             ip_allow: vec!["10.0.0.0/8".to_string()],
@@ -2059,10 +2232,14 @@ mod tests {
         let create_json = serde_json::to_value(&create_request).unwrap();
         assert_eq!(create_json["hashData"]["keyIdHash"], "id-hash");
         assert_eq!(create_json["ipAccessList"][0]["source"], "10.0.0.0/8");
+        assert_eq!(
+            create_json["assignedRoleIds"][0],
+            "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"
+        );
 
         let update_opts = KeyUpdateOptions {
             name: Some("renamed".to_string()),
-            role_ids: vec!["role-1".to_string()],
+            role_ids: vec!["a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()],
             expires_at: Some("2025-01-01T00:00:00Z".to_string()),
             state: Some("disabled".to_string()),
             ip_allow: vec!["0.0.0.0/0".to_string()],
@@ -2073,6 +2250,36 @@ mod tests {
         assert_eq!(update_json["expireAt"], "2025-01-01T00:00:00Z");
         assert_eq!(update_json["state"], "disabled");
         assert_eq!(update_json["ipAccessList"][0]["source"], "0.0.0.0/0");
+    }
+
+    #[test]
+    fn build_api_key_create_request_rejects_invalid_uuid() {
+        let opts = KeyCreateOptions {
+            name: "ci-key".to_string(),
+            role_ids: vec!["not-a-uuid".to_string()],
+            ..Default::default()
+        };
+        let err = build_api_key_create_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("not-a-uuid"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_api_key_create_request_rejects_invalid_expire_at() {
+        let opts = KeyCreateOptions {
+            name: "ci-key".to_string(),
+            expires_at: Some("next-tuesday".to_string()),
+            ..Default::default()
+        };
+        let err = build_api_key_create_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("next-tuesday"),
+            "error should mention the bad value: {}",
+            err
+        );
     }
 
     #[test]
