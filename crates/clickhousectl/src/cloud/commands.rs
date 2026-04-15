@@ -722,7 +722,7 @@ fn build_create_service_request(
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?.unwrap_or_default(),
         enable_core_dumps: opts.enable_core_dumps.unwrap_or_default(),
         // Fields not exposed in CLI
-        byoc_id: String::new(),
+        byoc_id: None,
         max_total_memory_gb: 0.0,
         min_total_memory_gb: 0.0,
         private_endpoint_ids: vec![],
@@ -2084,8 +2084,8 @@ mod tests {
         assert_eq!(json["endpoints"][0]["protocol"], "mysql");
         assert_eq!(json["privatePreviewTermsChecked"], true);
         assert_eq!(json["enableCoreDumps"], true);
-        // Fields not exposed in CLI get default values (not absent)
-        assert_eq!(json["byocId"], "");
+        // Fields not exposed in CLI are omitted from the JSON
+        assert!(json.get("byocId").is_none());
     }
 
     #[test]

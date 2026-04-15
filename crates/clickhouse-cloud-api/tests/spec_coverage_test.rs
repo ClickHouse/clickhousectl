@@ -276,6 +276,10 @@ async fn struct_fields_cover_every_live_spec_property() {
 /// the test will confirm the fix by passing without it.
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // Spec says required, but the API rejects empty strings with:
+    //   "BAD_REQUEST: request body.byocId: Invalid uuid"
+    // The field is only meaningful when creating a BYOC service.
+    ("ServicePostRequest", "byocId"),
+    // Spec says required, but the API rejects empty strings with:
     //   "BAD_REQUEST: request body.dataWarehouseId: Invalid data warehouse id"
     // The field is only meaningful when creating a service inside a data warehouse.
     ("ServicePostRequest", "dataWarehouseId"),

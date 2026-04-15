@@ -10449,8 +10449,8 @@ pub struct ServicePatchRequest {
 pub struct ServicePostRequest {
     #[serde(rename = "backupId", skip_serializing_if = "Option::is_none", default)]
     pub backup_id: Option<uuid::Uuid>,
-    #[serde(rename = "byocId", default)]
-    pub byoc_id: String,
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none", default)]
+    pub byoc_id: Option<String>,
     #[serde(rename = "complianceType", default)]
     pub compliance_type: ServicePostRequestCompliancetype,
     #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none", default)]
