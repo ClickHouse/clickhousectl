@@ -13,6 +13,7 @@ use clap::Parser;
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
     CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
+    PostgresCertsCommands, PostgresCommands, PostgresConfigCommands, PostgresReadReplicaCommands,
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
 };
 use clap::error::ErrorKind;
@@ -796,7 +797,221 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 .await
             }
         },
+        CloudCommands::Postgres { command } => run_postgres(&client, command, json).await,
     };
 
     result.map_err(|e| Error::Cloud(e.to_string()))
+}
+
+async fn run_postgres(
+    client: &CloudClient,
+    command: PostgresCommands,
+    json: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::PostgresServiceSetStateCommand;
+    use cloud::postgres::{
+        self as pg, PostgresCreateOptions, PostgresReadReplicaOptions, PostgresRestoreOptions,
+        PostgresUpdateOptions,
+    };
+
+    match command {
+        PostgresCommands::List { org_id, filter } => {
+            pg::postgres_list(client, org_id.as_deref(), &filter, json).await
+        }
+        PostgresCommands::Get {
+            postgres_id,
+            org_id,
+        } => pg::postgres_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Create {
+            name,
+            region,
+            size,
+            storage_gb,
+            provider,
+            pg_version,
+            ha_type,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        } => {
+            let opts = PostgresCreateOptions {
+                name: &name,
+                region: &region,
+                size: &size,
+                storage_gb,
+                provider: &provider,
+                pg_version: pg_version.as_deref(),
+                ha_type: ha_type.as_deref(),
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_create(client, opts, json).await
+        }
+        PostgresCommands::Update {
+            postgres_id,
+            name,
+            region,
+            size,
+            storage_gb,
+            provider,
+            pg_version,
+            ha_type,
+            add_tag,
+            remove_tag,
+            org_id,
+        } => {
+            let opts = PostgresUpdateOptions {
+                name: name.as_deref(),
+                region: region.as_deref(),
+                size: size.as_deref(),
+                storage_gb,
+                provider: provider.as_deref(),
+                pg_version: pg_version.as_deref(),
+                ha_type: ha_type.as_deref(),
+                add_tag: &add_tag,
+                remove_tag: &remove_tag,
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_update(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Delete {
+            postgres_id,
+            org_id,
+        } => pg::postgres_delete(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Certs(PostgresCertsCommands::Get {
+            postgres_id,
+            output,
+            org_id,
+        }) => {
+            pg::postgres_certs_get(
+                client,
+                &postgres_id,
+                output.as_deref(),
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(PostgresConfigCommands::Get {
+            postgres_id,
+            org_id,
+        }) => pg::postgres_config_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Config(PostgresConfigCommands::Replace {
+            postgres_id,
+            file,
+            org_id,
+        }) => {
+            pg::postgres_config_replace(client, &postgres_id, &file, org_id.as_deref(), json).await
+        }
+        PostgresCommands::Config(PostgresConfigCommands::Patch {
+            postgres_id,
+            sets,
+            file,
+            org_id,
+        }) => {
+            pg::postgres_config_patch(
+                client,
+                &postgres_id,
+                &sets,
+                file.as_deref(),
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ResetPassword {
+            postgres_id,
+            password,
+            generate,
+            org_id,
+        } => {
+            pg::postgres_reset_password(
+                client,
+                &postgres_id,
+                password.as_deref(),
+                generate,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ReadReplica(PostgresReadReplicaCommands::Create {
+            postgres_id,
+            name,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        }) => {
+            let opts = PostgresReadReplicaOptions {
+                name: &name,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_read_replica_create(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Restore {
+            postgres_id,
+            name,
+            restore_target,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        } => {
+            let opts = PostgresRestoreOptions {
+                name: &name,
+                restore_target: &restore_target,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_restore(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Restart {
+            postgres_id,
+            org_id,
+        } => {
+            pg::postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Restart,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Promote {
+            postgres_id,
+            org_id,
+        } => {
+            pg::postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Promote,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Switchover {
+            postgres_id,
+            org_id,
+        } => {
+            pg::postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Switchover,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+    }
 }

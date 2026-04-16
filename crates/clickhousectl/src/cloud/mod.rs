@@ -3,6 +3,7 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod credentials;
+pub mod postgres;
 pub mod types;
 
 #[cfg(test)]
