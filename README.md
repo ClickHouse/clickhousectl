@@ -207,6 +207,17 @@ clickhousectl cloud auth logout    # Clear all saved credentials (credentials.js
 
 Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables > OAuth tokens.
 
+### Debugging which credential source was used
+
+Pass `--debug` to any `cloud` command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
+
+```bash
+clickhousectl cloud --debug service list
+# [debug] auth source: credentials file (.clickhouse/credentials.json)
+# [debug] api url: https://api.clickhouse.cloud/v1
+# ... normal output ...
+```
+
 ## Cloud
 
 Manage ClickHouse Cloud services via the API.
