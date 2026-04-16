@@ -198,6 +198,7 @@ impl CloudCommands {
                 ServiceCommands::List { .. } => false,
                 ServiceCommands::Get { .. } => false,
                 ServiceCommands::Client { .. } => false,
+                ServiceCommands::Query { .. } => false,
                 ServiceCommands::Prometheus { .. } => false,
                 ServiceCommands::Create { .. } => true,
                 ServiceCommands::Delete { .. } => true,
@@ -701,6 +702,43 @@ CONTEXT FOR AGENTS:
         /// Whether to request filtered metrics
         #[arg(long)]
         filtered_metrics: Option<bool>,
+    },
+
+    /// Run a SQL query against a cloud service over HTTP
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Preferred over `cloud service client` for scripted use: no local clickhouse binary
+  and reuses the active cloud credentials. If none of --query/--queries-file/stdin
+  provides SQL, the command errors. --format defaults to PrettyCompact on a terminal
+  and TabSeparated when stdout is piped.")]
+    Query {
+        /// Service name to query
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Service ID to query
+        #[arg(long)]
+        id: Option<String>,
+
+        /// SQL query to execute
+        #[arg(long, short)]
+        query: Option<String>,
+
+        /// Read SQL from this file (use '-' for stdin)
+        #[arg(long)]
+        queries_file: Option<String>,
+
+        /// Database to run the query against
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Output format (e.g. TabSeparated, JSONEachRow, PrettyCompact)
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
     },
 }
 
@@ -1558,6 +1596,11 @@ mod tests {
 
         // Query endpoint read
         assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "get", "svc-1"], false);
+
+        // Query-run (OAuth JWT works against queries.clickhouse.cloud per the spec).
+        // The write-check gates the *Cloud API*, which this command does not touch —
+        // the SQL's own semantics are enforced by ClickHouse, not by clickhousectl.
+        assert_write(&["clickhousectl", "cloud", "service", "query", "--id", "svc-1", "--query", "SELECT 1"], false);
 
         // Private endpoint read
         assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);

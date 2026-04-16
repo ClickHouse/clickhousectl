@@ -289,6 +289,14 @@ CLICKHOUSE_PASSWORD=secret clickhousectl cloud service client --name my-service 
 # Use a local client version instead of auto-downloading the matching one
 clickhousectl cloud service client --name my-service --allow-mismatched-client-version
 
+# Run SQL over HTTP — no local clickhouse-client needed, uses active cloud credentials
+clickhousectl cloud service query --name my-service --query "SELECT 1"
+clickhousectl cloud service query --id <service-id> --queries-file script.sql --database analytics
+echo "SELECT count() FROM system.tables" | clickhousectl cloud service query --name my-service
+
+# Override output format (default: PrettyCompact on tty, TabSeparated when piped)
+clickhousectl cloud service query --name my-service -q "SELECT 1" --format JSONEachRow
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \

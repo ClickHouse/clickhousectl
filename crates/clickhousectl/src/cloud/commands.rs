@@ -2030,6 +2030,100 @@ async fn ensure_version_installed(
     Ok(version)
 }
 
+pub struct ServiceQueryOptions {
+    pub name: Option<String>,
+    pub id: Option<String>,
+    pub query: Option<String>,
+    pub queries_file: Option<String>,
+    pub database: Option<String>,
+    pub format: Option<String>,
+    pub org_id: Option<String>,
+}
+
+/// Resolve the SQL text from --query, --queries-file, or stdin.
+///
+/// Precedence: --query > --queries-file > stdin. Exactly one source is used; we
+/// don't concatenate. Empty SQL is rejected here so the HTTP call never happens.
+fn read_query_sql(
+    inline: Option<&str>,
+    file: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::Read;
+
+    let sql = if let Some(q) = inline {
+        q.to_string()
+    } else if let Some(path) = file {
+        if path == "-" {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        } else {
+            std::fs::read_to_string(path)
+                .map_err(|e| format!("failed to read {}: {}", path, e))?
+        }
+    } else if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf
+    } else {
+        return Err("no SQL provided. Use --query, --queries-file, or pipe SQL on stdin".into());
+    };
+
+    if sql.trim().is_empty() {
+        return Err("SQL query is empty".into());
+    }
+    Ok(sql)
+}
+
+/// Default output format picked when the user didn't pass --format.
+/// Matches clickhouse-client's behavior: pretty when interactive, tabular when piped.
+fn default_query_format() -> &'static str {
+    if std::io::stdout().is_terminal() {
+        "PrettyCompact"
+    } else {
+        "TabSeparated"
+    }
+}
+
+pub async fn service_query(
+    client: &CloudClient,
+    opts: ServiceQueryOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::cloud::types::RunQueryRequest;
+    use futures_util::StreamExt;
+    use std::io::Write;
+
+    let sql = read_query_sql(opts.query.as_deref(), opts.queries_file.as_deref())?;
+
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let svc = resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref()).await?;
+
+    let format_str = opts
+        .format
+        .unwrap_or_else(|| default_query_format().to_string());
+
+    let request = RunQueryRequest {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        sql: &sql,
+        database: opts.database.as_deref(),
+    };
+
+    let resp = client
+        .run_query(&svc.id.to_string(), &request, Some(&format_str))
+        .await?;
+
+    let mut stream = resp.bytes_stream();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("error reading query response: {}", e))?;
+        out.write_all(&chunk)?;
+    }
+    out.flush()?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

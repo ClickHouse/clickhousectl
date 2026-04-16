@@ -630,6 +630,26 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 };
                 cloud::commands::service_client(&client, opts).await
             }
+            ServiceCommands::Query {
+                name,
+                id,
+                query,
+                queries_file,
+                database,
+                format,
+                org_id,
+            } => {
+                let opts = cloud::commands::ServiceQueryOptions {
+                    name,
+                    id,
+                    query,
+                    queries_file,
+                    database,
+                    format,
+                    org_id,
+                };
+                cloud::commands::service_query(&client, opts).await
+            }
             ServiceCommands::Prometheus {
                 service_id,
                 org_id,

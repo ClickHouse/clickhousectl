@@ -1,7 +1,11 @@
-use crate::cloud::types::DeleteResponse;
+use crate::cloud::types::{DeleteResponse, RunQueryRequest};
 use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
+
+/// Base URL for the query-run service (separate host from the main Cloud API).
+/// Override with `CLICKHOUSE_CLOUD_QUERIES_URL` for testing.
+const DEFAULT_QUERIES_BASE_URL: &str = "https://queries.clickhouse.cloud";
 
 #[derive(Debug)]
 pub struct CloudError {
@@ -533,6 +537,62 @@ impl CloudClient {
             .instance_prometheus_get(org_id, service_id, filtered.as_deref())
             .await
             .map_err(|e| self.convert_error(e))
+    }
+
+    /// POST to the query-run endpoint and return a streaming response.
+    ///
+    /// The caller is responsible for reading the body — typically piping it to stdout.
+    /// `format` is passed as the `format` URL parameter; if `None`, the server's
+    /// default is used.
+    pub async fn run_query(
+        &self,
+        service_id: &str,
+        request: &RunQueryRequest<'_>,
+        format: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let base = env::var("CLICKHOUSE_CLOUD_QUERIES_URL")
+            .unwrap_or_else(|_| DEFAULT_QUERIES_BASE_URL.to_string());
+        let base = base.trim_end_matches('/');
+        let url = match format {
+            Some(f) => format!(
+                "{}/service/{}/run?format={}",
+                base,
+                service_id,
+                urlencoding::encode(f)
+            ),
+            None => format!("{}/service/{}/run", base, service_id),
+        };
+
+        let body = serde_json::to_vec(request).map_err(|e| CloudError {
+            message: format!("Failed to serialize query request: {}", e),
+        })?;
+
+        // Match the SQL Console's content-type exactly — some deployments are strict.
+        let req = self
+            .api()
+            .authenticated_request(reqwest::Method::POST, &url)
+            .header("content-type", "text/plain;charset=UTF-8")
+            .header("x-service-type", "clickhouse")
+            .header("auth-provider", "custom")
+            .body(body);
+
+        let resp = req.send().await.map_err(|e| CloudError {
+            message: format!("Query request failed: {}", e),
+        })?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await.unwrap_or_default();
+            return Err(CloudError {
+                message: format!(
+                    "Query failed ({}): {}",
+                    status,
+                    if body_text.is_empty() { "no response body" } else { &body_text }
+                ),
+            });
+        }
+
+        Ok(resp)
     }
 
     // Organization endpoints (delegated to library client)

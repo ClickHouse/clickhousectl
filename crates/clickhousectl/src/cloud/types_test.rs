@@ -1,4 +1,4 @@
-use super::types::DeleteResponse;
+use super::types::{DeleteResponse, RunQueryRequest};
 
 // Contract policy for this suite:
 // - mirror GA request/response schemas and query surfaces only
@@ -29,6 +29,31 @@ fn test_delete_response_serialize() {
     assert_eq!(json["status"], 200.0);
     assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
     assert!(json.get("request_id").is_none());
+}
+
+#[test]
+fn test_run_query_request_serialize_with_database() {
+    let req = RunQueryRequest {
+        run_id: "5b02a72e-be42-4442-82f8-9e572d9aae1b".to_string(),
+        sql: "SELECT 1",
+        database: Some("galaxy"),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["runId"], "5b02a72e-be42-4442-82f8-9e572d9aae1b");
+    assert_eq!(json["sql"], "SELECT 1");
+    assert_eq!(json["database"], "galaxy");
+    assert!(json.get("run_id").is_none());
+}
+
+#[test]
+fn test_run_query_request_serialize_omits_null_database() {
+    let req = RunQueryRequest {
+        run_id: "abc".to_string(),
+        sql: "SELECT 1",
+        database: None,
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert!(json.get("database").is_none());
 }
 
 // ── Activity tests (library types) ─────────────────────────────────

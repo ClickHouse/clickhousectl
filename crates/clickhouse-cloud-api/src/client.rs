@@ -122,6 +122,23 @@ impl Client {
         }
     }
 
+    /// Build an authenticated request to an absolute URL using this client's credentials.
+    ///
+    /// The API base URL is ignored — pass the full target URL. Useful for adjacent
+    /// ClickHouse Cloud services that share the same auth scheme (e.g. the query-run
+    /// endpoint at `queries.clickhouse.cloud`).
+    pub fn authenticated_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+    ) -> reqwest::RequestBuilder {
+        let builder = self.http.request(method, url);
+        match &self.auth {
+            Auth::Basic { key_id, key_secret } => builder.basic_auth(key_id, Some(key_secret)),
+            Auth::Bearer { token } => builder.bearer_auth(token),
+        }
+    }
+
     /// Get list of available organizations
     pub async fn organization_get_list(
         &self,
