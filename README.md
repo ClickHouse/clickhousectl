@@ -1,5 +1,7 @@
 # clickhousectl
 
+> **Beta:** `clickhousectl` is currently in beta. Features and behavior may change.
+
 `clickhousectl` is the CLI for ClickHouse: local and cloud.
 
 With `clickhousectl` you can:
@@ -59,10 +61,10 @@ clickhousectl local remove 25.12.5.44
 
 #### ClickHouse binary storage
 
-ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhousectl/`:
+ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhouse/`:
 
 ```
-~/.clickhousectl/
+~/.clickhouse/
 ├── versions/
 │   └── 25.12.5.44/
 │       └── clickhouse
@@ -100,37 +102,52 @@ clickhousectl local client --host remote-host --port 9000  # Connect to a specif
 
 ### Creating and managing ClickHouse servers
 
-Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhousectl/servers/<name>/data/`.
+Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhouse/servers/<name>/data/`.
 
 ```bash
 # Start a server (runs in background by default)
 clickhousectl local server start                          # Named "default"
 clickhousectl local server start --name dev               # Named "dev"
+clickhousectl local server start --version stable         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start -- --config-file=/path/to/config.xml
 
 # List all servers (running and stopped)
 clickhousectl local server list
+clickhousectl local server list --global                  # List servers across all projects
 
 # Stop servers
 clickhousectl local server stop default                   # Stop by name
+clickhousectl local server stop default --global          # Stop from any project
+clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
 clickhousectl local server stop-all                       # Stop all running servers
+clickhousectl local server stop-all --global              # Stop all servers system-wide
 
 # Remove a stopped server and its data
 clickhousectl local server remove test
+
+# Write connection env vars to .env file
+clickhousectl local server dotenv                        # From "default" server → .env
+clickhousectl local server dotenv --name dev             # From "dev" server → .env
+clickhousectl local server dotenv --local                # Write to .env.local instead
+clickhousectl local server dotenv --user default --password secret --database mydb  # Include credentials
 ```
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 
+**Orphaned server recovery:** If server metadata files are lost while the ClickHouse process is still running, the CLI automatically recovers them via process discovery. Running `server list`, `server start`, or any server command will detect orphaned processes belonging to the current project and bring them back under management.
+
+**Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.
+
 #### Project-local data directory
 
-All server data lives inside `.clickhousectl/` in your project directory:
+All server data lives inside `.clickhouse/` in your project directory:
 
 ```
-.clickhousectl/
+.clickhouse/
 ├── .gitignore              # auto-created, ignores everything
 ├── credentials.json        # cloud API credentials (if configured)
 └── servers/
@@ -144,17 +161,19 @@ Each named server has its own data directory, so servers are fully isolated from
 
 ## Authentication
 
-Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys.
+Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys. OAuth provides **read-only** access; API keys provide full **read/write** access.
 
-### OAuth login (recommended)
+### OAuth login (read-only)
 
 ```bash
 clickhousectl cloud auth login
 ```
 
-This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhousectl/tokens.json` (project-local).
+This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhouse/tokens.json` (project-local).
 
-### API key/secret
+> **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication.
+
+### API key/secret (required for write operations)
 
 ```bash
 # Non-interactive (CI-friendly)
@@ -164,7 +183,7 @@ clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
 clickhousectl cloud auth login --interactive
 ```
 
-Credentials are saved to `.clickhousectl/credentials.json` (project-local).
+Credentials are saved to `.clickhouse/credentials.json` (project-local).
 
 You can also use environment variables:
 ```bash
@@ -177,14 +196,16 @@ Or pass credentials directly via flags on any command:
 clickhousectl cloud --api-key KEY --api-secret SECRET ...
 ```
 
+Learn how to [create API keys](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl).
+
 ### Auth status and logout
 
 ```bash
-clickhousectl cloud auth status    # Show current auth state
+clickhousectl cloud auth status    # Show current auth state (including read-only/read-write labels)
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: CLI flags > OAuth tokens > `.clickhousectl/credentials.json` > environment variables.
+Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables > OAuth tokens.
 
 ## Cloud
 
@@ -457,9 +478,23 @@ Supports global or project scope installation. Project scope installs Skills int
 - `--all` install Skills for all supported agents
 - `--detected-only` install Skills for supported agents that were detected on the system
 
+## Self-update
+
+`clickhousectl` can update itself to the latest release:
+
+```bash
+# Update to the latest version
+clickhousectl update
+
+# Check for updates without installing
+clickhousectl update --check
+```
+
+The CLI also checks for updates in the background (at most once per 24 hours) and displays a notice when a newer version is available.
+
 ## Cloud integration testing
 
-Cloud commands are tested against a real ClickHouse Cloud workspace. All changes to Cloud commands must pass CI testing before merge. CI tests are under [`tests/cloud_cli.rs`](tests/cloud_cli.rs).
+Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests are in [`crates/clickhouse-cloud-api/tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs).
 
 Required environment variables:
 
@@ -471,11 +506,10 @@ export CLICKHOUSE_CLOUD_TEST_PROVIDER=aws
 export CLICKHOUSE_CLOUD_TEST_REGION=us-east-1
 ```
 
-Run the CI test:
+Run the integration test:
 
 ```bash
-CLICKHOUSECTL_BIN=target/debug/clickhousectl \
-cargo test --test cloud_cli cloud_service_crud_lifecycle -- --ignored --nocapture --test-threads=1
+cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
 ```
 
 By default, any failed check fails the run. To keep going after `non-blocking` capability failures and collect them in a summary at the end, set:
