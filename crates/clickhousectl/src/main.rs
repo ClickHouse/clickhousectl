@@ -227,6 +227,39 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     });
                 }
 
+                let env_key = std::env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
+                let env_secret = std::env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+                match (env_key.is_some(), env_secret.is_some()) {
+                    (true, true) => {
+                        rows.push(AuthRow {
+                            auth_type: "Env vars".into(),
+                            status: "Active".into(),
+                            scope: "read/write".into(),
+                        });
+                    }
+                    (true, false) => {
+                        rows.push(AuthRow {
+                            auth_type: "Env vars".into(),
+                            status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
+                            scope: "-".into(),
+                        });
+                    }
+                    (false, true) => {
+                        rows.push(AuthRow {
+                            auth_type: "Env vars".into(),
+                            status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
+                            scope: "-".into(),
+                        });
+                    }
+                    (false, false) => {
+                        rows.push(AuthRow {
+                            auth_type: "Env vars".into(),
+                            status: "Not configured".into(),
+                            scope: "-".into(),
+                        });
+                    }
+                }
+
                 if args.json {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
