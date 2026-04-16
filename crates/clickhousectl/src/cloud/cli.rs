@@ -87,6 +87,10 @@ pub struct CloudArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Print debug info (e.g. the credential source used) to stderr before running the command
+    #[arg(long, global = true)]
+    pub debug: bool,
+
     /// API base URL (default: auto-detect from OAuth tokens, or https://api.clickhouse.cloud)
     #[cfg_attr(debug_assertions, arg(long, global = true))]
     #[cfg_attr(not(debug_assertions), arg(long, global = true, hide = true))]

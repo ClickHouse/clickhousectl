@@ -23,9 +23,88 @@ enum AuthMode {
     Bearer,
 }
 
+/// The resolved credential source that won precedence for a `CloudClient`.
+///
+/// Useful for debugging "which credential did we actually use?" questions.
+/// See `CloudClient::auth_source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSource {
+    /// `--api-key` / `--api-secret` CLI flags
+    CliFlags,
+    /// Project-local `.clickhouse/credentials.json`
+    CredentialsFile,
+    /// `CLICKHOUSE_CLOUD_API_KEY` / `CLICKHOUSE_CLOUD_API_SECRET` env vars
+    EnvVars,
+    /// OAuth tokens saved by `cloud auth login` (`.clickhouse/tokens.json`)
+    OAuthTokens,
+}
+
+/// Resolve the credential source that *would* win precedence if a `CloudClient`
+/// were constructed right now, without actually creating one.
+///
+/// Returns `None` if no usable credentials are configured. Mirrors the
+/// precedence used by `CloudClient::new`: CLI flags > credentials file
+/// > env vars > OAuth tokens.
+pub fn resolve_active_auth_source(
+    api_key: Option<&str>,
+    api_secret: Option<&str>,
+) -> Option<AuthSource> {
+    if api_key.is_some() || api_secret.is_some() {
+        return Some(AuthSource::CliFlags);
+    }
+    if crate::cloud::credentials::load_credentials().is_some() {
+        return Some(AuthSource::CredentialsFile);
+    }
+    let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
+    let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+    if env_key.is_some() && env_secret.is_some() {
+        return Some(AuthSource::EnvVars);
+    }
+    if let Some(tokens) = crate::cloud::auth::load_tokens()
+        && crate::cloud::auth::is_token_valid(&tokens)
+    {
+        return Some(AuthSource::OAuthTokens);
+    }
+    None
+}
+
+impl AuthSource {
+    /// Short label for the source (useful for tables / compact output).
+    #[allow(dead_code)]
+    pub fn label(&self) -> &'static str {
+        match self {
+            AuthSource::CliFlags => "CLI flags",
+            AuthSource::CredentialsFile => "Credentials file",
+            AuthSource::EnvVars => "Env vars",
+            AuthSource::OAuthTokens => "OAuth",
+        }
+    }
+
+    /// One-line description including the concrete source (flag, path, env var names).
+    pub fn describe(&self) -> String {
+        match self {
+            AuthSource::CliFlags => "CLI flags (--api-key, --api-secret)".to_string(),
+            AuthSource::CredentialsFile => format!(
+                "credentials file ({})",
+                crate::cloud::credentials::credentials_path().display()
+            ),
+            AuthSource::EnvVars => {
+                "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)"
+                    .to_string()
+            }
+            AuthSource::OAuthTokens => format!(
+                "OAuth tokens ({})",
+                crate::cloud::auth::tokens_path().display()
+            ),
+        }
+    }
+}
+
 pub struct CloudClient {
     lib_client: clickhouse_cloud_api::Client,
     auth_mode: AuthMode,
+    auth_source: AuthSource,
+    base_url: String,
 }
 
 /// Convert CLI base URL (with /v1 suffix) to library base URL (without /v1).
@@ -71,6 +150,8 @@ impl CloudClient {
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Basic,
+                auth_source: AuthSource::CliFlags,
+                base_url,
             });
         }
 
@@ -89,6 +170,8 @@ impl CloudClient {
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Basic,
+                auth_source: AuthSource::CredentialsFile,
+                base_url,
             });
         }
 
@@ -105,6 +188,8 @@ impl CloudClient {
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Basic,
+                auth_source: AuthSource::EnvVars,
+                base_url,
             });
         }
 
@@ -123,6 +208,8 @@ impl CloudClient {
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Bearer,
+                auth_source: AuthSource::OAuthTokens,
+                base_url,
             });
         }
 
@@ -135,6 +222,16 @@ impl CloudClient {
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
         matches!(self.auth_mode, AuthMode::Bearer)
+    }
+
+    /// The credential source that won precedence when constructing this client.
+    pub fn auth_source(&self) -> AuthSource {
+        self.auth_source
+    }
+
+    /// The API base URL the client is talking to (includes the `/v1` suffix).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// Access the library client for migrated commands.
@@ -742,6 +839,8 @@ mod tests {
         CloudClient {
             lib_client,
             auth_mode: AuthMode::Basic,
+            auth_source: AuthSource::CliFlags,
+            base_url: DEFAULT_BASE_URL.to_string(),
         }
     }
 
@@ -756,6 +855,8 @@ mod tests {
         let client = CloudClient {
             lib_client,
             auth_mode: AuthMode::Bearer,
+            auth_source: AuthSource::OAuthTokens,
+            base_url: DEFAULT_BASE_URL.to_string(),
         };
         assert!(client.is_bearer_auth());
     }
@@ -833,12 +934,55 @@ mod tests {
         let client = CloudClient {
             lib_client,
             auth_mode: AuthMode::Bearer,
+            auth_source: AuthSource::OAuthTokens,
+            base_url: DEFAULT_BASE_URL.to_string(),
         };
         let err = client.convert_error(clickhouse_cloud_api::Error::Api {
             status: 403,
             message: "Forbidden".into(),
         });
         assert!(err.message.contains("Hint: You are authenticated via OAuth"));
+    }
+
+    #[test]
+    fn auth_source_label_and_describe() {
+        assert_eq!(AuthSource::CliFlags.label(), "CLI flags");
+        assert_eq!(AuthSource::CredentialsFile.label(), "Credentials file");
+        assert_eq!(AuthSource::EnvVars.label(), "Env vars");
+        assert_eq!(AuthSource::OAuthTokens.label(), "OAuth");
+
+        assert!(AuthSource::CliFlags.describe().contains("--api-key"));
+        assert!(
+            AuthSource::EnvVars
+                .describe()
+                .contains("CLICKHOUSE_CLOUD_API_KEY")
+        );
+        assert!(AuthSource::CredentialsFile.describe().contains("credentials"));
+        assert!(AuthSource::OAuthTokens.describe().contains("OAuth"));
+    }
+
+    #[test]
+    fn auth_source_accessor_returns_cli_flags_default_in_test_client() {
+        let client = test_client();
+        assert_eq!(client.auth_source(), AuthSource::CliFlags);
+        assert_eq!(client.base_url(), DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn resolve_active_auth_source_cli_flags_take_precedence() {
+        // CLI flags must always win, regardless of other configured sources.
+        assert_eq!(
+            resolve_active_auth_source(Some("k"), Some("s")),
+            Some(AuthSource::CliFlags)
+        );
+        assert_eq!(
+            resolve_active_auth_source(Some("k"), None),
+            Some(AuthSource::CliFlags)
+        );
+        assert_eq!(
+            resolve_active_auth_source(None, Some("s")),
+            Some(AuthSource::CliFlags)
+        );
     }
 
     #[test]

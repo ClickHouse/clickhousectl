@@ -185,7 +185,16 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     status: String,
                     #[tabled(rename = "Scope")]
                     scope: String,
+                    #[tabled(rename = "Active")]
+                    active: String,
                 }
+
+                // Determine which source would actually win precedence right now.
+                // CLI --api-key/--api-secret aren't relevant to `auth status` itself.
+                let active = cloud::resolve_active_auth_source(None, None);
+                let mark = |src: cloud::AuthSource| -> String {
+                    if active == Some(src) { "yes".into() } else { "-".into() }
+                };
 
                 let mut rows = Vec::new();
 
@@ -195,6 +204,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "OAuth".into(),
                             status: "Active".into(),
                             scope: "read-only".into(),
+                            active: mark(cloud::AuthSource::OAuthTokens),
                         });
                     }
                     Some(_) => {
@@ -202,6 +212,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "OAuth".into(),
                             status: "Expired".into(),
                             scope: "read-only".into(),
+                            active: "-".into(),
                         });
                     }
                     None => {
@@ -209,6 +220,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "OAuth".into(),
                             status: "Not configured".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
                     }
                 }
@@ -218,12 +230,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         auth_type: "API key".into(),
                         status: "Active".into(),
                         scope: "read/write".into(),
+                        active: mark(cloud::AuthSource::CredentialsFile),
                     });
                 } else {
                     rows.push(AuthRow {
                         auth_type: "API key".into(),
                         status: "Not configured".into(),
                         scope: "-".into(),
+                        active: "-".into(),
                     });
                 }
 
@@ -235,6 +249,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Active".into(),
                             scope: "read/write".into(),
+                            active: mark(cloud::AuthSource::EnvVars),
                         });
                     }
                     (true, false) => {
@@ -242,6 +257,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
                     }
                     (false, true) => {
@@ -249,6 +265,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
                     }
                     (false, false) => {
@@ -256,7 +273,17 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Not configured".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
+                    }
+                }
+
+                if args.debug {
+                    match active {
+                        Some(src) => {
+                            eprintln!("[debug] auth source: {}", src.describe());
+                        }
+                        None => eprintln!("[debug] auth source: none (no credentials configured)"),
                     }
                 }
 
@@ -281,6 +308,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         args.url.as_deref(),
     )
     .map_err(|e| Error::Cloud(e.to_string()))?;
+
+    if args.debug {
+        eprintln!("[debug] auth source: {}", client.auth_source().describe());
+        eprintln!("[debug] api url: {}", client.base_url());
+    }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
