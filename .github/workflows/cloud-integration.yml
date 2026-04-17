@@ -42,3 +42,6 @@ jobs:
 
       - name: Run cloud integration suite
         run: cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
+
+      - name: Run cloud Postgres integration suite
+        run: cargo test -p clickhouse-cloud-api --test integration_postgres_test -- --ignored --nocapture
