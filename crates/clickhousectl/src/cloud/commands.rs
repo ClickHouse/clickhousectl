@@ -63,7 +63,7 @@ const KNOWN_PROFILES: &[&str] = &[
 ];
 
 /// Resolve org ID from explicit arg or auto-detect
-async fn resolve_org_id(
+pub(super) async fn resolve_org_id(
     client: &CloudClient,
     org_id: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -107,7 +107,7 @@ async fn resolve_service(
 /// Parse a string into a library enum via serde deserialization, with client-side
 /// validation against a known-values list. Library enums have an `Unknown(String)`
 /// catch-all that prevents serde from ever failing, so we validate first.
-fn parse_serde_enum<T: serde::de::DeserializeOwned>(
+pub(super) fn parse_serde_enum<T: serde::de::DeserializeOwned>(
     value: &str,
     field: &str,
     known_values: &[&str],
@@ -125,7 +125,7 @@ fn parse_serde_enum<T: serde::de::DeserializeOwned>(
         .map_err(|e| format!("invalid {}: {}", field, e).into())
 }
 
-fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
+pub(super) fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
     match value.split_once('=') {
         Some((key, tag_value)) => {
             let key = key.trim();
@@ -152,7 +152,7 @@ fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> 
     }
 }
 
-fn parse_tags(
+pub(super) fn parse_tags(
     values: &[String],
 ) -> Result<Option<Vec<ResourceTagsV1>>, Box<dyn std::error::Error>> {
     if values.is_empty() {
