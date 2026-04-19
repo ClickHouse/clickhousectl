@@ -537,7 +537,7 @@ pub async fn postgres_list(
         })
         .collect();
 
-    println!("{}", Table::new(rows).with(Style::rounded()));
+    println!("{}", Table::new(rows).with(Style::markdown()));
     Ok(())
 }
 

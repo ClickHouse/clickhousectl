@@ -291,7 +291,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 if args.json {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
-                    println!("{}", Table::new(rows).with(Style::rounded()));
+                    println!("{}", Table::new(rows).with(Style::markdown()));
                 }
                 Ok(())
             }
