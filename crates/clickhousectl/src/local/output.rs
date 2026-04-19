@@ -47,7 +47,7 @@ impl fmt::Display for ListInstalledOutput {
                 },
             })
             .collect();
-        let table = Table::new(rows).with(Style::rounded()).to_string();
+        let table = Table::new(rows).with(Style::markdown()).to_string();
         write!(f, "{table}")
     }
 }
@@ -91,7 +91,7 @@ impl fmt::Display for ListAvailableOutput {
                 },
             })
             .collect();
-        let table = Table::new(rows).with(Style::rounded()).to_string();
+        let table = Table::new(rows).with(Style::markdown()).to_string();
         writeln!(f, "{table}")?;
         writeln!(f)?;
         writeln!(f, "Install with: clickhousectl local install <version>")?;
@@ -283,7 +283,7 @@ impl fmt::Display for ServerListOutput {
                     project: e.project.clone().unwrap_or_default(),
                 })
                 .collect();
-            let table = Table::new(rows).with(Style::rounded()).to_string();
+            let table = Table::new(rows).with(Style::markdown()).to_string();
             writeln!(f, "{table}")?;
         } else {
             let rows: Vec<ServerListRow> = self
@@ -302,7 +302,7 @@ impl fmt::Display for ServerListOutput {
                     tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
                 })
                 .collect();
-            let table = Table::new(rows).with(Style::rounded()).to_string();
+            let table = Table::new(rows).with(Style::markdown()).to_string();
             writeln!(f, "{table}")?;
         }
 

@@ -428,7 +428,7 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
                 id: o.id.to_string(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -506,7 +506,7 @@ pub async fn service_list(
                 }
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1019,7 +1019,7 @@ pub async fn backup_list(
                 created: b.started_at.to_rfc3339(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1367,7 +1367,7 @@ pub async fn org_usage(
                 total: format!("{:.2}", cost.total_chc),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1412,7 +1412,7 @@ pub async fn member_list(
                 name: m.name.clone(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1524,7 +1524,7 @@ pub async fn invitation_list(
                 expires: inv.expire_at.to_rfc3339(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1640,7 +1640,7 @@ pub async fn key_list(
                     .unwrap_or_else(|| "never".into()),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1782,7 +1782,7 @@ pub async fn activity_list(
                 created: a.created_at.to_rfc3339(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
