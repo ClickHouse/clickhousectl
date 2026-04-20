@@ -6,13 +6,13 @@ use clickhouse_cloud_api::models::{
     InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
     IpAccessListPatch, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1, Service,
-    ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
-    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
-    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
-    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
-    ServiceReplicaScalingPatchRequest,
-    ServiceStatePatchRequestCommand, ServicPrivateEndpointePostRequest,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1,
+    ServicPrivateEndpointePostRequest, Service, ServiceEndpointChange,
+    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
+    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
+    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
+    ServiceStatePatchRequestCommand,
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
@@ -84,10 +84,7 @@ async fn resolve_service(
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
-            let matches: Vec<_> = services
-                .into_iter()
-                .filter(|s| s.name == name)
-                .collect();
+            let matches: Vec<_> = services.into_iter().filter(|s| s.name == name).collect();
             match matches.len() {
                 0 => Err(format!("no service found with name '{}'", name).into()),
                 1 => Ok(matches.into_iter().next().unwrap()),
@@ -179,10 +176,7 @@ fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> 
     })
 }
 
-fn parse_ip_access_list_patch(
-    add: &[String],
-    remove: &[String],
-) -> Option<IpAccessListPatch> {
+fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAccessListPatch> {
     let patch = IpAccessListPatch {
         add: parse_ip_access_entries(add).unwrap_or_default(),
         remove: parse_ip_access_entries(remove).unwrap_or_default(),
@@ -197,7 +191,11 @@ fn parse_private_endpoint_ids_patch(
 ) -> Option<InstancePrivateEndpointsPatch> {
     let patch = InstancePrivateEndpointsPatch {
         add: if add.is_empty() { vec![] } else { add.to_vec() },
-        remove: if remove.is_empty() { vec![] } else { remove.to_vec() },
+        remove: if remove.is_empty() {
+            vec![]
+        } else {
+            remove.to_vec()
+        },
     };
 
     (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
@@ -352,7 +350,10 @@ fn parse_ip_access_entries_lib(values: &[String]) -> Option<Vec<IpAccessListEntr
     })
 }
 
-fn parse_uuid_list(values: &[String], field: &str) -> Result<Vec<uuid::Uuid>, Box<dyn std::error::Error>> {
+fn parse_uuid_list(
+    values: &[String],
+    field: &str,
+) -> Result<Vec<uuid::Uuid>, Box<dyn std::error::Error>> {
     values
         .iter()
         .map(|s| {
@@ -492,9 +493,7 @@ pub async fn service_list(
                 let endpoint = svc
                     .endpoints
                     .first()
-                    .map(|e| {
-                        format!("{}:{}", e.host, e.port)
-                    })
+                    .map(|e| format!("{}:{}", e.host, e.port))
                     .unwrap_or_else(|| "-".to_string());
                 Row {
                     name: svc.name.clone(),
@@ -534,12 +533,7 @@ pub async fn service_get(
         if !svc.endpoints.is_empty() {
             println!("  Endpoints:");
             for ep in &svc.endpoints {
-                println!(
-                    "    {} - {}:{}",
-                    ep.protocol,
-                    ep.host,
-                    ep.port
-                );
+                println!("    {} - {}:{}", ep.protocol, ep.host, ep.port);
             }
         }
         if !svc.ip_access_list.is_empty() {
@@ -718,7 +712,11 @@ fn build_create_service_request(
             )?),
             None => None,
         },
-        private_preview_terms_checked: if opts.private_preview_terms_checked { Some(true) } else { None },
+        private_preview_terms_checked: if opts.private_preview_terms_checked {
+            Some(true)
+        } else {
+            None
+        },
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
         // Fields not exposed in CLI
@@ -807,7 +805,8 @@ fn build_api_key_create_request(
             opts.hash_key_id.as_deref(),
             opts.hash_key_id_suffix.as_deref(),
             opts.hash_key_secret.as_deref(),
-        )?.unwrap_or_default(),
+        )?
+        .unwrap_or_default(),
         roles: vec![],
     })
 }
@@ -949,11 +948,7 @@ pub async fn service_start(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!(
-            "Service {} starting (state: {})",
-            svc.name,
-            svc.state
-        );
+        println!("Service {} starting (state: {})", svc.name, svc.state);
     }
     Ok(())
 }
@@ -973,12 +968,953 @@ pub async fn service_stop(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
+        println!("Service {} stopping (state: {})", svc.name, svc.state);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_list(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let clickpipes = client.list_clickpipes(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipes)?);
+    } else if clickpipes.is_empty() {
+        println!("No ClickPipes found");
+    } else {
+        println!("ClickPipes:");
+        for cp in &clickpipes {
+            println!("  {} ({}) - {}", cp.name, cp.id, cp.state);
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_s3(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    url: &str,
+    format: &str,
+    database: &str,
+    table: &str,
+    columns: &[String],
+    storage_type: &str,
+    compression: &str,
+    continuous: bool,
+    queue_url: Option<&str>,
+    delimiter: Option<&str>,
+    iam_role: Option<&str>,
+    access_key_id: Option<&str>,
+    secret_key: Option<&str>,
+    connection_string: Option<&str>,
+    azure_container_name: Option<&str>,
+    path: Option<&str>,
+    service_account_key: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
+        ClickPipePostRequest, ClickPipePostSource, MskIamUser,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+    let parsed_columns = parse_columns(columns)?;
+
+    let (authentication, iam_role_val, access_key) = match (iam_role, access_key_id, secret_key) {
+        (Some(role), _, _) => (
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
+            Some(role.to_string()),
+            None,
+        ),
+        (_, Some(key_id), Some(secret)) => (
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER),
+            None,
+            Some(MskIamUser {
+                access_key_id: key_id.to_string(),
+                secret_key: secret.to_string(),
+            }),
+        ),
+        _ => (None, None, None),
+    };
+    let authentication = authentication
+        .or_else(|| {
+            connection_string
+                .map(|_| ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING)
+        })
+        .or_else(|| {
+            service_account_key
+                .map(|_| ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
+        });
+
+    let source = ClickPipePostObjectStorageSource {
+        r#type: parse_enum(storage_type)?,
+        format: parse_enum(format)?,
+        url: url.to_string(),
+        compression: Some(parse_enum(compression)?),
+        is_continuous: if continuous { Some(true) } else { None },
+        queue_url: queue_url.map(String::from),
+        delimiter: delimiter.map(String::from),
+        authentication,
+        iam_role: iam_role_val,
+        access_key,
+        connection_string: connection_string.map(String::from),
+        azure_container_name: azure_container_name.map(String::from),
+        path: path.map(String::from),
+        service_account_key: service_account_key.map(String::from),
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            object_storage: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(database, table, parsed_columns),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_kafka(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    brokers: &str,
+    topics: &str,
+    format: &str,
+    database: &str,
+    table: &str,
+    columns: &[String],
+    kafka_type: &str,
+    consumer_group: Option<&str>,
+    auth: Option<&str>,
+    username: Option<&str>,
+    password: Option<&str>,
+    iam_role: Option<&str>,
+    access_key_id: Option<&str>,
+    secret_key: Option<&str>,
+    offset: &str,
+    offset_timestamp: Option<&str>,
+    schema_registry_url: Option<&str>,
+    schema_registry_username: Option<&str>,
+    schema_registry_password: Option<&str>,
+    ca_certificate: Option<&str>,
+    client_certificate: Option<&str>,
+    client_key: Option<&str>,
+    schema_registry_ca_certificate: Option<&str>,
+    reverse_private_endpoint_ids: &[String],
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
+        ClickPipeMutateKafkaSchemaRegistry, ClickPipePostKafkaSource,
+        ClickPipePostKafkaSourceAuthentication, ClickPipePostRequest, ClickPipePostSource,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+    let parsed_columns = parse_columns(columns)?;
+
+    let authentication: ClickPipePostKafkaSourceAuthentication = match auth {
+        Some(a) => parse_enum(a)?,
+        None => ClickPipePostKafkaSourceAuthentication::default(),
+    };
+
+    // credentials: JSON object whose shape depends on auth mode.
+    let credentials = match (username, password, client_certificate, client_key) {
+        (Some(u), Some(p), _, _) => serde_json::json!({ "username": u, "password": p }),
+        (_, _, Some(cert_path), Some(key_path)) => {
+            let cert = std::fs::read_to_string(cert_path)?;
+            let key = std::fs::read_to_string(key_path)?;
+            serde_json::json!({ "certificate": cert, "privateKey": key })
+        }
+        _ => serde_json::Value::Null,
+    };
+
+    let schema_registry = schema_registry_url
+        .map(|url| -> Result<_, Box<dyn std::error::Error>> {
+            let creds = match (schema_registry_username, schema_registry_password) {
+                (Some(u), Some(p)) => ClickPipeKafkaSchemaRegistryCredentials {
+                    username: u.to_string(),
+                    password: p.to_string(),
+                },
+                _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
+            };
+            let ca_cert = match schema_registry_ca_certificate {
+                Some(path) => Some(std::fs::read_to_string(path)?),
+                None => None,
+            };
+            Ok(ClickPipeMutateKafkaSchemaRegistry {
+                url: url.to_string(),
+                authentication: Default::default(),
+                credentials: creds,
+                ca_certificate: ca_cert,
+            })
+        })
+        .transpose()?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let _ = (iam_role, access_key_id, secret_key); // IAM auth paths not wired yet
+
+    let source = ClickPipePostKafkaSource {
+        r#type: parse_enum(kafka_type)?,
+        format: parse_enum(format)?,
+        brokers: brokers.to_string(),
+        topics: topics.to_string(),
+        consumer_group: consumer_group.map(String::from),
+        authentication,
+        credentials,
+        iam_role: iam_role.map(String::from),
+        offset: Some(ClickPipeKafkaOffset {
+            strategy: parse_enum(offset)?,
+            timestamp: offset_timestamp.map(String::from),
+        }),
+        schema_registry,
+        ca_certificate: ca_cert_contents,
+        reverse_private_endpoint_ids: reverse_private_endpoint_ids.to_vec(),
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            kafka: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(database, table, parsed_columns),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_kinesis(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    stream_name: &str,
+    region: &str,
+    format: &str,
+    database: &str,
+    table: &str,
+    columns: &[String],
+    auth: &str,
+    iam_role: Option<&str>,
+    access_key_id: Option<&str>,
+    secret_key: Option<&str>,
+    iterator_type: &str,
+    iterator_timestamp: Option<u64>,
+    enhanced_fan_out: bool,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostKinesisSource, ClickPipePostRequest, ClickPipePostSource, MskIamUser,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+    let parsed_columns = parse_columns(columns)?;
+
+    let access_key = match (access_key_id, secret_key) {
+        (Some(k), Some(s)) => Some(MskIamUser {
+            access_key_id: k.to_string(),
+            secret_key: s.to_string(),
+        }),
+        _ => None,
+    };
+
+    let source = ClickPipePostKinesisSource {
+        format: parse_enum(format)?,
+        stream_name: stream_name.to_string(),
+        region: region.to_string(),
+        authentication: parse_enum(auth)?,
+        iam_role: iam_role.map(String::from),
+        access_key,
+        use_enhanced_fan_out: if enhanced_fan_out { Some(true) } else { None },
+        iterator_type: parse_enum(iterator_type)?,
+        timestamp: iterator_timestamp.map(|t| t as i64),
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            kinesis: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(database, table, parsed_columns),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+pub async fn clickpipe_get(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let clickpipe = client
+        .get_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+        println!("  Service ID: {}", clickpipe.service_id);
+        println!("  Scaling:");
+        println!("    Replicas: {}", clickpipe.scaling.replicas);
+        println!("    CPU: {}m", clickpipe.scaling.replica_cpu_millicores);
+        println!("    Memory: {} GB", clickpipe.scaling.replica_memory_gb);
+        if let Some(source_type) = source_label(&clickpipe.source) {
+            println!("  Source: {}", source_type);
+        }
+        if !clickpipe.destination.database.is_empty() || !clickpipe.destination.table.is_empty() {
+            println!(
+                "  Destination: {}.{}",
+                clickpipe.destination.database, clickpipe.destination.table
+            );
+        }
+        if !clickpipe.destination.columns.is_empty() {
+            println!("  Columns:");
+            for col in &clickpipe.destination.columns {
+                println!("    {} ({})", col.name, col.r#type);
+            }
+        }
+        println!("  Created: {}", clickpipe.created_at.to_rfc3339());
+        println!("  Updated: {}", clickpipe.updated_at.to_rfc3339());
+    }
+    Ok(())
+}
+
+/// Identify which source variant is populated on a ClickPipeSource response.
+fn source_label(source: &clickhouse_cloud_api::models::ClickPipeSource) -> Option<&'static str> {
+    if source.object_storage.is_some() {
+        Some("objectStorage")
+    } else if source.kafka.is_some() {
+        Some("kafka")
+    } else if source.kinesis.is_some() {
+        Some("kinesis")
+    } else if source.postgres.is_some() {
+        Some("postgres")
+    } else if source.mysql.is_some() {
+        Some("mysql")
+    } else if source.mongodb.is_some() {
+        Some("mongodb")
+    } else if source.bigquery.is_some() {
+        Some("bigquery")
+    } else {
+        None
+    }
+}
+
+pub async fn clickpipe_delete(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    client
+        .delete_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::json!({ "deleted": clickpipe_id }));
+    } else {
+        println!("ClickPipe {} deleted", clickpipe_id);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_state(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    command: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand;
+    let cmd = match command {
+        "start" => ClickPipeStatePatchRequestCommand::Start,
+        "stop" => ClickPipeStatePatchRequestCommand::Stop,
+        "resync" => ClickPipeStatePatchRequestCommand::Resync,
+        other => return Err(format!("Unknown state command: {}", other).into()),
+    };
+    let org_id = resolve_org_id(client, org_id).await?;
+    let clickpipe = client
+        .change_clickpipe_state(&org_id, service_id, clickpipe_id, cmd)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
         println!(
-            "Service {} stopping (state: {})",
-            svc.name,
-            svc.state
+            "ClickPipe {} {} (state: {})",
+            clickpipe.name, command, clickpipe.state
         );
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_scale(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    replicas: Option<u32>,
+    cpu_millicores: Option<u32>,
+    memory_gb: Option<f64>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let request = clickhouse_cloud_api::models::ClickPipeScalingPatchRequest {
+        replicas: replicas.map(i64::from),
+        replica_cpu_millicores: cpu_millicores.map(i64::from),
+        replica_memory_gb: memory_gb,
+        concurrency: None,
+    };
+    let clickpipe = client
+        .update_clickpipe_scaling(&org_id, service_id, clickpipe_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!("ClickPipe {} scaling updated", clickpipe.name);
+        println!("  Replicas: {}", clickpipe.scaling.replicas);
+        println!("  CPU: {}m", clickpipe.scaling.replica_cpu_millicores);
+        println!("  Memory: {} GB", clickpipe.scaling.replica_memory_gb);
+    }
+    Ok(())
+}
+
+pub async fn clickpipe_settings_get(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let settings = client
+        .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+    } else {
+        println!("ClickPipe Settings:");
+        let value = serde_json::to_value(&settings)?;
+        if let Some(obj) = value.as_object() {
+            for (key, val) in obj {
+                if !val.is_null() {
+                    println!("  {}: {}", key, val);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_settings_update(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    streaming_max_insert_wait_ms: Option<u32>,
+    object_storage_concurrency: Option<u32>,
+    object_storage_polling_interval_ms: Option<u32>,
+    object_storage_max_insert_bytes: Option<u64>,
+    object_storage_max_file_count: Option<u32>,
+    clickhouse_max_threads: Option<u32>,
+    clickhouse_max_insert_threads: Option<u32>,
+    object_storage_use_cluster_function: Option<bool>,
+    clickhouse_parallel_view_processing: Option<bool>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let request = clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+        streaming_max_insert_wait_ms: streaming_max_insert_wait_ms.map(i64::from),
+        object_storage_concurrency: object_storage_concurrency.map(i64::from),
+        object_storage_polling_interval_ms: object_storage_polling_interval_ms.map(i64::from),
+        object_storage_max_insert_bytes: object_storage_max_insert_bytes.map(|v| v as i64),
+        object_storage_max_file_count: object_storage_max_file_count.map(i64::from),
+        clickhouse_max_threads: clickhouse_max_threads.map(i64::from),
+        clickhouse_max_insert_threads: clickhouse_max_insert_threads.map(i64::from),
+        object_storage_use_cluster_function,
+        clickhouse_parallel_view_processing,
+        clickhouse_max_download_threads: None,
+        clickhouse_min_insert_block_size_bytes: None,
+        clickhouse_parallel_distributed_insert_select: None,
+    };
+    let settings = client
+        .update_clickpipe_settings(&org_id, service_id, clickpipe_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+    } else {
+        println!("ClickPipe settings updated");
+        let value = serde_json::to_value(&settings)?;
+        if let Some(obj) = value.as_object() {
+            for (key, val) in obj {
+                if !val.is_null() {
+                    println!("  {}: {}", key, val);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse a CLI string into a library enum. Library enums have a
+/// `#[serde(untagged)] Unknown(String)` variant so unknown inputs are
+/// forwarded to the API (which returns the canonical validation error).
+fn parse_enum<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, String> {
+    serde_json::from_value(serde_json::Value::String(s.to_string()))
+        .map_err(|e| format!("invalid value '{}': {}", s, e))
+}
+
+/// Parse `name:type` column specifications into library destination columns.
+fn parse_columns(
+    columns: &[String],
+) -> Result<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>, String> {
+    columns
+        .iter()
+        .map(|col| {
+            let (name, col_type) = col
+                .split_once(':')
+                .ok_or_else(|| format!("Invalid column format '{}': expected name:type", col))?;
+            Ok(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
+                name: name.to_string(),
+                r#type: col_type.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Build a managed-table destination with the default MergeTree engine.
+fn build_destination(
+    database: &str,
+    table: &str,
+    columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
+) -> clickhouse_cloud_api::models::ClickPipeMutateDestination {
+    clickhouse_cloud_api::models::ClickPipeMutateDestination {
+        database: database.to_string(),
+        table: table.to_string(),
+        columns,
+        managed_table: true,
+        roles: vec![],
+        table_definition:
+            clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition::default(),
+    }
+}
+
+/// Print the standard "created" confirmation for any create_* handler.
+fn print_created(
+    clickpipe: &clickhouse_cloud_api::models::ClickPipe,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", clickpipe.name);
+        println!("  ID: {}", clickpipe.id);
+        println!("  State: {}", clickpipe.state);
+    }
+    Ok(())
+}
+
+/// Parse `schema.table:target_table` mappings into (schema, table, target) tuples.
+/// Source-specific handlers map these into their own TableMapping struct.
+fn parse_db_table_mappings(mappings: &[String]) -> Result<Vec<(String, String, String)>, String> {
+    mappings
+        .iter()
+        .map(|m| {
+            let (source, target) = m.split_once(':').ok_or_else(|| {
+                format!(
+                    "Invalid table mapping '{}': expected schema.table:target_table",
+                    m
+                )
+            })?;
+            let (schema, table) = source
+                .split_once('.')
+                .ok_or_else(|| format!("Invalid source '{}': expected schema.table", source))?;
+            Ok((schema.to_string(), table.to_string(), target.to_string()))
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_postgres(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    host: &str,
+    port: u16,
+    pg_database: &str,
+    username: &str,
+    password: &str,
+    table_mappings: &[String],
+    postgres_type: &str,
+    replication_mode: &str,
+    auth: &str,
+    iam_role: Option<&str>,
+    tls_host: Option<&str>,
+    ca_certificate: Option<&str>,
+    publication_name: Option<&str>,
+    replication_slot_name: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource,
+        ClickPipePostgresPipeSettings, ClickPipePostgresPipeTableMapping, PLAIN,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+    let mappings = parse_db_table_mappings(table_mappings)?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => std::fs::read_to_string(path)?,
+        None => String::new(),
+    };
+
+    let pg_mappings = mappings
+        .into_iter()
+        .map(|(schema, t, target)| ClickPipePostgresPipeTableMapping {
+            source_schema_name: schema,
+            source_table: t,
+            target_table: target,
+            ..Default::default()
+        })
+        .collect();
+
+    let source = ClickPipeMutatePostgresSource {
+        r#type: Some(parse_enum(postgres_type)?),
+        credentials: PLAIN {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+        host: host.to_string(),
+        port: i64::from(port),
+        database: pg_database.to_string(),
+        authentication: parse_enum(auth)?,
+        iam_role: iam_role.unwrap_or_default().to_string(),
+        tls_host: tls_host.unwrap_or_default().to_string(),
+        ca_certificate: ca_cert_contents,
+        settings: ClickPipePostgresPipeSettings {
+            replication_mode: parse_enum(replication_mode)?,
+            publication_name: publication_name.unwrap_or_default().to_string(),
+            replication_slot_name: replication_slot_name.unwrap_or_default().to_string(),
+            ..Default::default()
+        },
+        table_mappings: pg_mappings,
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            postgres: source,
+            ..Default::default()
+        },
+        destination: build_destination("default", "", vec![]),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_mysql(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    table_mappings: &[String],
+    mysql_type: &str,
+    replication_mode: &str,
+    replication_mechanism: &str,
+    auth: &str,
+    iam_role: Option<&str>,
+    tls_host: Option<&str>,
+    ca_certificate: Option<&str>,
+    disable_tls: bool,
+    skip_cert_verification: bool,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMutateMySQLSource, ClickPipeMutatePostgresSource, ClickPipeMySQLPipeSettings,
+        ClickPipeMySQLPipeTableMapping, ClickPipePostRequest, ClickPipePostSource, PLAIN,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+    let mappings = parse_db_table_mappings(table_mappings)?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let mysql_mappings = mappings
+        .into_iter()
+        .map(|(schema, t, target)| ClickPipeMySQLPipeTableMapping {
+            source_schema_name: schema,
+            source_table: t,
+            target_table: target,
+            ..Default::default()
+        })
+        .collect();
+
+    let source = ClickPipeMutateMySQLSource {
+        r#type: Some(parse_enum(mysql_type)?),
+        credentials: Some(PLAIN {
+            username: username.to_string(),
+            password: password.to_string(),
+        }),
+        host: host.to_string(),
+        port: i64::from(port),
+        authentication: Some(parse_enum(auth)?),
+        iam_role: iam_role.map(String::from),
+        tls_host: tls_host.map(String::from),
+        ca_certificate: ca_cert_contents,
+        disable_tls: if disable_tls { Some(true) } else { None },
+        skip_cert_verification: if skip_cert_verification {
+            Some(true)
+        } else {
+            None
+        },
+        settings: ClickPipeMySQLPipeSettings {
+            replication_mode: parse_enum(replication_mode)?,
+            replication_mechanism: Some(parse_enum(replication_mechanism)?),
+            ..Default::default()
+        },
+        table_mappings: mysql_mappings,
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            mysql: Some(source),
+            postgres: ClickPipeMutatePostgresSource::default(),
+            ..Default::default()
+        },
+        destination: build_destination("default", "", vec![]),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_mongodb(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    uri: &str,
+    username: &str,
+    password: &str,
+    table_mappings: &[String],
+    replication_mode: &str,
+    read_preference: &str,
+    tls_host: Option<&str>,
+    ca_certificate: Option<&str>,
+    disable_tls: bool,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMongoDBPipeSettings, ClickPipeMongoDBPipeTableMapping,
+        ClickPipeMutateMongoDBSource, ClickPipeMutatePostgresSource, ClickPipePostRequest,
+        ClickPipePostSource, PLAIN,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+
+    // MongoDB uses `database.collection:target_table` format.
+    let mongo_mappings: Vec<ClickPipeMongoDBPipeTableMapping> = table_mappings
+        .iter()
+        .map(|m| {
+            let (source, target) = m.split_once(':').ok_or_else(|| {
+                format!(
+                    "Invalid table mapping '{}': expected database.collection:target_table",
+                    m
+                )
+            })?;
+            let (db, collection) = source.split_once('.').ok_or_else(|| {
+                format!("Invalid source '{}': expected database.collection", source)
+            })?;
+            Ok(ClickPipeMongoDBPipeTableMapping {
+                source_database_name: db.to_string(),
+                source_collection: collection.to_string(),
+                target_table: target.to_string(),
+                table_engine: None,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let ca_cert_contents = match ca_certificate {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let source = ClickPipeMutateMongoDBSource {
+        credentials: Some(PLAIN {
+            username: username.to_string(),
+            password: password.to_string(),
+        }),
+        uri: uri.to_string(),
+        read_preference: parse_enum(read_preference)?,
+        tls_host: tls_host.map(String::from),
+        ca_certificate: ca_cert_contents,
+        disable_tls: if disable_tls { Some(true) } else { None },
+        settings: ClickPipeMongoDBPipeSettings {
+            replication_mode: parse_enum(replication_mode)?,
+            ..Default::default()
+        },
+        table_mappings: mongo_mappings,
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            mongodb: Some(source),
+            postgres: ClickPipeMutatePostgresSource::default(),
+            ..Default::default()
+        },
+        destination: build_destination("default", "", vec![]),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn clickpipe_create_bigquery(
+    client: &CloudClient,
+    service_id: &str,
+    name: &str,
+    service_account_file: &str,
+    staging_path: &str,
+    table_mappings: &[String],
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
+        ClickPipeMutateBigQuerySource, ClickPipeMutatePostgresSource, ClickPipePostRequest,
+        ClickPipePostSource, ServiceAccount,
+    };
+
+    let org_id = resolve_org_id(client, org_id).await?;
+    let sa_contents = std::fs::read_to_string(service_account_file)?;
+    let sa_b64 = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        sa_contents.as_bytes(),
+    );
+
+    // BigQuery uses `dataset.table:target_table` format.
+    let bq_mappings: Vec<ClickPipeBigQueryPipeTableMapping> = table_mappings
+        .iter()
+        .map(|m| {
+            let (source, target) = m.split_once(':').ok_or_else(|| {
+                format!(
+                    "Invalid table mapping '{}': expected dataset.table:target_table",
+                    m
+                )
+            })?;
+            let (dataset, t) = source
+                .split_once('.')
+                .ok_or_else(|| format!("Invalid source '{}': expected dataset.table", source))?;
+            Ok(ClickPipeBigQueryPipeTableMapping {
+                source_dataset_name: dataset.to_string(),
+                source_table: t.to_string(),
+                target_table: target.to_string(),
+                ..Default::default()
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let source = ClickPipeMutateBigQuerySource {
+        credentials: ServiceAccount {
+            service_account_file: sa_b64,
+        },
+        snapshot_staging_path: staging_path.to_string(),
+        settings: ClickPipeBigQueryPipeSettings {
+            replication_mode: parse_enum("snapshot")?,
+            ..Default::default()
+        },
+        table_mappings: bq_mappings,
+    };
+
+    let request = ClickPipePostRequest {
+        name: name.to_string(),
+        source: ClickPipePostSource {
+            bigquery: Some(source),
+            postgres: ClickPipeMutatePostgresSource::default(),
+            ..Default::default()
+        },
+        destination: build_destination("default", "", vec![]),
+        ..Default::default()
+    };
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
     Ok(())
 }
 
@@ -1294,11 +2230,7 @@ pub async fn org_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!(
-            "Organization updated: {} ({})",
-            org.name,
-            org.id
-        );
+        println!("Organization updated: {} ({})", org.name, org.id);
     }
     Ok(())
 }
@@ -1549,11 +2481,7 @@ pub async fn invitation_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!(
-            "Invitation sent to {} ({})",
-            inv.email,
-            inv.id
-        );
+        println!("Invitation sent to {} ({})", inv.email, inv.id);
     }
     Ok(())
 }
@@ -1828,7 +2756,10 @@ pub async fn backup_config_get(
     } else {
         println!("Backup configuration for service {}", service_id);
         println!("  Backup period: {} hours", config.backup_period_in_hours);
-        println!("  Retention: {} hours", config.backup_retention_period_in_hours);
+        println!(
+            "  Retention: {} hours",
+            config.backup_retention_period_in_hours
+        );
         println!("  Start time: {}", config.backup_start_time);
     }
     Ok(())
@@ -1852,7 +2783,10 @@ pub async fn backup_config_update(
     } else {
         println!("Backup configuration updated for service {}", service_id);
         println!("  Backup period: {} hours", config.backup_period_in_hours);
-        println!("  Retention: {} hours", config.backup_retention_period_in_hours);
+        println!(
+            "  Retention: {} hours",
+            config.backup_retention_period_in_hours
+        );
         println!("  Start time: {}", config.backup_start_time);
     }
     Ok(())
@@ -2429,5 +3363,115 @@ mod tests {
         assert_eq!(query_json["roles"][0], "admin");
         assert_eq!(query_json["openApiKeys"][0], "key-1");
         assert_eq!(query_json["allowedOrigins"], "https://example.com");
+    }
+
+    #[test]
+    fn parse_db_table_mappings_valid() {
+        let mappings = vec![
+            "public.users:public_users".to_string(),
+            "schema1.orders:schema1_orders".to_string(),
+        ];
+        let result = super::parse_db_table_mappings(&mappings).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0],
+            ("public".into(), "users".into(), "public_users".into())
+        );
+        assert_eq!(
+            result[1],
+            ("schema1".into(), "orders".into(), "schema1_orders".into())
+        );
+    }
+
+    #[test]
+    fn parse_db_table_mappings_missing_colon() {
+        let mappings = vec!["public.users".to_string()];
+        let result = super::parse_db_table_mappings(&mappings);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("expected schema.table:target_table")
+        );
+    }
+
+    #[test]
+    fn parse_db_table_mappings_missing_dot() {
+        let mappings = vec!["users:target".to_string()];
+        let result = super::parse_db_table_mappings(&mappings);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected schema.table"));
+    }
+
+    #[test]
+    fn parse_db_table_mappings_empty() {
+        let mappings: Vec<String> = vec![];
+        let result = super::parse_db_table_mappings(&mappings).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_enum_known_variant() {
+        use clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceFormat;
+        let format: ClickPipePostObjectStorageSourceFormat =
+            super::parse_enum("JSONEachRow").unwrap();
+        assert_eq!(format, ClickPipePostObjectStorageSourceFormat::JSONEachRow);
+    }
+
+    #[test]
+    fn parse_enum_unknown_falls_through() {
+        // Unknown values map to the catch-all Unknown(String) variant —
+        // forwarded to the API which returns the canonical validation error.
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceType;
+        let kafka_type: ClickPipePostKafkaSourceType =
+            super::parse_enum("not-a-real-type").unwrap();
+        assert_eq!(
+            kafka_type,
+            ClickPipePostKafkaSourceType::Unknown("not-a-real-type".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_enum_preserves_rename_spellings() {
+        // Enums use `#[serde(rename = "s3")]` etc. — wire format is authoritative.
+        use clickhouse_cloud_api::models::{
+            ClickPipePostKafkaSourceAuthentication, ClickPipePostObjectStorageSourceType,
+        };
+        let ty: ClickPipePostObjectStorageSourceType = super::parse_enum("s3").unwrap();
+        assert_eq!(ty, ClickPipePostObjectStorageSourceType::S3);
+        let auth: ClickPipePostKafkaSourceAuthentication =
+            super::parse_enum("SCRAM-SHA-256").unwrap();
+        assert_eq!(auth, ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_256);
+    }
+
+    #[test]
+    fn parse_columns_valid() {
+        let cols = vec!["id:Int64".to_string(), "name:String".to_string()];
+        let parsed = super::parse_columns(&cols).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "id");
+        assert_eq!(parsed[0].r#type, "Int64");
+        assert_eq!(parsed[1].name, "name");
+        assert_eq!(parsed[1].r#type, "String");
+    }
+
+    #[test]
+    fn parse_columns_missing_colon_errors() {
+        let cols = vec!["id_without_type".to_string()];
+        let err = super::parse_columns(&cols).unwrap_err();
+        assert!(err.contains("expected name:type"));
+    }
+
+    #[test]
+    fn build_destination_uses_defaults_for_table_definition() {
+        let dest = super::build_destination("mydb", "events", vec![]);
+        assert_eq!(dest.database, "mydb");
+        assert_eq!(dest.table, "events");
+        assert!(dest.managed_table);
+        // Default table engine is MergeTree, not something else.
+        assert_eq!(
+            dest.table_definition.engine.r#type,
+            clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType::MergeTree
+        );
     }
 }

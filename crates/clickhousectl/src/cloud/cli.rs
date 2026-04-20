@@ -152,6 +152,20 @@ CONTEXT FOR AGENTS:
         command: BackupCommands,
     },
 
+    // Clickpipe commands
+    #[command(
+        name = "clickpipe",
+        after_help = "\
+CONTEXT FOR AGENTS:
+    Manage ClickPipes for ingesting data into ClickHouse Cloud.
+    Subcommands: list, get, delete, start, stop, resync, scale, settings, create.
+    Requires a service ID — get it from `clickhousectl cloud service list`."
+    )]
+    ClickPipe {
+        #[command(subcommand)]
+        command: ClickPipeCommands,
+    },
+
     /// Manage organization members
     Member {
         #[command(subcommand)]
@@ -260,6 +274,20 @@ impl CloudCommands {
                 ActivityCommands::Get { .. } => false,
             },
             CloudCommands::Postgres { command } => command.is_write(),
+            CloudCommands::ClickPipe { command } => match command {
+                ClickPipeCommands::List { .. } => false,
+                ClickPipeCommands::Get { .. } => false,
+                ClickPipeCommands::Delete { .. } => true,
+                ClickPipeCommands::Start { .. } => true,
+                ClickPipeCommands::Stop { .. } => true,
+                ClickPipeCommands::Resync { .. } => true,
+                ClickPipeCommands::Scale { .. } => true,
+                ClickPipeCommands::Create { .. } => true,
+                ClickPipeCommands::Settings { command } => match command {
+                    ClickPipeSettingsCommands::Get { .. } => false,
+                    ClickPipeSettingsCommands::Update { .. } => true,
+                },
+            },
         }
     }
 }
@@ -793,7 +821,6 @@ pub enum PrivateEndpointCommands {
     },
 }
 
-
 #[derive(Subcommand)]
 pub enum BackupCommands {
     /// List backups for a service
@@ -825,6 +852,667 @@ CONTEXT FOR AGENTS:
 
         /// Backup ID
         backup_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+pub enum ClickPipeCommands {
+    /// List ClickPipes
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get ClickPipe details
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a ClickPipe
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Start a ClickPipe
+    Start {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Stop a ClickPipe
+    Stop {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Resync a ClickPipe (CDC pipes only)
+    Resync {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update scaling configuration
+    Scale {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Number of replicas (1-40)
+        #[arg(long)]
+        replicas: Option<u32>,
+
+        /// CPU millicores per replica (125-2000, streaming pipes)
+        #[arg(long)]
+        cpu_millicores: Option<u32>,
+
+        /// Memory GB per replica (0.5-8, streaming pipes)
+        #[arg(long)]
+        memory_gb: Option<f64>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Manage ClickPipe settings
+    Settings {
+        #[command(subcommand)]
+        command: ClickPipeSettingsCommands,
+    },
+
+    /// Create a ClickPipe
+    Create {
+        #[command(subcommand)]
+        command: ClickPipeCreateCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeSettingsCommands {
+    /// Get ClickPipe settings
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update ClickPipe settings
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        clickpipe_id: String,
+
+        /// Max wait before inserting data (ms, 500-60000)
+        #[arg(long)]
+        streaming_max_insert_wait_ms: Option<u32>,
+
+        /// Concurrent file processing threads (1-35)
+        #[arg(long)]
+        object_storage_concurrency: Option<u32>,
+
+        /// Polling interval for continuous ingest (ms, 100-3600000)
+        #[arg(long)]
+        object_storage_polling_interval_ms: Option<u32>,
+
+        /// Bytes per insert batch
+        #[arg(long)]
+        object_storage_max_insert_bytes: Option<u64>,
+
+        /// Max files per insert batch (1-10000)
+        #[arg(long)]
+        object_storage_max_file_count: Option<u32>,
+
+        /// Max concurrent threads for file processing (0-64)
+        #[arg(long)]
+        clickhouse_max_threads: Option<u32>,
+
+        /// Max concurrent insert threads (0-16)
+        #[arg(long)]
+        clickhouse_max_insert_threads: Option<u32>,
+
+        /// Use ClickHouse cluster function
+        #[arg(long)]
+        object_storage_use_cluster_function: Option<bool>,
+
+        /// Push to attached views concurrently
+        #[arg(long)]
+        clickhouse_parallel_view_processing: Option<bool>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeCreateCommands {
+    /// Create a ClickPipe from S3, GCS, Azure Blob, or other object storage
+    #[command(name = "object-storage")]
+    ObjectStorage {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Source URL (e.g., https://bucket.s3.region.amazonaws.com/path/*.json)
+        #[arg(long)]
+        source_url: String,
+
+        /// Data format: JSONEachRow, CSV, CSVWithNames, Parquet, Avro, etc.
+        #[arg(long)]
+        format: String,
+
+        /// Destination database
+        #[arg(long)]
+        database: String,
+
+        /// Destination table
+        #[arg(long)]
+        table: String,
+
+        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
+        #[arg(long = "column")]
+        columns: Vec<String>,
+
+        /// Storage type: s3 (default), gcs, azureblobstorage, dospaces, cloudflarer2, ovhobjectstorage
+        #[arg(long, default_value = "s3")]
+        storage_type: String,
+
+        /// Compression: auto, gzip, brotli, xz, zstd, none
+        #[arg(long, default_value = "auto")]
+        compression: String,
+
+        /// Enable continuous ingestion
+        #[arg(long)]
+        continuous: bool,
+
+        /// SQS queue URL for continuous ingestion notifications
+        #[arg(long)]
+        queue_url: Option<String>,
+
+        /// CSV delimiter character (e.g., ",")
+        #[arg(long)]
+        delimiter: Option<String>,
+
+        /// IAM role ARN for authentication
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// Access key ID for authentication
+        #[arg(long, requires = "secret_key")]
+        access_key_id: Option<String>,
+
+        /// Secret key for authentication
+        #[arg(long, requires = "access_key_id")]
+        secret_key: Option<String>,
+
+        /// Azure connection string for authentication
+        #[arg(long)]
+        connection_string: Option<String>,
+
+        /// Azure container name
+        #[arg(long)]
+        azure_container_name: Option<String>,
+
+        /// Object storage path (for Azure)
+        #[arg(long)]
+        path: Option<String>,
+
+        /// GCP service account key (base64-encoded JSON key file)
+        #[arg(long)]
+        service_account_key: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from Kafka or Kafka-compatible source
+    Kafka {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Kafka broker(s) (e.g., "broker1:9092,broker2:9092")
+        #[arg(long)]
+        brokers: String,
+
+        /// Topic(s) to consume from
+        #[arg(long)]
+        topics: String,
+
+        /// Data format: JSONEachRow, Avro, AvroConfluent, Protobuf
+        #[arg(long)]
+        format: String,
+
+        /// Destination database
+        #[arg(long)]
+        database: String,
+
+        /// Destination table
+        #[arg(long)]
+        table: String,
+
+        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+        #[arg(long = "column")]
+        columns: Vec<String>,
+
+        /// Kafka type: kafka (default), redpanda, msk, confluent, warpstream, azureeventhub, dokafka
+        #[arg(long, default_value = "kafka")]
+        kafka_type: String,
+
+        /// Consumer group name
+        #[arg(long)]
+        consumer_group: Option<String>,
+
+        /// Authentication: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS
+        #[arg(long)]
+        auth: Option<String>,
+
+        /// Username for PLAIN/SCRAM authentication
+        #[arg(long, requires = "password")]
+        username: Option<String>,
+
+        /// Password for PLAIN/SCRAM authentication
+        #[arg(long, requires = "username")]
+        password: Option<String>,
+
+        /// IAM role ARN for MSK IAM authentication
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// Access key ID for IAM_USER authentication
+        #[arg(long, requires = "secret_key")]
+        access_key_id: Option<String>,
+
+        /// Secret key for IAM_USER authentication
+        #[arg(long, requires = "access_key_id")]
+        secret_key: Option<String>,
+
+        /// Offset strategy: from_beginning (default), from_latest, from_timestamp
+        #[arg(long, default_value = "from_beginning")]
+        offset: String,
+
+        /// Timestamp for from_timestamp offset (e.g., "2021-01-01T00:00")
+        #[arg(long)]
+        offset_timestamp: Option<String>,
+
+        /// Schema registry URL (for Avro/Protobuf formats)
+        #[arg(long)]
+        schema_registry_url: Option<String>,
+
+        /// Schema registry username
+        #[arg(long)]
+        schema_registry_username: Option<String>,
+
+        /// Schema registry password
+        #[arg(long)]
+        schema_registry_password: Option<String>,
+
+        /// Path to broker CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Path to client certificate file (for MUTUAL_TLS auth)
+        #[arg(long)]
+        client_certificate: Option<String>,
+
+        /// Path to client private key file (for MUTUAL_TLS auth)
+        #[arg(long)]
+        client_key: Option<String>,
+
+        /// Path to schema registry CA certificate file
+        #[arg(long)]
+        schema_registry_ca_certificate: Option<String>,
+
+        /// Reverse private endpoint IDs (repeatable)
+        #[arg(long = "reverse-private-endpoint-id")]
+        reverse_private_endpoint_ids: Vec<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from Amazon Kinesis
+    Kinesis {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Kinesis stream name
+        #[arg(long)]
+        stream_name: String,
+
+        /// AWS region (e.g., us-east-1)
+        #[arg(long)]
+        region: String,
+
+        /// Data format: JSONEachRow, Avro, AvroConfluent
+        #[arg(long)]
+        format: String,
+
+        /// Destination database
+        #[arg(long)]
+        database: String,
+
+        /// Destination table
+        #[arg(long)]
+        table: String,
+
+        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+        #[arg(long = "column")]
+        columns: Vec<String>,
+
+        /// Authentication: IAM_ROLE (default), IAM_USER
+        #[arg(long, default_value = "IAM_ROLE")]
+        auth: String,
+
+        /// IAM role ARN
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// Access key ID for IAM_USER authentication
+        #[arg(long, requires = "secret_key")]
+        access_key_id: Option<String>,
+
+        /// Secret key for IAM_USER authentication
+        #[arg(long, requires = "access_key_id")]
+        secret_key: Option<String>,
+
+        /// Iterator type: TRIM_HORIZON (default), LATEST, AT_TIMESTAMP
+        #[arg(long, default_value = "TRIM_HORIZON")]
+        iterator_type: String,
+
+        /// Unix timestamp for AT_TIMESTAMP iterator type
+        #[arg(long)]
+        iterator_timestamp: Option<u64>,
+
+        /// Enable enhanced fan-out
+        #[arg(long)]
+        enhanced_fan_out: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from PostgreSQL
+    Postgres {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// PostgreSQL host
+        #[arg(long)]
+        host: String,
+
+        /// PostgreSQL port
+        #[arg(long, default_value = "5432")]
+        port: u16,
+
+        /// Source database name
+        #[arg(long)]
+        pg_database: String,
+
+        /// Username
+        #[arg(long)]
+        username: String,
+
+        /// Password
+        #[arg(long)]
+        password: String,
+
+        /// Table mappings as schema.table:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
+
+        /// Postgres type: postgres (default), supabase, neon, alloydb, rdspostgres, aurorapostgres, cloudsqlpostgres, azurepostgres, crunchybridge, tigerdata
+        #[arg(long, default_value = "postgres")]
+        postgres_type: String,
+
+        /// Replication mode: cdc (default), snapshot, cdc_only
+        #[arg(long, default_value = "cdc")]
+        replication_mode: String,
+
+        /// Authentication: basic (default), IAM_ROLE
+        #[arg(long, default_value = "basic")]
+        auth: String,
+
+        /// IAM role ARN
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// TLS hostname
+        #[arg(long)]
+        tls_host: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Postgres publication name
+        #[arg(long)]
+        publication_name: Option<String>,
+
+        /// Replication slot name
+        #[arg(long)]
+        replication_slot_name: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from MySQL
+    #[command(name = "mysql")]
+    MySQL {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// MySQL host
+        #[arg(long)]
+        host: String,
+
+        /// MySQL port
+        #[arg(long, default_value = "3306")]
+        port: u16,
+
+        /// Username
+        #[arg(long)]
+        username: String,
+
+        /// Password
+        #[arg(long)]
+        password: String,
+
+        /// Table mappings as schema.table:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
+
+        /// MySQL type: mysql (default), rdsmysql, auroramysql, mariadb, rdsmariadb
+        #[arg(long, default_value = "mysql")]
+        mysql_type: String,
+
+        /// Replication mode: cdc (default), snapshot, cdc_only
+        #[arg(long, default_value = "cdc")]
+        replication_mode: String,
+
+        /// Replication mechanism: GTID (default), FILE_POS
+        #[arg(long, default_value = "GTID")]
+        replication_mechanism: String,
+
+        /// Authentication: basic (default), IAM_ROLE
+        #[arg(long, default_value = "basic")]
+        auth: String,
+
+        /// IAM role ARN
+        #[arg(long)]
+        iam_role: Option<String>,
+
+        /// TLS hostname
+        #[arg(long)]
+        tls_host: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Disable TLS
+        #[arg(long)]
+        disable_tls: bool,
+
+        /// Skip certificate verification
+        #[arg(long)]
+        skip_cert_verification: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from MongoDB
+    #[command(name = "mongodb")]
+    MongoDB {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// MongoDB connection URI (e.g., mongodb+srv://cluster0.example.mongodb.net/mydb)
+        #[arg(long)]
+        uri: String,
+
+        /// Username
+        #[arg(long)]
+        username: String,
+
+        /// Password
+        #[arg(long)]
+        password: String,
+
+        /// Table mappings as database.collection:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
+
+        /// Replication mode: cdc (default), snapshot, cdc_only
+        #[arg(long, default_value = "cdc")]
+        replication_mode: String,
+
+        /// Read preference: secondaryPreferred (default), primary, primaryPreferred, secondary, nearest
+        #[arg(long, default_value = "secondaryPreferred")]
+        read_preference: String,
+
+        /// TLS hostname
+        #[arg(long)]
+        tls_host: Option<String>,
+
+        /// Path to CA certificate file
+        #[arg(long)]
+        ca_certificate: Option<String>,
+
+        /// Disable TLS
+        #[arg(long)]
+        disable_tls: bool,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a ClickPipe from BigQuery
+    #[command(name = "bigquery")]
+    BigQuery {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe name
+        #[arg(long)]
+        name: String,
+
+        /// Path to GCP service account JSON key file
+        #[arg(long)]
+        service_account_file: String,
+
+        /// GCS staging path for snapshot data
+        #[arg(long)]
+        staging_path: String,
+
+        /// Table mappings as dataset.table:target_table (repeatable)
+        #[arg(long = "table-mapping")]
+        table_mappings: Vec<String>,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -1537,21 +2225,69 @@ mod tests {
         // Org reads
         assert_write(&["clickhousectl", "cloud", "org", "list"], false);
         assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "prometheus", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "usage", "org-1", "--from-date", "2025-01-01", "--to-date", "2025-01-31"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "prometheus", "org-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "usage",
+                "org-1",
+                "--from-date",
+                "2025-01-01",
+                "--to-date",
+                "2025-01-31",
+            ],
+            false,
+        );
 
         // Service reads
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "client", "--id", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "service", "get", "svc-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "client",
+                "--id",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
+            false,
+        );
 
         // Backup reads
-        assert_write(&["clickhousectl", "cloud", "backup", "list", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "backup", "list", "svc-1"],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"],
+            false,
+        );
 
         // Backup config read
-        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "get", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "backup-config",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Member reads
         assert_write(&["clickhousectl", "cloud", "member", "list"], false);
@@ -1559,7 +2295,10 @@ mod tests {
 
         // Invitation reads
         assert_write(&["clickhousectl", "cloud", "invitation", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "invitation", "get", "inv-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "invitation", "get", "inv-1"],
+            false,
+        );
 
         // Key reads
         assert_write(&["clickhousectl", "cloud", "key", "list"], false);
@@ -1567,13 +2306,36 @@ mod tests {
 
         // Activity reads
         assert_write(&["clickhousectl", "cloud", "activity", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "activity", "get", "act-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "activity", "get", "act-1"],
+            false,
+        );
 
         // Query endpoint read
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "get", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Private endpoint read
-        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "get-config",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Postgres reads
         assert_write(&["clickhousectl", "cloud", "postgres", "list"], false);
@@ -1585,39 +2347,191 @@ mod tests {
     #[test]
     fn is_write_command_destructive_commands() {
         // Org write
-        assert_write(&["clickhousectl", "cloud", "org", "update", "org-1", "--name", "new"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "update",
+                "org-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
 
         // Service writes
-        assert_write(&["clickhousectl", "cloud", "service", "create", "--name", "s", "--provider", "aws", "--region", "us-east-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "delete", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "start", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "stop", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "update", "svc-1", "--name", "new"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "scale", "svc-1", "--num-replicas", "2"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "reset-password", "svc-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "create",
+                "--name",
+                "s",
+                "--provider",
+                "aws",
+                "--region",
+                "us-east-1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "delete", "svc-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "start", "svc-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "stop", "svc-1"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "update",
+                "svc-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scale",
+                "svc-1",
+                "--num-replicas",
+                "2",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "reset-password",
+                "svc-1",
+            ],
+            true,
+        );
 
         // Backup config write
-        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "update", "svc-1", "--backup-period-hours", "12"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "backup-config",
+                "update",
+                "svc-1",
+                "--backup-period-hours",
+                "12",
+            ],
+            true,
+        );
 
         // Member writes
-        assert_write(&["clickhousectl", "cloud", "member", "update", "usr-1", "--role-id", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "member", "remove", "usr-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "member",
+                "update",
+                "usr-1",
+                "--role-id",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "member", "remove", "usr-1"],
+            true,
+        );
 
         // Invitation writes
-        assert_write(&["clickhousectl", "cloud", "invitation", "create", "--email", "a@b.com", "--role-id", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "invitation", "delete", "inv-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "invitation",
+                "create",
+                "--email",
+                "a@b.com",
+                "--role-id",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "invitation", "delete", "inv-1"],
+            true,
+        );
 
         // Key writes
-        assert_write(&["clickhousectl", "cloud", "key", "create", "--name", "k"], true);
-        assert_write(&["clickhousectl", "cloud", "key", "update", "key-1", "--name", "new"], true);
+        assert_write(
+            &["clickhousectl", "cloud", "key", "create", "--name", "k"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "key",
+                "update",
+                "key-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
         assert_write(&["clickhousectl", "cloud", "key", "delete", "key-1"], true);
 
         // Query endpoint writes
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "create", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "delete", "svc-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "create",
+                "svc-1",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "delete",
+                "svc-1",
+            ],
+            true,
+        );
 
         // Private endpoint write
-        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "create", "svc-1", "--endpoint-id", "ep-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                "ep-1",
+            ],
+            true,
+        );
 
         // Postgres writes
         assert_write(&["clickhousectl", "cloud", "postgres", "create", "--name", "pg", "--region", "us-east-1", "--size", "m7i.2xlarge", "--storage-gb", "100"], true);
