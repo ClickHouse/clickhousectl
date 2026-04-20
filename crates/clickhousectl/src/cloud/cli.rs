@@ -149,10 +149,14 @@ CONTEXT FOR AGENTS:
     },
 
     // Clickpipe commands
-    #[command(name = "clickpipe", after_help = "\
+    #[command(
+        name = "clickpipe",
+        after_help = "\
 CONTEXT FOR AGENTS:
-    Manage ClickPipes for ingesting data into ClickHouse Cloud. Subcommands: list, get.
-    Requires a service ID — get it from `clickhousectl cloud service list`.")]
+    Manage ClickPipes for ingesting data into ClickHouse Cloud.
+    Subcommands: list, get, delete, start, stop, resync, scale, settings, create.
+    Requires a service ID — get it from `clickhousectl cloud service list`."
+    )]
     ClickPipe {
         #[command(subcommand)]
         command: ClickPipeCommands,
@@ -252,6 +256,20 @@ impl CloudCommands {
             CloudCommands::Activity { command } => match command {
                 ActivityCommands::List { .. } => false,
                 ActivityCommands::Get { .. } => false,
+            },
+            CloudCommands::ClickPipe { command } => match command {
+                ClickPipeCommands::List { .. } => false,
+                ClickPipeCommands::Get { .. } => false,
+                ClickPipeCommands::Delete { .. } => true,
+                ClickPipeCommands::Start { .. } => true,
+                ClickPipeCommands::Stop { .. } => true,
+                ClickPipeCommands::Resync { .. } => true,
+                ClickPipeCommands::Scale { .. } => true,
+                ClickPipeCommands::Create { .. } => true,
+                ClickPipeCommands::Settings { command } => match command {
+                    ClickPipeSettingsCommands::Get { .. } => false,
+                    ClickPipeSettingsCommands::Update { .. } => true,
+                },
             },
         }
     }
@@ -786,7 +804,6 @@ pub enum PrivateEndpointCommands {
     },
 }
 
-
 #[derive(Subcommand)]
 pub enum BackupCommands {
     /// List backups for a service
@@ -825,6 +842,7 @@ CONTEXT FOR AGENTS:
     },
 }
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum ClickPipeCommands {
     /// List ClickPipes
     List {
@@ -2190,21 +2208,69 @@ mod tests {
         // Org reads
         assert_write(&["clickhousectl", "cloud", "org", "list"], false);
         assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "prometheus", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "usage", "org-1", "--from-date", "2025-01-01", "--to-date", "2025-01-31"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "prometheus", "org-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "usage",
+                "org-1",
+                "--from-date",
+                "2025-01-01",
+                "--to-date",
+                "2025-01-31",
+            ],
+            false,
+        );
 
         // Service reads
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "client", "--id", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "service", "get", "svc-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "client",
+                "--id",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
+            false,
+        );
 
         // Backup reads
-        assert_write(&["clickhousectl", "cloud", "backup", "list", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "backup", "list", "svc-1"],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"],
+            false,
+        );
 
         // Backup config read
-        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "get", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "backup-config",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Member reads
         assert_write(&["clickhousectl", "cloud", "member", "list"], false);
@@ -2212,7 +2278,10 @@ mod tests {
 
         // Invitation reads
         assert_write(&["clickhousectl", "cloud", "invitation", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "invitation", "get", "inv-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "invitation", "get", "inv-1"],
+            false,
+        );
 
         // Key reads
         assert_write(&["clickhousectl", "cloud", "key", "list"], false);
@@ -2220,50 +2289,225 @@ mod tests {
 
         // Activity reads
         assert_write(&["clickhousectl", "cloud", "activity", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "activity", "get", "act-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "activity", "get", "act-1"],
+            false,
+        );
 
         // Query endpoint read
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "get", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Private endpoint read
-        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "get-config",
+                "svc-1",
+            ],
+            false,
+        );
     }
 
     #[test]
     fn is_write_command_destructive_commands() {
         // Org write
-        assert_write(&["clickhousectl", "cloud", "org", "update", "org-1", "--name", "new"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "update",
+                "org-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
 
         // Service writes
-        assert_write(&["clickhousectl", "cloud", "service", "create", "--name", "s", "--provider", "aws", "--region", "us-east-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "delete", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "start", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "stop", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "update", "svc-1", "--name", "new"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "scale", "svc-1", "--num-replicas", "2"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "reset-password", "svc-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "create",
+                "--name",
+                "s",
+                "--provider",
+                "aws",
+                "--region",
+                "us-east-1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "delete", "svc-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "start", "svc-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "stop", "svc-1"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "update",
+                "svc-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scale",
+                "svc-1",
+                "--num-replicas",
+                "2",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "reset-password",
+                "svc-1",
+            ],
+            true,
+        );
 
         // Backup config write
-        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "update", "svc-1", "--backup-period-hours", "12"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "backup-config",
+                "update",
+                "svc-1",
+                "--backup-period-hours",
+                "12",
+            ],
+            true,
+        );
 
         // Member writes
-        assert_write(&["clickhousectl", "cloud", "member", "update", "usr-1", "--role-id", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "member", "remove", "usr-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "member",
+                "update",
+                "usr-1",
+                "--role-id",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "member", "remove", "usr-1"],
+            true,
+        );
 
         // Invitation writes
-        assert_write(&["clickhousectl", "cloud", "invitation", "create", "--email", "a@b.com", "--role-id", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "invitation", "delete", "inv-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "invitation",
+                "create",
+                "--email",
+                "a@b.com",
+                "--role-id",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "invitation", "delete", "inv-1"],
+            true,
+        );
 
         // Key writes
-        assert_write(&["clickhousectl", "cloud", "key", "create", "--name", "k"], true);
-        assert_write(&["clickhousectl", "cloud", "key", "update", "key-1", "--name", "new"], true);
+        assert_write(
+            &["clickhousectl", "cloud", "key", "create", "--name", "k"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "key",
+                "update",
+                "key-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
         assert_write(&["clickhousectl", "cloud", "key", "delete", "key-1"], true);
 
         // Query endpoint writes
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "create", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "delete", "svc-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "create",
+                "svc-1",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "delete",
+                "svc-1",
+            ],
+            true,
+        );
 
         // Private endpoint write
-        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "create", "svc-1", "--endpoint-id", "ep-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                "ep-1",
+            ],
+            true,
+        );
     }
 }

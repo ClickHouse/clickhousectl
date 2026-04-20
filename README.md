@@ -10,6 +10,7 @@ With `clickhousectl` you can:
 - Execute queries against ClickHouse servers
 - Setup ClickHouse Cloud and create cloud-managed ClickHouse clusters
 - Manage ClickHouse Cloud resources
+- Create and manage ClickPipes for data ingestion (S3, Kafka, Kinesis, Postgres, MySQL, MongoDB, BigQuery)
 - Install the official ClickHouse agent skills into supported coding agents
 - Push your local ClickHouse development to cloud
 
@@ -367,6 +368,100 @@ clickhousectl cloud service delete <service-id> --force
 clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
 ```
+
+### ClickPipes
+
+Manage ClickPipes for ingesting data into ClickHouse Cloud from external sources.
+
+```bash
+# List ClickPipes for a service
+clickhousectl cloud clickpipe list <service-id>
+
+# Get ClickPipe details
+clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
+
+# Start/stop/resync a ClickPipe
+clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
+clickhousectl cloud clickpipe stop <service-id> <clickpipe-id>
+clickhousectl cloud clickpipe resync <service-id> <clickpipe-id>   # CDC pipes only
+
+# Delete a ClickPipe
+clickhousectl cloud clickpipe delete <service-id> <clickpipe-id>
+
+# Update scaling
+clickhousectl cloud clickpipe scale <service-id> <clickpipe-id> \
+  --replicas 2 --cpu-millicores 250 --memory-gb 1
+
+# Get/update settings
+clickhousectl cloud clickpipe settings get <service-id> <clickpipe-id>
+clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
+  --streaming-max-insert-wait-ms 10000
+```
+
+#### Creating ClickPipes
+
+Each source type has its own subcommand under `clickpipe create`:
+
+```bash
+# From S3 / object storage
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-s3-pipe \
+  --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/**' \
+  --format JSONEachRow \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
+# From Kafka / Redpanda / Confluent / MSK
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-kafka-pipe \
+  --brokers 'broker:9092' --topics events \
+  --format JSONEachRow \
+  --kafka-type redpanda \
+  --auth SCRAM-SHA-256 --username user --password pass \
+  --ca-certificate ./ca.crt \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
+# From Amazon Kinesis
+clickhousectl cloud clickpipe create kinesis <service-id> \
+  --name my-kinesis-pipe \
+  --stream-name events --region us-east-1 \
+  --format JSONEachRow \
+  --auth IAM_USER --access-key-id AKIA... --secret-key ... \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
+# From PostgreSQL (CDC)
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-pg-pipe \
+  --host db.example.com --pg-database mydb \
+  --username pguser --password pgpass \
+  --table-mapping "public.users:public_users" \
+  --table-mapping "public.orders:public_orders"
+
+# From MySQL (CDC)
+clickhousectl cloud clickpipe create mysql <service-id> \
+  --name my-mysql-pipe \
+  --host mysql.example.com \
+  --username root --password pass \
+  --table-mapping "mydb.users:mydb_users"
+
+# From MongoDB (CDC)
+clickhousectl cloud clickpipe create mongodb <service-id> \
+  --name my-mongo-pipe \
+  --uri 'mongodb+srv://cluster.example.net/mydb' \
+  --username mongouser --password mongopass \
+  --table-mapping "mydb.users:mydb_users"
+
+# From BigQuery (snapshot)
+clickhousectl cloud clickpipe create bigquery <service-id> \
+  --name my-bq-pipe \
+  --service-account-file ./sa-key.json \
+  --staging-path gs://bucket/staging \
+  --table-mapping "dataset.table:target_table"
+```
+
+Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
 ### Members
 

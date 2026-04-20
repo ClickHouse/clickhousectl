@@ -10,13 +10,13 @@ mod user_agent;
 mod version_manager;
 
 use clap::Parser;
-use cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli,
-    ClickPipeCommands, ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs,
-    CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
-};
 use clap::error::ErrorKind;
+use cli::{
+    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, ClickPipeCommands,
+    ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands, Commands,
+    InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
+    QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
+};
 
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -73,10 +73,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
     if args.check {
         match update::check_for_update().await? {
             Some((current, latest)) => {
-                println!(
-                    "Update available: v{} → v{}",
-                    current, latest
-                );
+                println!("Update available: v{} → v{}", current, latest);
                 println!("Run `clickhousectl update` to upgrade.");
             }
             None => {
@@ -148,7 +145,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .map_err(|e| Error::Cloud(format!("Invalid URL: {}", e)))?;
                 let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
                 let base_host = host.strip_prefix("api.").unwrap_or(host);
-                let url = format!("https://console.{}/signUp?utm_source=clickhousectl", base_host);
+                let url = format!(
+                    "https://console.{}/signUp?utm_source=clickhousectl",
+                    base_host
+                );
                 println!("Opening ClickHouse Cloud sign-up page...");
                 if open::that(&url).is_err() {
                     println!("Could not open browser. Please visit: {}", url);
@@ -628,13 +628,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 invitation_id,
                 org_id,
             } => {
-                cloud::commands::invitation_delete(
-                    &client,
-                    &invitation_id,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+                cloud::commands::invitation_delete(&client, &invitation_id, org_id.as_deref(), json)
+                    .await
             }
         },
         CloudCommands::Key { command } => match command {
@@ -734,8 +729,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         },
         CloudCommands::ClickPipe { command } => match command {
             ClickPipeCommands::List { service_id, org_id } => {
-                cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json)
-                    .await
+                cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json).await
             }
             ClickPipeCommands::Get {
                 service_id,
@@ -859,7 +853,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     clickhouse_parallel_view_processing,
                     org_id,
                 } => {
-                    let request = cloud::types::ClickPipeSettingsRequest {
+                    cloud::commands::clickpipe_settings_update(
+                        &client,
+                        &service_id,
+                        &clickpipe_id,
                         streaming_max_insert_wait_ms,
                         object_storage_concurrency,
                         object_storage_polling_interval_ms,
@@ -869,18 +866,12 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         clickhouse_max_insert_threads,
                         object_storage_use_cluster_function,
                         clickhouse_parallel_view_processing,
-                    };
-                    cloud::commands::clickpipe_settings_update(
-                        &client,
-                        &service_id,
-                        &clickpipe_id,
-                        &request,
                         org_id.as_deref(),
                         json,
                     )
                     .await
                 }
-            }
+            },
             ClickPipeCommands::Create { command } => match command {
                 ClickPipeCreateCommands::ObjectStorage {
                     service_id,
@@ -1168,7 +1159,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     )
                     .await
                 }
-            }
+            },
         },
     };
 
