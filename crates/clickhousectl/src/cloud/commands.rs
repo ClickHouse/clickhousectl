@@ -995,29 +995,9 @@ pub async fn clickpipe_list(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn clickpipe_create_s3(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    url: &str,
-    format: &str,
-    database: &str,
-    table: &str,
-    columns: &[String],
-    storage_type: &str,
-    compression: &str,
-    continuous: bool,
-    queue_url: Option<&str>,
-    delimiter: Option<&str>,
-    iam_role: Option<&str>,
-    access_key_id: Option<&str>,
-    secret_key: Option<&str>,
-    connection_string: Option<&str>,
-    azure_container_name: Option<&str>,
-    path: Option<&str>,
-    service_account_key: Option<&str>,
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::ObjectStorageCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
@@ -1025,10 +1005,14 @@ pub async fn clickpipe_create_s3(
         ClickPipePostRequest, ClickPipePostSource, MskIamUser,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
-    let parsed_columns = parse_columns(columns)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let parsed_columns = parse_columns(&args.columns)?;
 
-    let (authentication, iam_role_val, access_key) = match (iam_role, access_key_id, secret_key) {
+    let (authentication, iam_role_val, access_key) = match (
+        args.iam_role.as_deref(),
+        args.access_key_id.as_deref(),
+        args.secret_key.as_deref(),
+    ) {
         (Some(role), _, _) => (
             Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
             Some(role.to_string()),
@@ -1046,78 +1030,98 @@ pub async fn clickpipe_create_s3(
     };
     let authentication = authentication
         .or_else(|| {
-            connection_string
+            args.connection_string
+                .as_ref()
                 .map(|_| ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING)
         })
         .or_else(|| {
-            service_account_key
+            args.service_account_key
+                .as_ref()
                 .map(|_| ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
         });
 
     let source = ClickPipePostObjectStorageSource {
-        r#type: parse_enum(storage_type)?,
-        format: parse_enum(format)?,
-        url: url.to_string(),
-        compression: Some(parse_enum(compression)?),
-        is_continuous: if continuous { Some(true) } else { None },
-        queue_url: queue_url.map(String::from),
-        delimiter: delimiter.map(String::from),
+        r#type: parse_enum(&args.storage_type)?,
+        format: parse_enum(&args.format)?,
+        url: args.source_url.clone(),
+        compression: Some(parse_enum(&args.compression)?),
+        is_continuous: if args.continuous { Some(true) } else { None },
+        queue_url: args.queue_url.clone(),
+        delimiter: args.delimiter.clone(),
         authentication,
         iam_role: iam_role_val,
         access_key,
-        connection_string: connection_string.map(String::from),
-        azure_container_name: azure_container_name.map(String::from),
-        path: path.map(String::from),
-        service_account_key: service_account_key.map(String::from),
+        connection_string: args.connection_string.clone(),
+        azure_container_name: args.azure_container_name.clone(),
+        path: args.path.clone(),
+        service_account_key: args.service_account_key.clone(),
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             object_storage: Some(source),
             ..Default::default()
         },
-        destination: build_destination(database, table, parsed_columns),
+        destination: build_destination(&args.database, &args.table, parsed_columns),
         ..Default::default()
     };
 
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Build the Kafka `credentials` JSON body, whose shape is a `oneOf` determined
+/// by the auth mode (see the `ClickPipePostKafkaSource.credentials` schema).
+/// IAM_ROLE sends a null body — the role ARN flows through the separate
+/// top-level `iamRole` field on the source, not through credentials.
+///
+/// `mtls_contents` is the pre-read (certificate, privateKey) PEM bundle used
+/// only for MUTUAL_TLS; the caller reads these from disk so this function
+/// stays pure and testable.
+fn build_kafka_credentials(
+    authentication: &clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication,
+    args: &crate::cloud::cli::KafkaCreateArgs,
+    mtls_contents: Option<(String, String)>,
+) -> Result<serde_json::Value, String> {
+    use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+    match authentication {
+        Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512 => {
+            match (args.username.as_deref(), args.password.as_deref()) {
+                (Some(u), Some(p)) => Ok(serde_json::json!({ "username": u, "password": p })),
+                _ => Err(format!(
+                    "{} requires --username and --password",
+                    args.auth.as_deref().unwrap_or("PLAIN")
+                )),
+            }
+        }
+        Auth::IAM_USER => match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
+            (Some(k), Some(s)) => Ok(serde_json::json!({ "accessKeyId": k, "secretKey": s })),
+            _ => Err("IAM_USER requires --access-key-id and --secret-key".into()),
+        },
+        Auth::IAM_ROLE => {
+            if args.iam_role.is_none() {
+                Err("IAM_ROLE requires --iam-role".into())
+            } else {
+                Ok(serde_json::Value::Null)
+            }
+        }
+        Auth::MUTUAL_TLS => match mtls_contents {
+            Some((cert, key)) => {
+                Ok(serde_json::json!({ "certificate": cert, "privateKey": key }))
+            }
+            None => Err("MUTUAL_TLS requires --client-certificate and --client-key".into()),
+        },
+        Auth::Unknown(_) => Ok(serde_json::Value::Null),
+    }
+}
+
 pub async fn clickpipe_create_kafka(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    brokers: &str,
-    topics: &str,
-    format: &str,
-    database: &str,
-    table: &str,
-    columns: &[String],
-    kafka_type: &str,
-    consumer_group: Option<&str>,
-    auth: Option<&str>,
-    username: Option<&str>,
-    password: Option<&str>,
-    iam_role: Option<&str>,
-    access_key_id: Option<&str>,
-    secret_key: Option<&str>,
-    offset: &str,
-    offset_timestamp: Option<&str>,
-    schema_registry_url: Option<&str>,
-    schema_registry_username: Option<&str>,
-    schema_registry_password: Option<&str>,
-    ca_certificate: Option<&str>,
-    client_certificate: Option<&str>,
-    client_key: Option<&str>,
-    schema_registry_ca_certificate: Option<&str>,
-    reverse_private_endpoint_ids: &[String],
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::KafkaCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
@@ -1126,40 +1130,50 @@ pub async fn clickpipe_create_kafka(
         ClickPipePostKafkaSourceAuthentication, ClickPipePostRequest, ClickPipePostSource,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
-    let parsed_columns = parse_columns(columns)?;
+    // Validate args and build credentials before any network call so bad
+    // invocations fail fast.
+    let parsed_columns = parse_columns(&args.columns)?;
 
-    let authentication: ClickPipePostKafkaSourceAuthentication = match auth {
+    let authentication: ClickPipePostKafkaSourceAuthentication = match args.auth.as_deref() {
         Some(a) => parse_enum(a)?,
         None => ClickPipePostKafkaSourceAuthentication::default(),
     };
 
-    // credentials: JSON object whose shape depends on auth mode.
-    let credentials = match (username, password, client_certificate, client_key) {
-        (Some(u), Some(p), _, _) => serde_json::json!({ "username": u, "password": p }),
-        (_, _, Some(cert_path), Some(key_path)) => {
-            let cert = std::fs::read_to_string(cert_path)?;
-            let key = std::fs::read_to_string(key_path)?;
-            serde_json::json!({ "certificate": cert, "privateKey": key })
+    let mtls_cert_contents = match (
+        &authentication,
+        args.client_certificate.as_deref(),
+        args.client_key.as_deref(),
+    ) {
+        (ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS, Some(cert_path), Some(key_path)) => {
+            Some((
+                std::fs::read_to_string(cert_path)?,
+                std::fs::read_to_string(key_path)?,
+            ))
         }
-        _ => serde_json::Value::Null,
+        _ => None,
     };
+    let credentials = build_kafka_credentials(&authentication, args, mtls_cert_contents)?;
 
-    let schema_registry = schema_registry_url
+    let schema_registry = args
+        .schema_registry_url
+        .as_ref()
         .map(|url| -> Result<_, Box<dyn std::error::Error>> {
-            let creds = match (schema_registry_username, schema_registry_password) {
+            let creds = match (
+                args.schema_registry_username.as_deref(),
+                args.schema_registry_password.as_deref(),
+            ) {
                 (Some(u), Some(p)) => ClickPipeKafkaSchemaRegistryCredentials {
                     username: u.to_string(),
                     password: p.to_string(),
                 },
                 _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
             };
-            let ca_cert = match schema_registry_ca_certificate {
+            let ca_cert = match args.schema_registry_ca_certificate.as_deref() {
                 Some(path) => Some(std::fs::read_to_string(path)?),
                 None => None,
             };
             Ok(ClickPipeMutateKafkaSchemaRegistry {
-                url: url.to_string(),
+                url: url.clone(),
                 authentication: Default::default(),
                 credentials: creds,
                 ca_certificate: ca_cert,
@@ -1167,77 +1181,60 @@ pub async fn clickpipe_create_kafka(
         })
         .transpose()?;
 
-    let ca_cert_contents = match ca_certificate {
+    let ca_cert_contents = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
 
-    let _ = (iam_role, access_key_id, secret_key); // IAM auth paths not wired yet
-
     let source = ClickPipePostKafkaSource {
-        r#type: parse_enum(kafka_type)?,
-        format: parse_enum(format)?,
-        brokers: brokers.to_string(),
-        topics: topics.to_string(),
-        consumer_group: consumer_group.map(String::from),
+        r#type: parse_enum(&args.kafka_type)?,
+        format: parse_enum(&args.format)?,
+        brokers: args.brokers.clone(),
+        topics: args.topics.clone(),
+        consumer_group: args.consumer_group.clone(),
         authentication,
         credentials,
-        iam_role: iam_role.map(String::from),
+        iam_role: args.iam_role.clone(),
         offset: Some(ClickPipeKafkaOffset {
-            strategy: parse_enum(offset)?,
-            timestamp: offset_timestamp.map(String::from),
+            strategy: parse_enum(&args.offset)?,
+            timestamp: args.offset_timestamp.clone(),
         }),
         schema_registry,
         ca_certificate: ca_cert_contents,
-        reverse_private_endpoint_ids: reverse_private_endpoint_ids.to_vec(),
+        reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             kafka: Some(source),
             ..Default::default()
         },
-        destination: build_destination(database, table, parsed_columns),
+        destination: build_destination(&args.database, &args.table, parsed_columns),
         ..Default::default()
     };
 
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn clickpipe_create_kinesis(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    stream_name: &str,
-    region: &str,
-    format: &str,
-    database: &str,
-    table: &str,
-    columns: &[String],
-    auth: &str,
-    iam_role: Option<&str>,
-    access_key_id: Option<&str>,
-    secret_key: Option<&str>,
-    iterator_type: &str,
-    iterator_timestamp: Option<u64>,
-    enhanced_fan_out: bool,
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::KinesisCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
         ClickPipePostKinesisSource, ClickPipePostRequest, ClickPipePostSource, MskIamUser,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
-    let parsed_columns = parse_columns(columns)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let parsed_columns = parse_columns(&args.columns)?;
 
-    let access_key = match (access_key_id, secret_key) {
+    let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
         (Some(k), Some(s)) => Some(MskIamUser {
             access_key_id: k.to_string(),
             secret_key: s.to_string(),
@@ -1246,29 +1243,29 @@ pub async fn clickpipe_create_kinesis(
     };
 
     let source = ClickPipePostKinesisSource {
-        format: parse_enum(format)?,
-        stream_name: stream_name.to_string(),
-        region: region.to_string(),
-        authentication: parse_enum(auth)?,
-        iam_role: iam_role.map(String::from),
+        format: parse_enum(&args.format)?,
+        stream_name: args.stream_name.clone(),
+        region: args.region.clone(),
+        authentication: parse_enum(&args.auth)?,
+        iam_role: args.iam_role.clone(),
         access_key,
-        use_enhanced_fan_out: if enhanced_fan_out { Some(true) } else { None },
-        iterator_type: parse_enum(iterator_type)?,
-        timestamp: iterator_timestamp.map(|t| t as i64),
+        use_enhanced_fan_out: if args.enhanced_fan_out { Some(true) } else { None },
+        iterator_type: parse_enum(&args.iterator_type)?,
+        timestamp: args.iterator_timestamp.map(|t| t as i64),
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             kinesis: Some(source),
             ..Default::default()
         },
-        destination: build_destination(database, table, parsed_columns),
+        destination: build_destination(&args.database, &args.table, parsed_columns),
         ..Default::default()
     };
 
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
@@ -1582,26 +1579,9 @@ fn parse_db_table_mappings(mappings: &[String]) -> Result<Vec<(String, String, S
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn clickpipe_create_postgres(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    host: &str,
-    port: u16,
-    pg_database: &str,
-    username: &str,
-    password: &str,
-    table_mappings: &[String],
-    postgres_type: &str,
-    replication_mode: &str,
-    auth: &str,
-    iam_role: Option<&str>,
-    tls_host: Option<&str>,
-    ca_certificate: Option<&str>,
-    publication_name: Option<&str>,
-    replication_slot_name: Option<&str>,
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::PostgresCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
@@ -1609,10 +1589,10 @@ pub async fn clickpipe_create_postgres(
         ClickPipePostgresPipeSettings, ClickPipePostgresPipeTableMapping, PLAIN,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
-    let mappings = parse_db_table_mappings(table_mappings)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let mappings = parse_db_table_mappings(&args.table_mappings)?;
 
-    let ca_cert_contents = match ca_certificate {
+    let ca_cert_contents = match args.ca_certificate.as_deref() {
         Some(path) => std::fs::read_to_string(path)?,
         None => String::new(),
     };
@@ -1628,29 +1608,29 @@ pub async fn clickpipe_create_postgres(
         .collect();
 
     let source = ClickPipeMutatePostgresSource {
-        r#type: Some(parse_enum(postgres_type)?),
+        r#type: Some(parse_enum(&args.postgres_type)?),
         credentials: PLAIN {
-            username: username.to_string(),
-            password: password.to_string(),
+            username: args.username.clone(),
+            password: args.password.clone(),
         },
-        host: host.to_string(),
-        port: i64::from(port),
-        database: pg_database.to_string(),
-        authentication: parse_enum(auth)?,
-        iam_role: iam_role.unwrap_or_default().to_string(),
-        tls_host: tls_host.unwrap_or_default().to_string(),
+        host: args.host.clone(),
+        port: i64::from(args.port),
+        database: args.pg_database.clone(),
+        authentication: parse_enum(&args.auth)?,
+        iam_role: args.iam_role.clone().unwrap_or_default(),
+        tls_host: args.tls_host.clone().unwrap_or_default(),
         ca_certificate: ca_cert_contents,
         settings: ClickPipePostgresPipeSettings {
-            replication_mode: parse_enum(replication_mode)?,
-            publication_name: publication_name.unwrap_or_default().to_string(),
-            replication_slot_name: replication_slot_name.unwrap_or_default().to_string(),
+            replication_mode: parse_enum(&args.replication_mode)?,
+            publication_name: args.publication_name.clone().unwrap_or_default(),
+            replication_slot_name: args.replication_slot_name.clone().unwrap_or_default(),
             ..Default::default()
         },
         table_mappings: pg_mappings,
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             postgres: source,
             ..Default::default()
@@ -1660,32 +1640,15 @@ pub async fn clickpipe_create_postgres(
     };
 
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn clickpipe_create_mysql(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    host: &str,
-    port: u16,
-    username: &str,
-    password: &str,
-    table_mappings: &[String],
-    mysql_type: &str,
-    replication_mode: &str,
-    replication_mechanism: &str,
-    auth: &str,
-    iam_role: Option<&str>,
-    tls_host: Option<&str>,
-    ca_certificate: Option<&str>,
-    disable_tls: bool,
-    skip_cert_verification: bool,
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::MySqlCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
@@ -1693,10 +1656,10 @@ pub async fn clickpipe_create_mysql(
         ClickPipeMySQLPipeTableMapping, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
-    let mappings = parse_db_table_mappings(table_mappings)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let mappings = parse_db_table_mappings(&args.table_mappings)?;
 
-    let ca_cert_contents = match ca_certificate {
+    let ca_cert_contents = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
@@ -1712,33 +1675,33 @@ pub async fn clickpipe_create_mysql(
         .collect();
 
     let source = ClickPipeMutateMySQLSource {
-        r#type: Some(parse_enum(mysql_type)?),
+        r#type: Some(parse_enum(&args.mysql_type)?),
         credentials: Some(PLAIN {
-            username: username.to_string(),
-            password: password.to_string(),
+            username: args.username.clone(),
+            password: args.password.clone(),
         }),
-        host: host.to_string(),
-        port: i64::from(port),
-        authentication: Some(parse_enum(auth)?),
-        iam_role: iam_role.map(String::from),
-        tls_host: tls_host.map(String::from),
+        host: args.host.clone(),
+        port: i64::from(args.port),
+        authentication: Some(parse_enum(&args.auth)?),
+        iam_role: args.iam_role.clone(),
+        tls_host: args.tls_host.clone(),
         ca_certificate: ca_cert_contents,
-        disable_tls: if disable_tls { Some(true) } else { None },
-        skip_cert_verification: if skip_cert_verification {
+        disable_tls: if args.disable_tls { Some(true) } else { None },
+        skip_cert_verification: if args.skip_cert_verification {
             Some(true)
         } else {
             None
         },
         settings: ClickPipeMySQLPipeSettings {
-            replication_mode: parse_enum(replication_mode)?,
-            replication_mechanism: Some(parse_enum(replication_mechanism)?),
+            replication_mode: parse_enum(&args.replication_mode)?,
+            replication_mechanism: Some(parse_enum(&args.replication_mechanism)?),
             ..Default::default()
         },
         table_mappings: mysql_mappings,
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             mysql: Some(source),
             postgres: ClickPipeMutatePostgresSource::default(),
@@ -1749,27 +1712,15 @@ pub async fn clickpipe_create_mysql(
     };
 
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn clickpipe_create_mongodb(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    uri: &str,
-    username: &str,
-    password: &str,
-    table_mappings: &[String],
-    replication_mode: &str,
-    read_preference: &str,
-    tls_host: Option<&str>,
-    ca_certificate: Option<&str>,
-    disable_tls: bool,
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::MongoDbCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
@@ -1778,10 +1729,11 @@ pub async fn clickpipe_create_mongodb(
         ClickPipePostSource, PLAIN,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     // MongoDB uses `database.collection:target_table` format.
-    let mongo_mappings: Vec<ClickPipeMongoDBPipeTableMapping> = table_mappings
+    let mongo_mappings: Vec<ClickPipeMongoDBPipeTableMapping> = args
+        .table_mappings
         .iter()
         .map(|m| {
             let (source, target) = m.split_once(':').ok_or_else(|| {
@@ -1802,30 +1754,30 @@ pub async fn clickpipe_create_mongodb(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    let ca_cert_contents = match ca_certificate {
+    let ca_cert_contents = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
 
     let source = ClickPipeMutateMongoDBSource {
         credentials: Some(PLAIN {
-            username: username.to_string(),
-            password: password.to_string(),
+            username: args.username.clone(),
+            password: args.password.clone(),
         }),
-        uri: uri.to_string(),
-        read_preference: parse_enum(read_preference)?,
-        tls_host: tls_host.map(String::from),
+        uri: args.uri.clone(),
+        read_preference: parse_enum(&args.read_preference)?,
+        tls_host: args.tls_host.clone(),
         ca_certificate: ca_cert_contents,
-        disable_tls: if disable_tls { Some(true) } else { None },
+        disable_tls: if args.disable_tls { Some(true) } else { None },
         settings: ClickPipeMongoDBPipeSettings {
-            replication_mode: parse_enum(replication_mode)?,
+            replication_mode: parse_enum(&args.replication_mode)?,
             ..Default::default()
         },
         table_mappings: mongo_mappings,
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             mongodb: Some(source),
             postgres: ClickPipeMutatePostgresSource::default(),
@@ -1836,21 +1788,15 @@ pub async fn clickpipe_create_mongodb(
     };
 
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn clickpipe_create_bigquery(
     client: &CloudClient,
-    service_id: &str,
-    name: &str,
-    service_account_file: &str,
-    staging_path: &str,
-    table_mappings: &[String],
-    org_id: Option<&str>,
+    args: &crate::cloud::cli::BigQueryCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
@@ -1859,15 +1805,16 @@ pub async fn clickpipe_create_bigquery(
         ClickPipePostSource, ServiceAccount,
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
-    let sa_contents = std::fs::read_to_string(service_account_file)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let sa_contents = std::fs::read_to_string(&args.service_account_file)?;
     let sa_b64 = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
         sa_contents.as_bytes(),
     );
 
     // BigQuery uses `dataset.table:target_table` format.
-    let bq_mappings: Vec<ClickPipeBigQueryPipeTableMapping> = table_mappings
+    let bq_mappings: Vec<ClickPipeBigQueryPipeTableMapping> = args
+        .table_mappings
         .iter()
         .map(|m| {
             let (source, target) = m.split_once(':').ok_or_else(|| {
@@ -1892,7 +1839,7 @@ pub async fn clickpipe_create_bigquery(
         credentials: ServiceAccount {
             service_account_file: sa_b64,
         },
-        snapshot_staging_path: staging_path.to_string(),
+        snapshot_staging_path: args.staging_path.clone(),
         settings: ClickPipeBigQueryPipeSettings {
             replication_mode: parse_enum("snapshot")?,
             ..Default::default()
@@ -1901,7 +1848,7 @@ pub async fn clickpipe_create_bigquery(
     };
 
     let request = ClickPipePostRequest {
-        name: name.to_string(),
+        name: args.name.clone(),
         source: ClickPipePostSource {
             bigquery: Some(source),
             postgres: ClickPipeMutatePostgresSource::default(),
@@ -1912,7 +1859,7 @@ pub async fn clickpipe_create_bigquery(
     };
 
     let clickpipe = client
-        .create_clickpipe(&org_id, service_id, &request)
+        .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
     Ok(())
@@ -3473,5 +3420,106 @@ mod tests {
             dest.table_definition.engine.r#type,
             clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType::MergeTree
         );
+    }
+
+    // `build_kafka_credentials` tests — lock the wire shape for each auth mode.
+    // Authoritative source: `ClickPipePostKafkaSource.credentials` in
+    // `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`.
+
+    fn kafka_args() -> crate::cloud::cli::KafkaCreateArgs {
+        crate::cloud::cli::KafkaCreateArgs {
+            service_id: "svc".into(),
+            name: "pipe".into(),
+            brokers: "b:9092".into(),
+            topics: "t".into(),
+            format: "JSONEachRow".into(),
+            database: "d".into(),
+            table: "t".into(),
+            columns: vec![],
+            kafka_type: "kafka".into(),
+            consumer_group: None,
+            auth: None,
+            username: None,
+            password: None,
+            iam_role: None,
+            access_key_id: None,
+            secret_key: None,
+            offset: "from_beginning".into(),
+            offset_timestamp: None,
+            schema_registry_url: None,
+            schema_registry_username: None,
+            schema_registry_password: None,
+            ca_certificate: None,
+            client_certificate: None,
+            client_key: None,
+            schema_registry_ca_certificate: None,
+            reverse_private_endpoint_ids: vec![],
+            org_id: None,
+        }
+    }
+
+    #[test]
+    fn kafka_credentials_plain_shape() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.auth = Some("PLAIN".into());
+        args.username = Some("u".into());
+        args.password = Some("p".into());
+        let creds = super::build_kafka_credentials(&Auth::PLAIN, &args, None).unwrap();
+        assert_eq!(creds["username"], "u");
+        assert_eq!(creds["password"], "p");
+    }
+
+    #[test]
+    fn kafka_credentials_iam_user_shape() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.auth = Some("IAM_USER".into());
+        args.access_key_id = Some("AKIA".into());
+        args.secret_key = Some("secret".into());
+        let creds = super::build_kafka_credentials(&Auth::IAM_USER, &args, None).unwrap();
+        // MskIamUser wire shape is {accessKeyId, secretKey} — NOT snake_case.
+        assert_eq!(creds["accessKeyId"], "AKIA");
+        assert_eq!(creds["secretKey"], "secret");
+        assert!(creds.get("access_key_id").is_none());
+    }
+
+    #[test]
+    fn kafka_credentials_iam_role_is_null() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.auth = Some("IAM_ROLE".into());
+        args.iam_role = Some("arn:aws:iam::123:role/Foo".into());
+        // IAM_ROLE sends credentials=null; the role ARN flows through the
+        // top-level `iamRole` field on the Kafka source, not credentials.
+        let creds = super::build_kafka_credentials(&Auth::IAM_ROLE, &args, None).unwrap();
+        assert!(creds.is_null());
+    }
+
+    #[test]
+    fn kafka_credentials_mutual_tls_shape() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let args = kafka_args();
+        let contents = Some(("CERT_PEM".into(), "KEY_PEM".into()));
+        let creds = super::build_kafka_credentials(&Auth::MUTUAL_TLS, &args, contents).unwrap();
+        assert_eq!(creds["certificate"], "CERT_PEM");
+        assert_eq!(creds["privateKey"], "KEY_PEM");
+    }
+
+    #[test]
+    fn kafka_credentials_iam_user_missing_args_errors() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let args = kafka_args();
+        let err = super::build_kafka_credentials(&Auth::IAM_USER, &args, None).unwrap_err();
+        assert!(err.contains("--access-key-id"));
+    }
+
+    #[test]
+    fn kafka_credentials_iam_role_missing_arn_errors() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.auth = Some("IAM_ROLE".into());
+        let err = super::build_kafka_credentials(&Auth::IAM_ROLE, &args, None).unwrap_err();
+        assert!(err.contains("--iam-role"));
     }
 }

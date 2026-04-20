@@ -1,5 +1,77 @@
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
+use clap::builder::PossibleValuesParser;
 use clap::{Args, Subcommand};
+
+// Valid wire values for each ClickPipe enum the CLI accepts as a string argument.
+// Kept in sync with the clickhouse-cloud-api library enums; extra variants are
+// rejected by clap at parse time with a `[possible values: …]` hint.
+const OBJECT_STORAGE_FORMATS: &[&str] = &[
+    "JSONEachRow",
+    "JSONAsObject",
+    "CSV",
+    "CSVWithNames",
+    "TabSeparated",
+    "TabSeparatedWithNames",
+    "Parquet",
+    "Avro",
+];
+const OBJECT_STORAGE_COMPRESSIONS: &[&str] =
+    &["none", "gzip", "gz", "brotli", "br", "xz", "LZMA", "zstd", "auto"];
+const OBJECT_STORAGE_TYPES: &[&str] = &[
+    "s3",
+    "gcs",
+    "dospaces",
+    "azureblobstorage",
+    "cloudflarer2",
+    "ovhobjectstorage",
+];
+const KAFKA_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"];
+const KAFKA_TYPES: &[&str] = &[
+    "kafka",
+    "redpanda",
+    "msk",
+    "gcmk",
+    "confluent",
+    "warpstream",
+    "azureeventhub",
+    "dokafka",
+];
+const KAFKA_AUTHS: &[&str] = &[
+    "PLAIN",
+    "SCRAM-SHA-256",
+    "SCRAM-SHA-512",
+    "IAM_ROLE",
+    "IAM_USER",
+    "MUTUAL_TLS",
+];
+const KAFKA_OFFSET_STRATEGIES: &[&str] = &["from_beginning", "from_latest", "from_timestamp"];
+const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent"];
+const KINESIS_AUTHS: &[&str] = &["IAM_ROLE", "IAM_USER"];
+const KINESIS_ITERATOR_TYPES: &[&str] = &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"];
+const POSTGRES_TYPES: &[&str] = &[
+    "postgres",
+    "supabase",
+    "neon",
+    "alloydb",
+    "planetscale",
+    "rdspostgres",
+    "aurorapostgres",
+    "cloudsqlpostgres",
+    "azurepostgres",
+    "crunchybridge",
+    "tigerdata",
+];
+const DB_AUTHS: &[&str] = &["basic", "IAM_ROLE"];
+const REPLICATION_MODES: &[&str] = &["cdc", "snapshot", "cdc_only"];
+const MYSQL_TYPES: &[&str] = &["mysql", "rdsmysql", "auroramysql", "mariadb", "rdsmariadb"];
+const MYSQL_REPLICATION_MECHANISMS: &[&str] = &["GTID", "FILE_POS"];
+const MONGODB_READ_PREFERENCES: &[&str] = &[
+    "primary",
+    "primaryPreferred",
+    "secondary",
+    "secondaryPreferred",
+    "nearest",
+];
 
 fn parse_date_only(value: &str) -> Result<String, String> {
     if NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
@@ -1026,481 +1098,562 @@ pub enum ClickPipeSettingsCommands {
 pub enum ClickPipeCreateCommands {
     /// Create a ClickPipe from S3, GCS, Azure Blob, or other object storage
     #[command(name = "object-storage")]
-    ObjectStorage {
-        /// Service ID
-        service_id: String,
-
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
-
-        /// Source URL (e.g., https://bucket.s3.region.amazonaws.com/path/*.json)
-        #[arg(long)]
-        source_url: String,
-
-        /// Data format: JSONEachRow, CSV, CSVWithNames, Parquet, Avro, etc.
-        #[arg(long)]
-        format: String,
-
-        /// Destination database
-        #[arg(long)]
-        database: String,
-
-        /// Destination table
-        #[arg(long)]
-        table: String,
-
-        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
-        #[arg(long = "column")]
-        columns: Vec<String>,
-
-        /// Storage type: s3 (default), gcs, azureblobstorage, dospaces, cloudflarer2, ovhobjectstorage
-        #[arg(long, default_value = "s3")]
-        storage_type: String,
-
-        /// Compression: auto, gzip, brotli, xz, zstd, none
-        #[arg(long, default_value = "auto")]
-        compression: String,
-
-        /// Enable continuous ingestion
-        #[arg(long)]
-        continuous: bool,
-
-        /// SQS queue URL for continuous ingestion notifications
-        #[arg(long)]
-        queue_url: Option<String>,
-
-        /// CSV delimiter character (e.g., ",")
-        #[arg(long)]
-        delimiter: Option<String>,
-
-        /// IAM role ARN for authentication
-        #[arg(long)]
-        iam_role: Option<String>,
-
-        /// Access key ID for authentication
-        #[arg(long, requires = "secret_key")]
-        access_key_id: Option<String>,
-
-        /// Secret key for authentication
-        #[arg(long, requires = "access_key_id")]
-        secret_key: Option<String>,
-
-        /// Azure connection string for authentication
-        #[arg(long)]
-        connection_string: Option<String>,
-
-        /// Azure container name
-        #[arg(long)]
-        azure_container_name: Option<String>,
-
-        /// Object storage path (for Azure)
-        #[arg(long)]
-        path: Option<String>,
-
-        /// GCP service account key (base64-encoded JSON key file)
-        #[arg(long)]
-        service_account_key: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    ObjectStorage(ObjectStorageCreateArgs),
 
     /// Create a ClickPipe from Kafka or Kafka-compatible source
-    Kafka {
-        /// Service ID
-        service_id: String,
-
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
-
-        /// Kafka broker(s) (e.g., "broker1:9092,broker2:9092")
-        #[arg(long)]
-        brokers: String,
-
-        /// Topic(s) to consume from
-        #[arg(long)]
-        topics: String,
-
-        /// Data format: JSONEachRow, Avro, AvroConfluent, Protobuf
-        #[arg(long)]
-        format: String,
-
-        /// Destination database
-        #[arg(long)]
-        database: String,
-
-        /// Destination table
-        #[arg(long)]
-        table: String,
-
-        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-        #[arg(long = "column")]
-        columns: Vec<String>,
-
-        /// Kafka type: kafka (default), redpanda, msk, confluent, warpstream, azureeventhub, dokafka
-        #[arg(long, default_value = "kafka")]
-        kafka_type: String,
-
-        /// Consumer group name
-        #[arg(long)]
-        consumer_group: Option<String>,
-
-        /// Authentication: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS
-        #[arg(long)]
-        auth: Option<String>,
-
-        /// Username for PLAIN/SCRAM authentication
-        #[arg(long, requires = "password")]
-        username: Option<String>,
-
-        /// Password for PLAIN/SCRAM authentication
-        #[arg(long, requires = "username")]
-        password: Option<String>,
-
-        /// IAM role ARN for MSK IAM authentication
-        #[arg(long)]
-        iam_role: Option<String>,
-
-        /// Access key ID for IAM_USER authentication
-        #[arg(long, requires = "secret_key")]
-        access_key_id: Option<String>,
-
-        /// Secret key for IAM_USER authentication
-        #[arg(long, requires = "access_key_id")]
-        secret_key: Option<String>,
-
-        /// Offset strategy: from_beginning (default), from_latest, from_timestamp
-        #[arg(long, default_value = "from_beginning")]
-        offset: String,
-
-        /// Timestamp for from_timestamp offset (e.g., "2021-01-01T00:00")
-        #[arg(long)]
-        offset_timestamp: Option<String>,
-
-        /// Schema registry URL (for Avro/Protobuf formats)
-        #[arg(long)]
-        schema_registry_url: Option<String>,
-
-        /// Schema registry username
-        #[arg(long)]
-        schema_registry_username: Option<String>,
-
-        /// Schema registry password
-        #[arg(long)]
-        schema_registry_password: Option<String>,
-
-        /// Path to broker CA certificate file
-        #[arg(long)]
-        ca_certificate: Option<String>,
-
-        /// Path to client certificate file (for MUTUAL_TLS auth)
-        #[arg(long)]
-        client_certificate: Option<String>,
-
-        /// Path to client private key file (for MUTUAL_TLS auth)
-        #[arg(long)]
-        client_key: Option<String>,
-
-        /// Path to schema registry CA certificate file
-        #[arg(long)]
-        schema_registry_ca_certificate: Option<String>,
-
-        /// Reverse private endpoint IDs (repeatable)
-        #[arg(long = "reverse-private-endpoint-id")]
-        reverse_private_endpoint_ids: Vec<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    Kafka(KafkaCreateArgs),
 
     /// Create a ClickPipe from Amazon Kinesis
-    Kinesis {
-        /// Service ID
-        service_id: String,
-
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
-
-        /// Kinesis stream name
-        #[arg(long)]
-        stream_name: String,
-
-        /// AWS region (e.g., us-east-1)
-        #[arg(long)]
-        region: String,
-
-        /// Data format: JSONEachRow, Avro, AvroConfluent
-        #[arg(long)]
-        format: String,
-
-        /// Destination database
-        #[arg(long)]
-        database: String,
-
-        /// Destination table
-        #[arg(long)]
-        table: String,
-
-        /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-        #[arg(long = "column")]
-        columns: Vec<String>,
-
-        /// Authentication: IAM_ROLE (default), IAM_USER
-        #[arg(long, default_value = "IAM_ROLE")]
-        auth: String,
-
-        /// IAM role ARN
-        #[arg(long)]
-        iam_role: Option<String>,
-
-        /// Access key ID for IAM_USER authentication
-        #[arg(long, requires = "secret_key")]
-        access_key_id: Option<String>,
-
-        /// Secret key for IAM_USER authentication
-        #[arg(long, requires = "access_key_id")]
-        secret_key: Option<String>,
-
-        /// Iterator type: TRIM_HORIZON (default), LATEST, AT_TIMESTAMP
-        #[arg(long, default_value = "TRIM_HORIZON")]
-        iterator_type: String,
-
-        /// Unix timestamp for AT_TIMESTAMP iterator type
-        #[arg(long)]
-        iterator_timestamp: Option<u64>,
-
-        /// Enable enhanced fan-out
-        #[arg(long)]
-        enhanced_fan_out: bool,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    Kinesis(KinesisCreateArgs),
 
     /// Create a ClickPipe from PostgreSQL
-    Postgres {
-        /// Service ID
-        service_id: String,
-
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
-
-        /// PostgreSQL host
-        #[arg(long)]
-        host: String,
-
-        /// PostgreSQL port
-        #[arg(long, default_value = "5432")]
-        port: u16,
-
-        /// Source database name
-        #[arg(long)]
-        pg_database: String,
-
-        /// Username
-        #[arg(long)]
-        username: String,
-
-        /// Password
-        #[arg(long)]
-        password: String,
-
-        /// Table mappings as schema.table:target_table (repeatable)
-        #[arg(long = "table-mapping")]
-        table_mappings: Vec<String>,
-
-        /// Postgres type: postgres (default), supabase, neon, alloydb, rdspostgres, aurorapostgres, cloudsqlpostgres, azurepostgres, crunchybridge, tigerdata
-        #[arg(long, default_value = "postgres")]
-        postgres_type: String,
-
-        /// Replication mode: cdc (default), snapshot, cdc_only
-        #[arg(long, default_value = "cdc")]
-        replication_mode: String,
-
-        /// Authentication: basic (default), IAM_ROLE
-        #[arg(long, default_value = "basic")]
-        auth: String,
-
-        /// IAM role ARN
-        #[arg(long)]
-        iam_role: Option<String>,
-
-        /// TLS hostname
-        #[arg(long)]
-        tls_host: Option<String>,
-
-        /// Path to CA certificate file
-        #[arg(long)]
-        ca_certificate: Option<String>,
-
-        /// Postgres publication name
-        #[arg(long)]
-        publication_name: Option<String>,
-
-        /// Replication slot name
-        #[arg(long)]
-        replication_slot_name: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
     #[command(name = "mysql")]
-    MySQL {
-        /// Service ID
-        service_id: String,
-
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
-
-        /// MySQL host
-        #[arg(long)]
-        host: String,
-
-        /// MySQL port
-        #[arg(long, default_value = "3306")]
-        port: u16,
-
-        /// Username
-        #[arg(long)]
-        username: String,
-
-        /// Password
-        #[arg(long)]
-        password: String,
-
-        /// Table mappings as schema.table:target_table (repeatable)
-        #[arg(long = "table-mapping")]
-        table_mappings: Vec<String>,
-
-        /// MySQL type: mysql (default), rdsmysql, auroramysql, mariadb, rdsmariadb
-        #[arg(long, default_value = "mysql")]
-        mysql_type: String,
-
-        /// Replication mode: cdc (default), snapshot, cdc_only
-        #[arg(long, default_value = "cdc")]
-        replication_mode: String,
-
-        /// Replication mechanism: GTID (default), FILE_POS
-        #[arg(long, default_value = "GTID")]
-        replication_mechanism: String,
-
-        /// Authentication: basic (default), IAM_ROLE
-        #[arg(long, default_value = "basic")]
-        auth: String,
-
-        /// IAM role ARN
-        #[arg(long)]
-        iam_role: Option<String>,
-
-        /// TLS hostname
-        #[arg(long)]
-        tls_host: Option<String>,
-
-        /// Path to CA certificate file
-        #[arg(long)]
-        ca_certificate: Option<String>,
-
-        /// Disable TLS
-        #[arg(long)]
-        disable_tls: bool,
-
-        /// Skip certificate verification
-        #[arg(long)]
-        skip_cert_verification: bool,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    MySQL(MySqlCreateArgs),
 
     /// Create a ClickPipe from MongoDB
     #[command(name = "mongodb")]
-    MongoDB {
-        /// Service ID
-        service_id: String,
-
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
-
-        /// MongoDB connection URI (e.g., mongodb+srv://cluster0.example.mongodb.net/mydb)
-        #[arg(long)]
-        uri: String,
-
-        /// Username
-        #[arg(long)]
-        username: String,
-
-        /// Password
-        #[arg(long)]
-        password: String,
-
-        /// Table mappings as database.collection:target_table (repeatable)
-        #[arg(long = "table-mapping")]
-        table_mappings: Vec<String>,
-
-        /// Replication mode: cdc (default), snapshot, cdc_only
-        #[arg(long, default_value = "cdc")]
-        replication_mode: String,
-
-        /// Read preference: secondaryPreferred (default), primary, primaryPreferred, secondary, nearest
-        #[arg(long, default_value = "secondaryPreferred")]
-        read_preference: String,
-
-        /// TLS hostname
-        #[arg(long)]
-        tls_host: Option<String>,
-
-        /// Path to CA certificate file
-        #[arg(long)]
-        ca_certificate: Option<String>,
-
-        /// Disable TLS
-        #[arg(long)]
-        disable_tls: bool,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    MongoDB(MongoDbCreateArgs),
 
     /// Create a ClickPipe from BigQuery
     #[command(name = "bigquery")]
-    BigQuery {
-        /// Service ID
-        service_id: String,
+    BigQuery(BigQueryCreateArgs),
+}
 
-        /// ClickPipe name
-        #[arg(long)]
-        name: String,
+#[derive(Args, Debug)]
+pub struct ObjectStorageCreateArgs {
+    /// Service ID
+    pub service_id: String,
 
-        /// Path to GCP service account JSON key file
-        #[arg(long)]
-        service_account_file: String,
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
 
-        /// GCS staging path for snapshot data
-        #[arg(long)]
-        staging_path: String,
+    /// Source URL (e.g., https://bucket.s3.region.amazonaws.com/path/*.json)
+    #[arg(long)]
+    pub source_url: String,
 
-        /// Table mappings as dataset.table:target_table (repeatable)
-        #[arg(long = "table-mapping")]
-        table_mappings: Vec<String>,
+    /// Data format
+    #[arg(long, value_parser = PossibleValuesParser::new(OBJECT_STORAGE_FORMATS))]
+    pub format: String,
 
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
+    #[arg(long = "column")]
+    pub columns: Vec<String>,
+
+    /// Storage type
+    #[arg(
+        long,
+        default_value = "s3",
+        value_parser = PossibleValuesParser::new(OBJECT_STORAGE_TYPES),
+    )]
+    pub storage_type: String,
+
+    /// Compression
+    #[arg(
+        long,
+        default_value = "auto",
+        value_parser = PossibleValuesParser::new(OBJECT_STORAGE_COMPRESSIONS),
+    )]
+    pub compression: String,
+
+    /// Enable continuous ingestion
+    #[arg(long)]
+    pub continuous: bool,
+
+    /// SQS queue URL for continuous ingestion notifications
+    #[arg(long)]
+    pub queue_url: Option<String>,
+
+    /// CSV delimiter character (e.g., ",")
+    #[arg(long)]
+    pub delimiter: Option<String>,
+
+    /// IAM role ARN for authentication
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// Access key ID for authentication
+    #[arg(long, requires = "secret_key")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key for authentication
+    #[arg(long, requires = "access_key_id")]
+    pub secret_key: Option<String>,
+
+    /// Azure connection string for authentication
+    #[arg(long)]
+    pub connection_string: Option<String>,
+
+    /// Azure container name
+    #[arg(long)]
+    pub azure_container_name: Option<String>,
+
+    /// Object storage path (for Azure)
+    #[arg(long)]
+    pub path: Option<String>,
+
+    /// GCP service account key (base64-encoded JSON key file)
+    #[arg(long)]
+    pub service_account_key: Option<String>,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct KafkaCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    /// Kafka broker(s) (e.g., "broker1:9092,broker2:9092")
+    #[arg(long)]
+    pub brokers: String,
+
+    /// Topic(s) to consume from
+    #[arg(long)]
+    pub topics: String,
+
+    /// Data format
+    #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_FORMATS))]
+    pub format: String,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column")]
+    pub columns: Vec<String>,
+
+    /// Kafka type
+    #[arg(
+        long,
+        default_value = "kafka",
+        value_parser = PossibleValuesParser::new(KAFKA_TYPES),
+    )]
+    pub kafka_type: String,
+
+    /// Consumer group name
+    #[arg(long)]
+    pub consumer_group: Option<String>,
+
+    /// Authentication method
+    #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_AUTHS))]
+    pub auth: Option<String>,
+
+    /// Username for PLAIN/SCRAM authentication
+    #[arg(long, requires = "password")]
+    pub username: Option<String>,
+
+    /// Password for PLAIN/SCRAM authentication
+    #[arg(long, requires = "username")]
+    pub password: Option<String>,
+
+    /// IAM role ARN for MSK IAM authentication
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// Access key ID for IAM_USER authentication
+    #[arg(long, requires = "secret_key")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key for IAM_USER authentication
+    #[arg(long, requires = "access_key_id")]
+    pub secret_key: Option<String>,
+
+    /// Offset strategy
+    #[arg(
+        long,
+        default_value = "from_beginning",
+        value_parser = PossibleValuesParser::new(KAFKA_OFFSET_STRATEGIES),
+    )]
+    pub offset: String,
+
+    /// Timestamp for from_timestamp offset (e.g., "2021-01-01T00:00")
+    #[arg(long)]
+    pub offset_timestamp: Option<String>,
+
+    /// Schema registry URL (for Avro/Protobuf formats)
+    #[arg(long)]
+    pub schema_registry_url: Option<String>,
+
+    /// Schema registry username
+    #[arg(long)]
+    pub schema_registry_username: Option<String>,
+
+    /// Schema registry password
+    #[arg(long)]
+    pub schema_registry_password: Option<String>,
+
+    /// Path to broker CA certificate file
+    #[arg(long)]
+    pub ca_certificate: Option<String>,
+
+    /// Path to client certificate file (for MUTUAL_TLS auth)
+    #[arg(long)]
+    pub client_certificate: Option<String>,
+
+    /// Path to client private key file (for MUTUAL_TLS auth)
+    #[arg(long)]
+    pub client_key: Option<String>,
+
+    /// Path to schema registry CA certificate file
+    #[arg(long)]
+    pub schema_registry_ca_certificate: Option<String>,
+
+    /// Reverse private endpoint IDs (repeatable)
+    #[arg(long = "reverse-private-endpoint-id")]
+    pub reverse_private_endpoint_ids: Vec<String>,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct KinesisCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    /// Kinesis stream name
+    #[arg(long)]
+    pub stream_name: String,
+
+    /// AWS region (e.g., us-east-1)
+    #[arg(long)]
+    pub region: String,
+
+    /// Data format
+    #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
+    pub format: String,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column")]
+    pub columns: Vec<String>,
+
+    /// Authentication
+    #[arg(
+        long,
+        default_value = "IAM_ROLE",
+        value_parser = PossibleValuesParser::new(KINESIS_AUTHS),
+    )]
+    pub auth: String,
+
+    /// IAM role ARN
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// Access key ID for IAM_USER authentication
+    #[arg(long, requires = "secret_key")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key for IAM_USER authentication
+    #[arg(long, requires = "access_key_id")]
+    pub secret_key: Option<String>,
+
+    /// Iterator type
+    #[arg(
+        long,
+        default_value = "TRIM_HORIZON",
+        value_parser = PossibleValuesParser::new(KINESIS_ITERATOR_TYPES),
+    )]
+    pub iterator_type: String,
+
+    /// Unix timestamp for AT_TIMESTAMP iterator type
+    #[arg(long)]
+    pub iterator_timestamp: Option<u64>,
+
+    /// Enable enhanced fan-out
+    #[arg(long)]
+    pub enhanced_fan_out: bool,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct PostgresCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    /// PostgreSQL host
+    #[arg(long)]
+    pub host: String,
+
+    /// PostgreSQL port
+    #[arg(long, default_value = "5432")]
+    pub port: u16,
+
+    /// Source database name
+    #[arg(long)]
+    pub pg_database: String,
+
+    /// Username
+    #[arg(long)]
+    pub username: String,
+
+    /// Password
+    #[arg(long)]
+    pub password: String,
+
+    /// Table mappings as schema.table:target_table (repeatable)
+    #[arg(long = "table-mapping")]
+    pub table_mappings: Vec<String>,
+
+    /// Postgres type
+    #[arg(
+        long,
+        default_value = "postgres",
+        value_parser = PossibleValuesParser::new(POSTGRES_TYPES),
+    )]
+    pub postgres_type: String,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "cdc",
+        value_parser = PossibleValuesParser::new(REPLICATION_MODES),
+    )]
+    pub replication_mode: String,
+
+    /// Authentication
+    #[arg(
+        long,
+        default_value = "basic",
+        value_parser = PossibleValuesParser::new(DB_AUTHS),
+    )]
+    pub auth: String,
+
+    /// IAM role ARN
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// TLS hostname
+    #[arg(long)]
+    pub tls_host: Option<String>,
+
+    /// Path to CA certificate file
+    #[arg(long)]
+    pub ca_certificate: Option<String>,
+
+    /// Postgres publication name
+    #[arg(long)]
+    pub publication_name: Option<String>,
+
+    /// Replication slot name
+    #[arg(long)]
+    pub replication_slot_name: Option<String>,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct MySqlCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    /// MySQL host
+    #[arg(long)]
+    pub host: String,
+
+    /// MySQL port
+    #[arg(long, default_value = "3306")]
+    pub port: u16,
+
+    /// Username
+    #[arg(long)]
+    pub username: String,
+
+    /// Password
+    #[arg(long)]
+    pub password: String,
+
+    /// Table mappings as schema.table:target_table (repeatable)
+    #[arg(long = "table-mapping")]
+    pub table_mappings: Vec<String>,
+
+    /// MySQL type
+    #[arg(
+        long,
+        default_value = "mysql",
+        value_parser = PossibleValuesParser::new(MYSQL_TYPES),
+    )]
+    pub mysql_type: String,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "cdc",
+        value_parser = PossibleValuesParser::new(REPLICATION_MODES),
+    )]
+    pub replication_mode: String,
+
+    /// Replication mechanism
+    #[arg(
+        long,
+        default_value = "GTID",
+        value_parser = PossibleValuesParser::new(MYSQL_REPLICATION_MECHANISMS),
+    )]
+    pub replication_mechanism: String,
+
+    /// Authentication
+    #[arg(
+        long,
+        default_value = "basic",
+        value_parser = PossibleValuesParser::new(DB_AUTHS),
+    )]
+    pub auth: String,
+
+    /// IAM role ARN
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// TLS hostname
+    #[arg(long)]
+    pub tls_host: Option<String>,
+
+    /// Path to CA certificate file
+    #[arg(long)]
+    pub ca_certificate: Option<String>,
+
+    /// Disable TLS
+    #[arg(long)]
+    pub disable_tls: bool,
+
+    /// Skip certificate verification
+    #[arg(long)]
+    pub skip_cert_verification: bool,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct MongoDbCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    /// MongoDB connection URI (e.g., mongodb+srv://cluster0.example.mongodb.net/mydb)
+    #[arg(long)]
+    pub uri: String,
+
+    /// Username
+    #[arg(long)]
+    pub username: String,
+
+    /// Password
+    #[arg(long)]
+    pub password: String,
+
+    /// Table mappings as database.collection:target_table (repeatable)
+    #[arg(long = "table-mapping")]
+    pub table_mappings: Vec<String>,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "cdc",
+        value_parser = PossibleValuesParser::new(REPLICATION_MODES),
+    )]
+    pub replication_mode: String,
+
+    /// Read preference
+    #[arg(
+        long,
+        default_value = "secondaryPreferred",
+        value_parser = PossibleValuesParser::new(MONGODB_READ_PREFERENCES),
+    )]
+    pub read_preference: String,
+
+    /// TLS hostname
+    #[arg(long)]
+    pub tls_host: Option<String>,
+
+    /// Path to CA certificate file
+    #[arg(long)]
+    pub ca_certificate: Option<String>,
+
+    /// Disable TLS
+    #[arg(long)]
+    pub disable_tls: bool,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct BigQueryCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    /// Path to GCP service account JSON key file
+    #[arg(long)]
+    pub service_account_file: String,
+
+    /// GCS staging path for snapshot data
+    #[arg(long)]
+    pub staging_path: String,
+
+    /// Table mappings as dataset.table:target_table (repeatable)
+    #[arg(long = "table-mapping")]
+    pub table_mappings: Vec<String>,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
 }
 
 #[derive(Subcommand)]
