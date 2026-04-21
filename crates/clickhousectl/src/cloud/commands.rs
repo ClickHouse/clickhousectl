@@ -1632,7 +1632,7 @@ pub async fn clickpipe_create_postgres(
     let request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
-            postgres: source,
+            postgres: Some(source),
             ..Default::default()
         },
         destination: build_destination("default", "", vec![]),
@@ -1652,8 +1652,8 @@ pub async fn clickpipe_create_mysql(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
-        ClickPipeMutateMySQLSource, ClickPipeMutatePostgresSource, ClickPipeMySQLPipeSettings,
-        ClickPipeMySQLPipeTableMapping, ClickPipePostRequest, ClickPipePostSource, PLAIN,
+        ClickPipeMutateMySQLSource, ClickPipeMySQLPipeSettings, ClickPipeMySQLPipeTableMapping,
+        ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
@@ -1704,7 +1704,6 @@ pub async fn clickpipe_create_mysql(
         name: args.name.clone(),
         source: ClickPipePostSource {
             mysql: Some(source),
-            postgres: ClickPipeMutatePostgresSource::default(),
             ..Default::default()
         },
         destination: build_destination("default", "", vec![]),
@@ -1725,8 +1724,7 @@ pub async fn clickpipe_create_mongodb(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
         ClickPipeMongoDBPipeSettings, ClickPipeMongoDBPipeTableMapping,
-        ClickPipeMutateMongoDBSource, ClickPipeMutatePostgresSource, ClickPipePostRequest,
-        ClickPipePostSource, PLAIN,
+        ClickPipeMutateMongoDBSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
@@ -1780,7 +1778,6 @@ pub async fn clickpipe_create_mongodb(
         name: args.name.clone(),
         source: ClickPipePostSource {
             mongodb: Some(source),
-            postgres: ClickPipeMutatePostgresSource::default(),
             ..Default::default()
         },
         destination: build_destination("default", "", vec![]),
@@ -1801,8 +1798,7 @@ pub async fn clickpipe_create_bigquery(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
         ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
-        ClickPipeMutateBigQuerySource, ClickPipeMutatePostgresSource, ClickPipePostRequest,
-        ClickPipePostSource, ServiceAccount,
+        ClickPipeMutateBigQuerySource, ClickPipePostRequest, ClickPipePostSource, ServiceAccount,
     };
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
@@ -1851,7 +1847,6 @@ pub async fn clickpipe_create_bigquery(
         name: args.name.clone(),
         source: ClickPipePostSource {
             bigquery: Some(source),
-            postgres: ClickPipeMutatePostgresSource::default(),
             ..Default::default()
         },
         destination: build_destination("default", "", vec![]),
