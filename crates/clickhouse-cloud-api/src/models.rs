@@ -7283,18 +7283,25 @@ pub struct ClickPipeDestinationColumn {
 pub struct ClickPipeDestinationTableDefinition {
     #[serde(default)]
     pub engine: ClickPipeDestinationTableEngine,
-    #[serde(rename = "partitionBy", default)]
+    // API rejects empty strings / empty arrays for these keys. Spec has no
+    // `required` array so the description-heuristic treats them as required;
+    // skip at serialize time when unset instead of modeling as Option<T>.
+    #[serde(rename = "partitionBy", skip_serializing_if = "String::is_empty", default)]
     pub partition_by: String,
-    #[serde(rename = "primaryKey", default)]
+    #[serde(rename = "primaryKey", skip_serializing_if = "String::is_empty", default)]
     pub primary_key: String,
-    #[serde(rename = "sortingKey", default)]
+    #[serde(rename = "sortingKey", skip_serializing_if = "Vec::is_empty", default)]
     pub sorting_key: Vec<String>,
 }
 
 /// `ClickPipeDestinationTableEngine` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeDestinationTableEngine {
-    #[serde(rename = "columnIds", default)]
+    // columnIds only valid for SummingMergeTree. Skip when empty to avoid API
+    // rejection for MergeTree/ReplacingMergeTree/Null engines. Spec has no
+    // `required` array so the heuristic treats this as required; API rejects
+    // empty values despite that.
+    #[serde(rename = "columnIds", skip_serializing_if = "Vec::is_empty", default)]
     pub column_ids: Vec<String>,
     #[serde(default)]
     pub r#type: ClickPipeDestinationTableEngineType,
@@ -7876,8 +7883,8 @@ pub struct ClickPipePatchSource {
     pub mysql: Option<ClickPipePatchMySQLSource>,
     #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none", default)]
     pub object_storage: Option<ClickPipePatchObjectStorageSource>,
-    #[serde(default)]
-    pub postgres: ClickPipePatchPostgresSource,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub postgres: Option<ClickPipePatchPostgresSource>,
     #[serde(rename = "validateSamples", default)]
     pub validate_samples: bool,
 }
@@ -7972,14 +7979,20 @@ pub struct ClickPipePostObjectStorageSource {
 pub struct ClickPipePostRequest {
     #[serde(default)]
     pub destination: ClickPipeMutateDestination,
-    #[serde(rename = "fieldMappings", default)]
+    // Empty arrays rejected by some API paths and never useful on create —
+    // skip when empty. Non-Option to match the spec description heuristic.
+    #[serde(rename = "fieldMappings", skip_serializing_if = "Vec::is_empty", default)]
     pub field_mappings: Vec<ClickPipeFieldMapping>,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub scaling: ClickPipeScaling,
-    #[serde(default)]
-    pub settings: ClickPipeSettings,
+    // scaling block default-serializes as {replicas: 0, ...} which the API
+    // rejects ("replicas: Not between 1 and 40"). Modeled as Option so the
+    // whole block is omitted when the caller doesn't set it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scaling: Option<ClickPipeScaling>,
+    // settings default-serializes as `{}` which the API also rejects.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub settings: Option<ClickPipeSettings>,
     #[serde(default)]
     pub source: ClickPipePostSource,
 }
@@ -7999,8 +8012,8 @@ pub struct ClickPipePostSource {
     pub mysql: Option<ClickPipeMutateMySQLSource>,
     #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none", default)]
     pub object_storage: Option<ClickPipePostObjectStorageSource>,
-    #[serde(default)]
-    pub postgres: ClickPipeMutatePostgresSource,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub postgres: Option<ClickPipeMutatePostgresSource>,
     #[serde(rename = "validateSamples", default)]
     pub validate_samples: bool,
 }

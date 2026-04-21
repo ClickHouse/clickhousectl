@@ -1,7 +1,8 @@
 use clap::{Args, Parser, Subcommand};
 
 pub use crate::cloud::cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, CloudArgs, CloudCommands,
+    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, ClickPipeCommands,
+    ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands,
     InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
     QueryEndpointCommands, ServiceCommands,
 };

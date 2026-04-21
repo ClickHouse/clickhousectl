@@ -10,12 +10,13 @@ mod user_agent;
 mod version_manager;
 
 use clap::Parser;
-use cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
-    CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
-};
 use clap::error::ErrorKind;
+use cli::{
+    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, ClickPipeCommands,
+    ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands, Commands,
+    InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
+    QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
+};
 
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -72,10 +73,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
     if args.check {
         match update::check_for_update().await? {
             Some((current, latest)) => {
-                println!(
-                    "Update available: v{} → v{}",
-                    current, latest
-                );
+                println!("Update available: v{} → v{}", current, latest);
                 println!("Run `clickhousectl update` to upgrade.");
             }
             None => {
@@ -147,7 +145,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .map_err(|e| Error::Cloud(format!("Invalid URL: {}", e)))?;
                 let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
                 let base_host = host.strip_prefix("api.").unwrap_or(host);
-                let url = format!("https://console.{}/signUp?utm_source=clickhousectl", base_host);
+                let url = format!(
+                    "https://console.{}/signUp?utm_source=clickhousectl",
+                    base_host
+                );
                 println!("Opening ClickHouse Cloud sign-up page...");
                 if open::that(&url).is_err() {
                     println!("Could not open browser. Please visit: {}", url);
@@ -627,13 +628,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 invitation_id,
                 org_id,
             } => {
-                cloud::commands::invitation_delete(
-                    &client,
-                    &invitation_id,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+                cloud::commands::invitation_delete(&client, &invitation_id, org_id.as_deref(), json)
+                    .await
             }
         },
         CloudCommands::Key { command } => match command {
@@ -730,6 +726,175 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 )
                 .await
             }
+        },
+        CloudCommands::ClickPipe { command } => match command {
+            ClickPipeCommands::List { service_id, org_id } => {
+                cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json).await
+            }
+            ClickPipeCommands::Get {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_get(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Delete {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_delete(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Start {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_state(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    "start",
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Stop {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_state(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    "stop",
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Resync {
+                service_id,
+                clickpipe_id,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_state(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    "resync",
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Scale {
+                service_id,
+                clickpipe_id,
+                replicas,
+                cpu_millicores,
+                memory_gb,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_scale(
+                    &client,
+                    &service_id,
+                    &clickpipe_id,
+                    replicas,
+                    cpu_millicores,
+                    memory_gb,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ClickPipeCommands::Settings { command } => match command {
+                ClickPipeSettingsCommands::Get {
+                    service_id,
+                    clickpipe_id,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_settings_get(
+                        &client,
+                        &service_id,
+                        &clickpipe_id,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+                ClickPipeSettingsCommands::Update {
+                    service_id,
+                    clickpipe_id,
+                    streaming_max_insert_wait_ms,
+                    object_storage_concurrency,
+                    object_storage_polling_interval_ms,
+                    object_storage_max_insert_bytes,
+                    object_storage_max_file_count,
+                    clickhouse_max_threads,
+                    clickhouse_max_insert_threads,
+                    object_storage_use_cluster_function,
+                    clickhouse_parallel_view_processing,
+                    org_id,
+                } => {
+                    cloud::commands::clickpipe_settings_update(
+                        &client,
+                        &service_id,
+                        &clickpipe_id,
+                        streaming_max_insert_wait_ms,
+                        object_storage_concurrency,
+                        object_storage_polling_interval_ms,
+                        object_storage_max_insert_bytes,
+                        object_storage_max_file_count,
+                        clickhouse_max_threads,
+                        clickhouse_max_insert_threads,
+                        object_storage_use_cluster_function,
+                        clickhouse_parallel_view_processing,
+                        org_id.as_deref(),
+                        json,
+                    )
+                    .await
+                }
+            },
+            ClickPipeCommands::Create { command } => match command {
+                ClickPipeCreateCommands::ObjectStorage(args) => {
+                    cloud::commands::clickpipe_create_s3(&client, &args, json).await
+                }
+                ClickPipeCreateCommands::Kafka(args) => {
+                    cloud::commands::clickpipe_create_kafka(&client, &args, json).await
+                }
+                ClickPipeCreateCommands::Kinesis(args) => {
+                    cloud::commands::clickpipe_create_kinesis(&client, &args, json).await
+                }
+                ClickPipeCreateCommands::Postgres(args) => {
+                    cloud::commands::clickpipe_create_postgres(&client, &args, json).await
+                }
+                ClickPipeCreateCommands::MySQL(args) => {
+                    cloud::commands::clickpipe_create_mysql(&client, &args, json).await
+                }
+                ClickPipeCreateCommands::MongoDB(args) => {
+                    cloud::commands::clickpipe_create_mongodb(&client, &args, json).await
+                }
+                ClickPipeCreateCommands::BigQuery(args) => {
+                    cloud::commands::clickpipe_create_bigquery(&client, &args, json).await
+                }
+            },
         },
     };
 
