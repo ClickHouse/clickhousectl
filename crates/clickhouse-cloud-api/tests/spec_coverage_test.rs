@@ -302,6 +302,21 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ServicePostRequest", "releaseChannel"),
     ("ServicePostRequest", "tags"),
     ("ServicePostRequest", "tier"),
+    // ClickPipe{Post,Patch}Source.postgres is a $ref without the `oneOf: [ref,
+    // null]` wrapper every other source uses, so the description-heuristic
+    // infers "required" and the generator emits `T`. The API actually treats
+    // postgres as optional — non-postgres creates reject on `postgres.host: ''`
+    // when the empty default source is serialized. Modeled as `Option<T>` to
+    // match real API behavior; spec bug to be fixed upstream.
+    ("ClickPipePostSource", "postgres"),
+    ("ClickPipePatchSource", "postgres"),
+    // ClickPipeScaling sub-object: when default-serialized as {replicas: 0, …}
+    // the API rejects ("replicas: Not between 1 and 40"). Spec heuristic marks
+    // this as required, but in practice callers either set real values or
+    // want it omitted entirely. Modeled as `Option<T>`.
+    ("ClickPipePostRequest", "scaling"),
+    // settings similarly rejects `{}` — either send real values or omit.
+    ("ClickPipePostRequest", "settings"),
 ];
 
 fn assert_field_optionality(spec: &Value) {
