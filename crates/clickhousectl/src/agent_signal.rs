@@ -5,30 +5,13 @@
 //! Detection is delegated to the `is_ai_agent` crate, which inspects standard
 //! and tool-specific environment variables (e.g. `AGENT`, `CLAUDECODE`).
 
-use is_ai_agent::AgentId;
 use reqwest::RequestBuilder;
 
-/// Canonical kebab-case identifier for the detected agent, suitable for use
-/// as a URL query value. Returns `None` when no agent signal is present.
+/// Canonical kebab-case identifier for the detected agent, as defined by the
+/// `is-ai-agent` crate (`AgentId::as_str`). Returns `None` when no agent
+/// signal is present.
 pub fn detected_agent_id() -> Option<&'static str> {
-    is_ai_agent::detect().map(|a| agent_id_str(a.id))
-}
-
-fn agent_id_str(id: AgentId) -> &'static str {
-    match id {
-        AgentId::ClaudeCode => "claude-code",
-        AgentId::Cursor => "cursor",
-        AgentId::GeminiCli => "gemini-cli",
-        AgentId::Codex => "codex",
-        AgentId::Augment => "augment",
-        AgentId::Cline => "cline",
-        AgentId::OpenCode => "opencode",
-        AgentId::Trae => "trae",
-        AgentId::Goose => "goose",
-        AgentId::Amp => "amp",
-        AgentId::Devin => "devin",
-        AgentId::Unknown => "unknown",
-    }
+    is_ai_agent::detect().map(|a| a.id.as_str())
 }
 
 /// Append the `agent=<id>` query parameter to a request when an AI coding
@@ -68,33 +51,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_every_known_agent_id() {
-        // Exhaustive smoke check that no AgentId variant gets the empty string.
-        for id in [
-            AgentId::ClaudeCode,
-            AgentId::Cursor,
-            AgentId::GeminiCli,
-            AgentId::Codex,
-            AgentId::Augment,
-            AgentId::Cline,
-            AgentId::OpenCode,
-            AgentId::Trae,
-            AgentId::Goose,
-            AgentId::Amp,
-            AgentId::Devin,
-            AgentId::Unknown,
-        ] {
-            let s = agent_id_str(id);
-            assert!(!s.is_empty());
-            // Identifier must be URL-safe — no spaces or uppercase.
-            assert!(s.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
-        }
-    }
-
-    #[test]
-    fn claude_code_id_is_kebab_case() {
-        assert_eq!(agent_id_str(AgentId::ClaudeCode), "claude-code");
-        assert_eq!(agent_id_str(AgentId::GeminiCli), "gemini-cli");
+    fn detected_agent_id_uses_crate_canonical_id() {
+        // Smoke test: when the crate's CLAUDECODE detection fires, we surface
+        // its `AgentId::as_str` ("claude-code") verbatim. Captures the
+        // contract we rely on rather than reasserting the crate's table.
+        let agent = is_ai_agent::detect_with(
+            |name| (name == "CLAUDECODE").then(|| "1".to_string()),
+            |_| false,
+        )
+        .expect("CLAUDECODE should resolve to an Agent");
+        assert_eq!(agent.id.as_str(), "claude-code");
     }
 
     #[test]
