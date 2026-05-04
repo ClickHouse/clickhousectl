@@ -21,8 +21,7 @@ pub async fn download_url(url: &str, dest_path: &Path) -> Result<()> {
         .user_agent(crate::user_agent::user_agent())
         .build()?;
 
-    let response = client
-        .get(url)
+    let response = crate::agent_signal::add_agent_query_for(client.get(url), url)
         .send()
         .await?
         .error_for_status()

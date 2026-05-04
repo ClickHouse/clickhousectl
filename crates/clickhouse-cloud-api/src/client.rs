@@ -20,6 +20,7 @@ pub struct Client {
     http: reqwest::Client,
     base_url: String,
     auth: Auth,
+    extra_query_params: Vec<(String, String)>,
 }
 
 impl Client {
@@ -41,6 +42,7 @@ impl Client {
                 key_id: key_id.into(),
                 key_secret: key_secret.into(),
             },
+            extra_query_params: Vec::new(),
         }
     }
 
@@ -55,6 +57,7 @@ impl Client {
             auth: Auth::Bearer {
                 token: token.into(),
             },
+            extra_query_params: Vec::new(),
         }
     }
 
@@ -75,6 +78,7 @@ impl Client {
                 key_id: key_id.into(),
                 key_secret: key_secret.into(),
             },
+            extra_query_params: Vec::new(),
         }
     }
 
@@ -93,7 +97,24 @@ impl Client {
             auth: Auth::Bearer {
                 token: token.into(),
             },
+            extra_query_params: Vec::new(),
         }
+    }
+
+    /// Attach extra query parameters that should be appended to every request
+    /// this client makes. Useful for callers that want to surface a CLI- or
+    /// runtime-level signal (e.g. an `agent` tag) to the API for analytics.
+    ///
+    /// Multiple calls accumulate; existing params are preserved.
+    pub fn with_extra_query_params<I, K, V>(mut self, params: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.extra_query_params
+            .extend(params.into_iter().map(|(k, v)| (k.into(), v.into())));
+        self
     }
 
     /// Replace the Bearer token without rebuilding the client.
@@ -113,13 +134,17 @@ impl Client {
     }
 
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let builder = self
+        let mut builder = self
             .http
             .request(method, format!("{}{}", self.base_url, path));
-        match &self.auth {
+        builder = match &self.auth {
             Auth::Basic { key_id, key_secret } => builder.basic_auth(key_id, Some(key_secret)),
             Auth::Bearer { token } => builder.bearer_auth(token),
+        };
+        if !self.extra_query_params.is_empty() {
+            builder = builder.query(&self.extra_query_params);
         }
+        builder
     }
 
     /// Get list of available organizations

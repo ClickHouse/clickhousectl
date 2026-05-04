@@ -2786,3 +2786,68 @@ async fn default_base_url_is_production() {
     // but we can verify the client is constructable without panicking.
     let _client = Client::new("key", "secret");
 }
+
+// ===========================================================================
+// Extra query params (e.g. agent attribution tag)
+// ===========================================================================
+
+#[tokio::test]
+async fn extra_query_params_are_applied_to_every_request() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .and(query_param("agent", "claude-code"))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::with_base_url(mock_server.uri(), "key", "secret")
+        .with_extra_query_params([("agent", "claude-code")]);
+    let resp = client.organization_get_list().await.unwrap();
+    assert_eq!(resp.result.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn extra_query_params_coexist_with_endpoint_query_params() {
+    // The library already attaches `from_date`/`to_date` to usageCost — make
+    // sure our default params don't clobber them.
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/usageCost"))
+        .and(query_param("from_date", "2024-01-01"))
+        .and(query_param("to_date", "2024-01-31"))
+        .and(query_param("agent", "claude-code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "result": {
+                "grandTotalCHC": 0.0,
+                "costsByDate": []
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::with_base_url(mock_server.uri(), "key", "secret")
+        .with_extra_query_params([("agent", "claude-code")]);
+    client
+        .usage_cost_get("org-1", "2024-01-01", "2024-01-31", &[])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn empty_extra_query_params_keep_url_clean() {
+    // Client built with no extras should not append a stray empty `?`.
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&mock_server)
+        .await;
+
+    let client = Client::with_base_url(mock_server.uri(), "key", "secret");
+    client.organization_get_list().await.unwrap();
+}

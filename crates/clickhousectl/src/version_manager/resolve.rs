@@ -83,7 +83,10 @@ async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersio
 
     for minor in 1..=12 {
         let url = builds_probe_url(&format!("{}.{}", major, minor), platform);
-        match client.head(&url).send().await {
+        match crate::agent_signal::add_agent_query_for(client.head(&url), &url)
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 highest_available = Some(minor);
             }
@@ -223,7 +226,10 @@ async fn probe_builds(version_path: &str, platform: &Platform) -> bool {
         Err(_) => return false,
     };
 
-    match client.head(&url).send().await {
+    match crate::agent_signal::add_agent_query_for(client.head(&url), &url)
+        .send()
+        .await
+    {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }

@@ -116,6 +116,15 @@ fn lib_base_url(cli_base_url: &str) -> String {
         .to_string()
 }
 
+/// Tag every request with `agent=<id>` when an AI coding agent is driving the
+/// CLI, so server-side analytics can attribute usage. No-op for human users.
+fn tag_with_agent(client: clickhouse_cloud_api::Client) -> clickhouse_cloud_api::Client {
+    match crate::agent_signal::detected_agent_id() {
+        Some(id) => client.with_extra_query_params([("agent", id)]),
+        None => client,
+    }
+}
+
 impl CloudClient {
     pub fn new(
         api_key: Option<&str>,
@@ -141,12 +150,12 @@ impl CloudClient {
             let base_url = url_override
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-            let lib_client = clickhouse_cloud_api::Client::with_http_client(
+            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client(
                 http,
                 lib_base_url(&base_url),
                 &key,
                 &secret,
-            );
+            ));
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Basic,
@@ -161,12 +170,12 @@ impl CloudClient {
 
         // Try file credentials
         if let Some(creds) = crate::cloud::credentials::load_credentials() {
-            let lib_client = clickhouse_cloud_api::Client::with_http_client(
+            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client(
                 http,
                 lib_base_url(&base_url),
                 &creds.api_key,
                 &creds.api_secret,
-            );
+            ));
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Basic,
@@ -179,12 +188,12 @@ impl CloudClient {
         let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
         let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
         if let (Some(key), Some(secret)) = (env_key, env_secret) {
-            let lib_client = clickhouse_cloud_api::Client::with_http_client(
+            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client(
                 http,
                 lib_base_url(&base_url),
                 &key,
                 &secret,
-            );
+            ));
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Basic,
@@ -200,11 +209,11 @@ impl CloudClient {
             let base_url = url_override
                 .map(crate::cloud::auth::normalize_api_url)
                 .unwrap_or(tokens.api_url.clone());
-            let lib_client = clickhouse_cloud_api::Client::with_http_client_bearer(
+            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client_bearer(
                 http,
                 lib_base_url(&base_url),
                 &tokens.access_token,
-            );
+            ));
             return Ok(Self {
                 lib_client,
                 auth_mode: AuthMode::Bearer,
