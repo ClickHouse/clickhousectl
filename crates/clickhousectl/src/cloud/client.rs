@@ -123,22 +123,13 @@ fn resolve_auth(
     })
 }
 
-/// Resolve the credential source that *would* win precedence if a `CloudClient`
-/// were constructed right now, without actually creating one.
+/// Peek which credential source would win precedence right now without
+/// actually building a `CloudClient`.
 ///
-/// Returns `None` if no usable credentials are configured. Mirrors the
-/// precedence used by `CloudClient::new`: CLI flags > credentials file
-/// > env vars > OAuth tokens.
-pub fn resolve_active_auth_source(
-    api_key: Option<&str>,
-    api_secret: Option<&str>,
-) -> Option<AuthSource> {
-    // Half-set CLI flags still indicate intent to use CLI flags, even though
-    // `resolve_auth` would reject them. This keeps `cloud auth status` honest
-    // about what the user *tried* to configure.
-    if api_key.is_some() || api_secret.is_some() {
-        return Some(AuthSource::CliFlags);
-    }
+/// Used by `cloud auth status`, which has to render correctly even when no
+/// credentials are configured (the case `CloudClient::new` errors out on).
+/// Returns `None` if nothing usable is configured.
+pub fn resolve_active_auth_source() -> Option<AuthSource> {
     resolve_auth(None, None, None).ok().map(|r| r.source)
 }
 
@@ -981,23 +972,6 @@ mod tests {
         let client = test_client();
         assert_eq!(client.auth_source(), AuthSource::CliFlags);
         assert_eq!(client.base_url(), DEFAULT_BASE_URL);
-    }
-
-    #[test]
-    fn resolve_active_auth_source_cli_flags_take_precedence() {
-        // CLI flags must always win, regardless of other configured sources.
-        assert_eq!(
-            resolve_active_auth_source(Some("k"), Some("s")),
-            Some(AuthSource::CliFlags)
-        );
-        assert_eq!(
-            resolve_active_auth_source(Some("k"), None),
-            Some(AuthSource::CliFlags)
-        );
-        assert_eq!(
-            resolve_active_auth_source(None, Some("s")),
-            Some(AuthSource::CliFlags)
-        );
     }
 
     #[test]
