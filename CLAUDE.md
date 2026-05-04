@@ -122,7 +122,6 @@ cargo add -p clickhouse-cloud-api url
 - `src/paths.rs` handles `~/.clickhouse/` paths (global install dir); `src/init.rs` handles `.clickhouse/` paths (project-local data dir)
 - `local client` uses `exec()` (process replacement), so code after `cmd.exec()` only runs on failure
 - Error types use `thiserror` in `src/error.rs`; cloud module has its own error type wrapped as `Error::Cloud(String)`
-- AI agent attribution is folded into `src/user_agent.rs`. When the CLI runs under a detected agent, the User-Agent string becomes `clickhousectl/<ver> (agent=<id>)`. Detection uses `is_ai_agent::detect`. Every outbound `reqwest::Client` already calls `user_agent::user_agent()`, so no per-call-site wiring is needed.
 - Version resolution (`version_manager/resolve.rs`) handles specs like `stable`, `lts`, `25.12`, or exact `25.12.5.44` — all resolve to an exact version + channel via GitHub API
 - Releases are triggered by pushing a version tag (`v0.1.3`), which runs the GitHub Actions workflow
 

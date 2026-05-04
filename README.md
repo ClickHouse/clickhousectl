@@ -579,10 +579,6 @@ clickhousectl update --check
 
 The CLI also checks for updates in the background (at most once per 24 hours) and displays a notice when a newer version is available.
 
-## AI agent attribution
-
-When `clickhousectl` is invoked from inside a known AI coding agent (e.g. Claude Code, Cursor, Gemini CLI, Codex, Goose), the User-Agent header on every outbound HTTP request is extended with the agent's canonical id — for example `User-Agent: clickhousectl/0.1.18 (agent=claude-code)`. Human-driven invocations send the bare `clickhousectl/0.1.18`. Detection is via the [`is-ai-agent`](https://crates.io/crates/is-ai-agent) crate, which reads the standard `AGENT` env var and tool-specific signals.
-
 ## Cloud integration testing
 
 Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests are in [`crates/clickhouse-cloud-api/tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs).
