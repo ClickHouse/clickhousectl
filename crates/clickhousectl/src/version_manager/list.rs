@@ -130,10 +130,7 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
         for mm in (1..=12).rev() {
             let version_path = format!("{}.{}", yy, mm);
             let url = builds_probe_url(&version_path, &platform);
-            match crate::agent_signal::add_agent_query_for(client.head(&url), &url)
-                .send()
-                .await
-            {
+            match client.head(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
                     available.push(version_path);
                 }

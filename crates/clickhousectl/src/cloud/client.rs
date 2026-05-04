@@ -181,15 +181,6 @@ fn lib_base_url(cli_base_url: &str) -> String {
         .to_string()
 }
 
-/// Tag every request with `agent=<id>` when an AI coding agent is driving the
-/// CLI, so server-side analytics can attribute usage. No-op for human users.
-fn tag_with_agent(client: clickhouse_cloud_api::Client) -> clickhouse_cloud_api::Client {
-    match crate::agent_signal::detected_agent_id() {
-        Some(id) => client.with_extra_query_params([("agent", id)]),
-        None => client,
-    }
-}
-
 impl CloudClient {
     pub fn new(
         api_key: Option<&str>,
@@ -217,7 +208,7 @@ impl CloudClient {
         };
 
         Ok(Self {
-            lib_client: tag_with_agent(lib_client),
+            lib_client,
             auth_mode,
             auth_source: resolved.source,
             base_url: resolved.base_url,

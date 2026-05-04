@@ -1,4 +1,3 @@
-mod agent_signal;
 mod cli;
 mod cloud;
 mod error;

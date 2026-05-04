@@ -581,7 +581,7 @@ The CLI also checks for updates in the background (at most once per 24 hours) an
 
 ## AI agent attribution
 
-When `clickhousectl` is invoked from inside a known AI coding agent (e.g. Claude Code, Cursor, Gemini CLI, Codex, Goose), it tags outbound requests to ClickHouse-owned hosts (`builds.clickhouse.com`, `packages.clickhouse.com`, `api.clickhouse.cloud`) with an `agent=<id>` query parameter. Detection is via the [`is-ai-agent`](https://crates.io/crates/is-ai-agent) crate, which reads the standard `AGENT` env var and tool-specific signals. No tag is added for human-driven invocations, and third-party download mirrors (GitHub Releases) are never annotated.
+When `clickhousectl` is invoked from inside a known AI coding agent (e.g. Claude Code, Cursor, Gemini CLI, Codex, Goose), the User-Agent header on every outbound HTTP request is extended with the agent's canonical id — for example `User-Agent: clickhousectl/0.1.18 (agent=claude-code)`. Human-driven invocations send the bare `clickhousectl/0.1.18`. Detection is via the [`is-ai-agent`](https://crates.io/crates/is-ai-agent) crate, which reads the standard `AGENT` env var and tool-specific signals.
 
 ## Cloud integration testing
 
