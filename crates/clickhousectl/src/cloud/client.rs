@@ -39,6 +39,90 @@ pub enum AuthSource {
     OAuthTokens,
 }
 
+/// Credentials picked by the precedence ladder, paired with the auth scheme
+/// the lib client should be built with.
+enum ResolvedCreds {
+    Basic { key: String, secret: String },
+    Bearer { token: String },
+}
+
+/// One winning credential set: the keys/token, the source label, and the
+/// API base URL the caller should talk to.
+struct ResolvedAuth {
+    creds: ResolvedCreds,
+    source: AuthSource,
+    base_url: String,
+}
+
+/// Walk the precedence ladder once. Order: CLI flags, credentials file, env
+/// vars, OAuth tokens. Errors only when CLI flags are half-set (key without
+/// secret or vice versa) or when nothing usable is configured.
+fn resolve_auth(
+    api_key: Option<&str>,
+    api_secret: Option<&str>,
+    url_override: Option<&str>,
+) -> Result<ResolvedAuth> {
+    let normalized_default = || {
+        url_override
+            .map(crate::cloud::auth::normalize_api_url)
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+    };
+
+    if api_key.is_some() || api_secret.is_some() {
+        let key = api_key.map(String::from).ok_or_else(|| CloudError {
+            message: "API key required when --api-key or --api-secret is set".into(),
+        })?;
+        let secret = api_secret.map(String::from).ok_or_else(|| CloudError {
+            message: "API secret required when --api-key or --api-secret is set".into(),
+        })?;
+        return Ok(ResolvedAuth {
+            creds: ResolvedCreds::Basic { key, secret },
+            source: AuthSource::CliFlags,
+            base_url: normalized_default(),
+        });
+    }
+
+    if let Some(creds) = crate::cloud::credentials::load_credentials() {
+        return Ok(ResolvedAuth {
+            creds: ResolvedCreds::Basic {
+                key: creds.api_key,
+                secret: creds.api_secret,
+            },
+            source: AuthSource::CredentialsFile,
+            base_url: normalized_default(),
+        });
+    }
+
+    let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
+    let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+    if let (Some(key), Some(secret)) = (env_key, env_secret) {
+        return Ok(ResolvedAuth {
+            creds: ResolvedCreds::Basic { key, secret },
+            source: AuthSource::EnvVars,
+            base_url: normalized_default(),
+        });
+    }
+
+    if let Some(tokens) = crate::cloud::auth::load_tokens()
+        && crate::cloud::auth::is_token_valid(&tokens)
+    {
+        let base_url = url_override
+            .map(crate::cloud::auth::normalize_api_url)
+            .unwrap_or(tokens.api_url);
+        return Ok(ResolvedAuth {
+            creds: ResolvedCreds::Bearer {
+                token: tokens.access_token,
+            },
+            source: AuthSource::OAuthTokens,
+            base_url,
+        });
+    }
+
+    Err(CloudError {
+        message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
+    })
+}
+
 /// Resolve the credential source that *would* win precedence if a `CloudClient`
 /// were constructed right now, without actually creating one.
 ///
@@ -49,23 +133,13 @@ pub fn resolve_active_auth_source(
     api_key: Option<&str>,
     api_secret: Option<&str>,
 ) -> Option<AuthSource> {
+    // Half-set CLI flags still indicate intent to use CLI flags, even though
+    // `resolve_auth` would reject them. This keeps `cloud auth status` honest
+    // about what the user *tried* to configure.
     if api_key.is_some() || api_secret.is_some() {
         return Some(AuthSource::CliFlags);
     }
-    if crate::cloud::credentials::load_credentials().is_some() {
-        return Some(AuthSource::CredentialsFile);
-    }
-    let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-    let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
-    if env_key.is_some() && env_secret.is_some() {
-        return Some(AuthSource::EnvVars);
-    }
-    if let Some(tokens) = crate::cloud::auth::load_tokens()
-        && crate::cloud::auth::is_token_valid(&tokens)
-    {
-        return Some(AuthSource::OAuthTokens);
-    }
-    None
+    resolve_auth(None, None, None).ok().map(|r| r.source)
 }
 
 impl AuthSource {
@@ -138,92 +212,24 @@ impl CloudClient {
                 message: format!("Failed to create HTTP client: {}", e),
             })?;
 
-        // Priority: CLI flags > file credentials > env vars > OAuth tokens
-        // API keys are project-scoped (read/write); OAuth is user-scoped (read-only).
-        if api_key.is_some() || api_secret.is_some() {
-            let key = api_key.map(String::from).ok_or_else(|| CloudError {
-                message: "API key required when --api-key or --api-secret is set".into(),
-            })?;
-            let secret = api_secret.map(String::from).ok_or_else(|| CloudError {
-                message: "API secret required when --api-key or --api-secret is set".into(),
-            })?;
-            let base_url = url_override
-                .map(crate::cloud::auth::normalize_api_url)
-                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client(
-                http,
-                lib_base_url(&base_url),
-                &key,
-                &secret,
-            ));
-            return Ok(Self {
-                lib_client,
-                auth_mode: AuthMode::Basic,
-                auth_source: AuthSource::CliFlags,
-                base_url,
-            });
-        }
+        let resolved = resolve_auth(api_key, api_secret, url_override)?;
+        let lib_url = lib_base_url(&resolved.base_url);
+        let (lib_client, auth_mode) = match &resolved.creds {
+            ResolvedCreds::Basic { key, secret } => (
+                clickhouse_cloud_api::Client::with_http_client(http, lib_url, key, secret),
+                AuthMode::Basic,
+            ),
+            ResolvedCreds::Bearer { token } => (
+                clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token),
+                AuthMode::Bearer,
+            ),
+        };
 
-        let base_url = url_override
-            .map(crate::cloud::auth::normalize_api_url)
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-
-        // Try file credentials
-        if let Some(creds) = crate::cloud::credentials::load_credentials() {
-            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client(
-                http,
-                lib_base_url(&base_url),
-                &creds.api_key,
-                &creds.api_secret,
-            ));
-            return Ok(Self {
-                lib_client,
-                auth_mode: AuthMode::Basic,
-                auth_source: AuthSource::CredentialsFile,
-                base_url,
-            });
-        }
-
-        // Try env vars
-        let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-        let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
-        if let (Some(key), Some(secret)) = (env_key, env_secret) {
-            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client(
-                http,
-                lib_base_url(&base_url),
-                &key,
-                &secret,
-            ));
-            return Ok(Self {
-                lib_client,
-                auth_mode: AuthMode::Basic,
-                auth_source: AuthSource::EnvVars,
-                base_url,
-            });
-        }
-
-        // Fall back to OAuth tokens (read-only)
-        if let Some(tokens) = crate::cloud::auth::load_tokens()
-            && crate::cloud::auth::is_token_valid(&tokens)
-        {
-            let base_url = url_override
-                .map(crate::cloud::auth::normalize_api_url)
-                .unwrap_or(tokens.api_url.clone());
-            let lib_client = tag_with_agent(clickhouse_cloud_api::Client::with_http_client_bearer(
-                http,
-                lib_base_url(&base_url),
-                &tokens.access_token,
-            ));
-            return Ok(Self {
-                lib_client,
-                auth_mode: AuthMode::Bearer,
-                auth_source: AuthSource::OAuthTokens,
-                base_url,
-            });
-        }
-
-        Err(CloudError {
-            message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
+        Ok(Self {
+            lib_client: tag_with_agent(lib_client),
+            auth_mode,
+            auth_source: resolved.source,
+            base_url: resolved.base_url,
         })
     }
 
