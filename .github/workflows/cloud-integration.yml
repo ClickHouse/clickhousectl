@@ -9,6 +9,9 @@ on:
       - "crates/clickhouse-cloud-api/src/**"
       - "crates/clickhouse-cloud-api/tests/**"
       - "crates/clickhouse-cloud-api/Cargo.toml"
+      - "crates/clickhousectl/src/cloud/cli.rs"
+      - "crates/clickhousectl/src/cloud/commands.rs"
+      - "crates/clickhousectl/src/cloud/client.rs"
       - "Cargo.lock"
 
 permissions:
@@ -45,3 +48,6 @@ jobs:
 
       - name: Run cloud Postgres integration suite
         run: cargo test -p clickhouse-cloud-api --test integration_postgres_test -- --ignored --nocapture
+
+      - name: Run ClickPipe Postgres CDC integration test
+        run: cargo test -p clickhouse-cloud-api --test integration_clickpipe_postgres_cdc_test -- --ignored --nocapture

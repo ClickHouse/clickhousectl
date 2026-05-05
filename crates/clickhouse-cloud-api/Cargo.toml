@@ -16,6 +16,11 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 chrono = "0.4"
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8.3"
+rustls-pemfile = "2.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = "0.7.17"
+tokio-postgres-rustls = "0.13.0"
 uuid = "1"
 wiremock = "0.6"

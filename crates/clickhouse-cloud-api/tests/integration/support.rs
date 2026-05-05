@@ -140,6 +140,39 @@ impl TestContext {
             format!("tag:run_id={}", self.run_id),
         ]
     }
+
+    pub fn clickpipe_service_name(&self) -> String {
+        format!("clickhousectl-it-cp-{}", self.run_id)
+    }
+
+    pub fn clickpipe_postgres_service_name(&self) -> String {
+        format!("clickhousectl-it-cp-pg-{}", self.run_id)
+    }
+
+    pub fn clickpipe_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed-by".to_string(),
+                value: Some("clickhousectl-it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("clickpipe-postgres-cdc".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run-id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn clickpipe_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed-by=clickhousectl-it".to_string(),
+            "tag:suite=clickpipe-postgres-cdc".to_string(),
+            format!("tag:run-id={}", self.run_id),
+        ]
+    }
 }
 
 pub fn create_client() -> TestResult<Client> {
@@ -259,6 +292,7 @@ impl FailureRecorder {
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
+    clickpipes: Vec<(String, String)>,
 }
 
 impl CleanupRegistry {
@@ -280,8 +314,37 @@ impl CleanupRegistry {
             .retain(|registered| registered != postgres_id);
     }
 
+    pub fn register_clickpipe(
+        &mut self,
+        service_id: impl Into<String>,
+        clickpipe_id: impl Into<String>,
+    ) {
+        self.clickpipes.push((service_id.into(), clickpipe_id.into()));
+    }
+
+    pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
+        self.clickpipes
+            .retain(|(svc, pipe)| !(svc == service_id && pipe == clickpipe_id));
+    }
+
     pub async fn cleanup(&mut self, client: &Client, org_id: &str, delete_timeout: Duration, poll_interval: Duration) -> Result<(), String> {
         let mut failures = Vec::new();
+
+        // Drain ClickPipes first so their parent service can be torn down cleanly.
+        while let Some((service_id, clickpipe_id)) = self.clickpipes.pop() {
+            if let Err(error) = ensure_clickpipe_gone(
+                client,
+                org_id,
+                &service_id,
+                &clickpipe_id,
+                delete_timeout,
+                poll_interval,
+            )
+            .await
+            {
+                failures.push(format!("clickpipe {service_id}/{clickpipe_id}: {error}"));
+            }
+        }
 
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
@@ -369,6 +432,46 @@ async fn ensure_service_gone(
         let service_id = service_id.to_string();
         async move {
             match client.instance_get(&org_id, &service_id).await {
+                Ok(_) => Ok(None),
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
+                Err(e) => Err(e.into()),
+            }
+        }
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_clickpipe_gone(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    clickpipe_id: &str,
+    delete_timeout: Duration,
+    poll_interval: Duration,
+) -> TestResult<()> {
+    eprintln!("  cleanup: ensuring clickpipe is gone");
+
+    match client.click_pipe_get(org_id, service_id, clickpipe_id).await {
+        Ok(_) => {}
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
+        Err(_) => {}
+    }
+
+    match client.click_pipe_delete(org_id, service_id, clickpipe_id).await {
+        Ok(_) => {}
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    }
+
+    poll_until("clickpipe deletion", delete_timeout, poll_interval, || {
+        let client = client.clone();
+        let org_id = org_id.to_string();
+        let service_id = service_id.to_string();
+        let clickpipe_id = clickpipe_id.to_string();
+        async move {
+            match client.click_pipe_get(&org_id, &service_id, &clickpipe_id).await {
                 Ok(_) => Ok(None),
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
                 Err(e) => Err(e.into()),
