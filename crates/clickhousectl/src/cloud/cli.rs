@@ -235,7 +235,7 @@ CONTEXT FOR AGENTS:
     )]
     ClickPipe {
         #[command(subcommand)]
-        command: ClickPipeCommands,
+        command: Box<ClickPipeCommands>,
     },
 
     /// Manage organization members
@@ -346,7 +346,7 @@ impl CloudCommands {
                 ActivityCommands::Get { .. } => false,
             },
             CloudCommands::Postgres { command } => command.is_write(),
-            CloudCommands::ClickPipe { command } => match command {
+            CloudCommands::ClickPipe { command } => match command.as_ref() {
                 ClickPipeCommands::List { .. } => false,
                 ClickPipeCommands::Get { .. } => false,
                 ClickPipeCommands::Delete { .. } => true,

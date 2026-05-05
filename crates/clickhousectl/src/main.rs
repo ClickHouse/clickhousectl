@@ -794,7 +794,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             }
         },
         CloudCommands::Postgres { command } => run_postgres(&client, command, json).await,
-        CloudCommands::ClickPipe { command } => match command {
+        CloudCommands::ClickPipe { command } => match *command {
             ClickPipeCommands::List { service_id, org_id } => {
                 cloud::commands::clickpipe_list(&client, &service_id, org_id.as_deref(), json).await
             }
