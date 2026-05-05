@@ -63,7 +63,7 @@ const KNOWN_PROFILES: &[&str] = &[
 ];
 
 /// Resolve org ID from explicit arg or auto-detect
-async fn resolve_org_id(
+pub(super) async fn resolve_org_id(
     client: &CloudClient,
     org_id: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -107,7 +107,7 @@ async fn resolve_service(
 /// Parse a string into a library enum via serde deserialization, with client-side
 /// validation against a known-values list. Library enums have an `Unknown(String)`
 /// catch-all that prevents serde from ever failing, so we validate first.
-fn parse_serde_enum<T: serde::de::DeserializeOwned>(
+pub(super) fn parse_serde_enum<T: serde::de::DeserializeOwned>(
     value: &str,
     field: &str,
     known_values: &[&str],
@@ -125,7 +125,7 @@ fn parse_serde_enum<T: serde::de::DeserializeOwned>(
         .map_err(|e| format!("invalid {}: {}", field, e).into())
 }
 
-fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
+pub(super) fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
     match value.split_once('=') {
         Some((key, tag_value)) => {
             let key = key.trim();
@@ -152,7 +152,7 @@ fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> 
     }
 }
 
-fn parse_tags(
+pub(super) fn parse_tags(
     values: &[String],
 ) -> Result<Option<Vec<ResourceTagsV1>>, Box<dyn std::error::Error>> {
     if values.is_empty() {
@@ -428,7 +428,7 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
                 id: o.id.to_string(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -506,7 +506,7 @@ pub async fn service_list(
                 }
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1019,7 +1019,7 @@ pub async fn backup_list(
                 created: b.started_at.to_rfc3339(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1367,7 +1367,7 @@ pub async fn org_usage(
                 total: format!("{:.2}", cost.total_chc),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1412,7 +1412,7 @@ pub async fn member_list(
                 name: m.name.clone(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1524,7 +1524,7 @@ pub async fn invitation_list(
                 expires: inv.expire_at.to_rfc3339(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1640,7 +1640,7 @@ pub async fn key_list(
                     .unwrap_or_else(|| "never".into()),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -1782,7 +1782,7 @@ pub async fn activity_list(
                 created: a.created_at.to_rfc3339(),
             })
             .collect();
-        println!("{}", Table::new(rows).with(Style::rounded()));
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }

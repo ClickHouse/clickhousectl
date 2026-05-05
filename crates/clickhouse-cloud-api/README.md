@@ -67,6 +67,15 @@ cargo test --test client_test               # wiremock-based client tests
 cargo test --test models_test               # serde round-trip tests
 ```
 
+Live-API lifecycle suites are `#[ignore]`d by default (they provision real resources):
+
+```bash
+cargo test --test integration_test -- --ignored --nocapture           # ClickHouse service CRUD
+cargo test --test integration_postgres_test -- --ignored --nocapture  # Postgres service CRUD
+```
+
+Both require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow.
+
 The `spec_coverage_test` suite checks three things against the checked-in spec:
 
 1. Every OpenAPI operation has a matching `pub async fn` in `client.rs`
