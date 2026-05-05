@@ -1,4 +1,6 @@
 /target
+/.env
+/.env.local
 /.agents/
 /.claude/
 /.codex/

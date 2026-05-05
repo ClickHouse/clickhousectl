@@ -128,6 +128,20 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ServerCommands,
     },
+
+    /// Manage local Postgres instances (Docker-backed)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Manage named Postgres server instances backed by Docker. Each instance runs as
+  a `postgres:<tag>` container with data bind-mounted at .clickhouse/servers/<name>/data/.
+  Subcommands: start, stop, stop-all, remove, client, dotenv.
+  Typical: `clickhousectl local postgres start` (starts \"default\" on port 5432).
+  `local server list` shows ClickHouse + Postgres entries together.
+  Requires Docker to be installed and running.")]
+    Postgres {
+        #[command(subcommand)]
+        command: PostgresCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -261,5 +275,121 @@ CONTEXT FOR AGENTS:
         /// Include CLICKHOUSE_DATABASE with this value
         #[arg(long)]
         database: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PostgresCommands {
+    /// Start a Postgres container
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Starts a named Postgres server backed by a Docker container.
+  Without --name, the first server is called \"default\"; if \"default\" is running,
+  a random name is generated (e.g. \"bold-crane\").
+  --version (-v) selects a postgres image tag (e.g. 16, 16-alpine, 15.4). Defaults to \"latest\".
+  Image is pulled if not already present locally.
+  --port defaults to 5432; if taken, a free port is auto-assigned.
+  Data persists at .clickhouse/servers/<name>/data/ and is bind-mounted into the container.
+  A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
+  Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
+  `clickhousectl.project=<cwd>`, `created_by=clickhousectl_<version>` for safe discovery.
+  Requires Docker to be installed and running.")]
+    Start {
+        /// Server name (default: "default", or random if default is already running)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Postgres image tag (e.g. 16, 16-alpine, 15.4). Default: latest. Pulls if missing.
+        #[arg(long, short = 'v')]
+        version: Option<String>,
+
+        /// Host TCP port (default: 5432, auto-assigns a free port if in use)
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// POSTGRES_USER (default: postgres)
+        #[arg(long)]
+        user: Option<String>,
+
+        /// POSTGRES_PASSWORD (default: random 24-char alphanumeric)
+        #[arg(long)]
+        password: Option<String>,
+
+        /// POSTGRES_DB (default: postgres)
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Extra env vars for the container, repeatable: -e KEY=VALUE
+        #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+    },
+
+    /// Stop a running Postgres container by name
+    Stop {
+        /// Name of the server to stop
+        name: String,
+    },
+
+    /// Stop all running Postgres containers in this project
+    StopAll,
+
+    /// Remove a stopped Postgres server and its data directory
+    Remove {
+        /// Name of the server to remove
+        name: String,
+    },
+
+    /// Connect to a running Postgres instance with psql
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Two connection modes:
+  1. Named server: `clickhousectl local postgres client --name dev` — looks up the host port
+     and credentials from a locally managed Postgres started via `local postgres start`.
+     Defaults to \"default\".
+  2. Explicit host/port: `clickhousectl local postgres client --host myhost --port 5432`.
+  If `psql` is on PATH on the host, it is execed directly. Otherwise, falls back to running
+  `psql` inside the container via Docker exec (no host psql required).
+  --query and --queries-file pass through to psql (-c / -f).
+  Additional psql args can be passed after --.")]
+    Client {
+        /// Server name to connect to (default: "default")
+        #[arg(long, short)]
+        name: Option<String>,
+
+        /// Host to connect to (bypasses local server lookup)
+        #[arg(long)]
+        host: Option<String>,
+
+        /// TCP port to connect to (bypasses local server lookup if set)
+        #[arg(long, short)]
+        port: Option<u16>,
+
+        /// Execute a single SQL query
+        #[arg(long, short)]
+        query: Option<String>,
+
+        /// Execute queries from a SQL file
+        #[arg(long)]
+        queries_file: Option<String>,
+
+        /// Additional arguments to pass to psql
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Write Postgres connection env vars to a .env file
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Writes POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DATABASE
+  into .env (or .env.local with --local) based on a running Postgres server.
+  If the file already exists, existing POSTGRES_* vars are replaced in-place.")]
+    Dotenv {
+        /// Server name (default: "default")
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Write to .env.local instead of .env
+        #[arg(long)]
+        local: bool,
     },
 }

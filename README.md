@@ -142,6 +142,37 @@ clickhousectl local server dotenv --user default --password secret --database my
 
 **Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.
 
+#### Local Postgres (Docker-backed)
+
+When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. It manages a `postgres:<tag>` Docker container per named server, with data bind-mounted into `.clickhouse/servers/<name>/data/` and a generated random password stored in `.clickhouse/servers/<name>.json`. Requires Docker to be installed and running.
+
+```bash
+# Pre-pull a Postgres image (optional; start will pull on demand)
+clickhousectl local install postgres@16
+
+# Start a Postgres instance (defaults: postgres:latest, port 5432, user "postgres", db "postgres")
+clickhousectl local postgres start
+clickhousectl local postgres start --name dev --version 16 --port 5433
+clickhousectl local postgres start --user app --password s3cret --database myapp
+clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
+
+# List everything (ClickHouse + Postgres are merged in `server list`)
+clickhousectl local server list
+
+# Connect with psql (uses host psql if installed; otherwise falls back to docker exec)
+clickhousectl local postgres client --name dev
+clickhousectl local postgres client --name dev --query "SELECT 1"
+
+# Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env
+clickhousectl local postgres dotenv --name dev
+
+# Stop / remove
+clickhousectl local postgres stop dev
+clickhousectl local postgres remove dev
+```
+
+Containers are tagged with `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`, `clickhousectl.project=<cwd>`, and `created_by=clickhousectl_<version>` labels. `server list` recovers orphaned containers belonging to the current project via these labels, so deleting `.clickhouse/servers/<name>.json` is non-destructive — the next list/start command rediscovers it.
+
 #### Project-local data directory
 
 All server data lives inside `.clickhouse/` in your project directory:
