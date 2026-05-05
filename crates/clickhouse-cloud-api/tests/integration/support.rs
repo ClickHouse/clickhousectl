@@ -90,15 +90,15 @@ impl TestContext {
     pub fn run_tags(&self) -> Vec<ResourceTagsV1> {
         vec![
             ResourceTagsV1 {
-                key: "managed-by".to_string(),
-                value: Some("clickhousectl-it".to_string()),
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
             },
             ResourceTagsV1 {
                 key: "suite".to_string(),
-                value: Some("service-crud".to_string()),
+                value: Some("service_crud".to_string()),
             },
             ResourceTagsV1 {
-                key: "run-id".to_string(),
+                key: "run_id".to_string(),
                 value: Some(self.run_id.clone()),
             },
         ]
@@ -106,9 +106,9 @@ impl TestContext {
 
     pub fn run_tag_filters(&self) -> Vec<String> {
         vec![
-            "tag:managed-by=clickhousectl-it".to_string(),
-            "tag:suite=service-crud".to_string(),
-            format!("tag:run-id={}", self.run_id),
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=service_crud".to_string(),
+            format!("tag:run_id={}", self.run_id),
         ]
     }
 
@@ -119,15 +119,15 @@ impl TestContext {
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
         vec![
             ResourceTagsV1 {
-                key: "managed-by".to_string(),
-                value: Some("clickhousectl-it".to_string()),
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
             },
             ResourceTagsV1 {
                 key: "suite".to_string(),
-                value: Some("postgres-crud".to_string()),
+                value: Some("postgres_crud".to_string()),
             },
             ResourceTagsV1 {
-                key: "run-id".to_string(),
+                key: "run_id".to_string(),
                 value: Some(self.run_id.clone()),
             },
         ]
@@ -135,9 +135,9 @@ impl TestContext {
 
     pub fn postgres_run_tag_filters(&self) -> Vec<String> {
         vec![
-            "tag:managed-by=clickhousectl-it".to_string(),
-            "tag:suite=postgres-crud".to_string(),
-            format!("tag:run-id={}", self.run_id),
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=postgres_crud".to_string(),
+            format!("tag:run_id={}", self.run_id),
         ]
     }
 }
