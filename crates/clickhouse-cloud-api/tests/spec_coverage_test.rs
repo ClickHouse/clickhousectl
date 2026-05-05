@@ -317,6 +317,23 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipePostRequest", "scaling"),
     // settings similarly rejects `{}` — either send real values or omit.
     ("ClickPipePostRequest", "settings"),
+    // Both publicationName and replicationSlotName must be ABSENT (not just
+    // empty) for `cdc` mode — the API rejects "" with "replicationSlotName: ''"
+    // and rejects any value with "only valid for cdc_only mode". Spec heuristic
+    // marks them as required because the schema has no `required` array, but
+    // the field descriptions explicitly call them optional. Modeled as
+    // `Option<String>` so callers can omit them.
+    ("ClickPipePostgresPipeSettings", "publicationName"),
+    ("ClickPipePostgresPipeSettings", "replicationSlotName"),
+    // Four destination fields are "Required field for all pipe types except
+    // database pipes (Postgres, MySQL, BigQuery)" per their descriptions, but
+    // the schema lacks a `required` array so the heuristic infers required
+    // for everyone. Live API rejects empty defaults for database pipes (e.g.
+    // "destination.table: ''", "columns array length < minLength"). Modeled
+    // as Optional so database pipes can omit the whole group.
+    ("ClickPipeMutateDestination", "table"),
+    ("ClickPipeMutateDestination", "managedTable"),
+    ("ClickPipeMutateDestination", "tableDefinition"),
 ];
 
 fn assert_field_optionality(spec: &Value) {

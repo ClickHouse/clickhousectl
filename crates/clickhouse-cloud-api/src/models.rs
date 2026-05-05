@@ -7461,18 +7461,23 @@ pub struct ClickPipeMutateBigQuerySource {
 /// `ClickPipeMutateDestination` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutateDestination {
-    #[serde(default)]
+    // The spec describes `columns`, `managedTable`, `table`, and
+    // `tableDefinition` as "Required field for all pipe types except database
+    // pipes (Postgres, MySQL, BigQuery)" — all four must be omitted entirely
+    // for database pipes. Modeled with skip-when-empty / Option so callers can
+    // build a single destination type and database pipes serialize cleanly.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub columns: Vec<ClickPipeDestinationColumn>,
     #[serde(default)]
     pub database: String,
-    #[serde(rename = "managedTable", default)]
-    pub managed_table: bool,
-    #[serde(default)]
+    #[serde(rename = "managedTable", skip_serializing_if = "Option::is_none", default)]
+    pub managed_table: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub roles: Vec<String>,
-    #[serde(default)]
-    pub table: String,
-    #[serde(rename = "tableDefinition", default)]
-    pub table_definition: ClickPipeDestinationTableDefinition,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub table: Option<String>,
+    #[serde(rename = "tableDefinition", skip_serializing_if = "Option::is_none", default)]
+    pub table_definition: Option<ClickPipeDestinationTableDefinition>,
 }
 
 /// `ClickPipeMutateKafkaSchemaRegistry` from the ClickHouse Cloud API.
@@ -8029,14 +8034,14 @@ pub struct ClickPipePostgresPipeSettings {
     pub enable_failover_slots: bool,
     #[serde(rename = "initialLoadParallelism", default)]
     pub initial_load_parallelism: i64,
-    #[serde(rename = "publicationName", default)]
-    pub publication_name: String,
+    #[serde(rename = "publicationName", skip_serializing_if = "Option::is_none", default)]
+    pub publication_name: Option<String>,
     #[serde(rename = "pullBatchSize", default)]
     pub pull_batch_size: i64,
     #[serde(rename = "replicationMode", default)]
     pub replication_mode: ClickPipePostgresPipeSettingsReplicationmode,
-    #[serde(rename = "replicationSlotName", default)]
-    pub replication_slot_name: String,
+    #[serde(rename = "replicationSlotName", skip_serializing_if = "Option::is_none", default)]
+    pub replication_slot_name: Option<String>,
     #[serde(rename = "snapshotNumRowsPerPartition", default)]
     pub snapshot_num_rows_per_partition: i64,
     #[serde(rename = "snapshotNumberOfParallelTables", default)]

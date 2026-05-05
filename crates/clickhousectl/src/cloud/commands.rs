@@ -1532,14 +1532,25 @@ fn build_destination(
     table: &str,
     columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
 ) -> clickhouse_cloud_api::models::ClickPipeMutateDestination {
+    // Database pipes (Postgres/MySQL/BigQuery) carry the destination table on
+    // the per-mapping `targetTable` and reject any of {table, managedTable,
+    // tableDefinition, columns} at the top level. Detect that case via empty
+    // `table` and emit a destination with only `database` populated.
+    if table.is_empty() {
+        return clickhouse_cloud_api::models::ClickPipeMutateDestination {
+            database: database.to_string(),
+            ..Default::default()
+        };
+    }
     clickhouse_cloud_api::models::ClickPipeMutateDestination {
         database: database.to_string(),
-        table: table.to_string(),
+        table: Some(table.to_string()),
         columns,
-        managed_table: true,
+        managed_table: Some(true),
         roles: vec![],
-        table_definition:
+        table_definition: Some(
             clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition::default(),
+        ),
     }
 }
 
@@ -1622,8 +1633,8 @@ pub async fn clickpipe_create_postgres(
         ca_certificate: ca_cert_contents,
         settings: ClickPipePostgresPipeSettings {
             replication_mode: parse_enum(&args.replication_mode)?,
-            publication_name: args.publication_name.clone().unwrap_or_default(),
-            replication_slot_name: args.replication_slot_name.clone().unwrap_or_default(),
+            publication_name: args.publication_name.clone(),
+            replication_slot_name: args.replication_slot_name.clone(),
             ..Default::default()
         },
         table_mappings: pg_mappings,
@@ -3408,11 +3419,15 @@ mod tests {
     fn build_destination_uses_defaults_for_table_definition() {
         let dest = super::build_destination("mydb", "events", vec![]);
         assert_eq!(dest.database, "mydb");
-        assert_eq!(dest.table, "events");
-        assert!(dest.managed_table);
+        assert_eq!(dest.table.as_deref(), Some("events"));
+        assert_eq!(dest.managed_table, Some(true));
         // Default table engine is MergeTree, not something else.
         assert_eq!(
-            dest.table_definition.engine.r#type,
+            dest.table_definition
+                .as_ref()
+                .expect("non-database pipe gets a tableDefinition")
+                .engine
+                .r#type,
             clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType::MergeTree
         );
     }
