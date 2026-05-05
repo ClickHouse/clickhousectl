@@ -9,7 +9,7 @@ fn parse_date_only(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-fn parse_datetime(value: &str) -> Result<String, String> {
+pub(super) fn parse_datetime(value: &str) -> Result<String, String> {
     if DateTime::<FixedOffset>::parse_from_rfc3339(value).is_err() {
         return Err(format!(
             "invalid datetime '{}': expected ISO 8601 / RFC 3339",
@@ -175,6 +175,18 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ActivityCommands,
     },
+
+    /// Manage ClickHouse Cloud Postgres services (beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Manage ClickHouse Cloud managed Postgres services. Subcommands cover CRUD, lifecycle
+  (restart/promote/switchover), CA certs, runtime config, password reset, read replicas,
+  and point-in-time restore. Service IDs come from `postgres list`.
+  Write commands require API key auth — OAuth is read-only.")]
+    Postgres {
+        #[command(subcommand)]
+        command: crate::cloud::postgres::PostgresCommands,
+    },
 }
 
 impl CloudCommands {
@@ -247,6 +259,7 @@ impl CloudCommands {
                 ActivityCommands::List { .. } => false,
                 ActivityCommands::Get { .. } => false,
             },
+            CloudCommands::Postgres { command } => command.is_write(),
         }
     }
 }
@@ -1561,6 +1574,12 @@ mod tests {
 
         // Private endpoint read
         assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);
+
+        // Postgres reads
+        assert_write(&["clickhousectl", "cloud", "postgres", "list"], false);
+        assert_write(&["clickhousectl", "cloud", "postgres", "get", "pg-1"], false);
+        assert_write(&["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"], false);
+        assert_write(&["clickhousectl", "cloud", "postgres", "config", "get", "pg-1"], false);
     }
 
     #[test]
@@ -1599,5 +1618,18 @@ mod tests {
 
         // Private endpoint write
         assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "create", "svc-1", "--endpoint-id", "ep-1"], true);
+
+        // Postgres writes
+        assert_write(&["clickhousectl", "cloud", "postgres", "create", "--name", "pg", "--region", "us-east-1", "--size", "m7i.2xlarge", "--storage-gb", "100"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "update", "pg-1", "--name", "renamed"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "delete", "pg-1"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "config", "replace", "pg-1", "--file", "/tmp/c.json"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "config", "patch", "pg-1", "--set", "max_connections=500"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "reset-password", "pg-1", "--generate"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "read-replica", "create", "pg-1", "--name", "r1"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "restore", "pg-1", "--name", "r", "--restore-target", "2026-04-16T12:00:00Z"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "restart", "pg-1"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"], true);
     }
 }

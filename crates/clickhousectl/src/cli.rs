@@ -5,6 +5,10 @@ pub use crate::cloud::cli::{
     InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
     QueryEndpointCommands, ServiceCommands,
 };
+pub use crate::cloud::postgres::{
+    CertsCommands as PostgresCertsCommands, ConfigCommands as PostgresConfigCommands,
+    PostgresCommands, ReadReplicaCommands as PostgresReadReplicaCommands,
+};
 pub use crate::local::cli::LocalArgs;
 
 #[derive(Parser)]

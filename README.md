@@ -372,6 +372,82 @@ clickhousectl cloud service delete <service-id> --force
 | `--private-preview-terms-checked` | Accept private preview terms when required |
 | `--enable-core-dumps` | Enable or disable service core dump collection |
 
+### Postgres (beta)
+
+Manage ClickHouse Cloud managed Postgres services. All write commands require API key auth.
+
+```bash
+# List / get
+clickhousectl cloud postgres list
+clickhousectl cloud postgres list --filter state=running
+clickhousectl cloud postgres get <pg-id>
+
+# Create
+clickhousectl cloud postgres create \
+  --name my-pg \
+  --region us-east-1 \
+  --size m7i.2xlarge \
+  --storage-gb 100
+
+# Create with version + HA + tags + advanced config
+clickhousectl cloud postgres create \
+  --name my-pg \
+  --region us-east-1 \
+  --size m7i.2xlarge \
+  --storage-gb 100 \
+  --pg-version 17 \
+  --ha-type sync \
+  --tag env=prod \
+  --pg-config-file ./pg.json
+
+# Update metadata (all flags optional)
+clickhousectl cloud postgres update <pg-id> \
+  --name renamed \
+  --size m7i.4xlarge \
+  --storage-gb 200 \
+  --add-tag env=prod --remove-tag legacy
+
+# Delete
+clickhousectl cloud postgres delete <pg-id>
+
+# CA certificates
+clickhousectl cloud postgres certs get <pg-id>                   # raw PEM to stdout
+clickhousectl cloud postgres certs get <pg-id> --output ca.pem   # file (mode 0600 on unix)
+
+# Runtime configuration
+clickhousectl cloud postgres config get <pg-id>
+clickhousectl cloud postgres config replace <pg-id> --file cfg.json
+clickhousectl cloud postgres config patch <pg-id> --set max_connections=500 --set random_page_cost=1.1
+clickhousectl cloud postgres config patch <pg-id> --file patch.json
+
+# Password
+clickhousectl cloud postgres reset-password <pg-id> --password 'MyStr0ngPassword!'
+clickhousectl cloud postgres reset-password <pg-id> --generate
+
+# Read replica and PITR restore
+clickhousectl cloud postgres read-replica create <pg-id> --name replica-1
+clickhousectl cloud postgres restore <pg-id> --name restored --restore-target 2026-04-16T12:00:00Z
+
+# Lifecycle
+clickhousectl cloud postgres restart <pg-id>
+clickhousectl cloud postgres promote <pg-id>
+clickhousectl cloud postgres switchover <pg-id>
+```
+
+**Postgres Create Options:**
+| Option | Description |
+|--------|-------------|
+| `--name` | Service name (required) |
+| `--region` | Cloud region, e.g. `us-east-1` (required) |
+| `--size` | Instance size, e.g. `m7i.2xlarge` (required; server-validated) |
+| `--storage-gb` | Storage size in GB (required) |
+| `--provider` | Cloud provider (default: `aws`) |
+| `--pg-version` | Postgres major version: `18`, `17`, `16` |
+| `--ha-type` | High-availability: `none`, `async`, `sync` |
+| `--tag` | Resource tag `key` or `key=value` (repeatable) |
+| `--pg-config-file` | Path to JSON file with a `PgConfig` object |
+| `--pg-bouncer-config-file` | Path to JSON file with a `PgBouncerConfig` object |
+
 ### Backups
 
 ```bash
