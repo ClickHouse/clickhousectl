@@ -192,7 +192,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
 
                 // Determine which source would actually win precedence right now.
                 // CLI --api-key/--api-secret aren't relevant to `auth status` itself.
-                let active = cloud::resolve_active_auth_source(None, None);
+                let active = cloud::resolve_active_auth_source();
                 let mark = |src: cloud::AuthSource| -> String {
                     if active == Some(src) { "yes".into() } else { "-".into() }
                 };
@@ -291,7 +291,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 if args.json {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
-                    println!("{}", Table::new(rows).with(Style::rounded()));
+                    println!("{}", Table::new(rows).with(Style::markdown()));
                 }
                 Ok(())
             }
