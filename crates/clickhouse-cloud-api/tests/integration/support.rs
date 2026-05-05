@@ -152,15 +152,15 @@ impl TestContext {
     pub fn clickpipe_run_tags(&self) -> Vec<ResourceTagsV1> {
         vec![
             ResourceTagsV1 {
-                key: "managed-by".to_string(),
-                value: Some("clickhousectl-it".to_string()),
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
             },
             ResourceTagsV1 {
                 key: "suite".to_string(),
-                value: Some("clickpipe-postgres-cdc".to_string()),
+                value: Some("clickpipe_postgres_cdc".to_string()),
             },
             ResourceTagsV1 {
-                key: "run-id".to_string(),
+                key: "run_id".to_string(),
                 value: Some(self.run_id.clone()),
             },
         ]
@@ -168,9 +168,9 @@ impl TestContext {
 
     pub fn clickpipe_run_tag_filters(&self) -> Vec<String> {
         vec![
-            "tag:managed-by=clickhousectl-it".to_string(),
-            "tag:suite=clickpipe-postgres-cdc".to_string(),
-            format!("tag:run-id={}", self.run_id),
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=clickpipe_postgres_cdc".to_string(),
+            format!("tag:run_id={}", self.run_id),
         ]
     }
 }
