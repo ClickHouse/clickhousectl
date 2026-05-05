@@ -101,27 +101,39 @@ async fn start(
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
-    // Resume path: prior Postgres metadata exists and the container is still
-    // on disk. Reuse the original credentials/version (PGDATA is already
-    // initialized for them; passing different values silently doesn't take).
-    if let Some(prior) = prior
-        && let Some(cid) = prior.container_id.as_deref()
-        && docker.inspect_container(cid, None).await.is_ok()
-    {
-        if version.is_some()
-            || port.is_some()
-            || user.is_some()
-            || password.is_some()
-            || database.is_some()
-            || !extra_env.is_empty()
-        {
-            eprintln!(
-                "Note: '{}' already exists; resuming with stored settings. \
-                 To change image/port/credentials, run `local postgres remove {}` first.",
-                server_name, server_name
-            );
+    if let Some(prior) = prior {
+        let cid = prior.container_id.as_deref().unwrap_or("");
+        let container_present =
+            !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
+        if container_present {
+            // Resume the existing container with its persisted settings —
+            // PGDATA is already initdb'd against the original credentials,
+            // so passing different ones now silently wouldn't take.
+            if version.is_some()
+                || port.is_some()
+                || user.is_some()
+                || password.is_some()
+                || database.is_some()
+                || !extra_env.is_empty()
+            {
+                eprintln!(
+                    "Note: '{}' already exists; resuming with stored settings. \
+                     To change image/port/credentials, run `local postgres remove {}` first.",
+                    server_name, server_name
+                );
+            }
+            return resume_existing(&docker, prior, json).await;
         }
-        return resume_existing(&docker, prior, json).await;
+        // Metadata exists but the container is gone (e.g. external `docker rm`).
+        // Don't silently create a fresh container against the existing data dir
+        // — it would either fail (corrupt PGDATA) or come up with a password
+        // that doesn't match what we'd advertise. Force the user to choose.
+        return Err(Error::Exec(format!(
+            "Postgres '{name}' has metadata but the container is gone. Run \
+             `clickhousectl local postgres remove {name}` to clear the data dir \
+             and start fresh.",
+            name = server_name
+        )));
     }
 
     // Fresh-create path.
