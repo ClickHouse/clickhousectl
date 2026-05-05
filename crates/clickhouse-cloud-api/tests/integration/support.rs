@@ -111,6 +111,35 @@ impl TestContext {
             format!("tag:run-id={}", self.run_id),
         ]
     }
+
+    pub fn postgres_service_name(&self) -> String {
+        format!("clickhousectl-it-pg-{}", self.run_id)
+    }
+
+    pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed-by".to_string(),
+                value: Some("clickhousectl-it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("postgres-crud".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run-id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn postgres_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed-by=clickhousectl-it".to_string(),
+            "tag:suite=postgres-crud".to_string(),
+            format!("tag:run-id={}", self.run_id),
+        ]
+    }
 }
 
 pub fn create_client() -> TestResult<Client> {
@@ -229,6 +258,7 @@ impl FailureRecorder {
 #[derive(Default)]
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
+    postgres_ids: Vec<String>,
 }
 
 impl CleanupRegistry {
@@ -241,12 +271,27 @@ impl CleanupRegistry {
             .retain(|registered| registered != service_id);
     }
 
+    pub fn register_postgres(&mut self, postgres_id: impl Into<String>) {
+        self.postgres_ids.push(postgres_id.into());
+    }
+
+    pub fn unregister_postgres(&mut self, postgres_id: &str) {
+        self.postgres_ids
+            .retain(|registered| registered != postgres_id);
+    }
+
     pub async fn cleanup(&mut self, client: &Client, org_id: &str, delete_timeout: Duration, poll_interval: Duration) -> Result<(), String> {
         let mut failures = Vec::new();
 
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
                 failures.push(format!("{service_id}: {error}"));
+            }
+        }
+
+        while let Some(postgres_id) = self.postgres_ids.pop() {
+            if let Err(error) = ensure_postgres_gone(client, org_id, &postgres_id, delete_timeout, poll_interval).await {
+                failures.push(format!("postgres {postgres_id}: {error}"));
             }
         }
 
@@ -327,6 +372,51 @@ async fn ensure_service_gone(
                 Ok(_) => Ok(None),
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
                 Err(e) => Err(e.into()),
+            }
+        }
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_postgres_gone(
+    client: &Client,
+    org_id: &str,
+    postgres_id: &str,
+    delete_timeout: Duration,
+    poll_interval: Duration,
+) -> TestResult<()> {
+    eprintln!("  cleanup: ensuring postgres service is gone");
+
+    match client.postgres_service_get(org_id, postgres_id).await {
+        Ok(_) => {}
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
+        Err(_) => {}
+    }
+
+    match client.postgres_service_delete(org_id, postgres_id).await {
+        Ok(_) => {}
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    }
+
+    poll_until("postgres deletion", delete_timeout, poll_interval, || {
+        let client = client.clone();
+        let org_id = org_id.to_string();
+        let postgres_id = postgres_id.to_string();
+        async move {
+            match client.postgres_service_get(&org_id, &postgres_id).await {
+                Ok(_) => Ok(None),
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
+                Err(e) => {
+                    let message = e.to_string();
+                    if message.contains("404") || message.contains("not found") {
+                        Ok(Some(()))
+                    } else {
+                        Err(e.into())
+                    }
+                }
             }
         }
     })

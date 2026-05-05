@@ -13,6 +13,7 @@ use clap::Parser;
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
     CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
+    PostgresCertsCommands, PostgresCommands, PostgresConfigCommands, PostgresReadReplicaCommands,
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
 };
 use clap::error::ErrorKind;
@@ -185,7 +186,16 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     status: String,
                     #[tabled(rename = "Scope")]
                     scope: String,
+                    #[tabled(rename = "Active")]
+                    active: String,
                 }
+
+                // Determine which source would actually win precedence right now.
+                // CLI --api-key/--api-secret aren't relevant to `auth status` itself.
+                let active = cloud::resolve_active_auth_source();
+                let mark = |src: cloud::AuthSource| -> String {
+                    if active == Some(src) { "yes".into() } else { "-".into() }
+                };
 
                 let mut rows = Vec::new();
 
@@ -195,6 +205,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "OAuth".into(),
                             status: "Active".into(),
                             scope: "read-only".into(),
+                            active: mark(cloud::AuthSource::OAuthTokens),
                         });
                     }
                     Some(_) => {
@@ -202,6 +213,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "OAuth".into(),
                             status: "Expired".into(),
                             scope: "read-only".into(),
+                            active: "-".into(),
                         });
                     }
                     None => {
@@ -209,6 +221,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "OAuth".into(),
                             status: "Not configured".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
                     }
                 }
@@ -218,12 +231,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         auth_type: "API key".into(),
                         status: "Active".into(),
                         scope: "read/write".into(),
+                        active: mark(cloud::AuthSource::CredentialsFile),
                     });
                 } else {
                     rows.push(AuthRow {
                         auth_type: "API key".into(),
                         status: "Not configured".into(),
                         scope: "-".into(),
+                        active: "-".into(),
                     });
                 }
 
@@ -235,6 +250,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Active".into(),
                             scope: "read/write".into(),
+                            active: mark(cloud::AuthSource::EnvVars),
                         });
                     }
                     (true, false) => {
@@ -242,6 +258,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
                     }
                     (false, true) => {
@@ -249,6 +266,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
                     }
                     (false, false) => {
@@ -256,14 +274,24 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                             auth_type: "Env vars".into(),
                             status: "Not configured".into(),
                             scope: "-".into(),
+                            active: "-".into(),
                         });
+                    }
+                }
+
+                if args.debug {
+                    match active {
+                        Some(src) => {
+                            eprintln!("[debug] auth source: {}", src.describe());
+                        }
+                        None => eprintln!("[debug] auth source: none (no credentials configured)"),
                     }
                 }
 
                 if args.json {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
-                    println!("{}", Table::new(rows).with(Style::rounded()));
+                    println!("{}", Table::new(rows).with(Style::markdown()));
                 }
                 Ok(())
             }
@@ -281,6 +309,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         args.url.as_deref(),
     )
     .map_err(|e| Error::Cloud(e.to_string()))?;
+
+    if args.debug {
+        eprintln!("[debug] auth source: {}", client.auth_source().describe());
+        eprintln!("[debug] api url: {}", client.base_url());
+    }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
@@ -764,7 +797,221 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 .await
             }
         },
+        CloudCommands::Postgres { command } => run_postgres(&client, command, json).await,
     };
 
     result.map_err(|e| Error::Cloud(e.to_string()))
+}
+
+async fn run_postgres(
+    client: &CloudClient,
+    command: PostgresCommands,
+    json: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::PostgresServiceSetStateCommand;
+    use cloud::postgres::{
+        self as pg, PostgresCreateOptions, PostgresReadReplicaOptions, PostgresRestoreOptions,
+        PostgresUpdateOptions,
+    };
+
+    match command {
+        PostgresCommands::List { org_id, filter } => {
+            pg::postgres_list(client, org_id.as_deref(), &filter, json).await
+        }
+        PostgresCommands::Get {
+            postgres_id,
+            org_id,
+        } => pg::postgres_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Create {
+            name,
+            region,
+            size,
+            storage_gb,
+            provider,
+            pg_version,
+            ha_type,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        } => {
+            let opts = PostgresCreateOptions {
+                name: &name,
+                region: &region,
+                size: &size,
+                storage_gb,
+                provider: &provider,
+                pg_version: pg_version.as_deref(),
+                ha_type: ha_type.as_deref(),
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_create(client, opts, json).await
+        }
+        PostgresCommands::Update {
+            postgres_id,
+            name,
+            region,
+            size,
+            storage_gb,
+            provider,
+            pg_version,
+            ha_type,
+            add_tag,
+            remove_tag,
+            org_id,
+        } => {
+            let opts = PostgresUpdateOptions {
+                name: name.as_deref(),
+                region: region.as_deref(),
+                size: size.as_deref(),
+                storage_gb,
+                provider: provider.as_deref(),
+                pg_version: pg_version.as_deref(),
+                ha_type: ha_type.as_deref(),
+                add_tag: &add_tag,
+                remove_tag: &remove_tag,
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_update(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Delete {
+            postgres_id,
+            org_id,
+        } => pg::postgres_delete(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Certs(PostgresCertsCommands::Get {
+            postgres_id,
+            output,
+            org_id,
+        }) => {
+            pg::postgres_certs_get(
+                client,
+                &postgres_id,
+                output.as_deref(),
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(PostgresConfigCommands::Get {
+            postgres_id,
+            org_id,
+        }) => pg::postgres_config_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Config(PostgresConfigCommands::Replace {
+            postgres_id,
+            file,
+            org_id,
+        }) => {
+            pg::postgres_config_replace(client, &postgres_id, &file, org_id.as_deref(), json).await
+        }
+        PostgresCommands::Config(PostgresConfigCommands::Patch {
+            postgres_id,
+            sets,
+            file,
+            org_id,
+        }) => {
+            pg::postgres_config_patch(
+                client,
+                &postgres_id,
+                &sets,
+                file.as_deref(),
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ResetPassword {
+            postgres_id,
+            password,
+            generate,
+            org_id,
+        } => {
+            pg::postgres_reset_password(
+                client,
+                &postgres_id,
+                password.as_deref(),
+                generate,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ReadReplica(PostgresReadReplicaCommands::Create {
+            postgres_id,
+            name,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        }) => {
+            let opts = PostgresReadReplicaOptions {
+                name: &name,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_read_replica_create(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Restore {
+            postgres_id,
+            name,
+            restore_target,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        } => {
+            let opts = PostgresRestoreOptions {
+                name: &name,
+                restore_target: &restore_target,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            pg::postgres_restore(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Restart {
+            postgres_id,
+            org_id,
+        } => {
+            pg::postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Restart,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Promote {
+            postgres_id,
+            org_id,
+        } => {
+            pg::postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Promote,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Switchover {
+            postgres_id,
+            org_id,
+        } => {
+            pg::postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Switchover,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+    }
 }
