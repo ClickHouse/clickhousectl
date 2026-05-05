@@ -207,6 +207,17 @@ clickhousectl cloud auth logout    # Clear all saved credentials (credentials.js
 
 Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables > OAuth tokens.
 
+### Debugging which credential source was used
+
+Pass `--debug` to any `cloud` command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
+
+```bash
+clickhousectl cloud --debug service list
+# [debug] auth source: credentials file (.clickhouse/credentials.json)
+# [debug] api url: https://api.clickhouse.cloud/v1
+# ... normal output ...
+```
+
 ## Cloud
 
 Manage ClickHouse Cloud services via the API.
@@ -361,6 +372,82 @@ clickhousectl cloud service delete <service-id> --force
 | `--private-preview-terms-checked` | Accept private preview terms when required |
 | `--enable-core-dumps` | Enable or disable service core dump collection |
 
+### Postgres (beta)
+
+Manage ClickHouse Cloud managed Postgres services. All write commands require API key auth.
+
+```bash
+# List / get
+clickhousectl cloud postgres list
+clickhousectl cloud postgres list --filter state=running
+clickhousectl cloud postgres get <pg-id>
+
+# Create
+clickhousectl cloud postgres create \
+  --name my-pg \
+  --region us-east-1 \
+  --size m7i.2xlarge \
+  --storage-gb 100
+
+# Create with version + HA + tags + advanced config
+clickhousectl cloud postgres create \
+  --name my-pg \
+  --region us-east-1 \
+  --size m7i.2xlarge \
+  --storage-gb 100 \
+  --pg-version 17 \
+  --ha-type sync \
+  --tag env=prod \
+  --pg-config-file ./pg.json
+
+# Update metadata (all flags optional)
+clickhousectl cloud postgres update <pg-id> \
+  --name renamed \
+  --size m7i.4xlarge \
+  --storage-gb 200 \
+  --add-tag env=prod --remove-tag legacy
+
+# Delete
+clickhousectl cloud postgres delete <pg-id>
+
+# CA certificates
+clickhousectl cloud postgres certs get <pg-id>                   # raw PEM to stdout
+clickhousectl cloud postgres certs get <pg-id> --output ca.pem   # file (mode 0600 on unix)
+
+# Runtime configuration
+clickhousectl cloud postgres config get <pg-id>
+clickhousectl cloud postgres config replace <pg-id> --file cfg.json
+clickhousectl cloud postgres config patch <pg-id> --set max_connections=500 --set random_page_cost=1.1
+clickhousectl cloud postgres config patch <pg-id> --file patch.json
+
+# Password
+clickhousectl cloud postgres reset-password <pg-id> --password 'MyStr0ngPassword!'
+clickhousectl cloud postgres reset-password <pg-id> --generate
+
+# Read replica and PITR restore
+clickhousectl cloud postgres read-replica create <pg-id> --name replica-1
+clickhousectl cloud postgres restore <pg-id> --name restored --restore-target 2026-04-16T12:00:00Z
+
+# Lifecycle
+clickhousectl cloud postgres restart <pg-id>
+clickhousectl cloud postgres promote <pg-id>
+clickhousectl cloud postgres switchover <pg-id>
+```
+
+**Postgres Create Options:**
+| Option | Description |
+|--------|-------------|
+| `--name` | Service name (required) |
+| `--region` | Cloud region, e.g. `us-east-1` (required) |
+| `--size` | Instance size, e.g. `m7i.2xlarge` (required; server-validated) |
+| `--storage-gb` | Storage size in GB (required) |
+| `--provider` | Cloud provider (default: `aws`) |
+| `--pg-version` | Postgres major version: `18`, `17`, `16` |
+| `--ha-type` | High-availability: `none`, `async`, `sync` |
+| `--tag` | Resource tag `key` or `key=value` (repeatable) |
+| `--pg-config-file` | Path to JSON file with a `PgConfig` object |
+| `--pg-bouncer-config-file` | Path to JSON file with a `PgBouncerConfig` object |
+
 ### Backups
 
 ```bash
@@ -494,7 +581,7 @@ The CLI also checks for updates in the background (at most once per 24 hours) an
 
 ## Cloud integration testing
 
-Cloud commands are tested against a real ClickHouse Cloud workspace. All changes to Cloud commands must pass CI testing before merge. CI tests are under [`tests/cloud_cli.rs`](tests/cloud_cli.rs).
+Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests are in [`crates/clickhouse-cloud-api/tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs).
 
 Required environment variables:
 
@@ -506,11 +593,10 @@ export CLICKHOUSE_CLOUD_TEST_PROVIDER=aws
 export CLICKHOUSE_CLOUD_TEST_REGION=us-east-1
 ```
 
-Run the CI test:
+Run the integration test:
 
 ```bash
-CLICKHOUSECTL_BIN=target/debug/clickhousectl \
-cargo test --test cloud_cli cloud_service_crud_lifecycle -- --ignored --nocapture --test-threads=1
+cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
 ```
 
 By default, any failed check fails the run. To keep going after `non-blocking` capability failures and collect them in a summary at the end, set:

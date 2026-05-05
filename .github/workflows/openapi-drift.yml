@@ -1,0 +1,23 @@
+name: OpenAPI Spec Drift Check
+
+on:
+  schedule:
+    # Run daily at 08:00 UTC
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-drift:
+    name: Check for OpenAPI spec drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for drift and create issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-openapi-drift.py
