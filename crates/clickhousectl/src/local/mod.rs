@@ -54,6 +54,7 @@ fn parse_postgres_install_spec(spec: &str) -> Option<&str> {
 }
 
 async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
+    postgres::validate_pg_tag(tag)?;
     let docker = docker::connect().await?;
     if !force && docker::image_exists(&docker, tag).await? {
         let out = output::InstallOutput {
@@ -290,6 +291,22 @@ async fn start_server(
 
     // Resolve server name and check for collisions before any downloads
     let server_name = server::resolve_name(name.as_deref())?;
+
+    // Reject names already used by another engine — both engines share
+    // `.clickhouse/servers/<name>/` so reusing the dir under a different
+    // engine would clobber the other engine's data. Run this before the
+    // running-collision check so the engine error is preferred.
+    if let Some(prior) = server::load_info(&server_name)
+        && prior.engine != server::Engine::Clickhouse
+    {
+        return Err(Error::Exec(format!(
+            "name '{}' is already in use by a {} server. Use a different --name, \
+             or run `clickhousectl local postgres remove {}` first.",
+            server_name,
+            prior.engine.as_str(),
+            server_name
+        )));
+    }
 
     if name.is_some() && server::is_server_running(&server_name) {
         return Err(Error::ServerAlreadyRunning(server_name));
@@ -654,20 +671,28 @@ fn list_servers_local(json: bool) -> Result<()> {
         servers: entries
             .into_iter()
             .map(|e| {
+                let running = e.running;
                 let (pid, version, http_port, tcp_port, engine, container_id) = match e.info {
-                    Some(info) => (
-                        Some(info.pid),
-                        Some(info.version),
-                        Some(info.http_port),
-                        Some(info.tcp_port),
-                        info.engine.as_str().to_string(),
-                        info.container_id,
-                    ),
+                    Some(info) => {
+                        let is_ch = info.engine == server::Engine::Clickhouse;
+                        // pid only meaningful for a running ClickHouse process.
+                        let pid = if is_ch && running { Some(info.pid) } else { None };
+                        // http_port doesn't apply to Postgres.
+                        let http_port = if is_ch { Some(info.http_port) } else { None };
+                        (
+                            pid,
+                            Some(info.version),
+                            http_port,
+                            Some(info.tcp_port),
+                            info.engine.as_str().to_string(),
+                            info.container_id,
+                        )
+                    }
                     None => (None, None, None, None, "clickhouse".to_string(), None),
                 };
                 output::ServerListEntry {
                     name: e.name,
-                    running: e.running,
+                    running,
                     pid,
                     version,
                     http_port,

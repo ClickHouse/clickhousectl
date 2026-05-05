@@ -15,6 +15,24 @@ use std::process::Command;
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
 const DEFAULT_DATABASE: &str = "postgres";
+/// Default image tag when `--version` is not given. Within the supported
+/// range; users can override with any 16/17/18 tag (`16`, `16-alpine`, etc).
+pub const DEFAULT_PG_TAG: &str = "18";
+
+/// Accept Postgres image tags whose major version is 16, 17, or 18 — anything
+/// else is unsupported for now. Examples that pass: `16`, `16-alpine`, `17.0`,
+/// `18-bookworm`, `16.4-alpine3.20`. Examples that fail: `latest`, `15`, `19`.
+pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
+    let major: String = tag.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !matches!(major.as_str(), "16" | "17" | "18") {
+        return Err(Error::Exec(format!(
+            "postgres version '{}' is not supported. Use a 16, 17, or 18 image tag \
+             (for example: 16, 16-alpine, 17.0, 18-bookworm).",
+            tag
+        )));
+    }
+    Ok(())
+}
 
 pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
     match cmd {
@@ -57,13 +75,58 @@ async fn start(
 
     let server_name = server::resolve_name(name.as_deref())?;
 
+    // Read prior metadata up-front so the cross-engine guard fires before
+    // any liveness side-effects (and before we touch Docker).
+    let prior = server::load_info(&server_name);
+    if let Some(p) = &prior
+        && p.engine != Engine::Postgres
+    {
+        return Err(Error::Exec(format!(
+            "name '{}' is already in use by a {} server. Use a different --name, \
+             or run `clickhousectl local server remove {}` first.",
+            server_name,
+            p.engine.as_str(),
+            server_name
+        )));
+    }
+
     if name.is_some() && server::is_server_running(&server_name) {
         return Err(Error::ServerAlreadyRunning(server_name));
     }
 
     let docker = docker::connect().await?;
 
-    let tag = version.as_deref().unwrap_or("latest");
+    let project_cwd = std::env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+
+    // Resume path: prior Postgres metadata exists and the container is still
+    // on disk. Reuse the original credentials/version (PGDATA is already
+    // initialized for them; passing different values silently doesn't take).
+    if let Some(prior) = prior
+        && let Some(cid) = prior.container_id.as_deref()
+        && docker.inspect_container(cid, None).await.is_ok()
+    {
+        if version.is_some()
+            || port.is_some()
+            || user.is_some()
+            || password.is_some()
+            || database.is_some()
+            || !extra_env.is_empty()
+        {
+            eprintln!(
+                "Note: '{}' already exists; resuming with stored settings. \
+                 To change image/port/credentials, run `local postgres remove {}` first.",
+                server_name, server_name
+            );
+        }
+        return resume_existing(&docker, prior, json).await;
+    }
+
+    // Fresh-create path.
+    let tag = version.as_deref().unwrap_or(DEFAULT_PG_TAG);
+    validate_pg_tag(tag)?;
     if !docker::image_exists(&docker, tag).await? {
         eprintln!("Pulling postgres:{tag}...");
         docker::pull_image(&docker, tag).await?;
@@ -74,19 +137,11 @@ async fn start(
     server::ensure_server_data_dir(&server_name)?;
     let data_dir = server::server_data_dir(&server_name);
 
-    let project_cwd = std::env::current_dir()
-        .and_then(|p| p.canonicalize())
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-
-    // Clear out any stale stopped container with the same name (only if we
-    // can prove we own it via labels) so create_container doesn't 409.
     docker::ensure_name_free(&docker, &server_name, &project_cwd).await?;
 
     let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
     let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
 
-    // If POSTGRES_PASSWORD is in extra_env, prefer it; else use --password; else generate.
     let password_from_env = extra_env
         .iter()
         .find_map(|kv| kv.strip_prefix("POSTGRES_PASSWORD="))
@@ -122,13 +177,11 @@ async fn start(
     };
     server::save_server_info(&info)?;
 
-    // Health check: wait up to 3s for the container to be running.
     let healthy = wait_running(&docker, &container_id, 30).await;
     if !healthy {
         let logs = docker::container_logs_tail(&docker, &container_id, 50)
             .await
             .unwrap_or_default();
-        // Best-effort cleanup so we don't leave a broken container.
         let _ = docker::stop_container(&docker, &container_id).await;
         let _ = docker::remove_container(&docker, &container_id).await;
         server::remove_server_info(&server_name);
@@ -143,6 +196,50 @@ async fn start(
         container_id,
         image: format!("postgres:{tag}"),
         port: host_port,
+        user,
+        password,
+        database,
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+/// Resume an existing stopped Postgres container. Reads credentials from the
+/// container's persisted env (the source of truth — PGDATA was initialized
+/// for them) and refreshes the metadata.
+async fn resume_existing(
+    docker: &bollard::Docker,
+    prior: ServerInfo,
+    json: bool,
+) -> Result<()> {
+    let container_id = prior.container_id.clone().expect("checked by caller");
+
+    docker::start_existing_blocking(&container_id)?;
+
+    let healthy = wait_running(docker, &container_id, 30).await;
+    if !healthy {
+        let logs = docker::container_logs_tail(docker, &container_id, 50)
+            .await
+            .unwrap_or_default();
+        return Err(Error::DockerError(format!(
+            "Postgres container '{}' did not resume.\n--- container logs ---\n{}",
+            prior.name, logs
+        )));
+    }
+
+    let (user, password, database) = read_pg_env(docker, &container_id).await;
+
+    let info = ServerInfo {
+        started_at: server::now_timestamp(),
+        ..prior
+    };
+    server::save_server_info(&info)?;
+
+    let out = output::PostgresStartOutput {
+        name: info.name,
+        container_id,
+        image: info.version,
+        port: info.tcp_port,
         user,
         password,
         database,
@@ -254,6 +351,15 @@ fn remove(name: &str, json: bool) -> Result<()> {
     if server::is_server_running(name) {
         return Err(Error::ServerAlreadyRunning(name.to_string()));
     }
+
+    // Tear down the stopped container (if any) before removing the data dir.
+    if let Some(info) = server::load_info(name)
+        && info.engine == Engine::Postgres
+        && let Some(cid) = info.container_id.as_deref()
+    {
+        let _ = docker::stop_and_remove_blocking(cid);
+    }
+
     let data_dir = server::server_data_dir(name);
     if !data_dir.exists() {
         return Err(Error::ServerNotFound(name.to_string()));
@@ -326,7 +432,7 @@ async fn client(
         );
     }
 
-    // Build psql args for docker exec.
+    let one_shot = query.is_some() || queries_file.is_some();
     let mut psql_args: Vec<String> = vec![
         "-U".into(), user,
         "-d".into(), database,
@@ -341,7 +447,13 @@ async fn client(
     }
     psql_args.extend(extra_args);
 
-    docker::exec_psql_in_container(&docker, container_id, &psql_args).await
+    if one_shot {
+        // Non-interactive: no TTY, no raw mode, output goes to stdout/stderr
+        // so the caller can pipe / capture / redirect.
+        docker::exec_psql_one_shot(&docker, container_id, &psql_args).await
+    } else {
+        docker::exec_psql_in_container(&docker, container_id, &psql_args).await
+    }
 }
 
 /// Read POSTGRES_USER/PASSWORD/DB from the container's effective env so we
@@ -491,6 +603,20 @@ mod tests {
     fn resolve_port_passes_through_explicit_value() {
         // Use a port unlikely to be bound; we just want the passthrough path.
         assert_eq!(resolve_port(Some(54321)).unwrap(), 54321);
+    }
+
+    #[test]
+    fn validate_pg_tag_accepts_supported_majors() {
+        for tag in ["16", "17", "18", "16-alpine", "17.0", "18-bookworm", "16.4-alpine3.20"] {
+            assert!(validate_pg_tag(tag).is_ok(), "expected `{}` to be accepted", tag);
+        }
+    }
+
+    #[test]
+    fn validate_pg_tag_rejects_unsupported() {
+        for tag in ["latest", "15", "19", "14-alpine", "alpine", ""] {
+            assert!(validate_pg_tag(tag).is_err(), "expected `{}` to be rejected", tag);
+        }
     }
 
     #[test]

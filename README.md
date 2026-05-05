@@ -147,10 +147,10 @@ clickhousectl local server dotenv --user default --password secret --database my
 When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. It manages a `postgres:<tag>` Docker container per named server, with data bind-mounted into `.clickhouse/servers/<name>/data/` and a generated random password stored in `.clickhouse/servers/<name>.json`. Requires Docker to be installed and running.
 
 ```bash
-# Pre-pull a Postgres image (optional; start will pull on demand)
+# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 16, 17, 18 (and any sub-tag like 16-alpine, 17.0, 18-bookworm).
 clickhousectl local install postgres@16
 
-# Start a Postgres instance (defaults: postgres:latest, port 5432, user "postgres", db "postgres")
+# Start a Postgres instance (defaults: postgres:18, port 5432, user "postgres", db "postgres")
 clickhousectl local postgres start
 clickhousectl local postgres start --name dev --version 16 --port 5433
 clickhousectl local postgres start --user app --password s3cret --database myapp

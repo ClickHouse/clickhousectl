@@ -296,6 +296,71 @@ pub async fn list_project_postgres(
     Ok(out)
 }
 
+/// Run `psql` inside a container in non-interactive mode: no TTY, no raw
+/// mode, no stdin. Streams stdout+stderr to the host. Used when the caller
+/// passes `--query` or `--queries-file` so the output can be piped/scripted.
+pub async fn exec_psql_one_shot(
+    docker: &Docker,
+    container_id: &str,
+    psql_args: &[String],
+) -> Result<()> {
+    use bollard::exec::StartExecResults;
+    use bollard::models::ExecConfig;
+    use tokio::io::AsyncWriteExt;
+
+    let mut cmd = vec!["psql".to_string()];
+    cmd.extend(psql_args.iter().cloned());
+
+    let exec = docker
+        .create_exec(
+            container_id,
+            ExecConfig {
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                attach_stdin: Some(false),
+                tty: Some(false),
+                cmd: Some(cmd),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| Error::DockerError(e.to_string()))?;
+    let exec_id = exec.id;
+
+    let started = docker
+        .start_exec(&exec_id, None)
+        .await
+        .map_err(|e| Error::DockerError(e.to_string()))?;
+    let mut output = match started {
+        StartExecResults::Attached { output, .. } => output,
+        StartExecResults::Detached => return Ok(()),
+    };
+
+    let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
+    while let Some(chunk) = output.next().await {
+        match chunk {
+            Ok(bollard::container::LogOutput::StdErr { message }) => {
+                let _ = stderr.write_all(&message).await;
+            }
+            Ok(out) => {
+                let _ = stdout.write_all(&out.into_bytes()).await;
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = stdout.flush().await;
+    let _ = stderr.flush().await;
+
+    if let Ok(info) = docker.inspect_exec(&exec_id).await
+        && let Some(code) = info.exit_code
+        && code != 0
+    {
+        std::process::exit(code as i32);
+    }
+    Ok(())
+}
+
 /// Run `psql` inside a container with a full interactive TTY:
 /// host stdin/stdout are wired to the docker exec stream, the host terminal
 /// goes into raw mode, and SIGWINCH is forwarded as `resize_exec`.
@@ -461,13 +526,35 @@ pub fn is_container_running_blocking(id: &str) -> bool {
     })
 }
 
+/// Stop a container, leaving it on disk so it can be `docker start`ed again.
+pub fn stop_blocking(id: &str) -> Result<()> {
+    let id = id.to_string();
+    block_on(async move {
+        let docker = connect().await?;
+        stop_container(&docker, &id).await
+    })
+}
+
+/// Best-effort stop, then remove the container.
 pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
     let id = id.to_string();
     block_on(async move {
         let docker = connect().await?;
-        // best-effort: stop may fail if the container is already stopped.
         let _ = stop_container(&docker, &id).await;
         remove_container(&docker, &id).await
+    })
+}
+
+/// `docker start` an existing stopped container.
+pub fn start_existing_blocking(id: &str) -> Result<()> {
+    use bollard::query_parameters::StartContainerOptions;
+    let id = id.to_string();
+    block_on(async move {
+        let docker = connect().await?;
+        docker
+            .start_container(&id, None::<StartContainerOptions>)
+            .await
+            .map_err(|e| Error::DockerError(e.to_string()))
     })
 }
 

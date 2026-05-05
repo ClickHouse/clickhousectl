@@ -151,25 +151,27 @@ fn is_alive(info: &ServerInfo) -> bool {
     }
 }
 
-/// Load server metadata if it exists and the underlying process/container is alive.
+/// Load server metadata regardless of liveness. Returns None if no metadata
+/// file exists or it can't be parsed.
+pub fn load_info(name: &str) -> Option<ServerInfo> {
+    let content = std::fs::read_to_string(server_meta_path(name)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Load server metadata only if the underlying process/container is alive.
+/// Does **not** auto-delete stale metadata — `list_all_servers` is the single
+/// place that GCs ClickHouse entries whose PID is gone, so callers like
+/// `is_server_running` and `resolve_name` can read the metadata without side
+/// effects.
 fn load_running_info(name: &str) -> Option<ServerInfo> {
-    let path = server_meta_path(name);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let info: ServerInfo = serde_json::from_str(&content).ok()?;
-    if is_alive(&info) {
-        Some(info)
-    } else {
-        // Stale — clean up
-        let _ = std::fs::remove_file(&path);
-        None
-    }
+    let info = load_info(name)?;
+    if is_alive(&info) { Some(info) } else { None }
 }
 
 /// List all known servers (both running and stopped).
 /// Discovers servers by scanning data directories in .clickhouse/servers/.
 /// Also runs process discovery to recover any orphaned servers for the current project.
 pub fn list_all_servers() -> Vec<ServerEntry> {
-    // Recover any orphaned servers before listing
     recover_current_project_servers();
 
     let dir = servers_dir();
@@ -182,7 +184,6 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
 
     for entry in dir_entries.flatten() {
         let path = entry.path();
-        // Only look at directories (server data dirs), skip .json files
         if !path.is_dir() {
             continue;
         }
@@ -191,13 +192,32 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
             None => continue,
         };
 
-        // Check if this server has a data subdir (sanity check)
         if !server_data_dir(&name).exists() {
             continue;
         }
 
-        let info = load_running_info(&name);
-        let running = info.is_some();
+        // Always read metadata if it exists, so the engine + saved version
+        // are visible even when the server is stopped (Postgres) or its
+        // process is gone (ClickHouse, until we GC the file).
+        let info = load_info(&name);
+        let running = match &info {
+            Some(i) => is_alive(i),
+            None => false,
+        };
+
+        // GC stale ClickHouse metadata: process is gone for good.
+        if let Some(i) = &info
+            && !running
+            && i.engine == Engine::Clickhouse
+        {
+            let _ = std::fs::remove_file(server_meta_path(&name));
+            entries.push(ServerEntry {
+                name,
+                running: false,
+                info: None,
+            });
+            continue;
+        }
 
         entries.push(ServerEntry {
             name,
@@ -206,15 +226,15 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
         });
     }
 
-    // Sort: running first, then alphabetical
     entries.sort_by(|a, b| b.running.cmp(&a.running).then(a.name.cmp(&b.name)));
     entries
 }
 
-/// List only running servers.
+/// List only currently running servers.
 pub fn list_running_servers() -> Vec<ServerInfo> {
     list_all_servers()
         .into_iter()
+        .filter(|e| e.running)
         .filter_map(|e| e.info)
         .collect()
 }
@@ -274,26 +294,32 @@ fn kill_process(pid: u32) -> Result<()> {
     Ok(())
 }
 
-/// Kill a server by name. Dispatches based on engine: SIGTERM/SIGKILL for
-/// ClickHouse, `docker stop`+`docker rm` (via bollard) for Postgres.
+/// Stop a running server by name.
+///
+/// * ClickHouse: SIGTERM (then SIGKILL on timeout); metadata is removed
+///   because the process is gone for good.
+/// * Postgres: stops the container only — does **not** remove it, and keeps
+///   the metadata file so a subsequent `start` resumes the same container
+///   (preserving the password and any other PGDATA-encoded settings).
 pub fn kill_server(name: &str) -> Result<()> {
     let info = load_running_info(name).ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
 
     match info.engine {
-        Engine::Clickhouse => kill_process(info.pid)?,
+        Engine::Clickhouse => {
+            kill_process(info.pid)?;
+            remove_server_info(name);
+        }
         Engine::Postgres => {
-            let id = info
-                .container_id
-                .as_deref()
-                .ok_or_else(|| Error::DockerError(format!(
+            let id = info.container_id.as_deref().ok_or_else(|| {
+                Error::DockerError(format!(
                     "Postgres server '{}' has no container_id in metadata",
                     name
-                )))?;
-            docker::stop_and_remove_blocking(id)?;
+                ))
+            })?;
+            docker::stop_blocking(id)?;
+            // Metadata + container preserved so `start` can resume.
         }
     }
-
-    remove_server_info(name);
     Ok(())
 }
 
