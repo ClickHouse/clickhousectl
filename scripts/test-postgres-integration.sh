@@ -41,6 +41,9 @@ FAILED_TESTS=()
 run_case() {
     local name=$1; shift
     local dir; dir=$(mktemp -d -t "pg-edge-$name.XXXX")
+    # The CLI canonicalizes the project path before stamping it into
+    # container labels, so we match against the realpath here.
+    local real_dir; real_dir=$(cd "$dir" && pwd -P)
     cd "$dir" || { echo "[FAIL] $name: tempdir"; FAIL=$((FAIL+1)); return; }
     if "$@"; then
         echo "[PASS] $name"
@@ -50,8 +53,8 @@ run_case() {
         FAIL=$((FAIL+1))
         FAILED_TESTS+=("$name")
     fi
-    # Best-effort cleanup of any containers this test left behind
-    docker ps -a --filter "label=clickhousectl.project=$dir" -q 2>/dev/null \
+    # Best-effort cleanup of any containers this test left behind.
+    docker ps -a --filter "label=clickhousectl.project=$real_dir" -q 2>/dev/null \
         | xargs -r docker rm -f >/dev/null 2>&1
     cd /
     rm -rf "$dir"
@@ -63,13 +66,14 @@ die() { echo "    -> $*"; return 1; }
 # ── 1. Reuses existing container after stop/delete-metadata via discovery ──
 case_orphan_recovery() {
     "$CTL" local postgres start --name a --version 16-alpine >/dev/null 2>&1 || { die "start"; return 1; }
-    local cid_before; cid_before=$(jq -r .container_id .clickhouse/servers/a.json)
+    local meta=.clickhouse/servers/a-pg16.json
+    local cid_before; cid_before=$(jq -r .container_id "$meta")
     "$CTL" local postgres stop a >/dev/null 2>&1 || { die "stop"; return 1; }
-    rm .clickhouse/servers/a.json
+    rm "$meta"
     # Recovery should re-populate metadata from the container labels.
     "$CTL" local server list 2>&1 | grep -q "^| a "  || { die "list did not see a"; return 1; }
-    [[ -f .clickhouse/servers/a.json ]] || { die "metadata not recovered"; return 1; }
-    local cid_after; cid_after=$(jq -r .container_id .clickhouse/servers/a.json)
+    [[ -f "$meta" ]] || { die "metadata not recovered"; return 1; }
+    local cid_after; cid_after=$(jq -r .container_id "$meta")
     [[ "$cid_before" == "$cid_after" ]] || { die "container id changed: $cid_before -> $cid_after"; return 1; }
     "$CTL" local postgres remove a >/dev/null 2>&1 || { die "remove"; return 1; }
 }
@@ -77,7 +81,7 @@ case_orphan_recovery() {
 # ── 2. start with externally-removed container errors with recovery guidance ──
 case_externally_removed_container() {
     "$CTL" local postgres start --name b --version 16-alpine >/dev/null 2>&1 || { die "start"; return 1; }
-    local cid; cid=$(jq -r .container_id .clickhouse/servers/b.json)
+    local cid; cid=$(jq -r .container_id .clickhouse/servers/b-pg16.json)
     docker rm -f "$cid" >/dev/null 2>&1 || { die "docker rm failed"; return 1; }
     # Metadata still references the dead id. Should error with explicit
     # recovery guidance, not silently recreate against potentially-corrupt PGDATA.
@@ -96,8 +100,8 @@ case_two_concurrent_servers() {
     "$CTL" local postgres start --name c1 --version 16-alpine >/dev/null 2>&1 || { die "start c1"; return 1; }
     "$CTL" local postgres start --name c2 --version 16-alpine >/dev/null 2>&1 || { die "start c2"; return 1; }
     local p1 p2
-    p1=$(jq -r .tcp_port .clickhouse/servers/c1.json)
-    p2=$(jq -r .tcp_port .clickhouse/servers/c2.json)
+    p1=$(jq -r .tcp_port .clickhouse/servers/c1-pg16.json)
+    p2=$(jq -r .tcp_port .clickhouse/servers/c2-pg16.json)
     [[ "$p1" != "$p2" ]] || { die "ports collide: $p1 == $p2"; return 1; }
     [[ "$p1" -gt 0 && "$p2" -gt 0 ]] || { die "ports invalid"; return 1; }
     "$CTL" local postgres stop c1 >/dev/null 2>&1
@@ -106,16 +110,21 @@ case_two_concurrent_servers() {
     "$CTL" local postgres remove c2 >/dev/null 2>&1
 }
 
-# ── 4. Restart with conflicting --version warns and uses stored version ──
-case_restart_ignores_changed_version() {
-    "$CTL" local postgres start --name d --version 16-alpine >/dev/null 2>&1 || { die "start"; return 1; }
+# ── 4. Same name, two majors → two isolated instances ──
+case_per_version_isolation() {
+    "$CTL" local postgres start --name d --version 16-alpine >/dev/null 2>&1 || { die "start 16"; return 1; }
     "$CTL" local postgres stop d >/dev/null 2>&1
-    local out; out=$("$CTL" local postgres start --name d --version 17-alpine 2>&1)
-    echo "$out" | grep -q "resuming with stored settings" || { die "no resume warning"; return 1; }
-    local image; image=$(jq -r .version .clickhouse/servers/d.json)
-    [[ "$image" == "postgres:16-alpine" ]] || { die "image changed: $image"; return 1; }
-    "$CTL" local postgres stop d >/dev/null 2>&1
-    "$CTL" local postgres remove d >/dev/null 2>&1
+    "$CTL" local postgres start --name d --version 17-alpine >/dev/null 2>&1 || { die "start 17"; return 1; }
+    [[ -f .clickhouse/servers/d-pg16.json ]] || { die "16 metadata vanished"; return 1; }
+    [[ -f .clickhouse/servers/d-pg17.json ]] || { die "17 metadata not created"; return 1; }
+    [[ -d .clickhouse/servers/d-pg16/data ]] || { die "16 data dir vanished"; return 1; }
+    [[ -d .clickhouse/servers/d-pg17/data ]] || { die "17 data dir not created"; return 1; }
+    # Bare `local postgres stop d` should ask for --version since multiple match.
+    local out; out=$("$CTL" local postgres stop d 2>&1) || true
+    echo "$out" | grep -q "pass --version" || { die "no disambiguation message: $out"; return 1; }
+    "$CTL" local postgres stop d --version 17 >/dev/null 2>&1 || { die "versioned stop failed"; return 1; }
+    "$CTL" local postgres remove d --version 17 >/dev/null 2>&1
+    "$CTL" local postgres remove d --version 16 >/dev/null 2>&1
 }
 
 # ── 5. dotenv reflects the actual container password (post-restart) ──
@@ -145,24 +154,20 @@ case_install_rejects_latest() {
     echo "$out" | grep -q "not supported" || { die "no rejection: $out"; return 1; }
 }
 
-# ── 8. Cross-engine guard: stopped CH default blocks postgres default ──
-case_cross_engine_blocks_postgres() {
-    mkdir -p .clickhouse/servers/x/data
-    cat > .clickhouse/servers/x.json <<EOF
-{"name":"x","pid":99999,"version":"25.12.5.44","http_port":8123,"tcp_port":9000,"started_at":"0","cwd":"$PWD","engine":"clickhouse"}
+# ── 8. Cross-engine name reuse coexists (CH and PG can share a name) ──
+case_cross_engine_coexist() {
+    # Fake a stopped CH "shared" instance with metadata only.
+    mkdir -p .clickhouse/servers/shared/data
+    cat > .clickhouse/servers/shared.json <<EOF
+{"name":"shared","pid":99999,"version":"25.12.5.44","http_port":8123,"tcp_port":9000,"started_at":"0","cwd":"$PWD","engine":"clickhouse"}
 EOF
-    local out; out=$("$CTL" local postgres start --name x 2>&1) || true
-    echo "$out" | grep -q "is already in use by a clickhouse server" || { die "no guard: $out"; return 1; }
-}
-
-# ── 9. Cross-engine guard: stopped Postgres blocks CH ──
-case_cross_engine_blocks_clickhouse() {
-    mkdir -p .clickhouse/servers/y/data
-    cat > .clickhouse/servers/y.json <<EOF
-{"name":"y","pid":0,"version":"postgres:16-alpine","http_port":0,"tcp_port":5432,"started_at":"0","cwd":"$PWD","engine":"postgres","container_id":"deadbeef"}
-EOF
-    local out; out=$("$CTL" local server start --name y 2>&1) || true
-    echo "$out" | grep -q "is already in use by a postgres server" || { die "no guard: $out"; return 1; }
+    # Starting Postgres "shared" should succeed — CH and PG live in different files.
+    "$CTL" local postgres start --name shared --version 16-alpine >/dev/null 2>&1 \
+        || { die "postgres start with same name failed"; return 1; }
+    [[ -f .clickhouse/servers/shared.json ]] || { die "CH metadata clobbered"; return 1; }
+    [[ -f .clickhouse/servers/shared-pg16.json ]] || { die "PG metadata not created"; return 1; }
+    "$CTL" local postgres stop shared >/dev/null 2>&1
+    "$CTL" local postgres remove shared >/dev/null 2>&1
 }
 
 # ── 10. local server stop-all leaves Postgres running ──
@@ -185,9 +190,11 @@ case_non_tty_query() {
     "$CTL" local postgres start --name q --version 16-alpine >/dev/null 2>&1 || { die "start"; return 1; }
     # Wait for pg to be query-ready (up to ~5s); the first start already waits
     # for the container, but pg itself takes a moment to accept queries.
-    local cid; cid=$(jq -r .container_id .clickhouse/servers/q.json)
-    for _ in {1..30}; do
-        docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1 && break
+    local cid; cid=$(jq -r .container_id .clickhouse/servers/q-pg16.json)
+    # `pg_isready` without -h checks a unix socket dir that may not exist in
+    # alpine builds yet; force TCP to wait for actual query readiness.
+    for _ in {1..50}; do
+        docker exec "$cid" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
         sleep 0.2
     done
     # Hide host psql to force the docker-exec fallback.
@@ -231,10 +238,10 @@ case_majors_start_and_serve() {
             fail=1
             continue
         fi
-        local cid; cid=$(jq -r .container_id ".clickhouse/servers/$n.json")
+        local cid; cid=$(jq -r .container_id ".clickhouse/servers/$n-pg$tag.json")
         local ready=0
         for _ in {1..50}; do
-            if docker exec "$cid" pg_isready -U postgres >/dev/null 2>&1; then
+            if docker exec "$cid" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
                 ready=1
                 break
             fi
@@ -263,12 +270,11 @@ case_unsupported_majors() {
 run_case orphan_recovery                case_orphan_recovery
 run_case externally_removed_container   case_externally_removed_container
 run_case two_concurrent_servers         case_two_concurrent_servers
-run_case restart_ignores_changed_version case_restart_ignores_changed_version
+run_case per_version_isolation          case_per_version_isolation
 run_case dotenv_password_consistency    case_dotenv_password_consistency
 run_case path_traversal_name            case_path_traversal_name
 run_case install_rejects_latest         case_install_rejects_latest
-run_case cross_engine_blocks_postgres   case_cross_engine_blocks_postgres
-run_case cross_engine_blocks_clickhouse case_cross_engine_blocks_clickhouse
+run_case cross_engine_coexist           case_cross_engine_coexist
 run_case stop_all_isolates_postgres     case_stop_all_isolates_postgres
 run_case port_zero_rejected             case_port_zero_rejected
 run_case non_tty_query                  case_non_tty_query

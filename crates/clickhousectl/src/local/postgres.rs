@@ -19,6 +19,13 @@ const DEFAULT_DATABASE: &str = "postgres";
 /// range; users can override with any 16/17/18 tag (`16`, `16-alpine`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
 
+/// Extract the major-version digits from a Postgres image tag. `16-alpine` →
+/// `"16"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
+/// responsibility (`validate_pg_tag`) — this only parses.
+pub(crate) fn pg_major_from_tag(tag: &str) -> String {
+    tag.chars().take_while(|c| c.is_ascii_digit()).collect()
+}
+
 /// Accept Postgres image tags whose major version is 16, 17, or 18 — anything
 /// else is unsupported for now. Examples that pass: `16`, `16-alpine`, `17.0`,
 /// `18-bookworm`, `16.4-alpine3.20`. Examples that fail: `latest`, `15`, `19`.
@@ -45,18 +52,21 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             database,
             env,
         } => start(name, version, port, user, password, database, env, json).await,
-        PostgresCommands::Stop { name } => stop(&name, json).await,
+        PostgresCommands::Stop { name, version } => stop(&name, version.as_deref(), json).await,
         PostgresCommands::StopAll => stop_all(json).await,
-        PostgresCommands::Remove { name } => remove(&name, json),
+        PostgresCommands::Remove { name, version } => remove(&name, version.as_deref(), json),
         PostgresCommands::Client {
             name,
+            version,
             host,
             port,
             query,
             queries_file,
             args,
-        } => client(name, host, port, query, queries_file, args).await,
-        PostgresCommands::Dotenv { name, local } => dotenv(name.as_deref(), local, json),
+        } => client(name, version, host, port, query, queries_file, args).await,
+        PostgresCommands::Dotenv { name, version, local } => {
+            dotenv(name.as_deref(), version.as_deref(), local, json)
+        }
     }
 }
 
@@ -73,26 +83,52 @@ async fn start(
 ) -> Result<()> {
     server::recover_current_project_servers();
 
-    let server_name = server::resolve_name(name.as_deref())?;
+    // User-facing name (no version suffix). Defaults to "default" when no
+    // postgres "default" is currently running.
+    let user_name = match name.as_deref() {
+        Some(n) => {
+            server::validate_server_name(n)?;
+            n.to_string()
+        }
+        None => default_pg_name(),
+    };
 
-    // Read prior metadata up-front so the cross-engine guard fires before
-    // any liveness side-effects (and before we touch Docker).
-    let prior = server::load_info(&server_name);
-    if let Some(p) = &prior
-        && p.engine != Engine::Postgres
-    {
-        return Err(Error::Exec(format!(
-            "name '{}' is already in use by a {} server. Use a different --name, \
-             or run `clickhousectl local server remove {}` first.",
-            server_name,
-            p.engine.as_str(),
-            server_name
-        )));
-    }
+    // If `--version` is omitted but there's already exactly one instance for
+    // this name, resume it — the user almost certainly wants their existing
+    // data, not a freshly-initialized DEFAULT_PG_TAG. With multiple
+    // instances, we ask them to disambiguate. Only when zero exist do we
+    // default to DEFAULT_PG_TAG.
+    let (tag, major) = match version.as_deref() {
+        Some(v) => {
+            validate_pg_tag(v)?;
+            (v.to_string(), pg_major_from_tag(v))
+        }
+        None => {
+            let existing = server::find_pg_instances(&user_name);
+            match existing.len() {
+                0 => (DEFAULT_PG_TAG.to_string(), pg_major_from_tag(DEFAULT_PG_TAG)),
+                1 => {
+                    let info = &existing[0];
+                    let stored_tag = info.version.strip_prefix("postgres:").unwrap_or(&info.version);
+                    (stored_tag.to_string(), pg_major_from_tag(stored_tag))
+                }
+                _ => {
+                    let versions: Vec<String> =
+                        existing.iter().map(|i| i.version.clone()).collect();
+                    return Err(Error::Exec(format!(
+                        "multiple postgres instances named '{}' ({}); pass --version to select one",
+                        user_name,
+                        versions.join(", ")
+                    )));
+                }
+            }
+        }
+    };
+    let tag = tag.as_str();
 
-    if name.is_some() && server::is_server_running(&server_name) {
-        return Err(Error::ServerAlreadyRunning(server_name));
-    }
+    // Disk identifier — uniquely scopes (name, major) so two majors of the
+    // same name never share container/data/metadata.
+    let key = server::pg_instance_key(&user_name, &major);
 
     let docker = docker::connect().await?;
 
@@ -101,44 +137,40 @@ async fn start(
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
-    if let Some(prior) = prior {
+    // Resume path: an instance for this exact (name, major) already exists.
+    if let Some(prior) = server::load_info(&key) {
         let cid = prior.container_id.as_deref().unwrap_or("");
         let container_present =
             !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
         if container_present {
-            // Resume the existing container with its persisted settings —
-            // PGDATA is already initdb'd against the original credentials,
-            // so passing different ones now silently wouldn't take.
-            if version.is_some()
-                || port.is_some()
+            if server::is_server_running(&key) {
+                return Err(Error::ServerAlreadyRunning(user_name));
+            }
+            if port.is_some()
                 || user.is_some()
                 || password.is_some()
                 || database.is_some()
                 || !extra_env.is_empty()
             {
                 eprintln!(
-                    "Note: '{}' already exists; resuming with stored settings. \
-                     To change image/port/credentials, run `local postgres remove {}` first.",
-                    server_name, server_name
+                    "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
+                     Run `local postgres remove {}` to start over.",
+                    user_name, user_name
                 );
             }
             return resume_existing(&docker, prior, json).await;
         }
-        // Metadata exists but the container is gone (e.g. external `docker rm`).
-        // Don't silently create a fresh container against the existing data dir
-        // — it would either fail (corrupt PGDATA) or come up with a password
-        // that doesn't match what we'd advertise. Force the user to choose.
+        // Metadata orphaned — container removed externally. Force explicit
+        // cleanup to avoid silently re-initing against potentially-stale data.
         return Err(Error::Exec(format!(
-            "Postgres '{name}' has metadata but the container is gone. Run \
-             `clickhousectl local postgres remove {name}` to clear the data dir \
+            "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
+             Run `clickhousectl local postgres remove {}` to clear the data dir \
              and start fresh.",
-            name = server_name
+            user_name, major, user_name
         )));
     }
 
-    // Fresh-create path.
-    let tag = version.as_deref().unwrap_or(DEFAULT_PG_TAG);
-    validate_pg_tag(tag)?;
+    // Fresh create.
     if !docker::image_exists(&docker, tag).await? {
         eprintln!("Pulling postgres:{tag}...");
         docker::pull_image(&docker, tag).await?;
@@ -146,10 +178,12 @@ async fn start(
 
     let host_port = resolve_port(port)?;
 
-    server::ensure_server_data_dir(&server_name)?;
-    let data_dir = server::server_data_dir(&server_name);
+    server::ensure_pg_data_dir(&user_name, &major)?;
+    let data_dir = server::pg_data_dir(&user_name, &major);
 
-    docker::ensure_name_free(&docker, &server_name, &project_cwd).await?;
+    // Defensive cleanup of any unmanaged container colliding on our chosen
+    // container name (only if labels confirm we own it).
+    docker::ensure_name_free(&docker, &user_name, &major, &project_cwd).await?;
 
     let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
     let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
@@ -163,7 +197,8 @@ async fn start(
         .unwrap_or_else(generate_password);
 
     let opts = PostgresRunOpts {
-        server_name: &server_name,
+        user_name: &user_name,
+        major: &major,
         tag,
         host_port,
         data_dir: &data_dir,
@@ -177,7 +212,7 @@ async fn start(
     let container_id = docker::run_postgres(&docker, opts).await?;
 
     let info = ServerInfo {
-        name: server_name.clone(),
+        name: key.clone(),
         pid: 0,
         version: format!("postgres:{tag}"),
         http_port: 0,
@@ -196,15 +231,15 @@ async fn start(
             .unwrap_or_default();
         let _ = docker::stop_container(&docker, &container_id).await;
         let _ = docker::remove_container(&docker, &container_id).await;
-        server::remove_server_info(&server_name);
+        server::remove_server_info(&key);
         return Err(Error::DockerError(format!(
             "Postgres container '{}' did not start.\n--- container logs ---\n{}",
-            server_name, logs
+            user_name, logs
         )));
     }
 
     let out = output::PostgresStartOutput {
-        name: server_name,
+        name: user_name,
         container_id,
         image: format!("postgres:{tag}"),
         port: host_port,
@@ -216,6 +251,55 @@ async fn start(
     Ok(())
 }
 
+/// Default user-facing name when `--name` is omitted: `"default"` if no
+/// postgres "default" is running, otherwise a random adjective-noun.
+fn default_pg_name() -> String {
+    let any_default_running = server::find_pg_instances("default")
+        .iter()
+        .any(|i| i
+            .container_id
+            .as_deref()
+            .map(docker::is_container_running_blocking)
+            .unwrap_or(false));
+    if any_default_running {
+        // Fall back to the existing random-name generator, which checks
+        // metadata file uniqueness across engines.
+        server::resolve_name(None).unwrap_or_else(|_| "default".into())
+    } else {
+        "default".into()
+    }
+}
+
+/// Resolve `--name <X> [--version <V>]` to a single Postgres instance on disk.
+/// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
+/// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
+fn resolve_pg_target(
+    user_name: &str,
+    version: Option<&str>,
+) -> Result<server::ServerInfo> {
+    if let Some(v) = version {
+        validate_pg_tag(v)?;
+        let major = pg_major_from_tag(v);
+        let key = server::pg_instance_key(user_name, &major);
+        return server::load_info(&key)
+            .filter(|i| i.engine == Engine::Postgres)
+            .ok_or_else(|| Error::ServerNotFound(format!("{user_name} (postgres:{major})")));
+    }
+    let instances = server::find_pg_instances(user_name);
+    match instances.len() {
+        0 => Err(Error::ServerNotFound(user_name.to_string())),
+        1 => Ok(instances.into_iter().next().unwrap()),
+        _ => {
+            let versions: Vec<String> = instances.iter().map(|i| i.version.clone()).collect();
+            Err(Error::Exec(format!(
+                "multiple postgres instances named '{}' ({}); pass --version to select one",
+                user_name,
+                versions.join(", ")
+            )))
+        }
+    }
+}
+
 /// Resume an existing stopped Postgres container. Reads credentials from the
 /// container's persisted env (the source of truth — PGDATA was initialized
 /// for them) and refreshes the metadata.
@@ -225,6 +309,7 @@ async fn resume_existing(
     json: bool,
 ) -> Result<()> {
     let container_id = prior.container_id.clone().expect("checked by caller");
+    let display_name = user_name_from_key(&prior.name).to_string();
 
     docker::start_existing_blocking(&container_id)?;
 
@@ -235,7 +320,7 @@ async fn resume_existing(
             .unwrap_or_default();
         return Err(Error::DockerError(format!(
             "Postgres container '{}' did not resume.\n--- container logs ---\n{}",
-            prior.name, logs
+            display_name, logs
         )));
     }
 
@@ -248,7 +333,7 @@ async fn resume_existing(
     server::save_server_info(&info)?;
 
     let out = output::PostgresStartOutput {
-        name: info.name,
+        name: display_name,
         container_id,
         image: info.version,
         port: info.tcp_port,
@@ -258,6 +343,18 @@ async fn resume_existing(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// Extract the user-facing name from a disk key. `dev-pg16` → `dev`;
+/// anything that doesn't match the suffix shape passes through unchanged.
+pub(crate) fn user_name_from_key(key: &str) -> &str {
+    if let Some(idx) = key.rfind("-pg") {
+        let suffix = &key[idx + 3..];
+        if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+            return &key[..idx];
+        }
+    }
+    key
 }
 
 async fn wait_running(docker: &bollard::Docker, id: &str, attempts: usize) -> bool {
@@ -296,15 +393,21 @@ fn generate_password() -> String {
     Alphanumeric.sample_string(&mut rand::rng(), 24)
 }
 
-async fn stop(name: &str, json: bool) -> Result<()> {
+async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
     server::recover_current_project_servers();
+    let target = resolve_pg_target(name, version)?;
     if !json {
-        println!("Stopping Postgres '{}'...", name);
+        let display = format!(
+            "{} ({})",
+            user_name_from_key(&target.name),
+            target.version
+        );
+        println!("Stopping Postgres {}...", display);
     }
-    server::kill_server(name)?;
+    server::kill_server(&target.name)?;
     let out = output::ServerStopOutput {
-        name: name.to_string(),
+        name: user_name_from_key(&target.name).to_string(),
     };
     output::print_output(&out, json);
     Ok(())
@@ -357,28 +460,27 @@ async fn stop_all(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn remove(name: &str, json: bool) -> Result<()> {
+fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
     server::recover_current_project_servers();
-    if server::is_server_running(name) {
+
+    let target = resolve_pg_target(name, version)?;
+    let key = target.name.clone();
+    if server::is_server_running(&key) {
         return Err(Error::ServerAlreadyRunning(name.to_string()));
     }
 
-    // Tear down the stopped container (if any) before removing the data dir.
-    if let Some(info) = server::load_info(name)
-        && info.engine == Engine::Postgres
-        && let Some(cid) = info.container_id.as_deref()
-    {
+    if let Some(cid) = target.container_id.as_deref() {
         let _ = docker::stop_and_remove_blocking(cid);
     }
 
-    let data_dir = server::server_data_dir(name);
-    if !data_dir.exists() {
-        return Err(Error::ServerNotFound(name.to_string()));
+    // Postgres data dir lives at .clickhouse/servers/<key>/data/. Remove the
+    // <key>/ wrapper so the (name, version) pair leaves no on-disk state.
+    let pg_dir = server::servers_dir_join(&key);
+    if pg_dir.exists() {
+        std::fs::remove_dir_all(&pg_dir)?;
     }
-    let server_dir = data_dir.parent().unwrap();
-    std::fs::remove_dir_all(server_dir)?;
-    server::remove_server_info(name);
+    server::remove_server_info(&key);
     let out = output::ServerRemoveOutput {
         name: name.to_string(),
     };
@@ -389,14 +491,13 @@ fn remove(name: &str, json: bool) -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn client(
     name: Option<String>,
+    version: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     query: Option<String>,
     queries_file: Option<String>,
     extra_args: Vec<String>,
 ) -> Result<()> {
-    let server_name = name.as_deref().unwrap_or("default").to_string();
-
     if host.is_some() || port.is_some() {
         // Direct connect — no server lookup; require host psql.
         let h = host.unwrap_or_else(|| "127.0.0.1".to_string());
@@ -405,24 +506,12 @@ async fn client(
     }
 
     server::recover_current_project_servers();
-    let entries = server::list_all_servers();
-    let entry = entries
-        .iter()
-        .find(|e| e.name == server_name)
-        .ok_or_else(|| Error::ServerNotFound(server_name.clone()))?;
-    let info = entry
-        .info
-        .as_ref()
-        .ok_or_else(|| Error::ServerNotRunning(server_name.clone()))?;
-    if info.engine != Engine::Postgres {
-        return Err(Error::Exec(format!(
-            "server '{}' is a {} server, not Postgres. Use `local client` for ClickHouse.",
-            server_name,
-            info.engine.as_str()
-        )));
+    let server_name = name.as_deref().unwrap_or("default");
+    let info = resolve_pg_target(server_name, version.as_deref())?;
+    if !server::is_server_running(&info.name) {
+        return Err(Error::ServerNotRunning(server_name.to_string()));
     }
 
-    // Read connection info from container env (POSTGRES_USER / DB).
     let docker = docker::connect().await?;
     let container_id = info
         .container_id
@@ -528,23 +617,17 @@ fn exec_host_psql(
     Err(Error::Exec(err.to_string()))
 }
 
-fn dotenv(name: Option<&str>, use_local: bool, json: bool) -> Result<()> {
+fn dotenv(
+    name: Option<&str>,
+    version: Option<&str>,
+    use_local: bool,
+    json: bool,
+) -> Result<()> {
+    server::recover_current_project_servers();
     let server_name = name.unwrap_or("default");
-    let entries = server::list_all_servers();
-    let entry = entries
-        .iter()
-        .find(|e| e.name == server_name)
-        .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
-    let info = entry
-        .info
-        .as_ref()
-        .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
-    if info.engine != Engine::Postgres {
-        return Err(Error::Exec(format!(
-            "server '{}' is a {} server, not Postgres",
-            server_name,
-            info.engine.as_str()
-        )));
+    let info = resolve_pg_target(server_name, version)?;
+    if !server::is_server_running(&info.name) {
+        return Err(Error::ServerNotRunning(server_name.to_string()));
     }
 
     // Read user/password/db from the container env so we always emit accurate creds.

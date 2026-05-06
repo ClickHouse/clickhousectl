@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 pub const LABEL_ENGINE: &str = "clickhousectl.engine";
 pub const LABEL_NAME: &str = "clickhousectl.name";
+pub const LABEL_MAJOR: &str = "clickhousectl.major";
 pub const LABEL_PROJECT: &str = "clickhousectl.project";
 pub const LABEL_CREATED_BY: &str = "created_by";
 
@@ -28,9 +29,10 @@ pub fn created_by_value() -> String {
     format!("clickhousectl_{}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Container name we use for a managed Postgres server.
-pub fn container_name(server_name: &str) -> String {
-    format!("clickhousectl-pg-{}", server_name)
+/// Container name for a Postgres instance: `clickhousectl-pg-<name>-<major>`.
+/// Distinct (name, major) pairs always get distinct container names.
+pub fn pg_container_name(user_name: &str, major: &str) -> String {
+    format!("clickhousectl-pg-{}-{}", user_name, major)
 }
 
 /// Connect to the local Docker daemon and verify it's reachable.
@@ -73,7 +75,10 @@ pub async fn image_exists(docker: &Docker, tag: &str) -> Result<bool> {
 }
 
 pub struct PostgresRunOpts<'a> {
-    pub server_name: &'a str,
+    /// User-facing instance name (e.g. `dev`).
+    pub user_name: &'a str,
+    /// Major version digits (e.g. `16`).
+    pub major: &'a str,
     pub tag: &'a str,
     pub host_port: u16,
     pub data_dir: &'a std::path::Path,
@@ -126,7 +131,8 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
 
     let mut labels: HashMap<String, String> = HashMap::new();
     labels.insert(LABEL_ENGINE.into(), "postgres".into());
-    labels.insert(LABEL_NAME.into(), opts.server_name.into());
+    labels.insert(LABEL_NAME.into(), opts.user_name.into());
+    labels.insert(LABEL_MAJOR.into(), opts.major.into());
     labels.insert(LABEL_PROJECT.into(), opts.project_cwd.into());
     labels.insert(LABEL_CREATED_BY.into(), created_by_value());
 
@@ -139,7 +145,7 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
     };
 
     let create_opts = CreateContainerOptionsBuilder::default()
-        .name(&container_name(opts.server_name))
+        .name(&pg_container_name(opts.user_name, opts.major))
         .build();
 
     let created = docker
@@ -155,17 +161,18 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
     Ok(created.id)
 }
 
-/// If a container with our managed name (`clickhousectl-pg-<name>`) exists in
-/// any state, remove it — but only when it carries our labels for the current
-/// project. Returns Ok(()) if the name is free or was successfully cleaned up,
-/// or an actionable error if the name is held by an unrelated container.
+/// If a container with our managed name (`clickhousectl-pg-<name>-<major>`)
+/// exists in any state, remove it — but only when it carries our labels for
+/// the current project. Returns Ok(()) if the name is free or was cleaned
+/// up, or an actionable error if the name is held by an unrelated container.
 pub async fn ensure_name_free(
     docker: &Docker,
-    server_name: &str,
+    user_name: &str,
+    major: &str,
     project_cwd: &str,
 ) -> Result<()> {
     use bollard::errors::Error as BErr;
-    let cname = container_name(server_name);
+    let cname = pg_container_name(user_name, major);
     match docker.inspect_container(&cname, None).await {
         Ok(info) => {
             let labels_match = info
@@ -241,7 +248,10 @@ pub async fn container_logs_tail(docker: &Docker, id: &str, n: usize) -> Result<
 
 pub struct DiscoveredContainer {
     pub container_id: String,
-    pub server_name: String,
+    /// User-facing instance name from the `clickhousectl.name` label.
+    pub user_name: String,
+    /// Major-version digits from the `clickhousectl.major` label.
+    pub major: String,
     pub image: String,
     pub host_port: Option<u16>,
 }
@@ -282,7 +292,13 @@ pub async fn list_project_postgres(
             None => continue,
         };
         let labels = c.labels.unwrap_or_default();
-        let server_name = match labels.get(LABEL_NAME) {
+        let user_name = match labels.get(LABEL_NAME) {
+            Some(s) => s.clone(),
+            None => continue,
+        };
+        // Skip containers from older versions of this CLI that didn't write a
+        // major label — we can't reconstruct their disk key safely.
+        let major = match labels.get(LABEL_MAJOR) {
             Some(s) => s.clone(),
             None => continue,
         };
@@ -295,7 +311,8 @@ pub async fn list_project_postgres(
         });
         out.push(DiscoveredContainer {
             container_id: id,
-            server_name,
+            user_name,
+            major,
             image,
             host_port,
         });
@@ -574,8 +591,8 @@ pub fn start_existing_blocking(id: &str) -> Result<()> {
 /// timeout) and we return silently.
 pub fn recover_project_postgres_blocking(project_cwd: &str) {
     use crate::local::server::{
-        ensure_server_data_dir, save_server_info, server_meta_path_for_recovery, Engine,
-        ServerInfo,
+        ensure_pg_data_dir, pg_instance_key, save_server_info,
+        server_meta_path_for_recovery, Engine, ServerInfo,
     };
     let cwd_owned = project_cwd.to_string();
     let _ = block_on(async move {
@@ -588,12 +605,13 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
             Err(_) => return Ok(()),
         };
         for c in containers {
-            if server_meta_path_for_recovery(&c.server_name).exists() {
+            let key = pg_instance_key(&c.user_name, &c.major);
+            if server_meta_path_for_recovery(&key).exists() {
                 continue;
             }
-            let _ = ensure_server_data_dir(&c.server_name);
+            let _ = ensure_pg_data_dir(&c.user_name, &c.major);
             let info = ServerInfo {
-                name: c.server_name.clone(),
+                name: key,
                 pid: 0,
                 version: c.image.clone(),
                 http_port: 0,

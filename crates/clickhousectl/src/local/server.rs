@@ -103,25 +103,53 @@ pub fn server_meta_path_for_recovery(name: &str) -> PathBuf {
     server_meta_path(name)
 }
 
-/// Data directory for a named server: .clickhouse/servers/<name>/data/
+/// Data directory for a ClickHouse server: .clickhouse/servers/<name>/data/.
 pub fn server_data_dir(name: &str) -> PathBuf {
     servers_dir().join(name).join("data")
 }
 
-/// Ensure the data directory for a named server exists.
-pub fn ensure_server_data_dir(name: &str) -> Result<()> {
+/// Disk identifier for a Postgres instance: `<name>-pg<major>`. Used in the
+/// metadata filename, the data dir name, and the container name so that
+/// distinct (name, major) pairs never share state.
+pub fn pg_instance_key(name: &str, major: &str) -> String {
+    format!("{}-pg{}", name, major)
+}
+
+/// Join a child name onto the servers directory. Exposed so handlers can
+/// remove a whole `<key>/` wrapper without poking at internals.
+pub fn servers_dir_join(child: &str) -> PathBuf {
+    servers_dir().join(child)
+}
+
+/// Data directory for a Postgres instance.
+pub fn pg_data_dir(name: &str, major: &str) -> PathBuf {
+    servers_dir().join(pg_instance_key(name, major)).join("data")
+}
+
+/// Ensure project-local servers dir + .gitignore exist. Idempotent.
+fn ensure_servers_dir() -> Result<()> {
     let dir = servers_dir();
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
-        // Ensure parent .clickhouse has gitignore
-        let local = init::local_dir();
-        let gitignore = local.join(".gitignore");
+        let gitignore = init::local_dir().join(".gitignore");
         if !gitignore.exists() {
             let _ = std::fs::write(gitignore, "*\n");
         }
     }
-    let data = server_data_dir(name);
-    std::fs::create_dir_all(&data)?;
+    Ok(())
+}
+
+/// Ensure the data directory for a ClickHouse server exists.
+pub fn ensure_server_data_dir(name: &str) -> Result<()> {
+    ensure_servers_dir()?;
+    std::fs::create_dir_all(server_data_dir(name))?;
+    Ok(())
+}
+
+/// Ensure the data directory for a Postgres instance exists.
+pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<()> {
+    ensure_servers_dir()?;
+    std::fs::create_dir_all(pg_data_dir(name, major))?;
     Ok(())
 }
 
@@ -152,10 +180,48 @@ fn is_alive(info: &ServerInfo) -> bool {
 }
 
 /// Load server metadata regardless of liveness. Returns None if no metadata
-/// file exists or it can't be parsed.
+/// file exists or it can't be parsed. `name` is the disk identifier — for
+/// ClickHouse this is just the user-facing name, for Postgres it's
+/// `<name>-pg<major>` (use `pg_instance_key`).
 pub fn load_info(name: &str) -> Option<ServerInfo> {
     let content = std::fs::read_to_string(server_meta_path(name)).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+/// Find every Postgres instance whose user-facing name is `name`. Returns
+/// one entry per major version that has a metadata file on disk.
+pub fn find_pg_instances(name: &str) -> Vec<ServerInfo> {
+    let prefix = format!("{}-pg", name);
+    let dir = match std::fs::read_dir(servers_dir()) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in dir.flatten() {
+        let fname = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let stem = match fname.strip_suffix(".json") {
+            Some(s) => s,
+            None => continue,
+        };
+        if !stem.starts_with(&prefix) {
+            continue;
+        }
+        // Major must be all digits to match — guards against e.g. `dev-pg-foo`
+        // matching when `name = "dev"`.
+        let major = &stem[prefix.len()..];
+        if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(info) = load_info(stem)
+            && info.engine == Engine::Postgres
+        {
+            out.push(info);
+        }
+    }
+    out
 }
 
 /// Load server metadata only if the underlying process/container is alive.
@@ -169,8 +235,11 @@ fn load_running_info(name: &str) -> Option<ServerInfo> {
 }
 
 /// List all known servers (both running and stopped).
-/// Discovers servers by scanning data directories in .clickhouse/servers/.
-/// Also runs process discovery to recover any orphaned servers for the current project.
+///
+/// Scans `.clickhouse/servers/*.json` for metadata. Each metadata file is one
+/// entry — for ClickHouse the disk id is the user-facing name; for Postgres
+/// it's `<name>-pg<major>`. Also runs process/container discovery so
+/// orphaned instances reappear.
 pub fn list_all_servers() -> Vec<ServerEntry> {
     recover_current_project_servers();
 
@@ -184,35 +253,33 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
 
     for entry in dir_entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
+        let fname = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let stem = match fname.strip_suffix(".json") {
+            Some(s) => s,
             None => continue,
         };
-
-        if !server_data_dir(&name).exists() {
+        if !path.is_file() {
             continue;
         }
 
-        // Always read metadata if it exists, so the engine + saved version
-        // are visible even when the server is stopped (Postgres) or its
-        // process is gone (ClickHouse, until we GC the file).
-        let info = load_info(&name);
+        let info = load_info(stem);
         let running = match &info {
             Some(i) => is_alive(i),
             None => false,
         };
 
-        // GC stale ClickHouse metadata: process is gone for good.
+        // GC stale ClickHouse metadata: process is gone for good. Postgres
+        // entries stay so `start` can resume the existing container.
         if let Some(i) = &info
             && !running
             && i.engine == Engine::Clickhouse
         {
-            let _ = std::fs::remove_file(server_meta_path(&name));
+            let _ = std::fs::remove_file(server_meta_path(stem));
             entries.push(ServerEntry {
-                name,
+                name: stem.to_string(),
                 running: false,
                 info: None,
             });
@@ -220,7 +287,7 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
         }
 
         entries.push(ServerEntry {
-            name,
+            name: stem.to_string(),
             running,
             info,
         });

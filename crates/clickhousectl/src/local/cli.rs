@@ -328,6 +328,9 @@ CONTEXT FOR AGENTS:
     Stop {
         /// Name of the server to stop
         name: String,
+        /// Postgres version to disambiguate when multiple share a name
+        #[arg(long, short = 'v')]
+        version: Option<String>,
     },
 
     /// Stop all running Postgres containers in this project
@@ -337,6 +340,9 @@ CONTEXT FOR AGENTS:
     Remove {
         /// Name of the server to remove
         name: String,
+        /// Postgres version to disambiguate when multiple share a name
+        #[arg(long, short = 'v')]
+        version: Option<String>,
     },
 
     /// Connect to a running Postgres instance with psql
@@ -355,6 +361,10 @@ CONTEXT FOR AGENTS:
         /// Server name to connect to (default: "default")
         #[arg(long, short)]
         name: Option<String>,
+
+        /// Postgres version to disambiguate when multiple share a name
+        #[arg(long, short = 'v')]
+        version: Option<String>,
 
         /// Host to connect to (bypasses local server lookup)
         #[arg(long)]
@@ -387,6 +397,10 @@ CONTEXT FOR AGENTS:
         /// Server name (default: "default")
         #[arg(long)]
         name: Option<String>,
+
+        /// Postgres version to disambiguate when multiple share a name
+        #[arg(long, short = 'v')]
+        version: Option<String>,
 
         /// Write to .env.local instead of .env
         #[arg(long)]
