@@ -110,10 +110,17 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
         ..Default::default()
     };
 
+    // Pin PGDATA to the legacy path. Postgres 18+ default-stores data at
+    // /var/lib/postgresql/<major>/docker; older majors use /var/lib/postgresql/data.
+    // We bind-mount a single host directory per server, so we force one
+    // consistent path regardless of major version. Each managed server is
+    // pinned to a single image tag (changing tag requires `remove`), so we
+    // never need pg_upgrade-style cross-version layout.
     let mut env: Vec<String> = vec![
         format!("POSTGRES_USER={}", opts.user),
         format!("POSTGRES_PASSWORD={}", opts.password),
         format!("POSTGRES_DB={}", opts.database),
+        "PGDATA=/var/lib/postgresql/data".to_string(),
     ];
     env.extend(opts.extra_env);
 
