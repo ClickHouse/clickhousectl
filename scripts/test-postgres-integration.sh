@@ -57,7 +57,13 @@ run_case() {
     docker ps -a --filter "label=clickhousectl.project=$real_dir" -q 2>/dev/null \
         | xargs -r docker rm -f >/dev/null 2>&1
     cd /
-    rm -rf "$dir"
+    # On Linux, residual postgres data dirs are owned by uid 999 (the
+    # postgres user inside the container), so a plain `rm` fails. Try
+    # host-side first; fall back to a privileged Alpine container.
+    if [[ -d "$dir" ]] && ! rm -rf "$dir" 2>/dev/null; then
+        docker run --rm -v "$(dirname "$dir"):/work" alpine:latest \
+            rm -rf "/work/$(basename "$dir")" >/dev/null 2>&1 || true
+    fi
 }
 
 # Helper: fail the case

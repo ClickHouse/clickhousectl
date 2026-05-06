@@ -560,6 +560,97 @@ pub fn stop_blocking(id: &str) -> Result<()> {
 }
 
 /// Best-effort stop, then remove the container.
+/// Remove a host directory and its contents, even when files inside are
+/// owned by container UIDs (postgres' uid 999) the host user can't `rm`.
+///
+/// Tries `std::fs::remove_dir_all` first, which is enough on macOS because
+/// Docker Desktop maps host UIDs transparently. On Linux bind mounts are
+/// direct, so fall back to a one-shot Alpine container running as root
+/// that nukes the directory from inside.
+pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
+    if !host_path.exists() {
+        return Ok(());
+    }
+    if std::fs::remove_dir_all(host_path).is_ok() {
+        return Ok(());
+    }
+    let parent = host_path
+        .parent()
+        .ok_or_else(|| Error::DockerError("path has no parent".into()))?
+        .canonicalize()?;
+    let basename = host_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::DockerError("path has no basename".into()))?
+        .to_string();
+    let parent_str = parent.display().to_string();
+
+    block_on(async move {
+        use bollard::errors::Error as BErr;
+        use bollard::models::{ContainerCreateBody, HostConfig};
+        use bollard::query_parameters::{
+            CreateContainerOptionsBuilder, CreateImageOptionsBuilder, StartContainerOptions,
+            WaitContainerOptions,
+        };
+
+        let docker = connect().await?;
+
+        // Pull alpine on first use.
+        if let Err(BErr::DockerResponseServerError { status_code: 404, .. }) =
+            docker.inspect_image("alpine:latest").await
+        {
+            let mut s = docker.create_image(
+                Some(
+                    CreateImageOptionsBuilder::default()
+                        .from_image("alpine:latest")
+                        .build(),
+                ),
+                None,
+                None,
+            );
+            while let Some(item) = s.next().await {
+                item.map_err(|e| Error::DockerError(e.to_string()))?;
+            }
+        }
+
+        let bind = format!("{}:/work", parent_str);
+        let cmd = format!("rm -rf /work/{}", basename);
+        let cfg = ContainerCreateBody {
+            image: Some("alpine:latest".into()),
+            cmd: Some(vec!["sh".into(), "-c".into(), cmd]),
+            host_config: Some(HostConfig {
+                binds: Some(vec![bind]),
+                auto_remove: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let created = docker
+            .create_container(
+                Some(CreateContainerOptionsBuilder::default().build()),
+                cfg,
+            )
+            .await
+            .map_err(|e| Error::DockerError(e.to_string()))?;
+        docker
+            .start_container(&created.id, None::<StartContainerOptions>)
+            .await
+            .map_err(|e| Error::DockerError(e.to_string()))?;
+        let mut wait = docker.wait_container(&created.id, None::<WaitContainerOptions>);
+        while let Some(item) = wait.next().await {
+            // Ignore individual stream errors — auto_remove will reap on exit.
+            let _ = item;
+        }
+        Ok::<(), Error>(())
+    })?;
+
+    // If anything is left (e.g. the dir itself remained empty), clean up host-side.
+    if host_path.exists() {
+        let _ = std::fs::remove_dir_all(host_path);
+    }
+    Ok(())
+}
+
 pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
     let id = id.to_string();
     block_on(async move {

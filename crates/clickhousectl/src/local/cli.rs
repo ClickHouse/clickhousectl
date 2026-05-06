@@ -120,7 +120,6 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Manage named ClickHouse server instances. Each server has its own data directory.
-  Subcommands: start, list, stop, stop-all, remove.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
   Related: `clickhousectl local client` to connect to a running server.")]
@@ -132,9 +131,9 @@ CONTEXT FOR AGENTS:
     /// Manage local Postgres instances (Docker-backed)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage named Postgres server instances backed by Docker. Each instance runs as
-  a `postgres:<tag>` container with data bind-mounted at .clickhouse/servers/<name>/data/.
-  Subcommands: start, stop, stop-all, remove, client, dotenv.
+  Manage named Postgres server instances backed by Docker. Each instance is keyed on
+  (name, major version) and runs as a `postgres:<tag>` container with data bind-mounted
+  at .clickhouse/servers/<name>-pg<major>/data/.
   Typical: `clickhousectl local postgres start` (starts \"default\" on port 5432).
   `local server list` shows ClickHouse + Postgres entries together.
   Requires Docker to be installed and running.")]

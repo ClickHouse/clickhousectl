@@ -476,10 +476,11 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
 
     // Postgres data dir lives at .clickhouse/servers/<key>/data/. Remove the
     // <key>/ wrapper so the (name, version) pair leaves no on-disk state.
+    // On Linux the bind-mounted PGDATA contains files owned by uid 999, so
+    // a plain rm fails — `remove_host_dir_blocking` falls back to a
+    // privileged container in that case.
     let pg_dir = server::servers_dir_join(&key);
-    if pg_dir.exists() {
-        std::fs::remove_dir_all(&pg_dir)?;
-    }
+    docker::remove_host_dir_blocking(&pg_dir)?;
     server::remove_server_info(&key);
     let out = output::ServerRemoveOutput {
         name: name.to_string(),
