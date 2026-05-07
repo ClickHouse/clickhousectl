@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-724606",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-766864",
       "email": "support@clickhouse.com"
     }
   },
@@ -409,6 +409,553 @@
         },
         "tags": [
           "Prometheus"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/roles": {
+      "get": {
+        "summary": "List all available roles for an organization",
+        "description": "Returns all available roles (system + custom) for an organization.",
+        "operationId": "organizationRolesGetList",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the requested organization.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/RBACRole"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Role Management"
+        ]
+      },
+      "post": {
+        "summary": "Create a new role",
+        "description": "Creates a new custom role for an organization with specified policies and actors.",
+        "operationId": "organizationRolePost",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the requested organization.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RBACRole"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Role Management"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/roles/{roleId}": {
+      "get": {
+        "summary": "Get role details",
+        "description": "Returns details for a specific role.",
+        "operationId": "organizationRoleGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the requested organization.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "roleId",
+            "description": "ID of the requested role.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RBACRole"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Role Management"
+        ]
+      },
+      "patch": {
+        "summary": "Update a role",
+        "description": "Updates an existing custom role. System roles cannot be updated. All fields are optional - only provided fields will be updated.",
+        "operationId": "organizationRolePatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the requested organization.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "roleId",
+            "description": "ID of the requested role.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoleUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/RBACRole"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Role Management"
+        ]
+      },
+      "delete": {
+        "summary": "Delete a role",
+        "description": "Deletes an existing custom role. System roles cannot be deleted. This operation will remove the role and all its associated policies.",
+        "operationId": "organizationRoleDelete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the requested organization.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "roleId",
+            "description": "ID of the requested role.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Role Management"
         ]
       }
     },
@@ -2124,6 +2671,490 @@
         },
         "tags": [
           "Prometheus"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings": {
+      "get": {
+        "summary": "List ClickHouse settings",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns the configured ClickHouse settings for the service. Only settings that have been explicitly set are included.",
+        "operationId": "serviceClickhouseSettingsListGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ServiceClickhouseSettingsList"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "patch": {
+        "summary": "Update ClickHouse settings",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Updates one or more ClickHouse settings for the service. Use the [schema endpoint](#tag/Service/operation/serviceClickhouseSettingsSchemaGet) to discover which settings are configurable.",
+        "operationId": "serviceClickhouseSettingsUpdate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceClickhouseSettingsPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ServiceClickhouseSettingsPatchResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings/schema": {
+      "get": {
+        "summary": "Get ClickHouse settings schema",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns the schema of all configurable ClickHouse settings, including types, valid values, descriptions, and warnings.",
+        "operationId": "serviceClickhouseSettingsSchemaGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ServiceClickhouseSettingsSchema"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings/{settingName}": {
+      "get": {
+        "summary": "Get ClickHouse setting",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns the current value of a ClickHouse setting for the service. Use the [schema endpoint](#tag/Service/operation/serviceClickhouseSettingsSchemaGet) to discover which settings are configurable.",
+        "operationId": "serviceClickhouseSettingGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "settingName",
+            "description": "Name of the setting to retrieve.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ServiceClickhouseSetting"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
         ]
       }
     },
@@ -4855,7 +5886,7 @@
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes": {
       "get": {
         "summary": "List ClickPipes",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns a list of ClickPipes.",
+        "description": "Returns a list of ClickPipes.",
         "operationId": "clickPipeGetList",
         "parameters": [
           {
@@ -4963,17 +5994,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "post": {
         "summary": "Create ClickPipe",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Create a new ClickPipe.",
+        "description": "Create a new ClickPipe.",
         "operationId": "clickPipeCreate",
         "parameters": [
           {
@@ -5087,19 +6112,13 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/{clickPipeId}": {
       "get": {
         "summary": "Get ClickPipe",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns the specified ClickPipe.",
+        "description": "Returns the specified ClickPipe.",
         "operationId": "clickPipeGet",
         "parameters": [
           {
@@ -5214,17 +6233,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "patch": {
         "summary": "Update ClickPipe",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Update the specified ClickPipe.",
+        "description": "Update the specified ClickPipe.",
         "operationId": "clickPipeUpdate",
         "parameters": [
           {
@@ -5348,17 +6361,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "delete": {
         "summary": "Delete ClickPipe",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Delete the specified ClickPipe.",
+        "description": "Delete the specified ClickPipe.",
         "operationId": "clickPipeDelete",
         "parameters": [
           {
@@ -5470,19 +6477,13 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/{clickPipeId}/settings": {
       "get": {
         "summary": "Get ClickPipe settings",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns the advanced settings for the specified ClickPipe.",
+        "description": "Returns the advanced settings for the specified ClickPipe.",
         "operationId": "clickPipeSettingsGet",
         "parameters": [
           {
@@ -5597,17 +6598,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "put": {
         "summary": "Update ClickPipe settings",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Update the advanced settings for the specified ClickPipe. Send key-value pairs where values can be strings, numbers, or booleans.",
+        "description": "Update the advanced settings for the specified ClickPipe. Send key-value pairs where values can be strings, numbers, or booleans.",
         "operationId": "clickPipeSettingsUpdate",
         "parameters": [
           {
@@ -5731,19 +6726,13 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/{clickPipeId}/scaling": {
       "patch": {
         "summary": "Update ClickPipe scaling",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Change scaling settings for the specified ClickPipe. This endpoint supports Kafka, Kinesis, and object storage pipes (S3, GCS, Azure Blob).\n\n**Note:** For database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery), use the [Update CDC ClickPipes scaling](#tag/ClickPipes/operation/clickPipeCdcScalingUpdate) endpoint instead.",
+        "description": "Change scaling settings for the specified ClickPipe. This endpoint supports Kafka, Kinesis, and object storage pipes (S3, GCS, Azure Blob).\n\n**Note:** For database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery), use the [Update CDC ClickPipes scaling](#tag/ClickPipes/operation/clickPipeCdcScalingUpdate) endpoint instead.",
         "operationId": "clickPipeScalingUpdate",
         "parameters": [
           {
@@ -5867,19 +6856,13 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/{clickPipeId}/state": {
       "patch": {
         "summary": "Update ClickPipe state",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Start, stop or resync ClickPipe. Stopping a ClickPipe will stop the ingestion process from any state. Starting is allowed for ClickPipes in the \"Stopped\" state or with a \"Failed\" state. Resyncing is only for Postgres and MySQL pipes and can be done from any state.",
+        "description": "Start, stop or resync ClickPipe. Stopping a ClickPipe will stop the ingestion process from any state. Starting is allowed for ClickPipes in the \"Stopped\" state or with a \"Failed\" state. Resyncing is only for Postgres and MySQL pipes and can be done from any state.",
         "operationId": "clickPipeStateUpdate",
         "parameters": [
           {
@@ -6003,19 +6986,13 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipesCdcScaling": {
       "get": {
         "summary": "Get CDC ClickPipes scaling",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Get scaling settings for database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery).\n\nThe infrastructure is shared between all database ClickPipes in the service, both for initial load and CDC. For billing purposes, 2 CPU cores and 8 GB of RAM [correspond](https://clickhouse.com/docs/cloud/manage/billing/overview#clickpipes-for-postgres-cdc) to one compute unit.\n\n**Note:** For Kafka, Kinesis, and object storage pipes (S3, GCS, Azure Blob), see [Get ClickPipe](#tag/ClickPipes/operation/clickPipeGet).\n\n**This endpoint becomes available once at least one database ClickPipe was provisioned.**",
+        "description": "Get scaling settings for database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery).\n\nThe infrastructure is shared between all database ClickPipes in the service, both for initial load and CDC. For billing purposes, 2 CPU cores and 8 GB of RAM [correspond](https://clickhouse.com/docs/cloud/manage/billing/overview#clickpipes-for-postgres-cdc) to one compute unit.\n\n**Note:** For Kafka, Kinesis, and object storage pipes (S3, GCS, Azure Blob), see [Get ClickPipe](#tag/ClickPipes/operation/clickPipeGet).\n\n**This endpoint becomes available once at least one database ClickPipe was provisioned.**",
         "operationId": "clickPipeCdcScalingGet",
         "parameters": [
           {
@@ -6120,17 +7097,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "patch": {
         "summary": "Update CDC ClickPipes scaling",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Update scaling settings for database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery).\n\nThe infrastructure is shared between all database ClickPipes in the service, both for initial load and CDC. Scaling settings may take a few minutes to fully propagate.\n\nFor billing purposes, 2 CPU cores and 8 GB of RAM [correspond](https://clickhouse.com/docs/cloud/manage/billing/overview#clickpipes-for-postgres-cdc) to one compute unit. If your organization tier changes, database ClickPipes will be [rescaled](https://clickhouse.com/docs/cloud/manage/billing/overview#compute) appropriately.\n\n**Note:** For Kafka, Kinesis, and object storage pipes (S3, GCS, Azure Blob), see [Get ClickPipe](#tag/ClickPipes/operation/clickPipeGet).\n\n**This endpoint becomes available once at least one database ClickPipe was provisioned.**",
+        "description": "Update scaling settings for database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery).\n\nThe infrastructure is shared between all database ClickPipes in the service, both for initial load and CDC. Scaling settings may take a few minutes to fully propagate.\n\nFor billing purposes, 2 CPU cores and 8 GB of RAM [correspond](https://clickhouse.com/docs/cloud/manage/billing/overview#clickpipes-for-postgres-cdc) to one compute unit. If your organization tier changes, database ClickPipes will be [rescaled](https://clickhouse.com/docs/cloud/manage/billing/overview#compute) appropriately.\n\n**Note:** For Kafka, Kinesis, and object storage pipes (S3, GCS, Azure Blob), see [Get ClickPipe](#tag/ClickPipes/operation/clickPipeGet).\n\n**This endpoint becomes available once at least one database ClickPipe was provisioned.**",
         "operationId": "clickPipeCdcScalingUpdate",
         "parameters": [
           {
@@ -6244,12 +7215,6 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
@@ -9756,7 +10721,7 @@
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipesReversePrivateEndpoints": {
       "get": {
         "summary": "List reverse private endpoints",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns a list of reverse private endpoints for the specified service.",
+        "description": "Returns a list of reverse private endpoints for the specified service.",
         "operationId": "clickPipeReversePrivateEndpointGetList",
         "parameters": [
           {
@@ -9864,17 +10829,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "post": {
         "summary": "Create reverse private endpoint",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Create a new reverse private endpoint.",
+        "description": "Create a new reverse private endpoint.",
         "operationId": "clickPipeReversePrivateEndpointCreate",
         "parameters": [
           {
@@ -9988,19 +10947,13 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/clickpipesReversePrivateEndpoints/{reversePrivateEndpointId}": {
       "get": {
         "summary": "Get reverse private endpoint",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns the reverse private endpoint with the specified ID.",
+        "description": "Returns the reverse private endpoint with the specified ID.",
         "operationId": "clickPipeReversePrivateEndpointGet",
         "parameters": [
           {
@@ -10115,17 +11068,11 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       },
       "delete": {
         "summary": "Delete reverse private endpoint",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Delete the reverse private endpoint with the specified ID.",
+        "description": "Delete the reverse private endpoint with the specified ID.",
         "operationId": "clickPipeReversePrivateEndpointDelete",
         "parameters": [
           {
@@ -10237,12 +11184,6 @@
         },
         "tags": [
           "ClickPipes"
-        ],
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
         ]
       }
     }
@@ -10430,7 +11371,7 @@
             "example": "my-clickpipe-consumer-group"
           },
           "authentication": {
-            "description": "Authentication method of the Kafka source. Supported authentication methods: kafka: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, msk: SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS, gcmk: SCRAM-SHA-256, SCRAM-SHA-512, confluent: PLAIN, MUTUAL_TLS, warpstream: PLAIN, azureeventhub: PLAIN, redpanda: SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, dokafka: SCRAM-SHA-256, MUTUAL_TLS",
+            "description": "Authentication method of the Kafka source. Supported authentication methods: kafka: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, msk: SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS, gcmk: PLAIN, MUTUAL_TLS, confluent: PLAIN, MUTUAL_TLS, warpstream: PLAIN, azureeventhub: PLAIN, redpanda: SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, dokafka: SCRAM-SHA-256, MUTUAL_TLS",
             "type": "string",
             "enum": [
               "PLAIN",
@@ -10528,7 +11469,7 @@
             "example": "my-clickpipe-consumer-group"
           },
           "authentication": {
-            "description": "Authentication method of the Kafka source. Supported authentication methods: kafka: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, msk: SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS, gcmk: SCRAM-SHA-256, SCRAM-SHA-512, confluent: PLAIN, MUTUAL_TLS, warpstream: PLAIN, azureeventhub: PLAIN, redpanda: SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, dokafka: SCRAM-SHA-256, MUTUAL_TLS",
+            "description": "Authentication method of the Kafka source. Supported authentication methods: kafka: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, msk: SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS, gcmk: PLAIN, MUTUAL_TLS, confluent: PLAIN, MUTUAL_TLS, warpstream: PLAIN, azureeventhub: PLAIN, redpanda: SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, dokafka: SCRAM-SHA-256, MUTUAL_TLS",
             "type": "string",
             "enum": [
               "PLAIN",
@@ -10603,7 +11544,7 @@
       "ClickPipePatchKafkaSource": {
         "properties": {
           "authentication": {
-            "description": "Authentication method of the Kafka source. Supported authentication methods: kafka: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, msk: SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS, gcmk: SCRAM-SHA-256, SCRAM-SHA-512, confluent: PLAIN, MUTUAL_TLS, warpstream: PLAIN, azureeventhub: PLAIN, redpanda: SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, dokafka: SCRAM-SHA-256, MUTUAL_TLS",
+            "description": "Authentication method of the Kafka source. Supported authentication methods: kafka: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, msk: SCRAM-SHA-512, IAM_ROLE, IAM_USER, MUTUAL_TLS, gcmk: PLAIN, MUTUAL_TLS, confluent: PLAIN, MUTUAL_TLS, warpstream: PLAIN, azureeventhub: PLAIN, redpanda: SCRAM-SHA-256, SCRAM-SHA-512, MUTUAL_TLS, dokafka: SCRAM-SHA-256, MUTUAL_TLS",
             "type": [
               "string",
               "null"
@@ -13269,7 +14210,9 @@
           },
           "name": {
             "description": "Name of the service. Alphanumerical string with whitespaces up to 50 characters.",
-            "type": "string"
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1
           },
           "provider": {
             "description": "Cloud provider",
@@ -13298,6 +14241,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -13663,6 +14607,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -13822,6 +14767,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -13871,6 +14817,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -13977,6 +14924,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -14735,7 +15683,8 @@
             "enum": [
               "VPC_ENDPOINT_SERVICE",
               "VPC_RESOURCE",
-              "MSK_MULTI_VPC"
+              "MSK_MULTI_VPC",
+              "GCP_PSC_SERVICE_ATTACHMENT"
             ],
             "example": "VPC_ENDPOINT_SERVICE"
           },
@@ -14782,6 +15731,14 @@
               "SASL_SCRAM"
             ],
             "example": "SASL_IAM"
+          },
+          "gcpServiceAttachment": {
+            "description": "Private Preview. GCP PSC service attachment URI. Required for GCP_PSC_SERVICE_ATTACHMENT type. Format: projects/{project}/regions/{region}/serviceAttachments/{name}.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
           }
         }
       },
@@ -14798,7 +15755,8 @@
             "enum": [
               "VPC_ENDPOINT_SERVICE",
               "VPC_RESOURCE",
-              "MSK_MULTI_VPC"
+              "MSK_MULTI_VPC",
+              "GCP_PSC_SERVICE_ATTACHMENT"
             ],
             "example": "VPC_ENDPOINT_SERVICE"
           },
@@ -14845,6 +15803,14 @@
               "SASL_SCRAM"
             ],
             "example": "SASL_IAM"
+          },
+          "gcpServiceAttachment": {
+            "description": "Private Preview. GCP PSC service attachment URI. Required for GCP_PSC_SERVICE_ATTACHMENT type. Format: projects/{project}/regions/{region}/serviceAttachments/{name}.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
           },
           "id": {
             "description": "Reverse private endpoint ID.",
@@ -14893,6 +15859,37 @@
             "example": "Ready"
           }
         }
+      },
+      "ClickStackAlertExecutionError": {
+        "properties": {
+          "timestamp": {
+            "description": "When the error occurred.",
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-04-17T12:00:00.000Z"
+          },
+          "type": {
+            "description": "Category of the error.",
+            "type": "string",
+            "enum": [
+              "QUERY_ERROR",
+              "WEBHOOK_ERROR",
+              "INVALID_ALERT",
+              "UNKNOWN"
+            ],
+            "example": "QUERY_ERROR"
+          },
+          "message": {
+            "description": "Human-readable error message.",
+            "type": "string",
+            "example": "Query timed out after 30s"
+          }
+        },
+        "required": [
+          "timestamp",
+          "type",
+          "message"
+        ]
       },
       "ClickStackAlertSilenced": {
         "properties": {
@@ -15012,7 +16009,7 @@
             "example": "65f5e4a3b9e77c001a567890"
           },
           "tileId": {
-            "description": "Tile ID for tile-based alerts. May not be a Raw-SQL-based tile.",
+            "description": "Tile ID for tile-based alerts. Must be a line, stacked bar, or number type tile.",
             "type": [
               "string",
               "null"
@@ -15036,9 +16033,17 @@
             "example": "ServiceName"
           },
           "threshold": {
-            "description": "Threshold value for triggering the alert.",
+            "description": "Threshold value for triggering the alert. For between and not_between threshold types, this is the lower bound.",
             "type": "number",
             "example": 100
+          },
+          "thresholdMax": {
+            "description": "Upper bound for between and not_between threshold types. Required when thresholdType is between or not_between, must be >= threshold.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 500
           },
           "interval": {
             "description": "Evaluation interval for the alert.",
@@ -15086,7 +16091,13 @@
             "type": "string",
             "enum": [
               "above",
-              "below"
+              "below",
+              "above_exclusive",
+              "below_or_equal",
+              "equal",
+              "not_equal",
+              "between",
+              "not_between"
             ],
             "example": "above"
           },
@@ -15140,6 +16151,13 @@
               }
             ]
           },
+          "executionErrors": {
+            "type": "array",
+            "description": "Errors recorded during the most recent alert execution, if any.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackAlertExecutionError"
+            }
+          },
           "createdAt": {
             "description": "Creation timestamp.",
             "type": [
@@ -15171,7 +16189,7 @@
             "example": "65f5e4a3b9e77c001a567890"
           },
           "tileId": {
-            "description": "Tile ID for tile-based alerts. May not be a Raw-SQL-based tile.",
+            "description": "Tile ID for tile-based alerts. Must be a line, stacked bar, or number type tile.",
             "type": [
               "string",
               "null"
@@ -15195,9 +16213,17 @@
             "example": "ServiceName"
           },
           "threshold": {
-            "description": "Threshold value for triggering the alert.",
+            "description": "Threshold value for triggering the alert. For between and not_between threshold types, this is the lower bound.",
             "type": "number",
             "example": 100
+          },
+          "thresholdMax": {
+            "description": "Upper bound for between and not_between threshold types. Required when thresholdType is between or not_between, must be >= threshold.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 500
           },
           "interval": {
             "description": "Evaluation interval for the alert.",
@@ -15245,7 +16271,13 @@
             "type": "string",
             "enum": [
               "above",
-              "below"
+              "below",
+              "above_exclusive",
+              "below_or_equal",
+              "equal",
+              "not_equal",
+              "between",
+              "not_between"
             ],
             "example": "above"
           },
@@ -15281,7 +16313,7 @@
             "example": "65f5e4a3b9e77c001a567890"
           },
           "tileId": {
-            "description": "Tile ID for tile-based alerts. May not be a Raw-SQL-based tile.",
+            "description": "Tile ID for tile-based alerts. Must be a line, stacked bar, or number type tile.",
             "type": [
               "string",
               "null"
@@ -15305,9 +16337,17 @@
             "example": "ServiceName"
           },
           "threshold": {
-            "description": "Threshold value for triggering the alert.",
+            "description": "Threshold value for triggering the alert. For between and not_between threshold types, this is the lower bound.",
             "type": "number",
             "example": 100
+          },
+          "thresholdMax": {
+            "description": "Upper bound for between and not_between threshold types. Required when thresholdType is between or not_between, must be >= threshold.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "example": 500
           },
           "interval": {
             "description": "Evaluation interval for the alert.",
@@ -15355,7 +16395,13 @@
             "type": "string",
             "enum": [
               "above",
-              "below"
+              "below",
+              "above_exclusive",
+              "below_or_equal",
+              "equal",
+              "not_equal",
+              "between",
+              "not_between"
             ],
             "example": "above"
           },
@@ -15410,7 +16456,9 @@
               "percent",
               "byte",
               "time",
-              "number"
+              "number",
+              "data_rate",
+              "throughput"
             ],
             "example": "number"
           },
@@ -15443,6 +16491,62 @@
             "description": "Currency symbol for currency format.",
             "type": "string",
             "example": "$"
+          },
+          "numericUnit": {
+            "description": "Numeric unit for data, data rate, or throughput formats.",
+            "type": "string",
+            "enum": [
+              "bytes_iec",
+              "bytes_si",
+              "bits_iec",
+              "bits_si",
+              "kibibytes",
+              "kilobytes",
+              "mebibytes",
+              "megabytes",
+              "gibibytes",
+              "gigabytes",
+              "tebibytes",
+              "terabytes",
+              "pebibytes",
+              "petabytes",
+              "packets_sec",
+              "bytes_sec_iec",
+              "bytes_sec_si",
+              "bits_sec_iec",
+              "bits_sec_si",
+              "kibibytes_sec",
+              "kibibits_sec",
+              "kilobytes_sec",
+              "kilobits_sec",
+              "mebibytes_sec",
+              "mebibits_sec",
+              "megabytes_sec",
+              "megabits_sec",
+              "gibibytes_sec",
+              "gibibits_sec",
+              "gigabytes_sec",
+              "gigabits_sec",
+              "tebibytes_sec",
+              "tebibits_sec",
+              "terabytes_sec",
+              "terabits_sec",
+              "pebibytes_sec",
+              "pebibits_sec",
+              "petabytes_sec",
+              "petabits_sec",
+              "cps",
+              "ops",
+              "rps",
+              "reads_sec",
+              "wps",
+              "iops",
+              "cpm",
+              "opm",
+              "rpm_reads",
+              "wpm"
+            ],
+            "example": "bytes_iec"
           },
           "unit": {
             "description": "Custom unit label.",
@@ -16659,6 +17763,20 @@
               "exponential histogram"
             ],
             "example": "gauge"
+          },
+          "where": {
+            "description": "Optional WHERE condition to scope which rows this filter key reads values from",
+            "type": "string",
+            "example": "ServiceName:api"
+          },
+          "whereLanguage": {
+            "description": "Language of the where condition",
+            "type": "string",
+            "enum": [
+              "sql",
+              "lucene"
+            ],
+            "example": "lucene"
           }
         },
         "required": [
@@ -16704,6 +17822,20 @@
               "exponential histogram"
             ],
             "example": "gauge"
+          },
+          "where": {
+            "description": "Optional WHERE condition to scope which rows this filter key reads values from",
+            "type": "string",
+            "example": "ServiceName:api"
+          },
+          "whereLanguage": {
+            "description": "Language of the where condition",
+            "type": "string",
+            "enum": [
+              "sql",
+              "lucene"
+            ],
+            "example": "lucene"
           },
           "id": {
             "description": "Unique dashboard filter key ID",
@@ -19541,6 +20673,113 @@
           }
         }
       },
+      "ServiceClickhouseSetting": {
+        "properties": {
+          "name": {
+            "description": "Name of the setting.",
+            "type": "string",
+            "example": "compatibility"
+          },
+          "value": {
+            "description": "Current value of the setting. Returned as a string for all setting types.",
+            "type": "string",
+            "example": "24.8"
+          }
+        }
+      },
+      "ServiceClickhouseSettingsList": {
+        "properties": {
+          "settings": {
+            "type": "array",
+            "description": "List of ClickHouse settings with their current values.",
+            "items": {
+              "$ref": "#/components/schemas/ServiceClickhouseSetting"
+            }
+          }
+        }
+      },
+      "ServiceClickhouseSettingWarning": {
+        "properties": {
+          "name": {
+            "description": "Name of the setting the warning applies to.",
+            "type": "string",
+            "example": "compatibility"
+          },
+          "message": {
+            "description": "Warning message.",
+            "type": "string",
+            "example": "Changing the compatibility version without comprehensive testing can cause query failures or instability."
+          }
+        }
+      },
+      "ServiceClickhouseSettingsPatchResponse": {
+        "properties": {
+          "settings": {
+            "description": "JSON object of setting names to their applied values. Example: {\"compatibility\": \"24.8\"}",
+            "type": "string",
+            "example": "{\"compatibility\": \"24.8\"}"
+          },
+          "warnings": {
+            "type": "array",
+            "description": "Warnings for settings that may have disruptive effects.",
+            "items": {
+              "$ref": "#/components/schemas/ServiceClickhouseSettingWarning"
+            }
+          }
+        }
+      },
+      "ServiceClickhouseSettingSchemaEntry": {
+        "properties": {
+          "name": {
+            "description": "Name of the setting.",
+            "type": "string",
+            "example": "compatibility"
+          },
+          "type": {
+            "description": "Data type of the setting value.",
+            "type": "string",
+            "example": "string"
+          },
+          "description": {
+            "description": "Description of the setting.",
+            "type": "string",
+            "example": "ClickHouse version compatibility setting."
+          },
+          "enum": {
+            "type": "array",
+            "description": "List of allowed values, if the setting is an enum.",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "warning": {
+            "description": "Warning message about potential disruptive effects of changing this setting.",
+            "type": "string",
+            "example": "Changing this setting without comprehensive testing can cause instability."
+          },
+          "deprecationNotice": {
+            "description": "Deprecation notice, if applicable.",
+            "type": "string",
+            "example": "This setting may become obsolete with Cloud v2 stateless workers."
+          },
+          "example": {
+            "description": "Example value for the setting.",
+            "type": "string",
+            "example": "24.8"
+          }
+        }
+      },
+      "ServiceClickhouseSettingsSchema": {
+        "properties": {
+          "settings": {
+            "type": "array",
+            "description": "List of all configurable ClickHouse settings with their types, descriptions, and constraints.",
+            "items": {
+              "$ref": "#/components/schemas/ServiceClickhouseSettingSchemaEntry"
+            }
+          }
+        }
+      },
       "pgConfig": {
         "type": "object",
         "title": "Postgres Configuration",
@@ -20179,18 +21418,6 @@
       },
       "PostgresServicePatchRequest": {
         "properties": {
-          "name": {
-            "$ref": "#/components/schemas/pgNameProperty"
-          },
-          "provider": {
-            "$ref": "#/components/schemas/pgProvider"
-          },
-          "region": {
-            "$ref": "#/components/schemas/pgRegion"
-          },
-          "postgresVersion": {
-            "$ref": "#/components/schemas/pgVersion"
-          },
           "size": {
             "$ref": "#/components/schemas/pgSize"
           },
@@ -20428,7 +21655,9 @@
         "properties": {
           "name": {
             "description": "Name of the service. Alphanumerical string with whitespaces up to 50 characters.",
-            "type": "string"
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1
           },
           "provider": {
             "description": "Cloud provider",
@@ -20457,6 +21686,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -20635,7 +21865,9 @@
         "properties": {
           "name": {
             "description": "Name of the service. Alphanumerical string with whitespaces up to 50 characters.",
-            "type": "string"
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1
           },
           "ipAccessList": {
             "$ref": "#/components/schemas/IpAccessListPatch"
@@ -20731,7 +21963,9 @@
           },
           "name": {
             "description": "Name of the service. Alphanumerical string with whitespaces up to 50 characters.",
-            "type": "string"
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1
           },
           "provider": {
             "description": "Cloud provider",
@@ -20760,6 +21994,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",
@@ -21042,6 +22277,18 @@
             "type": "string"
           }
         }
+      },
+      "ServiceClickhouseSettingsPatchRequest": {
+        "properties": {
+          "settings": {
+            "description": "JSON object of setting names to values. Example: {\"compatibility\": \"24.8\"}",
+            "type": "string",
+            "example": "{\"compatibility\": \"24.8\"}"
+          }
+        },
+        "required": [
+          "settings"
+        ]
       },
       "BackupConfigurationPatchRequest": {
         "properties": {
@@ -21395,6 +22642,7 @@
               "us-west-2",
               "us-east1",
               "us-central1",
+              "europe-west2",
               "europe-west4",
               "asia-southeast1",
               "asia-northeast1",

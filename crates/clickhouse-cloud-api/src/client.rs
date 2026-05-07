@@ -616,6 +616,123 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// List all available roles for an organization
+    pub async fn organization_roles_get_list(
+        &self,
+        organization_id: &str,
+    ) -> Result<ApiResponse<Vec<RBACRole>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Create a new role
+    pub async fn organization_role_post(
+        &self,
+        organization_id: &str,
+        body: &RoleCreateRequest,
+    ) -> Result<ApiResponse<RBACRole>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles");
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get role details
+    pub async fn organization_role_get(
+        &self,
+        organization_id: &str,
+        role_id: &str,
+    ) -> Result<ApiResponse<RBACRole>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Update a role
+    pub async fn organization_role_patch(
+        &self,
+        organization_id: &str,
+        role_id: &str,
+        body: &RoleUpdateRequest,
+    ) -> Result<ApiResponse<RBACRole>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
+        let mut req = self.request(reqwest::Method::PATCH, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Delete a role
+    pub async fn organization_role_delete(
+        &self,
+        organization_id: &str,
+        role_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
+        let req = self.request(reqwest::Method::DELETE, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Create new Postgres service
     pub async fn postgres_service_create(
         &self,
@@ -2216,6 +2333,101 @@ impl Client {
         for f in filters {
             req = req.query(&[("filter", f)]);
         }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// List ClickHouse settings
+    pub async fn service_clickhouse_settings_list_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<ServiceClickhouseSettingsList>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Update ClickHouse settings
+    pub async fn service_clickhouse_settings_update(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &ServiceClickhouseSettingsPatchRequest,
+    ) -> Result<ApiResponse<ServiceClickhouseSettingsPatchResponse>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
+        let mut req = self.request(reqwest::Method::PATCH, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get ClickHouse settings schema
+    pub async fn service_clickhouse_settings_schema_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<ServiceClickhouseSettingsSchema>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/schema");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get ClickHouse setting
+    pub async fn service_clickhouse_setting_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        setting_name: &str,
+    ) -> Result<ApiResponse<ServiceClickhouseSetting>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}");
+        let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
