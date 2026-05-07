@@ -142,6 +142,40 @@ clickhousectl local server dotenv --user default --password secret --database my
 
 **Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.
 
+#### Local Postgres (Docker-backed)
+
+When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
+
+```bash
+# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 16, 17, 18 (and any sub-tag like 16-alpine, 17.0, 18-bookworm).
+clickhousectl local install postgres@16
+
+# Start a Postgres instance (defaults: postgres:18, port 5432, user "postgres", db "postgres")
+clickhousectl local postgres start
+clickhousectl local postgres start --name dev --version 16 --port 5433
+clickhousectl local postgres start --user app --password s3cret --database myapp
+clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
+
+# List everything (ClickHouse + Postgres are merged in `server list`)
+clickhousectl local server list
+
+# Connect with psql (uses host psql if installed; otherwise falls back to docker exec)
+clickhousectl local postgres client --name dev
+clickhousectl local postgres client --name dev --query "SELECT 1"
+
+# Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env
+clickhousectl local postgres dotenv --name dev
+
+# Stop / remove. Pass --version when more than one major shares a name.
+clickhousectl local postgres stop dev
+clickhousectl local postgres stop dev --version 16        # disambiguate
+clickhousectl local postgres remove dev
+```
+
+`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, you'll be asked to pick. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory.
+
+Containers are tagged with `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`, `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and `created_by=clickhousectl_<version>` labels. `server list` recovers orphaned containers belonging to the current project via these labels, so deleting `.clickhouse/servers/<name>-pg<major>.json` is non-destructive — the next list/start rediscovers it.
+
 #### Project-local data directory
 
 All server data lives inside `.clickhouse/` in your project directory:

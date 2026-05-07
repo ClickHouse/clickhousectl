@@ -1,6 +1,7 @@
 use crate::error::{Error, Result};
 use crate::init;
 use crate::local::discovery;
+use crate::local::docker;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -17,16 +18,50 @@ const NOUNS: &[&str] = &[
     "lynx", "moth", "newt", "orca", "puma", "seal", "swan", "wolf",
 ];
 
+/// Engine driving a server instance. ClickHouse is a managed binary process;
+/// Postgres is a managed Docker container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    Clickhouse,
+    Postgres,
+}
+
+impl Engine {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Engine::Clickhouse => "clickhouse",
+            Engine::Postgres => "postgres",
+        }
+    }
+}
+
+fn default_engine() -> Engine {
+    Engine::Clickhouse
+}
+
 /// Metadata saved for each server instance.
+///
+/// `engine` and `container_id` are post-Postgres-support additions and default
+/// to ClickHouse + None so existing `.clickhouse/servers/*.json` files keep
+/// deserializing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub name: String,
+    /// Process PID for ClickHouse; 0 for Postgres (use `container_id` instead).
     pub pid: u32,
+    /// ClickHouse version like "25.12.5.44", or "postgres:<tag>" for Postgres.
     pub version: String,
+    /// Unused for Postgres (set to 0).
     pub http_port: u16,
+    /// TCP port for ClickHouse; mapped host port for Postgres.
     pub tcp_port: u16,
     pub started_at: String,
     pub cwd: String,
+    #[serde(default = "default_engine")]
+    pub engine: Engine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
 }
 
 /// A server entry shown in list output — may or may not be running.
@@ -62,25 +97,59 @@ fn server_meta_path(name: &str) -> PathBuf {
     servers_dir().join(format!("{}.json", name))
 }
 
-/// Data directory for a named server: .clickhouse/servers/<name>/data/
+/// Public alias used by `docker.rs` during orphan recovery — keeps the path
+/// computation in one place.
+pub fn server_meta_path_for_recovery(name: &str) -> PathBuf {
+    server_meta_path(name)
+}
+
+/// Data directory for a ClickHouse server: .clickhouse/servers/<name>/data/.
 pub fn server_data_dir(name: &str) -> PathBuf {
     servers_dir().join(name).join("data")
 }
 
-/// Ensure the data directory for a named server exists.
-pub fn ensure_server_data_dir(name: &str) -> Result<()> {
+/// Disk identifier for a Postgres instance: `<name>-pg<major>`. Used in the
+/// metadata filename, the data dir name, and the container name so that
+/// distinct (name, major) pairs never share state.
+pub fn pg_instance_key(name: &str, major: &str) -> String {
+    format!("{}-pg{}", name, major)
+}
+
+/// Join a child name onto the servers directory. Exposed so handlers can
+/// remove a whole `<key>/` wrapper without poking at internals.
+pub fn servers_dir_join(child: &str) -> PathBuf {
+    servers_dir().join(child)
+}
+
+/// Data directory for a Postgres instance.
+pub fn pg_data_dir(name: &str, major: &str) -> PathBuf {
+    servers_dir().join(pg_instance_key(name, major)).join("data")
+}
+
+/// Ensure project-local servers dir + .gitignore exist. Idempotent.
+fn ensure_servers_dir() -> Result<()> {
     let dir = servers_dir();
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
-        // Ensure parent .clickhouse has gitignore
-        let local = init::local_dir();
-        let gitignore = local.join(".gitignore");
+        let gitignore = init::local_dir().join(".gitignore");
         if !gitignore.exists() {
             let _ = std::fs::write(gitignore, "*\n");
         }
     }
-    let data = server_data_dir(name);
-    std::fs::create_dir_all(&data)?;
+    Ok(())
+}
+
+/// Ensure the data directory for a ClickHouse server exists.
+pub fn ensure_server_data_dir(name: &str) -> Result<()> {
+    ensure_servers_dir()?;
+    std::fs::create_dir_all(server_data_dir(name))?;
+    Ok(())
+}
+
+/// Ensure the data directory for a Postgres instance exists.
+pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<()> {
+    ensure_servers_dir()?;
+    std::fs::create_dir_all(pg_data_dir(name, major))?;
     Ok(())
 }
 
@@ -99,25 +168,79 @@ pub fn remove_server_info(name: &str) {
     let _ = std::fs::remove_file(server_meta_path(name));
 }
 
-/// Load server metadata if it exists and the process is alive.
-fn load_running_info(name: &str) -> Option<ServerInfo> {
-    let path = server_meta_path(name);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let info: ServerInfo = serde_json::from_str(&content).ok()?;
-    if is_process_alive(info.pid) {
-        Some(info)
-    } else {
-        // Stale — clean up
-        let _ = std::fs::remove_file(&path);
-        None
+/// Engine-aware liveness check.
+fn is_alive(info: &ServerInfo) -> bool {
+    match info.engine {
+        Engine::Clickhouse => is_process_alive(info.pid),
+        Engine::Postgres => match info.container_id.as_deref() {
+            Some(id) => docker::is_container_running_blocking(id),
+            None => false,
+        },
     }
 }
 
+/// Load server metadata regardless of liveness. Returns None if no metadata
+/// file exists or it can't be parsed. `name` is the disk identifier — for
+/// ClickHouse this is just the user-facing name, for Postgres it's
+/// `<name>-pg<major>` (use `pg_instance_key`).
+pub fn load_info(name: &str) -> Option<ServerInfo> {
+    let content = std::fs::read_to_string(server_meta_path(name)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Find every Postgres instance whose user-facing name is `name`. Returns
+/// one entry per major version that has a metadata file on disk.
+pub fn find_pg_instances(name: &str) -> Vec<ServerInfo> {
+    let prefix = format!("{}-pg", name);
+    let dir = match std::fs::read_dir(servers_dir()) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in dir.flatten() {
+        let fname = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let stem = match fname.strip_suffix(".json") {
+            Some(s) => s,
+            None => continue,
+        };
+        if !stem.starts_with(&prefix) {
+            continue;
+        }
+        // Major must be all digits to match — guards against e.g. `dev-pg-foo`
+        // matching when `name = "dev"`.
+        let major = &stem[prefix.len()..];
+        if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(info) = load_info(stem)
+            && info.engine == Engine::Postgres
+        {
+            out.push(info);
+        }
+    }
+    out
+}
+
+/// Load server metadata only if the underlying process/container is alive.
+/// Does **not** auto-delete stale metadata — `list_all_servers` is the single
+/// place that GCs ClickHouse entries whose PID is gone, so callers like
+/// `is_server_running` and `resolve_name` can read the metadata without side
+/// effects.
+fn load_running_info(name: &str) -> Option<ServerInfo> {
+    let info = load_info(name)?;
+    if is_alive(&info) { Some(info) } else { None }
+}
+
 /// List all known servers (both running and stopped).
-/// Discovers servers by scanning data directories in .clickhouse/servers/.
-/// Also runs process discovery to recover any orphaned servers for the current project.
+///
+/// Scans `.clickhouse/servers/*.json` for metadata. Each metadata file is one
+/// entry — for ClickHouse the disk id is the user-facing name; for Postgres
+/// it's `<name>-pg<major>`. Also runs process/container discovery so
+/// orphaned instances reappear.
 pub fn list_all_servers() -> Vec<ServerEntry> {
-    // Recover any orphaned servers before listing
     recover_current_project_servers();
 
     let dir = servers_dir();
@@ -130,39 +253,55 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
 
     for entry in dir_entries.flatten() {
         let path = entry.path();
-        // Only look at directories (server data dirs), skip .json files
-        if !path.is_dir() {
-            continue;
-        }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n.to_string(),
+        let fname = match entry.file_name().into_string() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let stem = match fname.strip_suffix(".json") {
+            Some(s) => s,
             None => continue,
         };
-
-        // Check if this server has a data subdir (sanity check)
-        if !server_data_dir(&name).exists() {
+        if !path.is_file() {
             continue;
         }
 
-        let info = load_running_info(&name);
-        let running = info.is_some();
+        let info = load_info(stem);
+        let running = match &info {
+            Some(i) => is_alive(i),
+            None => false,
+        };
+
+        // GC stale ClickHouse metadata: process is gone for good. Postgres
+        // entries stay so `start` can resume the existing container.
+        if let Some(i) = &info
+            && !running
+            && i.engine == Engine::Clickhouse
+        {
+            let _ = std::fs::remove_file(server_meta_path(stem));
+            entries.push(ServerEntry {
+                name: stem.to_string(),
+                running: false,
+                info: None,
+            });
+            continue;
+        }
 
         entries.push(ServerEntry {
-            name,
+            name: stem.to_string(),
             running,
             info,
         });
     }
 
-    // Sort: running first, then alphabetical
     entries.sort_by(|a, b| b.running.cmp(&a.running).then(a.name.cmp(&b.name)));
     entries
 }
 
-/// List only running servers.
+/// List only currently running servers.
 pub fn list_running_servers() -> Vec<ServerInfo> {
     list_all_servers()
         .into_iter()
+        .filter(|e| e.running)
         .filter_map(|e| e.info)
         .collect()
 }
@@ -222,13 +361,32 @@ fn kill_process(pid: u32) -> Result<()> {
     Ok(())
 }
 
-/// Kill a server by name.
+/// Stop a running server by name.
+///
+/// * ClickHouse: SIGTERM (then SIGKILL on timeout); metadata is removed
+///   because the process is gone for good.
+/// * Postgres: stops the container only — does **not** remove it, and keeps
+///   the metadata file so a subsequent `start` resumes the same container
+///   (preserving the password and any other PGDATA-encoded settings).
 pub fn kill_server(name: &str) -> Result<()> {
     let info = load_running_info(name).ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
 
-    kill_process(info.pid)?;
-
-    remove_server_info(name);
+    match info.engine {
+        Engine::Clickhouse => {
+            kill_process(info.pid)?;
+            remove_server_info(name);
+        }
+        Engine::Postgres => {
+            let id = info.container_id.as_deref().ok_or_else(|| {
+                Error::DockerError(format!(
+                    "Postgres server '{}' has no container_id in metadata",
+                    name
+                ))
+            })?;
+            docker::stop_blocking(id)?;
+            // Metadata + container preserved so `start` can resume.
+        }
+    }
     Ok(())
 }
 
@@ -389,9 +547,14 @@ pub fn recover_current_project_servers() {
             tcp_port: proc.tcp_port.unwrap_or(0),
             started_at: "recovered".to_string(),
             cwd: current_dir.clone(),
+            engine: Engine::Clickhouse,
+            container_id: None,
         };
         let _ = save_server_info(&info);
     }
+
+    // Also recover orphaned Postgres containers belonging to this project.
+    docker::recover_project_postgres_blocking(&current_dir);
 }
 
 /// A server entry for global listing — always running (discovered via process inspection).
@@ -402,9 +565,13 @@ pub struct GlobalServerEntry {
     pub http_port: Option<u16>,
     pub tcp_port: Option<u16>,
     pub version: Option<String>,
+    pub engine: Engine,
+    pub container_id: Option<String>,
 }
 
 /// List all running ClickHouse servers across all projects via process discovery.
+/// (Postgres containers are not currently merged in — a future change will add
+/// `docker ps` based discovery here as well.)
 pub fn list_all_servers_global() -> Vec<GlobalServerEntry> {
     let processes = discovery::discover_clickhouse_processes();
     processes
@@ -416,6 +583,8 @@ pub fn list_all_servers_global() -> Vec<GlobalServerEntry> {
             http_port: p.http_port,
             tcp_port: p.tcp_port,
             version: p.version,
+            engine: Engine::Clickhouse,
+            container_id: None,
         })
         .collect()
 }
@@ -428,4 +597,52 @@ pub fn kill_server_by_pid(pid: u32) -> Result<()> {
     }
 
     kill_process(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_serializes_lowercase() {
+        assert_eq!(serde_json::to_string(&Engine::Clickhouse).unwrap(), "\"clickhouse\"");
+        assert_eq!(serde_json::to_string(&Engine::Postgres).unwrap(), "\"postgres\"");
+    }
+
+    #[test]
+    fn server_info_legacy_json_deserializes_as_clickhouse() {
+        // Legacy JSON written before the engine field existed.
+        let legacy = r#"{
+            "name": "default",
+            "pid": 12345,
+            "version": "25.12.5.44",
+            "http_port": 8123,
+            "tcp_port": 9000,
+            "started_at": "1700000000",
+            "cwd": "/tmp/proj"
+        }"#;
+        let info: ServerInfo = serde_json::from_str(legacy).expect("legacy JSON should parse");
+        assert_eq!(info.engine, Engine::Clickhouse);
+        assert!(info.container_id.is_none());
+    }
+
+    #[test]
+    fn server_info_postgres_round_trip() {
+        let info = ServerInfo {
+            name: "dev".into(),
+            pid: 0,
+            version: "postgres:16".into(),
+            http_port: 0,
+            tcp_port: 5432,
+            started_at: "1700000000".into(),
+            cwd: "/tmp/proj".into(),
+            engine: Engine::Postgres,
+            container_id: Some("abc123".into()),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: ServerInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.engine, Engine::Postgres);
+        assert_eq!(parsed.container_id.as_deref(), Some("abc123"));
+        assert!(json.contains("\"engine\":\"postgres\""));
+    }
 }
