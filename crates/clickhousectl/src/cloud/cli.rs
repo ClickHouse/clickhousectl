@@ -211,6 +211,7 @@ impl CloudCommands {
                 ServiceCommands::Get { .. } => false,
                 ServiceCommands::Client { .. } => false,
                 ServiceCommands::Prometheus { .. } => false,
+                ServiceCommands::Query { .. } => false,
                 ServiceCommands::Create { .. } => true,
                 ServiceCommands::Delete { .. } => true,
                 ServiceCommands::Start { .. } => true,
@@ -471,6 +472,11 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         enable_core_dumps: Option<bool>,
 
+        /// Skip auto-provisioning of the Query API endpoint and per-service
+        /// read-only key
+        #[arg(long)]
+        no_enable_query: bool,
+
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
@@ -714,6 +720,49 @@ CONTEXT FOR AGENTS:
         /// Whether to request filtered metrics
         #[arg(long)]
         filtered_metrics: Option<bool>,
+    },
+
+    /// Run a SQL query against a cloud service over HTTP via the Query API
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Runs SQL over HTTP — no local clickhouse binary or service password required.
+  Uses a per-service, read-only API key auto-provisioned on first use (or on
+  `cloud service create`) and stored in .clickhouse/credentials.json.
+  SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
+  on a TTY, TabSeparated when piped.")]
+    Query {
+        /// Service name to query (exactly one of --name or --id is required)
+        #[arg(long, conflicts_with = "id")]
+        name: Option<String>,
+
+        /// Service ID to query
+        #[arg(long, conflicts_with = "name")]
+        id: Option<String>,
+
+        /// Execute a SQL query
+        #[arg(long, short)]
+        query: Option<String>,
+
+        /// Execute queries from a SQL file (use "-" for stdin)
+        #[arg(long)]
+        queries_file: Option<String>,
+
+        /// Target database
+        #[arg(long)]
+        database: Option<String>,
+
+        /// Response format (e.g. JSONEachRow, CSV, TabSeparated, PrettyCompact)
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Fail instead of auto-provisioning the query endpoint + read-only key
+        /// when none is stored locally
+        #[arg(long)]
+        no_auto_enable: bool,
     },
 }
 

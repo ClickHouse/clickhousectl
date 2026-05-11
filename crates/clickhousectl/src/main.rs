@@ -113,10 +113,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     let secret = api_secret.ok_or_else(|| {
                         Error::Cloud("--api-secret is required when --api-key is provided".into())
                     })?;
-                    let creds = cloud::credentials::Credentials {
-                        api_key: key,
-                        api_secret: secret,
-                    };
+                    let mut creds = cloud::credentials::load_credentials().unwrap_or_default();
+                    creds.api_key = Some(key);
+                    creds.api_secret = Some(secret);
                     cloud::credentials::save_credentials(&creds)
                         .map_err(|e| Error::Cloud(e.to_string()))?;
                     println!(
@@ -397,6 +396,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 disable_endpoint,
                 private_preview_terms_checked,
                 enable_core_dumps,
+                no_enable_query,
                 org_id,
             } => {
                 let opts = cloud::commands::CreateServiceOptions {
@@ -423,6 +423,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     disable_endpoints: disable_endpoint,
                     private_preview_terms_checked,
                     enable_core_dumps,
+                    no_enable_query,
                     org_id,
                 };
                 cloud::commands::service_create(&client, opts, json).await
@@ -643,6 +644,28 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     filtered_metrics,
                 )
                 .await
+            }
+            ServiceCommands::Query {
+                name,
+                id,
+                query,
+                queries_file,
+                database,
+                format,
+                org_id,
+                no_auto_enable,
+            } => {
+                let opts = cloud::commands::ServiceQueryOptions {
+                    name,
+                    id,
+                    query,
+                    queries_file,
+                    database,
+                    format,
+                    org_id,
+                    no_auto_enable,
+                };
+                cloud::commands::service_query(&client, opts).await
             }
         },
         CloudCommands::Member { command } => match command {

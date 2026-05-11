@@ -1,5 +1,5 @@
 use crate::cloud::client::CloudClient;
-use crate::cloud::credentials::{self, Credentials};
+use crate::cloud::credentials;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
     BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
@@ -579,6 +579,7 @@ pub struct CreateServiceOptions {
     pub disable_endpoints: Vec<String>,
     pub private_preview_terms_checked: bool,
     pub enable_core_dumps: Option<bool>,
+    pub no_enable_query: bool,
     pub org_id: Option<String>,
 }
 
@@ -855,15 +856,18 @@ pub async fn service_create(
     // Validate input before any network call so typos like --provider awss
     // fail locally instead of on the /organizations lookup.
     let request = build_create_service_request(&opts)?;
+    let no_enable_query = opts.no_enable_query;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let response = client.create_service(&org_id, &request).await?;
+    let svc_id = response.service.id.to_string();
+    let svc_name = response.service.name.clone();
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        let svc = response.service;
-        let password = response.password;
+        let svc = &response.service;
+        let password = &response.password;
 
         println!("Service created successfully!");
         println!();
@@ -883,6 +887,29 @@ pub async fn service_create(
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
         println!("  Password: {}", password);
+    }
+
+    if !no_enable_query && !json {
+        match crate::cloud::service_query::ensure_service_query_setup(
+            client, &org_id, &svc_id, &svc_name,
+        )
+        .await
+        {
+            Ok(_) => {
+                println!();
+                println!(
+                    "Query API endpoint enabled. Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"",
+                    svc_id
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to auto-provision Query API endpoint: {e}. \
+                     Run `clickhousectl cloud service query --id {}` later to retry.",
+                    svc_id
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -926,6 +953,7 @@ pub async fn service_delete(
     }
 
     let response = client.delete_service(&org_id, service_id).await?;
+    let _ = credentials::remove_service_query_key(service_id);
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
@@ -1066,10 +1094,9 @@ pub fn auth_interactive() -> Result<(), Box<dyn std::error::Error>> {
         return Err("API secret cannot be empty".into());
     }
 
-    let creds = Credentials {
-        api_key,
-        api_secret,
-    };
+    let mut creds = credentials::load_credentials().unwrap_or_default();
+    creds.api_key = Some(api_key);
+    creds.api_secret = Some(api_secret);
     credentials::save_credentials(&creds)?;
 
     println!(
@@ -1225,6 +1252,126 @@ pub async fn query_endpoint_delete(
         println!("Query endpoint deleted for service {}", service_id);
     }
     Ok(())
+}
+
+pub struct ServiceQueryOptions {
+    pub name: Option<String>,
+    pub id: Option<String>,
+    pub query: Option<String>,
+    pub queries_file: Option<String>,
+    pub database: Option<String>,
+    pub format: Option<String>,
+    pub org_id: Option<String>,
+    pub no_auto_enable: bool,
+}
+
+pub async fn service_query(
+    client: &CloudClient,
+    opts: ServiceQueryOptions,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sql = read_query_sql(opts.query.as_deref(), opts.queries_file.as_deref())?;
+
+    let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
+    let service = resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref())
+        .await?;
+    let service_id = service.id.to_string();
+
+    let key = match credentials::get_service_query_key(&service_id) {
+        Some(k) => k,
+        None if opts.no_auto_enable => {
+            return Err(format!(
+                "no stored Query API key for service {service_id}; rerun without --no-auto-enable to auto-provision"
+            )
+            .into());
+        }
+        None => {
+            eprintln!(
+                "Provisioning Query API endpoint + read-only key for service '{}'...",
+                service.name
+            );
+            crate::cloud::service_query::ensure_service_query_setup(
+                client,
+                &org_id,
+                &service_id,
+                &service.name,
+            )
+            .await?
+        }
+    };
+
+    let format = opts.format.unwrap_or_else(default_query_format);
+    let body = crate::cloud::types::RunQueryRequest {
+        run_id: uuid::Uuid::new_v4().to_string(),
+        sql,
+        database: opts.database,
+    };
+
+    let response = client
+        .run_service_query(&service_id, &key.key_id, &key.key_secret, &body, &format)
+        .await?;
+
+    use futures_util::StreamExt;
+    use std::io::Write as _;
+    let mut stream = response.bytes_stream();
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| -> Box<dyn std::error::Error> {
+            format!("Failed to read query response: {e}").into()
+        })?;
+        handle.write_all(&bytes)?;
+    }
+    handle.flush()?;
+    Ok(())
+}
+
+fn read_query_sql(
+    inline: Option<&str>,
+    queries_file: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::Read as _;
+
+    if let Some(q) = inline {
+        let trimmed = q.trim();
+        if trimmed.is_empty() {
+            return Err("--query was empty".into());
+        }
+        return Ok(q.to_string());
+    }
+
+    if let Some(path) = queries_file {
+        let mut content = String::new();
+        if path == "-" {
+            std::io::stdin().read_to_string(&mut content)?;
+        } else {
+            content = std::fs::read_to_string(path)?;
+        }
+        if content.trim().is_empty() {
+            return Err("queries file was empty".into());
+        }
+        return Ok(content);
+    }
+
+    if std::io::stdin().is_terminal() {
+        return Err(
+            "no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.".into(),
+        );
+    }
+
+    let mut content = String::new();
+    std::io::stdin().read_to_string(&mut content)?;
+    if content.trim().is_empty() {
+        return Err("no SQL received on stdin".into());
+    }
+    Ok(content)
+}
+
+fn default_query_format() -> String {
+    if std::io::stdout().is_terminal() {
+        "PrettyCompact".to_string()
+    } else {
+        "TabSeparated".to_string()
+    }
 }
 
 pub async fn private_endpoint_create(
@@ -2075,6 +2222,7 @@ mod tests {
             disable_endpoints: vec![],
             private_preview_terms_checked: true,
             enable_core_dumps: Some(true),
+            no_enable_query: false,
             org_id: None,
         };
 
@@ -2114,6 +2262,7 @@ mod tests {
             disable_endpoints: vec![],
             private_preview_terms_checked: false,
             enable_core_dumps: None,
+            no_enable_query: false,
             org_id: None,
         };
 
@@ -2149,6 +2298,7 @@ mod tests {
             disable_endpoints: vec![],
             private_preview_terms_checked: false,
             enable_core_dumps: None,
+            no_enable_query: false,
             org_id: None,
         };
 
