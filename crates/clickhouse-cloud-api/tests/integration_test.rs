@@ -280,7 +280,61 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let api_key_uuid = query_key.key.id.to_string();
         cleanup.register_api_key(api_key_uuid.clone());
 
+        // Before binding the key to a query endpoint, calling the Query API
+        // must fail. We don't pin the exact status (the control plane can
+        // return 401/403/404 here depending on which check trips first); we
+        // just require a 4xx so the test catches the regression where the
+        // endpoint silently works without a binding.
         failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "query before endpoint enabled fails",
+                || {
+                    let client = client.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    let key_secret = query_key.key_secret.clone();
+                    async move {
+                        match client
+                            .run_query(
+                                &service_id,
+                                &key_id,
+                                &key_secret,
+                                "SELECT 1",
+                                None,
+                                "TabSeparated",
+                            )
+                            .await
+                        {
+                            Ok(response) => {
+                                let status = response.status();
+                                let body = response.text().await.unwrap_or_default();
+                                Err(format!(
+                                    "expected 4xx before endpoint enabled, got {status}: {}",
+                                    body.trim()
+                                )
+                                .into())
+                            }
+                            Err(clickhouse_cloud_api::Error::Api { status, message })
+                                if (400..500).contains(&status) =>
+                            {
+                                eprintln!(
+                                    "  query without endpoint correctly rejected: {status}: {message}"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => Err(format!(
+                                "expected 4xx before endpoint enabled, got unexpected error: {e}"
+                            )
+                            .into()),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        let initial_endpoint = failures
             .run(
                 &ctx,
                 StepKind::Blocking,
@@ -304,7 +358,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     }
                 },
             )
-            .await?;
+            .await?
+            .expect("blocking steps always return a value");
 
         // Endpoint propagation can lag a few seconds behind the upsert; poll
         // for the first successful query rather than asserting on the first
@@ -368,6 +423,99 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     .await
                 }
             })
+            .await?;
+
+        // Re-upserting the same endpoint must be idempotent: the resource id
+        // should not change, and the existing credentials should keep working.
+        // Catches regressions where the control plane rotates the binding or
+        // strips `openApiKeys` on a no-op write.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "re-upsert query endpoint is idempotent",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let api_key_uuid = api_key_uuid.clone();
+                    let initial_endpoint = initial_endpoint.clone();
+                    async move {
+                        let body = InstanceServiceQueryApiEndpointsPostRequest {
+                            roles: vec!["sql_console_read_only".to_string()],
+                            open_api_keys: vec![api_key_uuid.clone()],
+                            allowed_origins: "*".to_string(),
+                        };
+                        let resp = client
+                            .instance_query_endpoint_upsert(&org_id, &service_id, &body)
+                            .await?;
+                        let endpoint = resp
+                            .result
+                            .ok_or("re-upsert returned no result")?;
+                        if endpoint.id != initial_endpoint.id {
+                            return Err(format!(
+                                "re-upsert changed endpoint id: {} -> {}",
+                                initial_endpoint.id, endpoint.id
+                            )
+                            .into());
+                        }
+                        if !endpoint.open_api_keys.contains(&api_key_uuid) {
+                            return Err(format!(
+                                "re-upsert dropped our key from openApiKeys: {:?}",
+                                endpoint.open_api_keys
+                            )
+                            .into());
+                        }
+                        if !endpoint.roles.iter().any(|r| r == "sql_console_read_only") {
+                            return Err(format!(
+                                "re-upsert dropped sql_console_read_only role: {:?}",
+                                endpoint.roles
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "SELECT 1 still works after re-upsert",
+                || {
+                    let client = client.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    let key_secret = query_key.key_secret.clone();
+                    async move {
+                        let response = client
+                            .run_query(
+                                &service_id,
+                                &key_id,
+                                &key_secret,
+                                "SELECT 1",
+                                None,
+                                "TabSeparated",
+                            )
+                            .await?;
+                        let body = response
+                            .text()
+                            .await
+                            .map_err(|e| format!("query response read failed: {e}"))?;
+                        let trimmed = body.trim();
+                        if trimmed == "1" {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "unexpected query response after re-upsert: {trimmed:?}"
+                            )
+                            .into())
+                        }
+                    }
+                },
+            )
             .await?;
 
         failures
