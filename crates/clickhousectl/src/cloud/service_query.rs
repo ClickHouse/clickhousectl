@@ -10,7 +10,7 @@ use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::Utc;
 use clickhouse_cloud_api::models::{
-    ApiKeyHashData, ApiKeyPostRequest, ApiKeyPostRequestState,
+    ApiKeyPostRequest, ApiKeyPostRequestState,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
 };
 
@@ -42,25 +42,27 @@ pub async fn ensure_service_query_setup(
         name: format!("clickhousectl-query-{service_name}"),
         assigned_role_ids: vec![],
         expire_at: None,
-        hash_data: ApiKeyHashData::default(),
+        hash_data: None,
         ip_access_list: vec![IpAccessListEntry {
             source: "0.0.0.0/0".to_string(),
             description: Some(format!(
                 "clickhousectl auto-provisioned key for service {service_name}"
             )),
         }],
-        // `roles` is deprecated but the API still enforces minLength=1.
-        // `query_endpoints` is the legacy role for keys whose only job is
-        // to authenticate against a Query API endpoint binding.
-        roles: vec!["query_endpoints".to_string()],
+        roles: None,
         state: ApiKeyPostRequestState::Enabled,
     };
 
     let key_response = client.create_api_key(org_id, &key_request).await?;
     let key_id = key_response.key_id.clone();
     let key_secret = key_response.key_secret.clone();
+    // `key_id`/`key_secret` are the credential pair used for query auth.
+    // The endpoint binding's `openApiKeys` array, by contrast, references
+    // API keys by their resource UUID — the same value the management
+    // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept.
+    let api_key_uuid = key_response.key.id.to_string();
 
-    // Merge our new key_id into any existing endpoint config so we don't
+    // Merge our new key UUID into any existing endpoint config so we don't
     // silently revoke other bindings the user set up.
     let mut open_api_keys = match client
         .api()
@@ -71,8 +73,8 @@ pub async fn ensure_service_query_setup(
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
         Err(e) => return Err(client.convert_error(e).into()),
     };
-    if !open_api_keys.contains(&key_id) {
-        open_api_keys.push(key_id.clone());
+    if !open_api_keys.contains(&api_key_uuid) {
+        open_api_keys.push(api_key_uuid);
     }
 
     let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {

@@ -256,17 +256,14 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         name: key_name,
                         assigned_role_ids: vec![],
                         expire_at: None,
-                        hash_data: ApiKeyHashData::default(),
+                        hash_data: None,
                         ip_access_list: vec![IpAccessListEntry {
                             source: "0.0.0.0/0".to_string(),
                             description: Some(
                                 "clickhousectl integration test query key".to_string(),
                             ),
                         }],
-                        // `roles` is deprecated but the API still enforces
-                        // minLength=1. `query_endpoints` is the legacy role
-                        // for keys scoped to Query API endpoint use.
-                        roles: vec!["query_endpoints".to_string()],
+                        roles: None,
                         state: ApiKeyPostRequestState::Enabled,
                     };
                     let resp = client.openapi_key_create(&org_id, &body).await?;
@@ -276,7 +273,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?
             .expect("blocking steps always return a value");
-        cleanup.register_api_key(query_key.key_id.clone());
+        // `query_key.key_id` is the credential id used for HTTP auth on the
+        // query endpoint. Management endpoints (GET/DELETE /keys/{id}) and the
+        // endpoint binding's `openApiKeys` array reference the API key's
+        // resource UUID instead — `query_key.key.id`.
+        let api_key_uuid = query_key.key.id.to_string();
+        cleanup.register_api_key(api_key_uuid.clone());
 
         failures
             .run(
@@ -287,11 +289,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let client = client.clone();
                     let org_id = ctx.org_id.clone();
                     let service_id = service_id.clone();
-                    let key_id = query_key.key_id.clone();
+                    let api_key_uuid = api_key_uuid.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
                             roles: vec!["sql_console_read_only".to_string()],
-                            open_api_keys: vec![key_id],
+                            open_api_keys: vec![api_key_uuid],
                             allowed_origins: "*".to_string(),
                         };
                         let resp = client
@@ -372,14 +374,14 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .run(&ctx, StepKind::Blocking, "delete read-only query key", || {
                 let client = client.clone();
                 let org_id = ctx.org_id.clone();
-                let key_id = query_key.key_id.clone();
+                let api_key_uuid = api_key_uuid.clone();
                 async move {
-                    client.openapi_key_delete(&org_id, &key_id).await?;
+                    client.openapi_key_delete(&org_id, &api_key_uuid).await?;
                     Ok(())
                 }
             })
             .await?;
-        cleanup.unregister_api_key(&query_key.key_id);
+        cleanup.unregister_api_key(&api_key_uuid);
 
         // ── 3. Stop / Start ──────────────────────────────────────────
 

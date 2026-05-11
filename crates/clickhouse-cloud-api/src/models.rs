@@ -6938,14 +6938,14 @@ pub struct ApiKeyPostRequest {
     pub assigned_role_ids: Vec<uuid::Uuid>,
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(rename = "hashData", default)]
-    pub hash_data: ApiKeyHashData,
+    #[serde(rename = "hashData", skip_serializing_if = "Option::is_none", default)]
+    pub hash_data: Option<ApiKeyHashData>,
     #[serde(rename = "ipAccessList", default)]
     pub ip_access_list: Vec<IpAccessListEntry>,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub roles: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub roles: Option<Vec<String>>,
     #[serde(default)]
     pub state: ApiKeyPostRequestState,
 }

@@ -808,8 +808,8 @@ fn build_api_key_create_request(
             opts.hash_key_id.as_deref(),
             opts.hash_key_id_suffix.as_deref(),
             opts.hash_key_secret.as_deref(),
-        )?.unwrap_or_default(),
-        roles: vec![],
+        )?,
+        roles: None,
     })
 }
 
