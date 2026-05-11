@@ -263,7 +263,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "clickhousectl integration test query key".to_string(),
                             ),
                         }],
-                        roles: vec![],
+                        // `roles` is deprecated but the API still enforces
+                        // minLength=1. `query_endpoints` is the legacy role
+                        // for keys scoped to Query API endpoint use.
+                        roles: vec!["query_endpoints".to_string()],
                         state: ApiKeyPostRequestState::Enabled,
                     };
                     let resp = client.openapi_key_create(&org_id, &body).await?;

@@ -49,7 +49,10 @@ pub async fn ensure_service_query_setup(
                 "clickhousectl auto-provisioned key for service {service_name}"
             )),
         }],
-        roles: vec![],
+        // `roles` is deprecated but the API still enforces minLength=1.
+        // `query_endpoints` is the legacy role for keys whose only job is
+        // to authenticate against a Query API endpoint binding.
+        roles: vec!["query_endpoints".to_string()],
         state: ApiKeyPostRequestState::Enabled,
     };
 
