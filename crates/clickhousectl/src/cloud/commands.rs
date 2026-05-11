@@ -1286,7 +1286,7 @@ pub async fn service_query(
         }
         None => {
             eprintln!(
-                "Provisioning Query API endpoint + read-only key for service '{}'...",
+                "Provisioning Query API endpoint + key for service '{}'...",
                 service.name
             );
             crate::cloud::service_query::ensure_service_query_setup(

@@ -237,17 +237,17 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // ── 2. Query API Endpoint ────────────────────────────────────
         //
         // Exercise the path that `cloud service query` uses: create a
-        // dedicated read-only API key, bind it to the service's query
-        // endpoint with role `sql_console_read_only`, run `SELECT 1`
-        // over HTTP via queries.clickhouse.cloud, and assert the result.
-        // This is the canonical query path; `cloud service client` (which
-        // requires a local `clickhouse` binary + service password) is on a
-        // deprecation track.
+        // dedicated API key, bind it to the service's query endpoint with
+        // role `sql_console_admin`, run `SELECT 1` over HTTP via
+        // queries.clickhouse.cloud, and assert the result. This is the
+        // canonical query path; `cloud service client` (which requires a
+        // local `clickhouse` binary + service password) is on a deprecation
+        // track.
 
         log_phase("Query API Endpoint");
 
         let query_key = failures
-            .run(&ctx, StepKind::Blocking, "create read-only query key", || {
+            .run(&ctx, StepKind::Blocking, "create query API key", || {
                 let client = client.clone();
                 let org_id = ctx.org_id.clone();
                 let key_name = format!("{}-query", ctx.service_name());
@@ -338,7 +338,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .run(
                 &ctx,
                 StepKind::Blocking,
-                "upsert query endpoint with read-only role",
+                "upsert query endpoint with admin role",
                 || {
                     let client = client.clone();
                     let org_id = ctx.org_id.clone();
@@ -346,7 +346,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let api_key_uuid = api_key_uuid.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
-                            roles: vec!["sql_console_read_only".to_string()],
+                            roles: vec!["sql_console_admin".to_string()],
                             open_api_keys: vec![api_key_uuid],
                             allowed_origins: "*".to_string(),
                         };
@@ -425,6 +425,99 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
+        // The query endpoint binding uses `sql_console_admin`, so the key
+        // must be able to write — `cloud service query` is the canonical
+        // path for INSERTs and DDL, not just SELECT. Walk through
+        // CREATE TABLE / INSERT / SELECT to catch regressions where the
+        // role on the binding is silently demoted to read-only.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "CREATE TABLE + INSERT + SELECT via Query API",
+                || {
+                    let client = client.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    let key_secret = query_key.key_secret.clone();
+                    async move {
+                        async fn exec(
+                            client: &clickhouse_cloud_api::Client,
+                            service_id: &str,
+                            key_id: &str,
+                            key_secret: &str,
+                            sql: &str,
+                        ) -> Result<String, Box<dyn std::error::Error>> {
+                            let response = client
+                                .run_query(
+                                    service_id,
+                                    key_id,
+                                    key_secret,
+                                    sql,
+                                    None,
+                                    "TabSeparated",
+                                )
+                                .await?;
+                            response
+                                .text()
+                                .await
+                                .map_err(|e| format!("query response read failed: {e}").into())
+                        }
+
+                        exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "CREATE TABLE clickhousectl_it_write (x UInt32) ENGINE = MergeTree ORDER BY x",
+                        )
+                        .await
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("CREATE TABLE failed (role may not grant writes): {e}").into()
+                        })?;
+                        exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "INSERT INTO clickhousectl_it_write VALUES (1), (2), (3)",
+                        )
+                        .await
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("INSERT failed: {e}").into()
+                        })?;
+                        let body = exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "SELECT sum(x) FROM clickhousectl_it_write",
+                        )
+                        .await?;
+                        let trimmed = body.trim();
+                        if trimmed != "6" {
+                            return Err(format!(
+                                "unexpected sum after INSERT: got {trimmed:?}, expected \"6\""
+                            )
+                            .into());
+                        }
+                        // Tidy up: the service is about to be deleted anyway,
+                        // but leaving artifacts behind makes debugging harder
+                        // if cleanup ever short-circuits.
+                        exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "DROP TABLE clickhousectl_it_write",
+                        )
+                        .await?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
         // Re-upserting the same endpoint must be idempotent: the resource id
         // should not change, and the existing credentials should keep working.
         // Catches regressions where the control plane rotates the binding or
@@ -442,7 +535,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let initial_endpoint = initial_endpoint.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
-                            roles: vec!["sql_console_read_only".to_string()],
+                            roles: vec!["sql_console_admin".to_string()],
                             open_api_keys: vec![api_key_uuid.clone()],
                             allowed_origins: "*".to_string(),
                         };
@@ -466,9 +559,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             )
                             .into());
                         }
-                        if !endpoint.roles.iter().any(|r| r == "sql_console_read_only") {
+                        if !endpoint.roles.iter().any(|r| r == "sql_console_admin") {
                             return Err(format!(
-                                "re-upsert dropped sql_console_read_only role: {:?}",
+                                "re-upsert dropped sql_console_admin role: {:?}",
                                 endpoint.roles
                             )
                             .into());
@@ -519,7 +612,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .await?;
 
         failures
-            .run(&ctx, StepKind::Blocking, "delete read-only query key", || {
+            .run(&ctx, StepKind::Blocking, "delete query API key", || {
                 let client = client.clone();
                 let org_id = ctx.org_id.clone();
                 let api_key_uuid = api_key_uuid.clone();

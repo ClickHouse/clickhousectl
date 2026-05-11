@@ -1,10 +1,10 @@
 //! Auto-provisioning of per-service Query API endpoints.
 //!
-//! Creates a dedicated read-only API key and binds it to the service's query
-//! endpoint with role `sql_console_read_only`. The key's `key_id`/`key_secret`
-//! are persisted in `.clickhouse/credentials.json` keyed by service id, so
-//! later `cloud service query` invocations can authenticate without contacting
-//! the control plane.
+//! Creates a dedicated API key and binds it to the service's query endpoint
+//! with role `sql_console_admin`. The key's `key_id`/`key_secret` are
+//! persisted in `.clickhouse/credentials.json` keyed by service id, so later
+//! `cloud service query` invocations can authenticate without contacting the
+//! control plane.
 
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
@@ -14,20 +14,22 @@ use clickhouse_cloud_api::models::{
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
 };
 
-/// The role attached to the query endpoint binding. Limits the key to
-/// read-only SQL through the query endpoint, regardless of any future
+/// The role attached to the query endpoint binding. Grants the key read +
+/// write SQL access through the query endpoint, scoped to this single
+/// service. The binding (not the API key) is what enforces the scope, so the
+/// key cannot reach other services in the org regardless of any future
 /// org-level role assignments.
-const READ_ONLY_ROLE: &str = "sql_console_read_only";
+const QUERY_ENDPOINT_ROLE: &str = "sql_console_admin";
 
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
 /// caller so CORS doesn't apply, but the API still requires a value.
 const ALLOWED_ORIGINS: &str = "*";
 
-/// Ensure a read-only query endpoint is provisioned for `service_id` and return
-/// the persisted key. If a key is already cached locally, returns it
-/// unchanged; otherwise creates the API key, binds it to the query endpoint
-/// (merging into any existing endpoint configuration), and saves it to
-/// `.clickhouse/credentials.json`.
+/// Ensure a query endpoint is provisioned for `service_id` and return the
+/// persisted key. If a key is already cached locally, returns it unchanged;
+/// otherwise creates the API key, binds it to the query endpoint (merging
+/// into any existing endpoint configuration) with read+write scope on this
+/// service, and saves it to `.clickhouse/credentials.json`.
 pub async fn ensure_service_query_setup(
     client: &CloudClient,
     org_id: &str,
@@ -78,7 +80,7 @@ pub async fn ensure_service_query_setup(
     }
 
     let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
-        roles: vec![READ_ONLY_ROLE.to_string()],
+        roles: vec![QUERY_ENDPOINT_ROLE.to_string()],
         open_api_keys,
         allowed_origins: ALLOWED_ORIGINS.to_string(),
     };
