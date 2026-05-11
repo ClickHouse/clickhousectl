@@ -122,6 +122,77 @@ impl Client {
         }
     }
 
+    /// Run a SQL statement against a service's Query API endpoint.
+    ///
+    /// Hits `queries.clickhouse.cloud` (override via the
+    /// `CLICKHOUSE_CLOUD_QUERY_HOST` env var) using Basic auth with the
+    /// provided `key_id`/`key_secret` — a per-service key bound to a
+    /// query endpoint with role `sql_console_read_only` (or
+    /// `sql_console_admin`). This bypasses the client's primary auth
+    /// because Query API keys are scoped to a single service.
+    ///
+    /// Returns the streaming response so the caller can forward it to
+    /// stdout or buffer it into memory.
+    pub async fn run_query(
+        &self,
+        service_id: &str,
+        key_id: &str,
+        key_secret: &str,
+        sql: &str,
+        database: Option<&str>,
+        format: &str,
+    ) -> Result<reqwest::Response, Error> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RunQueryBody<'a> {
+            run_id: String,
+            sql: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            database: Option<&'a str>,
+        }
+
+        let host = std::env::var("CLICKHOUSE_CLOUD_QUERY_HOST")
+            .unwrap_or_else(|_| "https://queries.clickhouse.cloud".to_string());
+        let url = format!(
+            "{}/service/{}/run",
+            host.trim_end_matches('/'),
+            service_id,
+        );
+
+        let body = RunQueryBody {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            sql,
+            database,
+        };
+
+        let response = self
+            .http
+            .post(url)
+            .query(&[("format", format)])
+            .basic_auth(key_id, Some(key_secret))
+            .header("content-type", "text/plain;charset=UTF-8")
+            .header("x-service-type", "clickhouse")
+            .header("auth-provider", "custom")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: if body_text.is_empty() {
+                    format!("Query API returned {status}")
+                } else {
+                    body_text
+                },
+            });
+        }
+
+        Ok(response)
+    }
+
     /// Get list of available organizations
     pub async fn organization_get_list(
         &self,

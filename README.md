@@ -420,6 +420,10 @@ For existing services without a stored key, `cloud service query` provisions one
 
 The read-only scope is enforced at the query endpoint binding (`sql_console_read_only`), not on the API key itself. `cloud service delete` removes the stored key from `credentials.json`.
 
+`cloud service query` is the canonical way to run SQL against a cloud service; `cloud service client` (which downloads a matching `clickhouse` binary and connects via the native protocol) is on a deprecation path.
+
+Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override the Query API host (defaults to `https://queries.clickhouse.cloud`).
+
 ### Postgres (beta)
 
 Manage ClickHouse Cloud managed Postgres services. All write commands require API key auth.

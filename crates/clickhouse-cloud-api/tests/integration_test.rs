@@ -234,7 +234,151 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "created service was not visible in service list"
         );
 
-        // ── 2. Stop / Start ──────────────────────────────────────────
+        // ── 2. Query API Endpoint ────────────────────────────────────
+        //
+        // Exercise the path that `cloud service query` uses: create a
+        // dedicated read-only API key, bind it to the service's query
+        // endpoint with role `sql_console_read_only`, run `SELECT 1`
+        // over HTTP via queries.clickhouse.cloud, and assert the result.
+        // This is the canonical query path; `cloud service client` (which
+        // requires a local `clickhouse` binary + service password) is on a
+        // deprecation track.
+
+        log_phase("Query API Endpoint");
+
+        let query_key = failures
+            .run(&ctx, StepKind::Blocking, "create read-only query key", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let key_name = format!("{}-query", ctx.service_name());
+                async move {
+                    let body = ApiKeyPostRequest {
+                        name: key_name,
+                        assigned_role_ids: vec![],
+                        expire_at: None,
+                        hash_data: ApiKeyHashData::default(),
+                        ip_access_list: vec![IpAccessListEntry {
+                            source: "0.0.0.0/0".to_string(),
+                            description: Some(
+                                "clickhousectl integration test query key".to_string(),
+                            ),
+                        }],
+                        roles: vec![],
+                        state: ApiKeyPostRequestState::Enabled,
+                    };
+                    let resp = client.openapi_key_create(&org_id, &body).await?;
+                    resp.result
+                        .ok_or_else(|| "api key create returned no result".into())
+                }
+            })
+            .await?
+            .expect("blocking steps always return a value");
+        cleanup.register_api_key(query_key.key_id.clone());
+
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "upsert query endpoint with read-only role",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    async move {
+                        let body = InstanceServiceQueryApiEndpointsPostRequest {
+                            roles: vec!["sql_console_read_only".to_string()],
+                            open_api_keys: vec![key_id],
+                            allowed_origins: "*".to_string(),
+                        };
+                        let resp = client
+                            .instance_query_endpoint_upsert(&org_id, &service_id, &body)
+                            .await?;
+                        resp.result
+                            .ok_or_else(|| "query endpoint upsert returned no result".into())
+                    }
+                },
+            )
+            .await?;
+
+        // Endpoint propagation can lag a few seconds behind the upsert; poll
+        // for the first successful query rather than asserting on the first
+        // try.
+        failures
+            .run(&ctx, StepKind::Blocking, "run SELECT 1 via Query API", || {
+                let client = client.clone();
+                let service_id = service_id.clone();
+                let key_id = query_key.key_id.clone();
+                let key_secret = query_key.key_secret.clone();
+                async move {
+                    poll_until(
+                        "query API SELECT 1",
+                        std::time::Duration::from_secs(120),
+                        std::time::Duration::from_secs(5),
+                        || {
+                            let client = client.clone();
+                            let service_id = service_id.clone();
+                            let key_id = key_id.clone();
+                            let key_secret = key_secret.clone();
+                            async move {
+                                match client
+                                    .run_query(
+                                        &service_id,
+                                        &key_id,
+                                        &key_secret,
+                                        "SELECT 1",
+                                        None,
+                                        "TabSeparated",
+                                    )
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        let body = response.text().await.map_err(|e| {
+                                            format!("query response read failed: {e}")
+                                        })?;
+                                        let trimmed = body.trim();
+                                        if trimmed == "1" {
+                                            Ok(Some(()))
+                                        } else {
+                                            Err(format!(
+                                                "unexpected query response: {trimmed:?}"
+                                            )
+                                            .into())
+                                        }
+                                    }
+                                    Err(clickhouse_cloud_api::Error::Api {
+                                        status, message,
+                                    }) if status == 401 || status == 403 || status == 404 => {
+                                        // Propagation delay — keep polling.
+                                        eprintln!(
+                                            "  query endpoint not ready yet ({status}): {message}"
+                                        );
+                                        Ok(None)
+                                    }
+                                    Err(e) => Err(e.into()),
+                                }
+                            }
+                        },
+                    )
+                    .await
+                }
+            })
+            .await?;
+
+        failures
+            .run(&ctx, StepKind::Blocking, "delete read-only query key", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let key_id = query_key.key_id.clone();
+                async move {
+                    client.openapi_key_delete(&org_id, &key_id).await?;
+                    Ok(())
+                }
+            })
+            .await?;
+        cleanup.unregister_api_key(&query_key.key_id);
+
+        // ── 3. Stop / Start ──────────────────────────────────────────
 
         log_phase("Stop And Start");
         failures
@@ -313,7 +457,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 3. Rename & Settings ─────────────────────────────────────
+        // ── 4. Rename & Settings ─────────────────────────────────────
 
         log_phase("Rename And Settings");
         failures
@@ -522,7 +666,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 4. IP Access ─────────────────────────────────────────────
+        // ── 5. IP Access ─────────────────────────────────────────────
 
         log_phase("IP Access");
         failures
@@ -727,7 +871,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
-        // ── 5. Scaling ───────────────────────────────────────────────
+        // ── 6. Scaling ───────────────────────────────────────────────
 
         log_phase("Scaling");
         failures
@@ -826,7 +970,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 6. Delete ────────────────────────────────────────────────
+        // ── 7. Delete ────────────────────────────────────────────────
 
         log_phase("Delete");
 

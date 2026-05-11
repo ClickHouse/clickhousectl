@@ -1300,15 +1300,18 @@ pub async fn service_query(
     };
 
     let format = opts.format.unwrap_or_else(default_query_format);
-    let body = crate::cloud::types::RunQueryRequest {
-        run_id: uuid::Uuid::new_v4().to_string(),
-        sql,
-        database: opts.database,
-    };
-
     let response = client
-        .run_service_query(&service_id, &key.key_id, &key.key_secret, &body, &format)
-        .await?;
+        .api()
+        .run_query(
+            &service_id,
+            &key.key_id,
+            &key.key_secret,
+            &sql,
+            opts.database.as_deref(),
+            &format,
+        )
+        .await
+        .map_err(|e| client.convert_error(e))?;
 
     use futures_util::StreamExt;
     use std::io::Write as _;
