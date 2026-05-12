@@ -82,12 +82,11 @@ fn resolve_auth(
         });
     }
 
-    if let Some(creds) = crate::cloud::credentials::load_credentials() {
+    if let Some(creds) = crate::cloud::credentials::load_credentials()
+        && let (Some(key), Some(secret)) = (creds.api_key, creds.api_secret)
+    {
         return Ok(ResolvedAuth {
-            creds: ResolvedCreds::Basic {
-                key: creds.api_key,
-                secret: creds.api_secret,
-            },
+            creds: ResolvedCreds::Basic { key, secret },
             source: AuthSource::CredentialsFile,
             base_url: normalized_default(),
         });

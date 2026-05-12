@@ -323,6 +323,11 @@ CLICKHOUSE_PASSWORD=secret clickhousectl cloud service client --name my-service 
 # Use a local client version instead of auto-downloading the matching one
 clickhousectl cloud service client --name my-service --allow-mismatched-client-version
 
+# Run SQL over HTTP via the Query API (no local clickhouse binary needed)
+clickhousectl cloud service query --name my-service --query "SELECT 1"
+clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
+echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
@@ -351,7 +356,7 @@ clickhousectl cloud service reset-password <service-id> \
   --new-password-hash <base64-sha256-hash> \
   --new-double-sha1-hash <mysql-double-sha1-hash>
 
-# Query endpoint management
+# Query endpoint management (manual — for custom roles or sharing keys with other tools)
 clickhousectl cloud service query-endpoint get <service-id>
 clickhousectl cloud service query-endpoint create <service-id> \
   --role admin \
@@ -405,6 +410,19 @@ clickhousectl cloud service delete <service-id> --force
 | `--enable-endpoint` / `--disable-endpoint` | Toggle GA service endpoints (currently `mysql`) |
 | `--private-preview-terms-checked` | Accept private preview terms when required |
 | `--enable-core-dumps` | Enable or disable service core dump collection |
+| `--no-enable-query` | Skip auto-provisioning of the Query API endpoint + per-service key |
+
+#### Query API auto-provisioning
+
+By default, `cloud service create` provisions a Query API endpoint for the new service and creates a dedicated API key bound to it. The key (`keyId`, `keySecret`, and `endpointId`) is stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. `cloud service query` then runs SQL over HTTP using that key — no `clickhouse` binary and no service password required. The key is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org.
+
+For existing services without a stored key, `cloud service query` provisions one lazily on first use. Pass `--no-auto-enable` to fail instead, or `--no-enable-query` on `service create` to skip the create-time hook.
+
+Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. `cloud service delete` removes the stored key from `credentials.json`.
+
+`cloud service query` is the canonical way to run SQL against a cloud service; `cloud service client` (which downloads a matching `clickhouse` binary and connects via the native protocol) is on a deprecation path.
+
+Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override the Query API host (defaults to `https://queries.clickhouse.cloud`).
 
 ### Postgres (beta)
 

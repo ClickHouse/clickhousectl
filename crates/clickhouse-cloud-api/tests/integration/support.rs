@@ -259,6 +259,7 @@ impl FailureRecorder {
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
+    api_key_ids: Vec<String>,
 }
 
 impl CleanupRegistry {
@@ -280,8 +281,27 @@ impl CleanupRegistry {
             .retain(|registered| registered != postgres_id);
     }
 
+    pub fn register_api_key(&mut self, key_id: impl Into<String>) {
+        self.api_key_ids.push(key_id.into());
+    }
+
+    pub fn unregister_api_key(&mut self, key_id: &str) {
+        self.api_key_ids
+            .retain(|registered| registered != key_id);
+    }
+
     pub async fn cleanup(&mut self, client: &Client, org_id: &str, delete_timeout: Duration, poll_interval: Duration) -> Result<(), String> {
         let mut failures = Vec::new();
+
+        // API keys are cleaned up first; they belong to the org, not a
+        // specific service, so they outlive service deletion if leaked.
+        while let Some(key_id) = self.api_key_ids.pop() {
+            match client.openapi_key_delete(org_id, &key_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("api key {key_id}: {e}")),
+            }
+        }
 
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {

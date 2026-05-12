@@ -71,12 +71,25 @@ fn spec_schema_type_names(spec: &Value) -> BTreeSet<String> {
         .collect()
 }
 
+/// Public client methods that intentionally don't correspond to an OpenAPI
+/// operation. The Query API endpoint that backs `run_query` is hosted at
+/// `queries.clickhouse.cloud` and is not described by the control-plane spec.
+const NON_OPENAPI_CLIENT_METHODS: &[&str] = &["run_query"];
+
 fn assert_client_operation_coverage(spec: &Value) {
     let spec_operations = spec_operation_ids(spec);
     let client_methods = public_items(CLIENT_RS, "pub async fn ");
+    let exempt: BTreeSet<String> = NON_OPENAPI_CLIENT_METHODS
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
 
     let missing: Vec<_> = spec_operations.difference(&client_methods).cloned().collect();
-    let extras: Vec<_> = client_methods.difference(&spec_operations).cloned().collect();
+    let extras: Vec<_> = client_methods
+        .difference(&spec_operations)
+        .filter(|m| !exempt.contains(m.as_str()))
+        .cloned()
+        .collect();
 
     assert!(
         missing.is_empty() && extras.is_empty(),
@@ -302,6 +315,19 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ServicePostRequest", "releaseChannel"),
     ("ServicePostRequest", "tags"),
     ("ServicePostRequest", "tier"),
+    // `roles` is deprecated in favour of `assignedRoleIds`. The spec marks it
+    // required (description heuristic) with `minLength=1`, so the generated
+    // `Vec<String>` would serialize as `"roles":[]` and the API would reject
+    // it. Model it as `Option<Vec<String>>` so callers using `assignedRoleIds`
+    // can omit `roles` entirely.
+    ("ApiKeyPostRequest", "roles"),
+    // `hashData` lets callers pre-hash an API key instead of having the API
+    // generate one. The spec marks it required (description heuristic), but
+    // the API treats it as opt-in: sending the default object yields
+    // `BAD_REQUEST: hashData.keyIdHash: Not a sha256sum`. Modelling it as
+    // `Option<ApiKeyHashData>` lets callers omit it and have the API
+    // generate the key as the spec's response description implies.
+    ("ApiKeyPostRequest", "hashData"),
 ];
 
 fn assert_field_optionality(spec: &Value) {
