@@ -410,7 +410,7 @@ For existing services without a stored key, `cloud service query` provisions one
 
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. `cloud service delete` removes the stored key from `credentials.json`.
 
-`cloud service query` is the canonical way to run SQL against a cloud service; `cloud service client` (which downloads a matching `clickhouse` binary and connects via the native protocol) is on a deprecation path.
+`cloud service query` is the canonical way to run SQL against a cloud service.
 
 Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override the Query API host (defaults to `https://queries.clickhouse.cloud`).
 

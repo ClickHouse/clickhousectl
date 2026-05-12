@@ -133,7 +133,7 @@ CONTEXT FOR AGENTS:
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
   Write commands (create, delete, start, stop, update, scale) require API key auth — OAuth is read-only.
-  Use `client` to open a clickhouse-client session to a service.
+  Use `query` to run SQL against a service over HTTP.
   Related: `clickhousectl cloud org list` for org IDs.")]
     Service {
         #[command(subcommand)]
