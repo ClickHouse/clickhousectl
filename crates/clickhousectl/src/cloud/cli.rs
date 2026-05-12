@@ -1078,6 +1078,10 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         threshold: f64,
 
+        /// Upper-bound threshold (optional companion to --threshold)
+        #[arg(long)]
+        threshold_max: Option<f64>,
+
         /// Threshold direction
         #[arg(long, value_name = "above|below")]
         threshold_type: String,
@@ -1162,6 +1166,10 @@ CONTEXT FOR AGENTS:
         /// Threshold value
         #[arg(long)]
         threshold: f64,
+
+        /// Upper-bound threshold (optional companion to --threshold)
+        #[arg(long)]
+        threshold_max: Option<f64>,
 
         /// Threshold direction
         #[arg(long, value_name = "above|below")]

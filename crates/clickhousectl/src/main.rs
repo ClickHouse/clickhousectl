@@ -928,6 +928,7 @@ async fn run_clickstack(
                 service_id,
                 name,
                 threshold,
+                threshold_max,
                 threshold_type,
                 interval,
                 source,
@@ -949,6 +950,7 @@ async fn run_clickstack(
                 let args = cs::AlertCreateArgs {
                     name: name.as_deref(),
                     threshold,
+                    threshold_max,
                     threshold_type: &threshold_type,
                     interval: &interval,
                     source: &source,
@@ -974,6 +976,7 @@ async fn run_clickstack(
                 alert_id,
                 name,
                 threshold,
+                threshold_max,
                 threshold_type,
                 interval,
                 source,
@@ -995,6 +998,7 @@ async fn run_clickstack(
                 let args = cs::AlertCreateArgs {
                     name: name.as_deref(),
                     threshold,
+                    threshold_max,
                     threshold_type: &threshold_type,
                     interval: &interval,
                     source: &source,

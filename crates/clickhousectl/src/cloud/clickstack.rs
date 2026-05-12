@@ -165,6 +165,7 @@ pub async fn clickstack_dashboard_delete(
 pub struct AlertCreateArgs<'a> {
     pub name: Option<&'a str>,
     pub threshold: f64,
+    pub threshold_max: Option<f64>,
     pub threshold_type: &'a str,
     pub interval: &'a str,
     pub source: &'a str,
@@ -520,6 +521,7 @@ fn build_alert_create_request(
     Ok(ClickStackCreateAlertRequest {
         name: args.name.map(str::to_string),
         threshold: args.threshold,
+        threshold_max: args.threshold_max,
         threshold_type,
         interval,
         source,
@@ -562,6 +564,7 @@ fn build_alert_update_request(
     Ok(ClickStackUpdateAlertRequest {
         name: args.name.map(str::to_string),
         threshold: args.threshold,
+        threshold_max: args.threshold_max,
         threshold_type,
         interval,
         source,
@@ -712,6 +715,7 @@ mod tests {
         AlertCreateArgs {
             name: Some("disk"),
             threshold: 90.0,
+            threshold_max: None,
             threshold_type: "above",
             interval: "5m",
             source: "saved_search",
