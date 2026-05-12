@@ -507,6 +507,53 @@ clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
 ```
 
+### ClickStack
+
+Manage ClickStack dashboards, alerts, sources, and webhooks. All commands are scoped to a
+service — get one from `clickhousectl cloud service list`.
+
+```bash
+# Dashboards
+clickhousectl cloud clickstack dashboard list <service-id>
+clickhousectl cloud clickstack dashboard get <service-id> <dashboard-id>
+clickhousectl cloud clickstack dashboard create <service-id> --from-file dashboard.json
+clickhousectl cloud clickstack dashboard create <service-id> --from-file - < dashboard.json
+clickhousectl cloud clickstack dashboard update <service-id> <dashboard-id> --from-file dashboard.json
+clickhousectl cloud clickstack dashboard delete <service-id> <dashboard-id>
+
+# Alerts (email channel)
+clickhousectl cloud clickstack alert list <service-id>
+clickhousectl cloud clickstack alert get <service-id> <alert-id>
+clickhousectl cloud clickstack alert create <service-id> \
+    --name "high error rate" \
+    --threshold 100 --threshold-type above \
+    --interval 5m --source saved_search --saved-search-id <ss-id> \
+    --channel-type email --email oncall@example.com
+
+# Alerts (webhook channel, tile-based source)
+clickhousectl cloud clickstack alert create <service-id> \
+    --name "disk pressure" \
+    --threshold 90 --threshold-type above \
+    --interval 5m --source tile \
+    --dashboard-id <dash-id> --tile-id <tile-id> \
+    --channel-type webhook --webhook-id <wh-id> --severity critical
+
+clickhousectl cloud clickstack alert update <service-id> <alert-id> \
+    --threshold 200 --threshold-type above \
+    --interval 5m --source saved_search --saved-search-id <ss-id> \
+    --channel-type email --email oncall@example.com
+clickhousectl cloud clickstack alert delete <service-id> <alert-id>
+
+# Sources and webhooks (read-only)
+clickhousectl cloud clickstack source list <service-id>
+clickhousectl cloud clickstack webhook list <service-id>
+```
+
+The `--from-file` flag for dashboards accepts a JSON body matching the
+`ClickStackCreateDashboardRequest` schema (`{"name": ..., "tiles": [...], "tags": [...]}`).
+Use `--name` and `--tag` to override the JSON body without editing the file. Use `-` as the
+path to read JSON from stdin.
+
 ### Members
 
 ```bash

@@ -1,9 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 
 pub use crate::cloud::cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, CloudArgs, CloudCommands,
-    InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
-    QueryEndpointCommands, ServiceCommands,
+    ActivityCommands, AlertCommands, AuthCommands, BackupCommands, BackupConfigCommands,
+    ClickStackCommands, CloudArgs, CloudCommands, DashboardCommands, InvitationCommands,
+    KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands, QueryEndpointCommands,
+    ServiceCommands, SourceCommands, WebhookCommands,
 };
 pub use crate::cloud::postgres::{
     CertsCommands as PostgresCertsCommands, ConfigCommands as PostgresConfigCommands,

@@ -10,13 +10,15 @@ mod user_agent;
 mod version_manager;
 
 use clap::Parser;
-use cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, CloudArgs,
-    CloudCommands, Commands, InvitationCommands, KeyCommands, MemberCommands, OrgCommands,
-    PostgresCertsCommands, PostgresCommands, PostgresConfigCommands, PostgresReadReplicaCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
-};
 use clap::error::ErrorKind;
+use cli::{
+    ActivityCommands, AlertCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli,
+    ClickStackCommands, CloudArgs, CloudCommands, Commands, DashboardCommands, InvitationCommands,
+    KeyCommands, MemberCommands, OrgCommands, PostgresCertsCommands, PostgresCommands,
+    PostgresConfigCommands, PostgresReadReplicaCommands, PrivateEndpointCommands,
+    QueryEndpointCommands, ServiceCommands, SkillsArgs, SourceCommands, UpdateArgs,
+    WebhookCommands,
+};
 
 use cloud::CloudClient;
 use error::{Error, Result};
@@ -73,10 +75,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
     if args.check {
         match update::check_for_update().await? {
             Some((current, latest)) => {
-                println!(
-                    "Update available: v{} → v{}",
-                    current, latest
-                );
+                println!("Update available: v{} → v{}", current, latest);
                 println!("Run `clickhousectl update` to upgrade.");
             }
             None => {
@@ -147,7 +146,10 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .map_err(|e| Error::Cloud(format!("Invalid URL: {}", e)))?;
                 let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
                 let base_host = host.strip_prefix("api.").unwrap_or(host);
-                let url = format!("https://console.{}/signUp?utm_source=clickhousectl", base_host);
+                let url = format!(
+                    "https://console.{}/signUp?utm_source=clickhousectl",
+                    base_host
+                );
                 println!("Opening ClickHouse Cloud sign-up page...");
                 if open::that(&url).is_err() {
                     println!("Could not open browser. Please visit: {}", url);
@@ -193,7 +195,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 // CLI --api-key/--api-secret aren't relevant to `auth status` itself.
                 let active = cloud::resolve_active_auth_source();
                 let mark = |src: cloud::AuthSource| -> String {
-                    if active == Some(src) { "yes".into() } else { "-".into() }
+                    if active == Some(src) {
+                        "yes".into()
+                    } else {
+                        "-".into()
+                    }
                 };
 
                 let mut rows = Vec::new();
@@ -716,13 +722,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 invitation_id,
                 org_id,
             } => {
-                cloud::commands::invitation_delete(
-                    &client,
-                    &invitation_id,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+                cloud::commands::invitation_delete(&client, &invitation_id, org_id.as_deref(), json)
+                    .await
             }
         },
         CloudCommands::Key { command } => match command {
@@ -821,9 +822,226 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             }
         },
         CloudCommands::Postgres { command } => run_postgres(&client, command, json).await,
+        CloudCommands::Clickstack { command } => run_clickstack(&client, command, json).await,
     };
 
     result.map_err(|e| Error::Cloud(e.to_string()))
+}
+
+async fn run_clickstack(
+    client: &CloudClient,
+    command: ClickStackCommands,
+    json: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use cloud::clickstack as cs;
+    match command {
+        ClickStackCommands::Dashboard { command } => match command {
+            DashboardCommands::List { service_id, org_id } => {
+                cs::clickstack_dashboard_list(client, &service_id, org_id.as_deref(), json).await
+            }
+            DashboardCommands::Get {
+                service_id,
+                dashboard_id,
+                org_id,
+            } => {
+                cs::clickstack_dashboard_get(
+                    client,
+                    &service_id,
+                    &dashboard_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            DashboardCommands::Create {
+                service_id,
+                from_file,
+                name,
+                tags,
+                org_id,
+            } => {
+                let args = cs::DashboardWriteArgs {
+                    from_file: &from_file,
+                    name_override: name.as_deref(),
+                    tag_overrides: &tags,
+                };
+                cs::clickstack_dashboard_create(
+                    client,
+                    &service_id,
+                    args,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            DashboardCommands::Update {
+                service_id,
+                dashboard_id,
+                from_file,
+                name,
+                tags,
+                org_id,
+            } => {
+                let args = cs::DashboardWriteArgs {
+                    from_file: &from_file,
+                    name_override: name.as_deref(),
+                    tag_overrides: &tags,
+                };
+                cs::clickstack_dashboard_update(
+                    client,
+                    &service_id,
+                    &dashboard_id,
+                    args,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            DashboardCommands::Delete {
+                service_id,
+                dashboard_id,
+                org_id,
+            } => {
+                cs::clickstack_dashboard_delete(
+                    client,
+                    &service_id,
+                    &dashboard_id,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+        },
+        ClickStackCommands::Alert { command } => match command {
+            AlertCommands::List { service_id, org_id } => {
+                cs::clickstack_alert_list(client, &service_id, org_id.as_deref(), json).await
+            }
+            AlertCommands::Get {
+                service_id,
+                alert_id,
+                org_id,
+            } => {
+                cs::clickstack_alert_get(client, &service_id, &alert_id, org_id.as_deref(), json)
+                    .await
+            }
+            AlertCommands::Create {
+                service_id,
+                name,
+                threshold,
+                threshold_type,
+                interval,
+                source,
+                group_by,
+                message,
+                dashboard_id,
+                tile_id,
+                saved_search_id,
+                schedule_offset_minutes,
+                schedule_start_at,
+                channel_type,
+                emails,
+                webhook_id,
+                webhook_service,
+                severity,
+                slack_channel_id,
+                org_id,
+            } => {
+                let args = cs::AlertCreateArgs {
+                    name: name.as_deref(),
+                    threshold,
+                    threshold_type: &threshold_type,
+                    interval: &interval,
+                    source: &source,
+                    group_by: group_by.as_deref(),
+                    message: message.as_deref(),
+                    dashboard_id: dashboard_id.as_deref(),
+                    tile_id: tile_id.as_deref(),
+                    saved_search_id: saved_search_id.as_deref(),
+                    schedule_offset_minutes,
+                    schedule_start_at: schedule_start_at.as_deref(),
+                    channel_type: &channel_type,
+                    emails: &emails,
+                    webhook_id: webhook_id.as_deref(),
+                    webhook_service: webhook_service.as_deref(),
+                    severity: severity.as_deref(),
+                    slack_channel_id: slack_channel_id.as_deref(),
+                };
+                cs::clickstack_alert_create(client, &service_id, args, org_id.as_deref(), json)
+                    .await
+            }
+            AlertCommands::Update {
+                service_id,
+                alert_id,
+                name,
+                threshold,
+                threshold_type,
+                interval,
+                source,
+                group_by,
+                message,
+                dashboard_id,
+                tile_id,
+                saved_search_id,
+                schedule_offset_minutes,
+                schedule_start_at,
+                channel_type,
+                emails,
+                webhook_id,
+                webhook_service,
+                severity,
+                slack_channel_id,
+                org_id,
+            } => {
+                let args = cs::AlertCreateArgs {
+                    name: name.as_deref(),
+                    threshold,
+                    threshold_type: &threshold_type,
+                    interval: &interval,
+                    source: &source,
+                    group_by: group_by.as_deref(),
+                    message: message.as_deref(),
+                    dashboard_id: dashboard_id.as_deref(),
+                    tile_id: tile_id.as_deref(),
+                    saved_search_id: saved_search_id.as_deref(),
+                    schedule_offset_minutes,
+                    schedule_start_at: schedule_start_at.as_deref(),
+                    channel_type: &channel_type,
+                    emails: &emails,
+                    webhook_id: webhook_id.as_deref(),
+                    webhook_service: webhook_service.as_deref(),
+                    severity: severity.as_deref(),
+                    slack_channel_id: slack_channel_id.as_deref(),
+                };
+                cs::clickstack_alert_update(
+                    client,
+                    &service_id,
+                    &alert_id,
+                    args,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            AlertCommands::Delete {
+                service_id,
+                alert_id,
+                org_id,
+            } => {
+                cs::clickstack_alert_delete(client, &service_id, &alert_id, org_id.as_deref(), json)
+                    .await
+            }
+        },
+        ClickStackCommands::Source { command } => match command {
+            SourceCommands::List { service_id, org_id } => {
+                cs::clickstack_source_list(client, &service_id, org_id.as_deref(), json).await
+            }
+        },
+        ClickStackCommands::Webhook { command } => match command {
+            WebhookCommands::List { service_id, org_id } => {
+                cs::clickstack_webhook_list(client, &service_id, org_id.as_deref(), json).await
+            }
+        },
+    }
 }
 
 async fn run_postgres(

@@ -352,8 +352,7 @@ fn service_state_enum_roundtrip() {
         ("idle", ServiceState::Idle),
     ];
     for (json_val, expected) in states {
-        let parsed: ServiceState =
-            serde_json::from_str(&format!(r#""{json_val}""#)).unwrap();
+        let parsed: ServiceState = serde_json::from_str(&format!(r#""{json_val}""#)).unwrap();
         assert_eq!(parsed, expected);
 
         let serialized = serde_json::to_string(&expected).unwrap();
@@ -380,8 +379,7 @@ fn clickpipe_state_all_variants() {
         "Resync",
     ];
     for s in states {
-        let parsed: ClickPipeState =
-            serde_json::from_str(&format!(r#""{s}""#)).unwrap();
+        let parsed: ClickPipeState = serde_json::from_str(&format!(r#""{s}""#)).unwrap();
         let serialized = serde_json::to_string(&parsed).unwrap();
         assert_eq!(serialized, format!(r#""{s}""#));
     }
@@ -425,7 +423,10 @@ fn unknown_enum_variant_deserializes() {
     // An unknown service state from the API should deserialize into Unknown(String)
     let json = r#"{"state": "brand-new-state"}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.state, ServiceState::Unknown("brand-new-state".to_string()));
+    assert_eq!(
+        svc.state,
+        ServiceState::Unknown("brand-new-state".to_string())
+    );
 }
 
 #[test]
@@ -447,7 +448,10 @@ fn known_enum_variant_still_deserializes() {
 #[test]
 fn unknown_enum_display() {
     assert_eq!(ServiceState::Running.to_string(), "running");
-    assert_eq!(ServiceState::Unknown("brand-new".to_string()).to_string(), "brand-new");
+    assert_eq!(
+        ServiceState::Unknown("brand-new".to_string()).to_string(),
+        "brand-new"
+    );
 }
 
 // ===========================================================================
@@ -895,7 +899,8 @@ fn clickpipe_minimal_response() {
 
 #[test]
 fn postgres_service_minimal_response() {
-    let pg: PostgresService = serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
+    let pg: PostgresService =
+        serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
     assert_eq!(pg.name, "");
     assert_eq!(pg.state, PgStateProperty::default());
 }
@@ -1055,7 +1060,10 @@ fn deserialize_reverse_private_endpoint() {
     }"#;
     let rpe: ReversePrivateEndpoint = serde_json::from_str(json).unwrap();
     assert_eq!(rpe.description, "MSK endpoint");
-    assert_eq!(rpe.status, ReversePrivateEndpointStatus::Other("available".to_string()));
+    assert_eq!(
+        rpe.status,
+        ReversePrivateEndpointStatus::Other("available".to_string())
+    );
 }
 
 #[test]
@@ -1098,4 +1106,169 @@ fn deserialize_clickpipe_scaling() {
     let s: ClickPipeScaling = serde_json::from_str(json).unwrap();
     assert_eq!(s.replicas, 3);
     assert_eq!(s.concurrency, 2);
+}
+
+// ===========================================================================
+// ClickStack — round-trip tests for the untagged-enum-bearing types.
+// These are the highest-risk shapes: the wrong variant would silently
+// match if the discriminating fields are absent or shared.
+// ===========================================================================
+
+#[test]
+fn clickstack_create_alert_request_email_channel_roundtrip() {
+    let req = ClickStackCreateAlertRequest {
+        name: Some("low-error-rate".to_string()),
+        threshold: 5.0,
+        threshold_type: ClickStackCreateAlertRequestThresholdtype::default(),
+        interval: ClickStackCreateAlertRequestInterval::default(),
+        source: ClickStackCreateAlertRequestSource::default(),
+        channel: ClickStackAlertChannel::ClickStackAlertChannelEmail(ClickStackAlertChannelEmail {
+            email_recipients: vec!["oncall@example.com".to_string()],
+            r#type: ClickStackAlertChannelEmailType::Email,
+        }),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["channel"]["type"], "email");
+    assert_eq!(json["channel"]["emailRecipients"][0], "oncall@example.com");
+    assert!(json["channel"].get("webhookId").is_none());
+
+    let back: ClickStackCreateAlertRequest = serde_json::from_value(json).unwrap();
+    assert!(matches!(
+        back.channel,
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(_)
+    ));
+}
+
+#[test]
+fn clickstack_create_alert_request_webhook_channel_roundtrip() {
+    let req = ClickStackCreateAlertRequest {
+        name: Some("disk-pressure".to_string()),
+        threshold: 90.0,
+        channel: ClickStackAlertChannel::ClickStackAlertChannelWebhook(
+            ClickStackAlertChannelWebhook {
+                webhook_id: "wh-123".to_string(),
+                webhook_service: Some("slack".to_string()),
+                severity: Some(ClickStackAlertChannelWebhookSeverity::Critical),
+                slack_channel_id: Some("C123".to_string()),
+                r#type: ClickStackAlertChannelWebhookType::Webhook,
+            },
+        ),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["channel"]["type"], "webhook");
+    assert_eq!(json["channel"]["webhookId"], "wh-123");
+    assert_eq!(json["channel"]["severity"], "critical");
+
+    let back: ClickStackCreateAlertRequest = serde_json::from_value(json).unwrap();
+    assert!(matches!(
+        back.channel,
+        ClickStackAlertChannel::ClickStackAlertChannelWebhook(_)
+    ));
+}
+
+#[test]
+fn clickstack_alert_channel_untagged_disambiguation() {
+    // Email payload — missing `webhookId`, so must match the email variant.
+    let email_json = r#"{"type":"email","emailRecipients":["a@b.com"]}"#;
+    let email: ClickStackAlertChannel = serde_json::from_str(email_json).unwrap();
+    assert!(matches!(
+        email,
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(_)
+    ));
+
+    // Webhook payload — has `webhookId`, must match the webhook variant.
+    let webhook_json = r#"{"type":"webhook","webhookId":"wh-1"}"#;
+    let webhook: ClickStackAlertChannel = serde_json::from_str(webhook_json).unwrap();
+    assert!(matches!(
+        webhook,
+        ClickStackAlertChannel::ClickStackAlertChannelWebhook(_)
+    ));
+}
+
+#[test]
+fn clickstack_create_dashboard_request_minimal_roundtrip() {
+    let req = ClickStackCreateDashboardRequest {
+        name: "smoke".to_string(),
+        tiles: vec![],
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["name"], "smoke");
+    assert_eq!(json["tiles"].as_array().unwrap().len(), 0);
+
+    let back: ClickStackCreateDashboardRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(back.name, "smoke");
+}
+
+#[test]
+fn clickstack_create_dashboard_request_with_markdown_tile_roundtrip() {
+    let tile = ClickStackTileInput {
+        h: 4,
+        w: 4,
+        x: 0,
+        y: 0,
+        name: "Welcome".to_string(),
+        config: Some(ClickStackTileConfig::ClickStackMarkdownChartConfig(
+            ClickStackMarkdownChartConfig {
+                display_type: ClickStackMarkdownChartConfigDisplaytype::Markdown,
+                markdown: Some("# Hello".to_string()),
+            },
+        )),
+        ..Default::default()
+    };
+    let req = ClickStackCreateDashboardRequest {
+        name: "Markdown dash".to_string(),
+        tiles: vec![tile],
+        tags: Some(vec!["smoke".to_string()]),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["tiles"][0]["config"]["displayType"], "markdown");
+    assert_eq!(json["tiles"][0]["config"]["markdown"], "# Hello");
+
+    let back: ClickStackCreateDashboardRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(back.tiles.len(), 1);
+    assert!(matches!(
+        back.tiles[0].config,
+        Some(ClickStackTileConfig::ClickStackMarkdownChartConfig(_))
+    ));
+}
+
+#[test]
+fn clickstack_source_dispatches_log_variant() {
+    let json = r#"{
+        "id": "src-1",
+        "name": "logs",
+        "kind": "log",
+        "connection": "default",
+        "defaultTableSelectExpression": "*",
+        "timestampValueExpression": "TimestampTime",
+        "from": {"databaseName": "default", "tableName": "otel_logs"}
+    }"#;
+    let src: ClickStackSource = serde_json::from_str(json).unwrap();
+    assert!(matches!(src, ClickStackSource::ClickStackLogSource(_)));
+    if let ClickStackSource::ClickStackLogSource(log) = src {
+        assert_eq!(log.id, "src-1");
+        assert_eq!(log.connection, "default");
+    }
+}
+
+#[test]
+fn clickstack_webhook_dispatches_slack_variant() {
+    let json = r#"{
+        "id": "wh-1",
+        "name": "oncall-slack",
+        "service": "slack",
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-02T00:00:00Z"
+    }"#;
+    let wh: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    // Slack is the first variant the untagged enum tries — anything with a
+    // matching shape lands here.
+    assert!(matches!(wh, ClickStackWebhook::ClickStackSlackWebhook(_)));
 }

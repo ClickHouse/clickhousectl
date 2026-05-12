@@ -187,6 +187,20 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: crate::cloud::postgres::PostgresCommands,
     },
+
+    /// ClickStack commands (dashboards, alerts, sources, webhooks)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Manage ClickStack resources scoped to a service. Subcommands: dashboard, alert,
+  source (list-only), webhook (list-only).
+  Every subcommand takes a service ID positionally — get one from `clickhousectl cloud service list`.
+  Dashboard create/update use --from-file JSON (the tile layout is too nested for flags).
+  Alert create/update are flag-based; --channel-type selects email or webhook.
+  Write commands require API key auth — OAuth is read-only.")]
+    Clickstack {
+        #[command(subcommand)]
+        command: ClickStackCommands,
+    },
 }
 
 impl CloudCommands {
@@ -261,6 +275,26 @@ impl CloudCommands {
                 ActivityCommands::Get { .. } => false,
             },
             CloudCommands::Postgres { command } => command.is_write(),
+            CloudCommands::Clickstack { command } => match command {
+                ClickStackCommands::Dashboard { command } => match command {
+                    DashboardCommands::List { .. } | DashboardCommands::Get { .. } => false,
+                    DashboardCommands::Create { .. }
+                    | DashboardCommands::Update { .. }
+                    | DashboardCommands::Delete { .. } => true,
+                },
+                ClickStackCommands::Alert { command } => match command {
+                    AlertCommands::List { .. } | AlertCommands::Get { .. } => false,
+                    AlertCommands::Create { .. }
+                    | AlertCommands::Update { .. }
+                    | AlertCommands::Delete { .. } => true,
+                },
+                ClickStackCommands::Source { command } => match command {
+                    SourceCommands::List { .. } => false,
+                },
+                ClickStackCommands::Webhook { command } => match command {
+                    WebhookCommands::List { .. } => false,
+                },
+            },
         }
     }
 }
@@ -843,7 +877,6 @@ pub enum PrivateEndpointCommands {
     },
 }
 
-
 #[derive(Subcommand)]
 pub enum BackupCommands {
     /// List backups for a service
@@ -875,6 +908,363 @@ CONTEXT FOR AGENTS:
 
         /// Backup ID
         backup_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+// `AlertCommands::Create` has ~17 fields, so the enum is wider than its
+// sibling sub-resources. Boxing each subcommand would scatter `Box<...>`
+// through main.rs dispatch without practical benefit — this enum is held
+// once at parse time and discarded.
+#[allow(clippy::large_enum_variant)]
+pub enum ClickStackCommands {
+    /// Manage ClickStack dashboards
+    Dashboard {
+        #[command(subcommand)]
+        command: DashboardCommands,
+    },
+    /// Manage ClickStack alerts
+    Alert {
+        #[command(subcommand)]
+        command: AlertCommands,
+    },
+    /// View ClickStack sources
+    Source {
+        #[command(subcommand)]
+        command: SourceCommands,
+    },
+    /// View ClickStack webhooks
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DashboardCommands {
+    /// List dashboards for a service
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get a dashboard by ID
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Dashboard ID
+        dashboard_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a dashboard from a JSON file (use "-" for stdin)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  JSON body must match the `ClickStackCreateDashboardRequest` schema:
+    {\"name\": \"...\", \"tiles\": [...], \"tags\": [\"...\"]}
+  Override --name or append --tag values to bypass editing the JSON.")]
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Path to a JSON file with the dashboard definition (use "-" for stdin)
+        #[arg(long, value_name = "PATH")]
+        from_file: String,
+
+        /// Override the `name` field from the JSON file
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Additional tag to append to the JSON file's tags (repeatable)
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update a dashboard from a JSON file (use "-" for stdin)
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// Dashboard ID
+        dashboard_id: String,
+
+        /// Path to a JSON file with the dashboard definition (use "-" for stdin)
+        #[arg(long, value_name = "PATH")]
+        from_file: String,
+
+        /// Override the `name` field from the JSON file
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Additional tag to append to the JSON file's tags (repeatable)
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a dashboard
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Dashboard ID
+        dashboard_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AlertCommands {
+    /// List alerts for a service
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get an alert by ID
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Alert ID
+        alert_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create an alert
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Source values: saved_search (requires --saved-search-id) or tile (requires --dashboard-id and --tile-id).
+  Channel: --channel-type email (requires --email, repeatable) or webhook (requires --webhook-id).
+  Intervals: 1m, 5m, 15m, 30m, 1h, 6h, 12h, 1d.")]
+    Create {
+        /// Service ID
+        service_id: String,
+
+        /// Alert name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Threshold value
+        #[arg(long)]
+        threshold: f64,
+
+        /// Threshold direction
+        #[arg(long, value_name = "above|below")]
+        threshold_type: String,
+
+        /// Polling interval (e.g. 1m, 5m, 15m, 30m, 1h, 6h, 12h, 1d)
+        #[arg(long)]
+        interval: String,
+
+        /// Alert source: saved_search or tile
+        #[arg(long, value_name = "saved_search|tile")]
+        source: String,
+
+        /// Group-by expression
+        #[arg(long)]
+        group_by: Option<String>,
+
+        /// Custom notification message
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Dashboard ID (required when --source=tile)
+        #[arg(long)]
+        dashboard_id: Option<String>,
+
+        /// Tile ID (required when --source=tile)
+        #[arg(long)]
+        tile_id: Option<String>,
+
+        /// Saved search ID (required when --source=saved_search)
+        #[arg(long)]
+        saved_search_id: Option<String>,
+
+        /// Schedule offset in minutes
+        #[arg(long)]
+        schedule_offset_minutes: Option<i64>,
+
+        /// Schedule start time (RFC3339)
+        #[arg(long, value_parser = parse_datetime)]
+        schedule_start_at: Option<String>,
+
+        /// Channel type
+        #[arg(long, value_name = "email|webhook")]
+        channel_type: String,
+
+        /// Email recipient (repeatable, required when --channel-type=email)
+        #[arg(long = "email", value_name = "ADDR")]
+        emails: Vec<String>,
+
+        /// Webhook ID (required when --channel-type=webhook)
+        #[arg(long)]
+        webhook_id: Option<String>,
+
+        /// Webhook service identifier
+        #[arg(long)]
+        webhook_service: Option<String>,
+
+        /// Webhook alert severity (critical, error, warning, info)
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Slack channel id (Slack webhooks only)
+        #[arg(long)]
+        slack_channel_id: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update an alert (same flag shape as create)
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// Alert ID
+        alert_id: String,
+
+        /// Alert name
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Threshold value
+        #[arg(long)]
+        threshold: f64,
+
+        /// Threshold direction
+        #[arg(long, value_name = "above|below")]
+        threshold_type: String,
+
+        /// Polling interval (e.g. 1m, 5m, 15m, 30m, 1h, 6h, 12h, 1d)
+        #[arg(long)]
+        interval: String,
+
+        /// Alert source: saved_search or tile
+        #[arg(long, value_name = "saved_search|tile")]
+        source: String,
+
+        /// Group-by expression
+        #[arg(long)]
+        group_by: Option<String>,
+
+        /// Custom notification message
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Dashboard ID (required when --source=tile)
+        #[arg(long)]
+        dashboard_id: Option<String>,
+
+        /// Tile ID (required when --source=tile)
+        #[arg(long)]
+        tile_id: Option<String>,
+
+        /// Saved search ID (required when --source=saved_search)
+        #[arg(long)]
+        saved_search_id: Option<String>,
+
+        /// Schedule offset in minutes
+        #[arg(long)]
+        schedule_offset_minutes: Option<i64>,
+
+        /// Schedule start time (RFC3339)
+        #[arg(long, value_parser = parse_datetime)]
+        schedule_start_at: Option<String>,
+
+        /// Channel type
+        #[arg(long, value_name = "email|webhook")]
+        channel_type: String,
+
+        /// Email recipient (repeatable, required when --channel-type=email)
+        #[arg(long = "email", value_name = "ADDR")]
+        emails: Vec<String>,
+
+        /// Webhook ID (required when --channel-type=webhook)
+        #[arg(long)]
+        webhook_id: Option<String>,
+
+        /// Webhook service identifier
+        #[arg(long)]
+        webhook_service: Option<String>,
+
+        /// Webhook alert severity (critical, error, warning, info)
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Slack channel id (Slack webhooks only)
+        #[arg(long)]
+        slack_channel_id: Option<String>,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete an alert
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Alert ID
+        alert_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SourceCommands {
+    /// List ClickStack sources for a service
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WebhookCommands {
+    /// List ClickStack webhooks for a service
+    List {
+        /// Service ID
+        service_id: String,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -1587,21 +1977,69 @@ mod tests {
         // Org reads
         assert_write(&["clickhousectl", "cloud", "org", "list"], false);
         assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "prometheus", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "usage", "org-1", "--from-date", "2025-01-01", "--to-date", "2025-01-31"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "prometheus", "org-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "usage",
+                "org-1",
+                "--from-date",
+                "2025-01-01",
+                "--to-date",
+                "2025-01-31",
+            ],
+            false,
+        );
 
         // Service reads
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "client", "--id", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "service", "get", "svc-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "client",
+                "--id",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
+            false,
+        );
 
         // Backup reads
-        assert_write(&["clickhousectl", "cloud", "backup", "list", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "backup", "list", "svc-1"],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "backup", "get", "svc-1", "bk-1"],
+            false,
+        );
 
         // Backup config read
-        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "get", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "backup-config",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Member reads
         assert_write(&["clickhousectl", "cloud", "member", "list"], false);
@@ -1609,7 +2047,10 @@ mod tests {
 
         // Invitation reads
         assert_write(&["clickhousectl", "cloud", "invitation", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "invitation", "get", "inv-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "invitation", "get", "inv-1"],
+            false,
+        );
 
         // Key reads
         assert_write(&["clickhousectl", "cloud", "key", "list"], false);
@@ -1617,69 +2058,532 @@ mod tests {
 
         // Activity reads
         assert_write(&["clickhousectl", "cloud", "activity", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "activity", "get", "act-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "activity", "get", "act-1"],
+            false,
+        );
 
         // Query endpoint read
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "get", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Private endpoint read
-        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "get-config", "svc-1"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "get-config",
+                "svc-1",
+            ],
+            false,
+        );
 
         // Postgres reads
         assert_write(&["clickhousectl", "cloud", "postgres", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "postgres", "get", "pg-1"], false);
-        assert_write(&["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"], false);
-        assert_write(&["clickhousectl", "cloud", "postgres", "config", "get", "pg-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "get", "pg-1"],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "config",
+                "get",
+                "pg-1",
+            ],
+            false,
+        );
+
+        // ClickStack reads
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "dashboard",
+                "list",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "dashboard",
+                "get",
+                "svc-1",
+                "dash-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "list",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "get",
+                "svc-1",
+                "alert-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "source",
+                "list",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "webhook",
+                "list",
+                "svc-1",
+            ],
+            false,
+        );
     }
 
     #[test]
     fn is_write_command_destructive_commands() {
         // Org write
-        assert_write(&["clickhousectl", "cloud", "org", "update", "org-1", "--name", "new"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "update",
+                "org-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
 
         // Service writes
-        assert_write(&["clickhousectl", "cloud", "service", "create", "--name", "s", "--provider", "aws", "--region", "us-east-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "delete", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "start", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "stop", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "update", "svc-1", "--name", "new"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "scale", "svc-1", "--num-replicas", "2"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "reset-password", "svc-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "create",
+                "--name",
+                "s",
+                "--provider",
+                "aws",
+                "--region",
+                "us-east-1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "delete", "svc-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "start", "svc-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "stop", "svc-1"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "update",
+                "svc-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scale",
+                "svc-1",
+                "--num-replicas",
+                "2",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "reset-password",
+                "svc-1",
+            ],
+            true,
+        );
 
         // Backup config write
-        assert_write(&["clickhousectl", "cloud", "service", "backup-config", "update", "svc-1", "--backup-period-hours", "12"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "backup-config",
+                "update",
+                "svc-1",
+                "--backup-period-hours",
+                "12",
+            ],
+            true,
+        );
 
         // Member writes
-        assert_write(&["clickhousectl", "cloud", "member", "update", "usr-1", "--role-id", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "member", "remove", "usr-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "member",
+                "update",
+                "usr-1",
+                "--role-id",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "member", "remove", "usr-1"],
+            true,
+        );
 
         // Invitation writes
-        assert_write(&["clickhousectl", "cloud", "invitation", "create", "--email", "a@b.com", "--role-id", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "invitation", "delete", "inv-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "invitation",
+                "create",
+                "--email",
+                "a@b.com",
+                "--role-id",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "invitation", "delete", "inv-1"],
+            true,
+        );
 
         // Key writes
-        assert_write(&["clickhousectl", "cloud", "key", "create", "--name", "k"], true);
-        assert_write(&["clickhousectl", "cloud", "key", "update", "key-1", "--name", "new"], true);
+        assert_write(
+            &["clickhousectl", "cloud", "key", "create", "--name", "k"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "key",
+                "update",
+                "key-1",
+                "--name",
+                "new",
+            ],
+            true,
+        );
         assert_write(&["clickhousectl", "cloud", "key", "delete", "key-1"], true);
 
         // Query endpoint writes
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "create", "svc-1"], true);
-        assert_write(&["clickhousectl", "cloud", "service", "query-endpoint", "delete", "svc-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "create",
+                "svc-1",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                "delete",
+                "svc-1",
+            ],
+            true,
+        );
 
         // Private endpoint write
-        assert_write(&["clickhousectl", "cloud", "service", "private-endpoint", "create", "svc-1", "--endpoint-id", "ep-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                "ep-1",
+            ],
+            true,
+        );
 
         // Postgres writes
-        assert_write(&["clickhousectl", "cloud", "postgres", "create", "--name", "pg", "--region", "us-east-1", "--size", "m7i.2xlarge", "--storage-gb", "100"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "update", "pg-1", "--name", "renamed"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "delete", "pg-1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "config", "replace", "pg-1", "--file", "/tmp/c.json"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "config", "patch", "pg-1", "--set", "max_connections=500"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "reset-password", "pg-1", "--generate"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "read-replica", "create", "pg-1", "--name", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "restore", "pg-1", "--name", "r", "--restore-target", "2026-04-16T12:00:00Z"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "restart", "pg-1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "create",
+                "--name",
+                "pg",
+                "--region",
+                "us-east-1",
+                "--size",
+                "m7i.2xlarge",
+                "--storage-gb",
+                "100",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "update",
+                "pg-1",
+                "--name",
+                "renamed",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "delete", "pg-1"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "config",
+                "replace",
+                "pg-1",
+                "--file",
+                "/tmp/c.json",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "config",
+                "patch",
+                "pg-1",
+                "--set",
+                "max_connections=500",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "reset-password",
+                "pg-1",
+                "--generate",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "read-replica",
+                "create",
+                "pg-1",
+                "--name",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "restore",
+                "pg-1",
+                "--name",
+                "r",
+                "--restore-target",
+                "2026-04-16T12:00:00Z",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "restart", "pg-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "promote", "pg-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "switchover", "pg-1"],
+            true,
+        );
+
+        // ClickStack writes
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "dashboard",
+                "create",
+                "svc-1",
+                "--from-file",
+                "/tmp/d.json",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "dashboard",
+                "update",
+                "svc-1",
+                "dash-1",
+                "--from-file",
+                "/tmp/d.json",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "dashboard",
+                "delete",
+                "svc-1",
+                "dash-1",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "create",
+                "svc-1",
+                "--threshold",
+                "1",
+                "--threshold-type",
+                "above",
+                "--interval",
+                "5m",
+                "--source",
+                "saved_search",
+                "--saved-search-id",
+                "ss-1",
+                "--channel-type",
+                "email",
+                "--email",
+                "a@b.com",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "update",
+                "svc-1",
+                "al-1",
+                "--threshold",
+                "1",
+                "--threshold-type",
+                "above",
+                "--interval",
+                "5m",
+                "--source",
+                "saved_search",
+                "--saved-search-id",
+                "ss-1",
+                "--channel-type",
+                "email",
+                "--email",
+                "a@b.com",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "alert",
+                "delete",
+                "svc-1",
+                "al-1",
+            ],
+            true,
+        );
     }
 }
