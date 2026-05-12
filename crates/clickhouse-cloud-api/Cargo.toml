@@ -15,6 +15,11 @@ uuid = { version = "1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
+aws-config = "1.8.16"
+aws-credential-types = "1.2.14"
+aws-sdk-iam = "1.108.1"
+aws-sdk-s3 = "1.132.0"
+base64 = "0.22.1"
 chrono = "0.4"
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8.3"

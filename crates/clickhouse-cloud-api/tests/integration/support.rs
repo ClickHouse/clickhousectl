@@ -173,12 +173,56 @@ impl TestContext {
             format!("tag:run_id={}", self.run_id),
         ]
     }
+
+    pub fn clickpipe_s3_service_name(&self) -> String {
+        format!("clickhousectl-it-cp-s3-{}", self.run_id)
+    }
+
+    pub fn clickpipe_s3_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("clickpipe_s3".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run_id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn clickpipe_s3_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=clickpipe_s3".to_string(),
+            format!("tag:run_id={}", self.run_id),
+        ]
+    }
+
+    /// S3 bucket names must be globally unique, 3–63 chars, lowercase letters,
+    /// digits, hyphens. `run_id` is already constrained to safe chars.
+    pub fn aws_s3_bucket_name(&self) -> String {
+        let raw = format!("clickhousectl-e2e-s3-{}", self.run_id);
+        // S3 forbids underscores; substitute for safety even if run_id is clean today.
+        raw.replace('_', "-").to_ascii_lowercase()
+    }
+
+    pub fn aws_iam_role_name(&self) -> String {
+        format!("clickhousectl-e2e-s3-{}", self.run_id)
+    }
 }
 
 pub fn create_client() -> TestResult<Client> {
     let key = required_env("CLICKHOUSE_CLOUD_API_KEY")?;
     let secret = required_env("CLICKHOUSE_CLOUD_API_SECRET")?;
-    Ok(Client::new(key, secret))
+    match env::var("CLICKHOUSE_CLOUD_API_BASE_URL").ok().filter(|s| !s.is_empty()) {
+        Some(base_url) => Ok(Client::with_base_url(base_url, key, secret)),
+        None => Ok(Client::new(key, secret)),
+    }
 }
 
 // ── Failure Recorder ─────────────────────────────────────────────────
@@ -642,4 +686,305 @@ fn required_env(name: &str) -> TestResult<String> {
         return Err(format!("{name} is set but empty (secrets unavailable in fork PRs?)").into());
     }
     Ok(value)
+}
+
+// ── AWS Cleanup Registry ─────────────────────────────────────────────
+//
+// Tracks AWS-side resources (S3 buckets, IAM roles) created by E2E tests
+// against integration sources, so a single teardown call removes them
+// regardless of which test step failed.
+
+#[derive(Default)]
+pub struct AwsCleanupRegistry {
+    s3_buckets: Vec<(aws_sdk_s3::config::Region, String)>,
+    iam_roles: Vec<String>,
+}
+
+impl AwsCleanupRegistry {
+    pub fn register_s3_bucket(
+        &mut self,
+        region: aws_sdk_s3::config::Region,
+        bucket: impl Into<String>,
+    ) {
+        self.s3_buckets.push((region, bucket.into()));
+    }
+
+    pub fn register_iam_role(&mut self, role_name: impl Into<String>) {
+        self.iam_roles.push(role_name.into());
+    }
+
+    pub async fn cleanup(
+        &mut self,
+        aws_config: &aws_config::SdkConfig,
+        iam_client: &aws_sdk_iam::Client,
+    ) -> Result<(), String> {
+        let mut failures = Vec::new();
+
+        while let Some((region, bucket)) = self.s3_buckets.pop() {
+            // S3 calls must hit the bucket's region — re-build the client per bucket.
+            let s3_config = aws_sdk_s3::config::Builder::from(aws_config)
+                .region(region)
+                .build();
+            let s3 = aws_sdk_s3::Client::from_conf(s3_config);
+            if let Err(error) = empty_and_delete_bucket(&s3, &bucket).await {
+                failures.push(format!("s3 bucket {bucket}: {error}"));
+            }
+        }
+
+        while let Some(role) = self.iam_roles.pop() {
+            if let Err(error) = delete_iam_role(iam_client, &role).await {
+                failures.push(format!("iam role {role}: {error}"));
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("\n"))
+        }
+    }
+}
+
+async fn empty_and_delete_bucket(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+) -> TestResult<()> {
+    eprintln!("  cleanup: emptying s3 bucket");
+
+    let mut continuation: Option<String> = None;
+    loop {
+        let mut req = s3.list_objects_v2().bucket(bucket);
+        if let Some(token) = &continuation {
+            req = req.continuation_token(token);
+        }
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) if e.to_string().contains("NoSuchBucket") => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+
+        let keys: Vec<aws_sdk_s3::types::ObjectIdentifier> = resp
+            .contents()
+            .iter()
+            .filter_map(|o| {
+                o.key().and_then(|k| {
+                    aws_sdk_s3::types::ObjectIdentifier::builder()
+                        .key(k)
+                        .build()
+                        .ok()
+                })
+            })
+            .collect();
+
+        if !keys.is_empty() {
+            let delete = aws_sdk_s3::types::Delete::builder()
+                .set_objects(Some(keys))
+                .quiet(true)
+                .build()?;
+            s3.delete_objects()
+                .bucket(bucket)
+                .delete(delete)
+                .send()
+                .await?;
+        }
+
+        if resp.is_truncated().unwrap_or(false) {
+            continuation = resp.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+
+    eprintln!("  cleanup: deleting s3 bucket");
+    match s3.delete_bucket().bucket(bucket).send().await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("NoSuchBucket") => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn delete_iam_role(
+    iam: &aws_sdk_iam::Client,
+    role_name: &str,
+) -> TestResult<()> {
+    eprintln!("  cleanup: detaching inline policies on iam role");
+
+    // Inline policies first.
+    let policies = match iam.list_role_policies().role_name(role_name).send().await {
+        Ok(r) => r.policy_names,
+        Err(e) if e.to_string().contains("NoSuchEntity") => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    for name in policies {
+        let _ = iam
+            .delete_role_policy()
+            .role_name(role_name)
+            .policy_name(&name)
+            .send()
+            .await;
+    }
+
+    // Managed policy attachments — none expected for our tests, but be defensive.
+    if let Ok(resp) = iam.list_attached_role_policies().role_name(role_name).send().await {
+        for p in resp.attached_policies() {
+            if let Some(arn) = p.policy_arn() {
+                let _ = iam
+                    .detach_role_policy()
+                    .role_name(role_name)
+                    .policy_arn(arn)
+                    .send()
+                    .await;
+            }
+        }
+    }
+
+    eprintln!("  cleanup: deleting iam role");
+    match iam.delete_role().role_name(role_name).send().await {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("NoSuchEntity") => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ── AWS Provisioning Helpers ─────────────────────────────────────────
+
+/// Create a private S3 bucket with the given name in the given region, blocked
+/// from public access, with `BucketOwnerEnforced` ACL semantics.
+pub async fn create_private_bucket(
+    s3: &aws_sdk_s3::Client,
+    region: &str,
+    bucket: &str,
+    tags: &[(String, String)],
+) -> TestResult<()> {
+    use aws_sdk_s3::types::{
+        BucketCannedAcl, BucketLocationConstraint, CreateBucketConfiguration,
+        ObjectOwnership, OwnershipControls, OwnershipControlsRule, PublicAccessBlockConfiguration,
+        Tag, Tagging,
+    };
+
+    let mut req = s3.create_bucket().bucket(bucket).acl(BucketCannedAcl::Private);
+    // us-east-1 must NOT have a LocationConstraint; every other region must.
+    if region != "us-east-1" {
+        let cfg = CreateBucketConfiguration::builder()
+            .location_constraint(BucketLocationConstraint::from(region))
+            .build();
+        req = req.create_bucket_configuration(cfg);
+    }
+    req.send().await?;
+
+    s3.put_public_access_block()
+        .bucket(bucket)
+        .public_access_block_configuration(
+            PublicAccessBlockConfiguration::builder()
+                .block_public_acls(true)
+                .ignore_public_acls(true)
+                .block_public_policy(true)
+                .restrict_public_buckets(true)
+                .build(),
+        )
+        .send()
+        .await?;
+
+    s3.put_bucket_ownership_controls()
+        .bucket(bucket)
+        .ownership_controls(
+            OwnershipControls::builder()
+                .rules(
+                    OwnershipControlsRule::builder()
+                        .object_ownership(ObjectOwnership::BucketOwnerEnforced)
+                        .build()?,
+                )
+                .build()?,
+        )
+        .send()
+        .await?;
+
+    if !tags.is_empty() {
+        let aws_tags: Vec<Tag> = tags
+            .iter()
+            .map(|(k, v)| Tag::builder().key(k).value(v).build())
+            .collect::<Result<_, _>>()?;
+        s3.put_bucket_tagging()
+            .bucket(bucket)
+            .tagging(Tagging::builder().set_tag_set(Some(aws_tags)).build()?)
+            .send()
+            .await?;
+    }
+
+    Ok(())
+}
+
+pub async fn put_object_bytes(
+    s3: &aws_sdk_s3::Client,
+    bucket: &str,
+    key: &str,
+    body: Vec<u8>,
+    content_type: &str,
+) -> TestResult<()> {
+    s3.put_object()
+        .bucket(bucket)
+        .key(key)
+        .body(body.into())
+        .content_type(content_type)
+        .send()
+        .await?;
+    Ok(())
+}
+
+/// Create an IAM role whose only purpose is to be assumed by a ClickPipes
+/// service principal. The trust policy targets `service_principal_arn` exactly
+/// — no wildcards — so the role can only be assumed by this one CHC service.
+///
+/// Tags are attached best-effort after creation; the `Integrations_Tester` SSO
+/// role can `CreateRole` but is denied `iam:TagRole`, so tagging at create-time
+/// would fail the whole call. Cleanup is tracked via `AwsCleanupRegistry`, so
+/// missing tags don't affect resource lifecycle.
+pub async fn create_clickpipes_iam_role(
+    iam: &aws_sdk_iam::Client,
+    role_name: &str,
+    service_principal_arn: &str,
+    inline_policy_doc: &str,
+    tags: &[(String, String)],
+) -> TestResult<String> {
+    use aws_sdk_iam::types::Tag;
+
+    let trust_policy = serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "AWS": service_principal_arn },
+            "Action": "sts:AssumeRole"
+        }]
+    })
+    .to_string();
+
+    let resp = iam
+        .create_role()
+        .role_name(role_name)
+        .assume_role_policy_document(trust_policy)
+        .send()
+        .await?;
+    let role_arn = resp
+        .role()
+        .map(|r| r.arn().to_string())
+        .ok_or("CreateRole returned no role")?;
+
+    if !tags.is_empty() {
+        let aws_tags: Vec<Tag> = tags
+            .iter()
+            .map(|(k, v)| Tag::builder().key(k).value(v).build())
+            .collect::<Result<_, _>>()?;
+        if let Err(e) = iam.tag_role().role_name(role_name).set_tags(Some(aws_tags)).send().await {
+            eprintln!("  warn: failed to tag iam role (continuing): {e}");
+        }
+    }
+
+    iam.put_role_policy()
+        .role_name(role_name)
+        .policy_name(format!("{role_name}-inline"))
+        .policy_document(inline_policy_doc)
+        .send()
+        .await?;
+
+    Ok(role_arn)
 }
