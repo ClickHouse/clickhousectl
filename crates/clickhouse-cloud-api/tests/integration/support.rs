@@ -45,13 +45,19 @@ impl fmt::Debug for TestContext {
 impl TestContext {
     pub fn from_env() -> TestResult<Self> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let label = env::var("CLICKHOUSE_CLOUD_TEST_RUN_LABEL").ok();
         let github_run_id = env::var("GITHUB_RUN_ID").ok();
         let github_sha = env::var("GITHUB_SHA").ok();
-        let run_id = match (github_run_id, github_sha) {
-            (Some(run_id), Some(sha)) => format!("{run_id}-{}", &sha[..7.min(sha.len())]),
-            (Some(run_id), None) => run_id,
-            (None, Some(sha)) => format!("local-{}", &sha[..7.min(sha.len())]),
-            (None, None) => format!("local-{timestamp}"),
+        let sha7 = github_sha
+            .as_deref()
+            .map(|s| s[..7.min(s.len())].to_string());
+        let run_id = match (label, github_run_id, sha7) {
+            (Some(label), _, Some(sha)) => format!("{label}-{sha}"),
+            (Some(label), _, None) => label,
+            (None, Some(rid), Some(sha)) => format!("{rid}-{sha}"),
+            (None, Some(rid), None) => rid,
+            (None, None, Some(sha)) => format!("local-{sha}"),
+            (None, None, None) => format!("local-{timestamp}"),
         };
 
         Ok(Self {
