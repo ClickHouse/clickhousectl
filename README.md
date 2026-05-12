@@ -313,16 +313,6 @@ clickhousectl cloud service create --name my-service \
 clickhousectl cloud service start <service-id>
 clickhousectl cloud service stop <service-id>
 
-# Connect to a cloud service with clickhouse-client
-clickhousectl cloud service client --name my-service --password secret
-clickhousectl cloud service client --id <service-id> -q "SELECT 1" --password secret
-
-# Use CLICKHOUSE_PASSWORD env var (recommended for scripts/agents)
-CLICKHOUSE_PASSWORD=secret clickhousectl cloud service client --name my-service -q "SELECT count() FROM system.tables"
-
-# Use a local client version instead of auto-downloading the matching one
-clickhousectl cloud service client --name my-service --allow-mismatched-client-version
-
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
 clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
