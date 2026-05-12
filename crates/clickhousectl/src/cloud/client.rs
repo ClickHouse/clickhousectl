@@ -236,9 +236,7 @@ impl CloudClient {
     }
 
     /// Unwrap an `ApiResponse<T>` into `T`, returning an error if the result is empty.
-    pub fn unwrap_response<T>(
-        response: clickhouse_cloud_api::models::ApiResponse<T>,
-    ) -> Result<T> {
+    pub fn unwrap_response<T>(response: clickhouse_cloud_api::models::ApiResponse<T>) -> Result<T> {
         response.result.ok_or_else(|| CloudError {
             message: "Empty response from API".into(),
         })
@@ -395,6 +393,179 @@ impl CloudClient {
         let response = self
             .api()
             .backup_get(org_id, service_id, backup_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    // ClickStack endpoints (delegated to library client)
+    pub async fn clickstack_list_dashboards(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::ClickStackDashboardResponse>> {
+        let response = self
+            .api()
+            .click_stack_list_dashboards(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_get_dashboard(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        dashboard_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::ClickStackDashboardResponse> {
+        let response = self
+            .api()
+            .click_stack_get_dashboard(org_id, service_id, dashboard_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_create_dashboard(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickStackCreateDashboardRequest,
+    ) -> Result<clickhouse_cloud_api::models::ClickStackDashboardResponse> {
+        let response = self
+            .api()
+            .click_stack_create_dashboard(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_update_dashboard(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        dashboard_id: &str,
+        request: &clickhouse_cloud_api::models::ClickStackUpdateDashboardRequest,
+    ) -> Result<clickhouse_cloud_api::models::ClickStackDashboardResponse> {
+        let response = self
+            .api()
+            .click_stack_update_dashboard(org_id, service_id, dashboard_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_delete_dashboard(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        dashboard_id: &str,
+    ) -> Result<DeleteResponse> {
+        let response = self
+            .api()
+            .click_stack_delete_dashboard(org_id, service_id, dashboard_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
+        })
+    }
+
+    pub async fn clickstack_list_alerts(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::ClickStackAlertResponse>> {
+        let response = self
+            .api()
+            .click_stack_list_alerts(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_get_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+    ) -> Result<clickhouse_cloud_api::models::ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_get_alert(org_id, service_id, alert_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_create_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickStackCreateAlertRequest,
+    ) -> Result<clickhouse_cloud_api::models::ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_create_alert(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_update_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+        request: &clickhouse_cloud_api::models::ClickStackUpdateAlertRequest,
+    ) -> Result<clickhouse_cloud_api::models::ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_update_alert(org_id, service_id, alert_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_delete_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+    ) -> Result<DeleteResponse> {
+        let response = self
+            .api()
+            .click_stack_delete_alert(org_id, service_id, alert_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Ok(DeleteResponse {
+            status: response.status.unwrap_or(0.0),
+            request_id: response.request_id.unwrap_or_default(),
+        })
+    }
+
+    pub async fn clickstack_list_sources(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::ClickStackSource>> {
+        let response = self
+            .api()
+            .click_stack_list_sources(org_id, service_id)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn clickstack_list_webhooks(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Vec<clickhouse_cloud_api::models::ClickStackWebhook>> {
+        let response = self
+            .api()
+            .click_stack_list_webhooks(org_id, service_id)
             .await
             .map_err(|e| self.convert_error(e))?;
         Self::unwrap_response(response)
@@ -937,7 +1108,10 @@ mod tests {
             status: 403,
             message: "Forbidden".into(),
         });
-        assert!(err.message.contains("Hint: You are authenticated via OAuth"));
+        assert!(
+            err.message
+                .contains("Hint: You are authenticated via OAuth")
+        );
     }
 
     #[test]
@@ -953,7 +1127,11 @@ mod tests {
                 .describe()
                 .contains("CLICKHOUSE_CLOUD_API_KEY")
         );
-        assert!(AuthSource::CredentialsFile.describe().contains("credentials"));
+        assert!(
+            AuthSource::CredentialsFile
+                .describe()
+                .contains("credentials")
+        );
         assert!(AuthSource::OAuthTokens.describe().contains("OAuth"));
     }
 
