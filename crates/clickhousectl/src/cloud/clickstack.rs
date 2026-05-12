@@ -636,22 +636,15 @@ fn validate_source_args(
     saved_search_id: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match source {
-        "tile" => {
-            if dashboard_id.is_none() {
-                return Err("--source=tile requires --dashboard-id".into());
-            }
-            if tile_id.is_none() {
-                return Err("--source=tile requires --tile-id".into());
-            }
+        "tile" if dashboard_id.is_none() => {
+            Err("--source=tile requires --dashboard-id".into())
         }
-        "saved_search" => {
-            if saved_search_id.is_none() {
-                return Err("--source=saved_search requires --saved-search-id".into());
-            }
+        "tile" if tile_id.is_none() => Err("--source=tile requires --tile-id".into()),
+        "saved_search" if saved_search_id.is_none() => {
+            Err("--source=saved_search requires --saved-search-id".into())
         }
-        _ => {}
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn parse_schedule_start_at(
