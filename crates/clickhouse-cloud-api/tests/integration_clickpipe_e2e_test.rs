@@ -1,21 +1,23 @@
 //! Multi-source ClickPipes end-to-end driver.
 //!
 //! Provisions a single ClickHouse Cloud service, then runs each per-source
-//! stage against it in sequence. Stages fail independently — one bad source
-//! is recorded but doesn't abort the rest of the run, since CHC service
-//! provisioning is the expensive part and we want full coverage per run.
+//! stage against it **in parallel**. Stages own their cleanup registries; the
+//! driver merges them back after `tokio::join!` resolves so a single teardown
+//! pass handles everything. Stages fail independently — one bad source is
+//! recorded but doesn't abort the rest of the run.
 //!
-//! Add new sources by writing a `run_<source>_stage` function in
-//! [`integration::stages`] and a corresponding call below.
+//! Add a new source by writing `run_<source>_stage` in [`integration::stages`]
+//! (taking `StageCtx` by value, returning `StageOutcome`) and plugging it into
+//! the `tokio::join!` below.
 
 mod integration;
 
 use integration::stages::*;
 use integration::support::*;
 
-const AWS_REGION: &str = "us-east-2";
+const DEFAULT_AWS_REGION: &str = "eu-west-1";
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live ClickHouse Cloud + AWS credentials and provisions real resources"]
 async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -23,12 +25,20 @@ async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
     let ctx = TestContext::from_env()?;
     let client = create_client()?;
 
+    // Co-locate AWS infra with the CHC service region by default, so EIP
+    // quotas in one region (us-east-2 in our sandbox account) don't block us.
+    let aws_region: String = std::env::var("CLICKHOUSE_CLOUD_TEST_AWS_REGION")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_AWS_REGION.to_string());
+
     let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-        .region(aws_sdk_s3::config::Region::new(AWS_REGION))
+        .region(aws_sdk_s3::config::Region::new(aws_region.clone()))
         .load()
         .await;
     let s3 = aws_sdk_s3::Client::new(&aws_config);
     let iam = aws_sdk_iam::Client::new(&aws_config);
+    let ec2 = aws_sdk_ec2::Client::new(&aws_config);
 
     let mut cleanup = CleanupRegistry::default();
     let mut aws_cleanup = AwsCleanupRegistry::default();
@@ -36,7 +46,7 @@ async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
     let run_result = async {
         log_run_header("cloud_clickpipe_e2e_all_sources", &ctx);
 
-        // ── Provision ClickHouse (shared across all stages) ─────────
+        // Provision once (blocking — no stage can run without the service).
         log_phase("Provision ClickHouse");
         let ch = provision_clickhouse(
             &client,
@@ -47,33 +57,47 @@ async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
         )
         .await?;
 
-        // ── Stages ──────────────────────────────────────────────────
-        //
-        // Stages are independent — a failure in one is logged but the
-        // run continues so later stages still execute on the same service.
+        // Each stage gets its own cleanup registries to keep ownership disjoint
+        // for the concurrent join. Outcomes are folded into the driver's
+        // registries before teardown.
+        let make_ctx = || StageCtx {
+            client: &client,
+            ctx: &ctx,
+            ch: &ch,
+            aws_config: &aws_config,
+            s3: &s3,
+            iam: &iam,
+            ec2: &ec2,
+            aws_region: &aws_region,
+            cleanup: CleanupRegistry::default(),
+            aws_cleanup: AwsCleanupRegistry::default(),
+        };
+
+        eprintln!("\n== Running stages in parallel ==");
+        let (s3_out, kafka_scram_out, kafka_mtls_out) = tokio::join!(
+            run_s3_stage(make_ctx()),
+            run_kafka_scram_tls_stage(make_ctx()),
+            run_kafka_mtls_stage(make_ctx()),
+        );
+
+        // Order matters here: merge cleanup state BEFORE inspecting results,
+        // so failures still get teardown.
         let mut stage_failures: Vec<(String, String)> = Vec::new();
-
-        run_stage(
-            "s3",
-            &mut stage_failures,
-            run_s3_stage(&mut StageCtx {
-                client: &client,
-                ctx: &ctx,
-                ch: &ch,
-                aws_config: &aws_config,
-                s3: &s3,
-                iam: &iam,
-                aws_region: AWS_REGION,
-                cleanup: &mut cleanup,
-                aws_cleanup: &mut aws_cleanup,
-            }),
-        )
-        .await;
-
-        // Future stages plug in here:
-        //   run_stage("kinesis", &mut stage_failures,
-        //             run_kinesis_stage(&mut StageCtx { ... })).await;
-        //   run_stage("kafka",   &mut stage_failures, run_kafka_stage(...)).await;
+        for (name, outcome) in [
+            ("s3", s3_out),
+            ("kafka-scram-tls", kafka_scram_out),
+            ("kafka-mtls", kafka_mtls_out),
+        ] {
+            cleanup.merge_from(outcome.cleanup);
+            aws_cleanup.merge_from(outcome.aws_cleanup);
+            match outcome.result {
+                Ok(()) => eprintln!("  PASS [{name}]"),
+                Err(err) => {
+                    eprintln!("  FAIL [{name}]: {}", render_error_chain(err.as_ref()));
+                    stage_failures.push((name.to_string(), err.to_string()));
+                }
+            }
+        }
 
         if !stage_failures.is_empty() {
             let summary = stage_failures
@@ -92,7 +116,7 @@ async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
     let cleanup_result = cleanup
         .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval)
         .await;
-    let aws_cleanup_result = aws_cleanup.cleanup(&aws_config, &iam).await;
+    let aws_cleanup_result = aws_cleanup.cleanup(&aws_config, &iam, &ec2).await;
 
     match (run_result, cleanup_result, aws_cleanup_result) {
         (Ok(()), Ok(()), Ok(())) => Ok(()),
@@ -105,18 +129,16 @@ async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
     }
 }
 
-async fn run_stage<F>(name: &str, failures: &mut Vec<(String, String)>, fut: F)
-where
-    F: std::future::Future<Output = TestResult<()>>,
-{
-    eprintln!("\n== Stage: {name} ==");
-    match fut.await {
-        Ok(()) => eprintln!("  PASS [{name}]"),
-        Err(err) => {
-            eprintln!("  FAIL [{name}]: {}", first_line(&err.to_string()));
-            failures.push((name.to_string(), err.to_string()));
-        }
+/// Walk the error's `source()` chain so we see the underlying SDK message
+/// rather than a top-level Display like `"service error"`.
+fn render_error_chain(err: &dyn std::error::Error) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut cur = err.source();
+    while let Some(s) = cur {
+        parts.push(s.to_string());
+        cur = s.source();
     }
+    parts.join(" -> ")
 }
 
 fn first_line(text: &str) -> &str {

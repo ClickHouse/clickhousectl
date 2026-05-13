@@ -368,6 +368,14 @@ impl CleanupRegistry {
         self.clickpipes.push((service_id.into(), clickpipe_id.into()));
     }
 
+    /// Drain another registry's entries into this one. Used by the parallel
+    /// driver to fold per-stage registries back into the parent for teardown.
+    pub fn merge_from(&mut self, mut other: CleanupRegistry) {
+        self.service_ids.append(&mut other.service_ids);
+        self.postgres_ids.append(&mut other.postgres_ids);
+        self.clickpipes.append(&mut other.clickpipes);
+    }
+
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
         self.clickpipes
             .retain(|(svc, pipe)| !(svc == service_id && pipe == clickpipe_id));
@@ -876,6 +884,9 @@ impl ClickHouseQuery {
 pub struct AwsCleanupRegistry {
     s3_buckets: Vec<(aws_sdk_s3::config::Region, String)>,
     iam_roles: Vec<String>,
+    ec2_instances: Vec<String>,
+    ec2_security_groups: Vec<String>,
+    ec2_elastic_ips: Vec<String>,
 }
 
 impl AwsCleanupRegistry {
@@ -891,10 +902,31 @@ impl AwsCleanupRegistry {
         self.iam_roles.push(role_name.into());
     }
 
+    pub fn register_ec2_instance(&mut self, instance_id: impl Into<String>) {
+        self.ec2_instances.push(instance_id.into());
+    }
+
+    pub fn register_ec2_security_group(&mut self, sg_id: impl Into<String>) {
+        self.ec2_security_groups.push(sg_id.into());
+    }
+
+    pub fn register_ec2_elastic_ip(&mut self, allocation_id: impl Into<String>) {
+        self.ec2_elastic_ips.push(allocation_id.into());
+    }
+
+    pub fn merge_from(&mut self, mut other: AwsCleanupRegistry) {
+        self.s3_buckets.append(&mut other.s3_buckets);
+        self.iam_roles.append(&mut other.iam_roles);
+        self.ec2_instances.append(&mut other.ec2_instances);
+        self.ec2_security_groups.append(&mut other.ec2_security_groups);
+        self.ec2_elastic_ips.append(&mut other.ec2_elastic_ips);
+    }
+
     pub async fn cleanup(
         &mut self,
         aws_config: &aws_config::SdkConfig,
         iam_client: &aws_sdk_iam::Client,
+        ec2_client: &aws_sdk_ec2::Client,
     ) -> Result<(), String> {
         let mut failures = Vec::new();
 
@@ -912,6 +944,39 @@ impl AwsCleanupRegistry {
         while let Some(role) = self.iam_roles.pop() {
             if let Err(error) = delete_iam_role(iam_client, &role).await {
                 failures.push(format!("iam role {role}: {error}"));
+            }
+        }
+
+        // Terminate instances first so they release their ENIs, then drop SGs.
+        if !self.ec2_instances.is_empty() {
+            let ids: Vec<String> = self.ec2_instances.drain(..).collect();
+            if let Err(error) = terminate_and_wait(ec2_client, &ids).await {
+                failures.push(format!("ec2 instances {ids:?}: {error}"));
+            }
+        }
+
+        while let Some(sg_id) = self.ec2_security_groups.pop() {
+            if let Err(error) = ec2_client.delete_security_group().group_id(&sg_id).send().await {
+                let msg = error.to_string();
+                if !msg.contains("InvalidGroup.NotFound") {
+                    failures.push(format!("ec2 sg {sg_id}: {msg}"));
+                }
+            }
+        }
+
+        // Elastic IPs are auto-disassociated when their instance is terminated,
+        // so by this point release is unconditional.
+        while let Some(allocation_id) = self.ec2_elastic_ips.pop() {
+            if let Err(error) = ec2_client
+                .release_address()
+                .allocation_id(&allocation_id)
+                .send()
+                .await
+            {
+                let msg = error.to_string();
+                if !msg.contains("InvalidAllocationID.NotFound") {
+                    failures.push(format!("ec2 eip {allocation_id}: {msg}"));
+                }
             }
         }
 
@@ -1117,6 +1182,444 @@ pub async fn put_object_bytes(
 /// role can `CreateRole` but is denied `iam:TagRole`, so tagging at create-time
 /// would fail the whole call. Cleanup is tracked via `AwsCleanupRegistry`, so
 /// missing tags don't affect resource lifecycle.
+// ── TLS Cert Generation (rcgen) ──────────────────────────────────────
+//
+// Self-signed CA + server cert (IP SAN) + client cert/key bundle, used by
+// the TLS Kafka stages. All PEM-encoded.
+
+pub struct RedpandaCerts {
+    pub ca_pem: String,
+    pub server_cert_pem: String,
+    pub server_key_pem: String,
+    pub client_cert_pem: String,
+    pub client_key_pem: String,
+    /// The CN we put on the client cert — Redpanda derives the mTLS user
+    /// identity from this string, so ACLs must be granted to `User:{client_cn}`.
+    pub client_cn: String,
+}
+
+pub fn generate_redpanda_certs(broker_ip: &str, client_cn: &str) -> TestResult<RedpandaCerts> {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType,
+    };
+
+    let parsed_ip: std::net::IpAddr = broker_ip
+        .parse()
+        .map_err(|e| format!("invalid broker ip {broker_ip}: {e}"))?;
+
+    // CA — used to sign both the server cert (broker presents) and the client
+    // cert (ClickPipes presents for mTLS).
+    let ca_key = KeyPair::generate()?;
+    let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "clickhousectl-e2e-test-ca");
+    let ca_cert = ca_params.clone().self_signed(&ca_key)?;
+    let ca_pem = ca_cert.pem();
+    let issuer = Issuer::new(ca_params, ca_key);
+
+    // Server cert: SAN = broker_ip, so ClickPipes' TLS validation matches.
+    let server_key = KeyPair::generate()?;
+    let mut server_params = CertificateParams::new(Vec::<String>::new())?;
+    server_params
+        .subject_alt_names
+        .push(SanType::IpAddress(parsed_ip));
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "redpanda-broker");
+    let server_cert = server_params.signed_by(&server_key, &issuer)?;
+
+    // Client cert: identity comes from CN.
+    let client_key = KeyPair::generate()?;
+    let mut client_params = CertificateParams::new(Vec::<String>::new())?;
+    client_params
+        .distinguished_name
+        .push(DnType::CommonName, client_cn);
+    let client_cert = client_params.signed_by(&client_key, &issuer)?;
+
+    Ok(RedpandaCerts {
+        ca_pem,
+        server_cert_pem: server_cert.pem(),
+        server_key_pem: server_key.serialize_pem(),
+        client_cert_pem: client_cert.pem(),
+        client_key_pem: client_key.serialize_pem(),
+        client_cn: client_cn.to_string(),
+    })
+}
+
+// ── EC2 Helpers ──────────────────────────────────────────────────────
+
+/// Resolve the default VPC for the configured region. Both us-east-2 and
+/// every Integrations_Tester region we use today have one — fail loudly if
+/// not.
+pub async fn default_vpc_id(ec2: &aws_sdk_ec2::Client) -> TestResult<String> {
+    use aws_sdk_ec2::types::Filter;
+
+    let resp = ec2
+        .describe_vpcs()
+        .filters(Filter::builder().name("is-default").values("true").build())
+        .send()
+        .await?;
+    resp.vpcs()
+        .iter()
+        .find_map(|v| v.vpc_id().map(|s| s.to_string()))
+        .ok_or_else(|| "no default VPC found in region".into())
+}
+
+pub async fn first_subnet_in_vpc(
+    ec2: &aws_sdk_ec2::Client,
+    vpc_id: &str,
+) -> TestResult<String> {
+    use aws_sdk_ec2::types::Filter;
+
+    let resp = ec2
+        .describe_subnets()
+        .filters(Filter::builder().name("vpc-id").values(vpc_id).build())
+        .send()
+        .await?;
+    resp.subnets()
+        .iter()
+        .find_map(|s| s.subnet_id().map(|s| s.to_string()))
+        .ok_or_else(|| format!("no subnets in vpc {vpc_id}").into())
+}
+
+/// Find the most recent Canonical-published Ubuntu 24.04 LTS amd64 AMI.
+pub async fn latest_ubuntu_noble_amd64_ami(
+    ec2: &aws_sdk_ec2::Client,
+) -> TestResult<String> {
+    use aws_sdk_ec2::types::Filter;
+
+    let resp = ec2
+        .describe_images()
+        .owners("099720109477") // Canonical
+        .filters(
+            Filter::builder()
+                .name("name")
+                .values("ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*")
+                .build(),
+        )
+        .filters(
+            Filter::builder()
+                .name("virtualization-type")
+                .values("hvm")
+                .build(),
+        )
+        .send()
+        .await?;
+
+    let mut images: Vec<_> = resp.images().to_vec();
+    images.sort_by(|a, b| a.creation_date().cmp(&b.creation_date()));
+    images
+        .last()
+        .and_then(|i| i.image_id().map(|s| s.to_string()))
+        .ok_or_else(|| "no Ubuntu Noble AMIs found".into())
+}
+
+/// Create a single-ingress-rule security group exposing one TCP port from any
+/// source. Returns the SG id. Caller must register it with `AwsCleanupRegistry`.
+pub async fn create_open_security_group(
+    ec2: &aws_sdk_ec2::Client,
+    vpc_id: &str,
+    name: &str,
+    ingress_ports: &[i32],
+) -> TestResult<String> {
+    use aws_sdk_ec2::types::{IpPermission, IpRange};
+
+    let sg = ec2
+        .create_security_group()
+        .vpc_id(vpc_id)
+        .group_name(name)
+        .description(format!("clickhousectl e2e ({name})"))
+        .send()
+        .await?;
+    let sg_id = sg.group_id().ok_or("CreateSecurityGroup returned no id")?.to_string();
+
+    let permissions: Vec<IpPermission> = ingress_ports
+        .iter()
+        .map(|port| {
+            IpPermission::builder()
+                .ip_protocol("tcp")
+                .from_port(*port)
+                .to_port(*port)
+                .ip_ranges(IpRange::builder().cidr_ip("0.0.0.0/0").build())
+                .build()
+        })
+        .collect();
+
+    ec2.authorize_security_group_ingress()
+        .group_id(&sg_id)
+        .set_ip_permissions(Some(permissions))
+        .send()
+        .await?;
+
+    Ok(sg_id)
+}
+
+/// Launch a single Ubuntu EC2 instance with the given user_data script,
+/// associated public IP, and security group. Returns `(instance_id, public_ip)`
+/// once the instance is in `running` state. Caller must register the instance
+/// in `AwsCleanupRegistry`.
+pub async fn launch_ec2_instance(
+    ec2: &aws_sdk_ec2::Client,
+    ami_id: &str,
+    subnet_id: &str,
+    sg_id: &str,
+    instance_type: &str,
+    user_data: &str,
+    name_tag: &str,
+) -> TestResult<(String, String)> {
+    use aws_sdk_ec2::types::{
+        BlockDeviceMapping, EbsBlockDevice, InstanceNetworkInterfaceSpecification,
+        InstanceType, ResourceType, Tag, TagSpecification, VolumeType,
+    };
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine as _;
+
+    let ud_b64 = STANDARD.encode(user_data.as_bytes());
+
+    let nic = InstanceNetworkInterfaceSpecification::builder()
+        .device_index(0)
+        .associate_public_ip_address(true)
+        .subnet_id(subnet_id)
+        .groups(sg_id)
+        .build();
+
+    let root_volume = BlockDeviceMapping::builder()
+        .device_name("/dev/sda1")
+        .ebs(
+            EbsBlockDevice::builder()
+                .volume_size(20)
+                .volume_type(VolumeType::Gp3)
+                .delete_on_termination(true)
+                .build(),
+        )
+        .build();
+
+    let tag_spec = TagSpecification::builder()
+        .resource_type(ResourceType::Instance)
+        .tags(Tag::builder().key("Name").value(name_tag).build())
+        .tags(
+            Tag::builder()
+                .key("managed_by")
+                .value("clickhousectl_e2e")
+                .build(),
+        )
+        .build();
+
+    let resp = ec2
+        .run_instances()
+        .image_id(ami_id)
+        .instance_type(InstanceType::from(instance_type))
+        .min_count(1)
+        .max_count(1)
+        .user_data(ud_b64)
+        .network_interfaces(nic)
+        .block_device_mappings(root_volume)
+        .tag_specifications(tag_spec)
+        .send()
+        .await?;
+
+    let instance = resp
+        .instances()
+        .first()
+        .ok_or("RunInstances returned no instances")?;
+    let instance_id = instance
+        .instance_id()
+        .ok_or("RunInstances returned instance without id")?
+        .to_string();
+
+    // Poll until running + public IP allocated.
+    eprintln!("  waiting for ec2 instance to enter running state");
+    let public_ip = poll_until(
+        "ec2 instance running with public ip",
+        Duration::from_secs(300),
+        Duration::from_secs(5),
+        || {
+            let ec2 = ec2.clone();
+            let instance_id = instance_id.clone();
+            async move {
+                let resp = ec2
+                    .describe_instances()
+                    .instance_ids(instance_id)
+                    .send()
+                    .await?;
+                let inst = resp
+                    .reservations()
+                    .iter()
+                    .flat_map(|r| r.instances())
+                    .next();
+                match inst {
+                    None => Ok(None),
+                    Some(i) => {
+                        let state = i
+                            .state()
+                            .and_then(|s| s.name())
+                            .map(|n| n.as_str().to_string())
+                            .unwrap_or_default();
+                        if state != "running" {
+                            return Ok(None);
+                        }
+                        Ok(i.public_ip_address().map(|s| s.to_string()))
+                    }
+                }
+            }
+        },
+    )
+    .await?;
+
+    Ok((instance_id, public_ip))
+}
+
+/// Allocate an Elastic IP. Returns `(public_ip, allocation_id)`. Caller is
+/// responsible for `register_ec2_elastic_ip(allocation_id)` and for calling
+/// `associate_elastic_ip` once an instance exists.
+pub async fn allocate_elastic_ip(
+    ec2: &aws_sdk_ec2::Client,
+) -> TestResult<(String, String)> {
+    use aws_sdk_ec2::types::DomainType;
+
+    let resp = ec2
+        .allocate_address()
+        .domain(DomainType::Vpc)
+        .send()
+        .await?;
+    let ip = resp.public_ip().ok_or("AllocateAddress returned no public_ip")?.to_string();
+    let alloc = resp
+        .allocation_id()
+        .ok_or("AllocateAddress returned no allocation_id")?
+        .to_string();
+    Ok((ip, alloc))
+}
+
+pub async fn associate_elastic_ip(
+    ec2: &aws_sdk_ec2::Client,
+    allocation_id: &str,
+    instance_id: &str,
+) -> TestResult<()> {
+    ec2.associate_address()
+        .allocation_id(allocation_id)
+        .instance_id(instance_id)
+        .send()
+        .await?;
+    Ok(())
+}
+
+/// Poll Redpanda's admin API for an HTTP user-lookup endpoint to confirm a
+/// SCRAM user has been provisioned. Lets us replace fixed-time sleeps in
+/// kafka stages with a real readiness check.
+pub async fn wait_for_redpanda_scram_user(
+    host: &str,
+    admin_port: u16,
+    username: &str,
+    timeout: Duration,
+) -> TestResult<()> {
+    let target = format!("http://{host}:{admin_port}/v1/security/users");
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    poll_until(
+        &format!("redpanda scram user {username}"),
+        timeout,
+        Duration::from_secs(3),
+        || {
+            let http = http.clone();
+            let target = target.clone();
+            let username = username.to_string();
+            async move {
+                let resp = match http.get(&target).send().await {
+                    Ok(r) => r,
+                    Err(_) => return Ok(None),
+                };
+                if !resp.status().is_success() {
+                    return Ok(None);
+                }
+                let body: serde_json::Value = match resp.json().await {
+                    Ok(b) => b,
+                    Err(_) => return Ok(None),
+                };
+                let found = body
+                    .as_array()
+                    .map(|users| users.iter().any(|u| u.as_str() == Some(&username)))
+                    .unwrap_or(false);
+                if found { Ok(Some(())) } else { Ok(None) }
+            }
+        },
+    )
+    .await
+}
+
+/// Best-effort TCP connect probe — used to wait for a service (Redpanda, etc.)
+/// to start listening after `user_data` finishes.
+pub async fn wait_for_tcp_port(host: &str, port: u16, timeout: Duration) -> TestResult<()> {
+    let target = format!("{host}:{port}");
+    poll_until(
+        &format!("tcp port {host}:{port}"),
+        timeout,
+        Duration::from_secs(5),
+        || {
+            let target = target.clone();
+            async move {
+                match tokio::time::timeout(
+                    Duration::from_secs(3),
+                    tokio::net::TcpStream::connect(&target),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => Ok(Some(())),
+                    _ => Ok(None),
+                }
+            }
+        },
+    )
+    .await
+}
+
+async fn terminate_and_wait(
+    ec2: &aws_sdk_ec2::Client,
+    instance_ids: &[String],
+) -> TestResult<()> {
+    if instance_ids.is_empty() {
+        return Ok(());
+    }
+    eprintln!("  cleanup: terminating ec2 instances");
+    let _ = ec2
+        .terminate_instances()
+        .set_instance_ids(Some(instance_ids.to_vec()))
+        .send()
+        .await?;
+
+    // Poll until all are in 'terminated'. AWS deletes them lazily after that.
+    poll_until(
+        "ec2 instances terminated",
+        Duration::from_secs(300),
+        Duration::from_secs(10),
+        || {
+            let ec2 = ec2.clone();
+            let ids = instance_ids.to_vec();
+            async move {
+                let resp = ec2
+                    .describe_instances()
+                    .set_instance_ids(Some(ids))
+                    .send()
+                    .await?;
+                let all_terminated = resp
+                    .reservations()
+                    .iter()
+                    .flat_map(|r| r.instances())
+                    .all(|i| {
+                        i.state()
+                            .and_then(|s| s.name())
+                            .map(|n| n.as_str() == "terminated")
+                            .unwrap_or(false)
+                    });
+                if all_terminated { Ok(Some(())) } else { Ok(None) }
+            }
+        },
+    )
+    .await
+}
+
 pub async fn create_clickpipes_iam_role(
     iam: &aws_sdk_iam::Client,
     role_name: &str,

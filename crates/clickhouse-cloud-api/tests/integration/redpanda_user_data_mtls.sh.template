@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euxo pipefail
+sleep 5
+
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | sudo -E bash
+sudo apt-get install -y redpanda jq
+
+sudo mkdir -p /etc/redpanda/tls
+echo "__SERVER_CERT_B64__" | base64 -d | sudo tee /etc/redpanda/tls/server.crt > /dev/null
+echo "__SERVER_KEY_B64__"  | base64 -d | sudo tee /etc/redpanda/tls/server.key > /dev/null
+echo "__CA_PEM_B64__"      | base64 -d | sudo tee /etc/redpanda/tls/ca.crt    > /dev/null
+echo "__CLIENT_CERT_B64__" | base64 -d | sudo tee /etc/redpanda/tls/client.crt > /dev/null
+echo "__CLIENT_KEY_B64__"  | base64 -d | sudo tee /etc/redpanda/tls/client.key > /dev/null
+sudo chown -R redpanda:redpanda /etc/redpanda/tls
+sudo chmod 600 /etc/redpanda/tls/server.key /etc/redpanda/tls/client.key
+
+sudo rpk redpanda config set redpanda.developer_mode true
+
+# Single mTLS listener on 9092 — Redpanda derives the user identity from the
+# client cert's subject CN, so no SCRAM users exist on this broker.
+sudo rpk redpanda config set redpanda.kafka_api '[{name: external, address: 0.0.0.0, port: 9092, authentication_method: mtls_identity}]'
+sudo rpk redpanda config set redpanda.advertised_kafka_api "[{name: external, address: __BROKER_IP__, port: 9092}]"
+sudo rpk redpanda config set redpanda.kafka_api_tls '[{name: external, enabled: true, cert_file: /etc/redpanda/tls/server.crt, key_file: /etc/redpanda/tls/server.key, truststore_file: /etc/redpanda/tls/ca.crt, require_client_auth: true}]'
+sudo rpk redpanda config set redpanda.admin '[{address: 0.0.0.0, port: 9644}]'
+
+# The client cert's CN is the broker's notion of the user; making it a
+# superuser lets the same cert both bootstrap the topic/ACLs from user_data
+# and act as the ClickPipes principal.
+sudo rpk redpanda config set redpanda.superusers '["__CLICKPIPE_CN__"]'
+
+sudo systemctl enable redpanda
+sudo systemctl start redpanda
+
+RPK_OPTS="--brokers __BROKER_IP__:9092 -X tls.enabled=true -X tls.ca=/etc/redpanda/tls/ca.crt -X tls.cert=/etc/redpanda/tls/client.crt -X tls.key=/etc/redpanda/tls/client.key"
+
+for i in $(seq 1 60); do
+  if rpk cluster info $RPK_OPTS >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+rpk topic create __TOPIC__ -p 1 $RPK_OPTS || true
+
+# Seed messages. ACLs aren't needed — the client is a superuser.
+for i in 1 2 3; do
+  case $i in
+    1) NAME="Ada Lovelace";     EMAIL="ada@example.com" ;;
+    2) NAME="Grace Hopper";     EMAIL="grace@example.com" ;;
+    3) NAME="Margaret Hamilton";EMAIL="margaret@example.com" ;;
+  esac
+  echo "{\"id\": $i, \"name\": \"$NAME\", \"email\": \"$EMAIL\"}"
+done | rpk topic produce __TOPIC__ $RPK_OPTS
+
+sudo touch /var/lib/redpanda-bootstrap-complete
