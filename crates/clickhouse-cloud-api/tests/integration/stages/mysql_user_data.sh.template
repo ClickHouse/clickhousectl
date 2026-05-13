@@ -1,0 +1,89 @@
+#!/bin/bash
+# MySQL 8.0 bootstrap for the ClickPipes MySQL E2E stage.
+# Installs MySQL, enables ROW-format binlogs (for CDC), enables TLS using a
+# self-signed cert whose SAN matches the EIP that ClickPipes connects to,
+# seeds a database + users table, and grants the ClickPipes user the
+# replication + SELECT privileges it needs.
+set -euxo pipefail
+sleep 5
+
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -y
+sudo apt-get install -y mysql-server
+
+# TLS material — cert SAN is the EIP, matching what ClickPipes connects to.
+sudo mkdir -p /etc/mysql/tls
+echo "__SERVER_CERT_B64__" | base64 -d | sudo tee /etc/mysql/tls/server.crt > /dev/null
+echo "__SERVER_KEY_B64__"  | base64 -d | sudo tee /etc/mysql/tls/server.key > /dev/null
+echo "__CA_PEM_B64__"      | base64 -d | sudo tee /etc/mysql/tls/ca.crt     > /dev/null
+sudo chown -R mysql:mysql /etc/mysql/tls
+sudo chmod 600 /etc/mysql/tls/server.key
+
+# Drop in a server config:
+#   - bind-address 0.0.0.0 so the EIP is reachable from ClickPipes
+#   - ROW-format binlog + FULL row image: CDC requirements
+#   - server_id non-zero: required for binary logging
+#   - TLS paths point at our self-signed bundle
+#   - require_secure_transport=ON so the API can't accidentally fall back to
+#     plaintext (ClickPipes is expected to do TLS regardless)
+sudo tee /etc/mysql/mysql.conf.d/99-clickpipe-e2e.cnf > /dev/null <<'EOF'
+[mysqld]
+bind-address                  = 0.0.0.0
+mysqlx                        = OFF
+server_id                     = 1
+log_bin                       = /var/log/mysql/mysql-bin.log
+binlog_format                 = ROW
+binlog_row_image              = FULL
+binlog_expire_logs_seconds    = 86400
+gtid_mode                     = ON
+enforce_gtid_consistency      = ON
+ssl_ca                        = /etc/mysql/tls/ca.crt
+ssl_cert                      = /etc/mysql/tls/server.crt
+ssl_key                       = /etc/mysql/tls/server.key
+require_secure_transport      = ON
+default_authentication_plugin = mysql_native_password
+EOF
+
+sudo systemctl restart mysql
+sudo systemctl enable mysql
+
+# Wait for MySQL to be up locally before we run admin SQL.
+for i in $(seq 1 60); do
+  if sudo mysqladmin --protocol=socket ping >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+DB_NAME="__DB_NAME__"
+CP_USER="__CLICKPIPE_USER__"
+CP_PASS="__CLICKPIPE_PASS__"
+
+# All admin SQL runs over the unix socket as root — that doesn't require TLS,
+# and root has no password on a fresh Ubuntu MySQL install.
+sudo mysql --protocol=socket <<SQL
+CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;
+USE \`${DB_NAME}\`;
+CREATE TABLE IF NOT EXISTS users (
+  id BIGINT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  email VARCHAR(255) NOT NULL
+);
+INSERT INTO users (id, name, email) VALUES
+  (1, 'Ada Lovelace',      'ada@example.com'),
+  (2, 'Grace Hopper',      'grace@example.com'),
+  (3, 'Margaret Hamilton', 'margaret@example.com')
+ON DUPLICATE KEY UPDATE name = VALUES(name), email = VALUES(email);
+
+-- Create the ClickPipes user. mysql_native_password is the auth plugin that
+-- the ClickPipes MySQL driver speaks; caching_sha2_password (8.0 default)
+-- often requires TLS pre-handshake or a public-key exchange that the pipe
+-- driver doesn't always do.
+CREATE USER IF NOT EXISTS '${CP_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${CP_PASS}';
+ALTER USER '${CP_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${CP_PASS}';
+GRANT SELECT ON \`${DB_NAME}\`.* TO '${CP_USER}'@'%';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '${CP_USER}'@'%';
+FLUSH PRIVILEGES;
+SQL
+
+sudo touch /var/lib/mysql-bootstrap-complete

@@ -6,6 +6,10 @@
 //! Add a new source by writing `stages/<source>.rs` with a
 //! `pub async fn run_<source>_stage(StageCtx) -> StageOutcome` entry point.
 
+// Per-source test binaries only pull in some of the stage re-exports below;
+// the unused ones are intentional, not dead code.
+#![allow(unused_imports)]
+
 use std::time::Duration;
 
 use clickhouse_cloud_api::models::*;
@@ -19,10 +23,9 @@ pub mod mysql;
 pub mod s3;
 
 pub use kafka::{run_kafka_mtls_stage, run_kafka_scram_tls_stage};
+pub use kinesis::run_kinesis_stage;
+pub use mysql::run_mysql_stage;
 pub use s3::run_s3_stage;
-// Re-export new stages here as they land:
-//   pub use kinesis::run_kinesis_stage;
-//   pub use mysql::run_mysql_stage;
 
 // ── Shared stage types ───────────────────────────────────────────────
 

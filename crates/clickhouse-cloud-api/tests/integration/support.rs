@@ -216,6 +216,18 @@ impl TestContext {
     pub fn aws_iam_role_name(&self) -> String {
         format!("clickhousectl-e2e-s3-{}", self.run_id)
     }
+
+    /// Kinesis stream names: 1–128 chars, `[A-Za-z0-9_.-]`. `run_id` is already
+    /// safe but keep this distinct from the S3 role/bucket names for clarity.
+    pub fn aws_kinesis_stream_name(&self) -> String {
+        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+    }
+
+    /// IAM role name dedicated to the Kinesis stage (trust scoped to the
+    /// per-test CHC service principal).
+    pub fn aws_kinesis_iam_role_name(&self) -> String {
+        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+    }
 }
 
 pub fn create_client() -> TestResult<Client> {
@@ -887,6 +899,9 @@ pub struct AwsCleanupRegistry {
     ec2_instances: Vec<String>,
     ec2_security_groups: Vec<String>,
     ec2_elastic_ips: Vec<String>,
+    /// `(region, stream_name)` — the region is required so cleanup can build a
+    /// regional Kinesis client even if the parent SDK config lives elsewhere.
+    kinesis_streams: Vec<(String, String)>,
 }
 
 impl AwsCleanupRegistry {
@@ -914,12 +929,21 @@ impl AwsCleanupRegistry {
         self.ec2_elastic_ips.push(allocation_id.into());
     }
 
+    pub fn register_kinesis_stream(
+        &mut self,
+        region: impl Into<String>,
+        stream_name: impl Into<String>,
+    ) {
+        self.kinesis_streams.push((region.into(), stream_name.into()));
+    }
+
     pub fn merge_from(&mut self, mut other: AwsCleanupRegistry) {
         self.s3_buckets.append(&mut other.s3_buckets);
         self.iam_roles.append(&mut other.iam_roles);
         self.ec2_instances.append(&mut other.ec2_instances);
         self.ec2_security_groups.append(&mut other.ec2_security_groups);
         self.ec2_elastic_ips.append(&mut other.ec2_elastic_ips);
+        self.kinesis_streams.append(&mut other.kinesis_streams);
     }
 
     pub async fn cleanup(
@@ -977,6 +1001,18 @@ impl AwsCleanupRegistry {
                 if !msg.contains("InvalidAllocationID.NotFound") {
                     failures.push(format!("ec2 eip {allocation_id}: {msg}"));
                 }
+            }
+        }
+
+        // Kinesis streams: build a regional client per entry so cleanup works
+        // even if the parent aws_config is in a different region.
+        while let Some((region, stream_name)) = self.kinesis_streams.pop() {
+            let kinesis_config = aws_sdk_kinesis::config::Builder::from(aws_config)
+                .region(aws_sdk_kinesis::config::Region::new(region.clone()))
+                .build();
+            let kinesis = aws_sdk_kinesis::Client::from_conf(kinesis_config);
+            if let Err(error) = delete_kinesis_stream(&kinesis, &stream_name).await {
+                failures.push(format!("kinesis stream {stream_name}: {error}"));
             }
         }
 
@@ -1174,14 +1210,6 @@ pub async fn put_object_bytes(
     Ok(())
 }
 
-/// Create an IAM role whose only purpose is to be assumed by a ClickPipes
-/// service principal. The trust policy targets `service_principal_arn` exactly
-/// — no wildcards — so the role can only be assumed by this one CHC service.
-///
-/// Tags are attached best-effort after creation; the `Integrations_Tester` SSO
-/// role can `CreateRole` but is denied `iam:TagRole`, so tagging at create-time
-/// would fail the whole call. Cleanup is tracked via `AwsCleanupRegistry`, so
-/// missing tags don't affect resource lifecycle.
 // ── TLS Cert Generation (rcgen) ──────────────────────────────────────
 //
 // Self-signed CA + server cert (IP SAN) + client cert/key bundle, used by
@@ -1620,6 +1648,14 @@ async fn terminate_and_wait(
     .await
 }
 
+/// Create an IAM role whose only purpose is to be assumed by a ClickPipes
+/// service principal. The trust policy targets `service_principal_arn` exactly
+/// — no wildcards — so the role can only be assumed by this one CHC service.
+///
+/// Tags are attached best-effort after creation; the `Integrations_Tester` SSO
+/// role can `CreateRole` but is denied `iam:TagRole`, so tagging at create-time
+/// would fail the whole call. Cleanup is tracked via `AwsCleanupRegistry`, so
+/// missing tags don't affect resource lifecycle.
 pub async fn create_clickpipes_iam_role(
     iam: &aws_sdk_iam::Client,
     role_name: &str,
@@ -1668,4 +1704,103 @@ pub async fn create_clickpipes_iam_role(
         .await?;
 
     Ok(role_arn)
+}
+
+// ── Kinesis Helpers ──────────────────────────────────────────────────
+
+/// Create an on-demand Kinesis data stream with a single shard, wait for it to
+/// enter `ACTIVE`, and tag it. Returns the stream's ARN.
+pub async fn create_kinesis_stream(
+    kinesis: &aws_sdk_kinesis::Client,
+    stream_name: &str,
+    tags: &[(String, String)],
+) -> TestResult<String> {
+    use aws_sdk_kinesis::types::{StreamMode, StreamModeDetails};
+
+    kinesis
+        .create_stream()
+        .stream_name(stream_name)
+        .stream_mode_details(
+            StreamModeDetails::builder()
+                .stream_mode(StreamMode::OnDemand)
+                .build()?,
+        )
+        .send()
+        .await?;
+
+    // Wait for ACTIVE — on-demand streams typically reach ACTIVE within ~30s.
+    let arn = poll_until(
+        &format!("kinesis stream {stream_name} ACTIVE"),
+        Duration::from_secs(300),
+        Duration::from_secs(5),
+        || {
+            let kinesis = kinesis.clone();
+            let stream_name = stream_name.to_string();
+            async move {
+                let resp = kinesis
+                    .describe_stream_summary()
+                    .stream_name(&stream_name)
+                    .send()
+                    .await?;
+                let desc = resp
+                    .stream_description_summary()
+                    .ok_or("DescribeStreamSummary returned no summary")?;
+                let status = desc.stream_status();
+                if status.as_str() == "ACTIVE" {
+                    Ok(Some(desc.stream_arn().to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+    )
+    .await?;
+
+    if !tags.is_empty() {
+        let mut req = kinesis.add_tags_to_stream().stream_name(stream_name);
+        for (k, v) in tags {
+            req = req.tags(k, v);
+        }
+        if let Err(e) = req.send().await {
+            eprintln!("  warn: failed to tag kinesis stream (continuing): {e}");
+        }
+    }
+
+    Ok(arn)
+}
+
+/// Put a single JSON-encoded record onto the stream. Partition key is the
+/// caller's choice — any string is fine for a 1-shard stream.
+pub async fn put_kinesis_record(
+    kinesis: &aws_sdk_kinesis::Client,
+    stream_name: &str,
+    partition_key: &str,
+    body: &[u8],
+) -> TestResult<()> {
+    kinesis
+        .put_record()
+        .stream_name(stream_name)
+        .partition_key(partition_key)
+        .data(aws_sdk_kinesis::primitives::Blob::new(body.to_vec()))
+        .send()
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_kinesis_stream(
+    kinesis: &aws_sdk_kinesis::Client,
+    stream_name: &str,
+) -> TestResult<()> {
+    eprintln!("  cleanup: deleting kinesis stream");
+    match kinesis
+        .delete_stream()
+        .stream_name(stream_name)
+        .enforce_consumer_deletion(true)
+        .send()
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("ResourceNotFoundException") => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
