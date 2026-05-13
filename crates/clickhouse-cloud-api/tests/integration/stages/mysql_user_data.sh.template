@@ -26,7 +26,10 @@ sudo chmod 600 /etc/mysql/tls/server.key
 #   - TLS paths point at our self-signed bundle
 #   - require_secure_transport=ON so the API can't accidentally fall back to
 #     plaintext (ClickPipes is expected to do TLS regardless)
-sudo tee /etc/mysql/mysql.conf.d/99-clickpipe-e2e.cnf > /dev/null <<'EOF'
+# File must sort AFTER Ubuntu's default `mysqld.cnf` so its bind-address +
+# server_id wins. Numeric prefixes (e.g. `99-`) sort BEFORE `m` in ASCII, so
+# the default overrides us. `zz-` sorts last.
+sudo tee /etc/mysql/mysql.conf.d/zz-clickpipe-e2e.cnf > /dev/null <<'EOF'
 [mysqld]
 bind-address                  = 0.0.0.0
 mysqlx                        = OFF
@@ -34,6 +37,7 @@ server_id                     = 1
 log_bin                       = /var/log/mysql/mysql-bin.log
 binlog_format                 = ROW
 binlog_row_image              = FULL
+binlog_row_metadata           = FULL
 binlog_expire_logs_seconds    = 86400
 gtid_mode                     = ON
 enforce_gtid_consistency      = ON

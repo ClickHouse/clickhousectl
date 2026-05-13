@@ -51,15 +51,38 @@ impl E2eHarness {
         let aws_cleanup = AwsCleanupRegistry::default();
 
         log_run_header(test_name, &ctx);
-        log_phase("Provision ClickHouse");
-        let ch = provision_clickhouse(
-            &client,
-            &ctx,
-            &mut cleanup,
-            &ctx.clickpipe_e2e_service_name(),
-            ctx.clickpipe_e2e_run_tags(),
-        )
-        .await?;
+
+        // If CLICKHOUSE_CLOUD_TEST_SERVICE_ID is set, attach to an existing
+        // externally-managed service rather than provisioning a new one.
+        // Useful for sharing one CHC service across multiple per-source test
+        // runs without re-paying the ~3 min provision/teardown each time.
+        // Requires CLICKHOUSE_CLOUD_TEST_SERVICE_PASSWORD too. The service is
+        // NOT registered with cleanup — caller is responsible for teardown.
+        let ch = match std::env::var("CLICKHOUSE_CLOUD_TEST_SERVICE_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
+            Some(service_id) => {
+                let password = std::env::var("CLICKHOUSE_CLOUD_TEST_SERVICE_PASSWORD")
+                    .map_err(|_| {
+                        "CLICKHOUSE_CLOUD_TEST_SERVICE_ID set but \
+                         CLICKHOUSE_CLOUD_TEST_SERVICE_PASSWORD missing"
+                    })?;
+                log_phase("Attach to existing ClickHouse service");
+                attach_clickhouse(&client, &ctx.org_id, &service_id, &password).await?
+            }
+            None => {
+                log_phase("Provision ClickHouse");
+                provision_clickhouse(
+                    &client,
+                    &ctx,
+                    &mut cleanup,
+                    &ctx.clickpipe_e2e_service_name(),
+                    ctx.clickpipe_e2e_run_tags(),
+                )
+                .await?
+            }
+        };
 
         Ok(Self {
             client,

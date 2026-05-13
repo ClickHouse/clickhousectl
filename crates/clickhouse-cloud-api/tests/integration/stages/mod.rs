@@ -19,11 +19,13 @@ use crate::integration::support::*;
 
 pub mod kafka;
 pub mod kinesis;
+pub mod mongo;
 pub mod mysql;
 pub mod s3;
 
 pub use kafka::{run_kafka_mtls_stage, run_kafka_scram_tls_stage};
 pub use kinesis::run_kinesis_stage;
+pub use mongo::run_mongo_stage;
 pub use mysql::run_mysql_stage;
 pub use s3::run_s3_stage;
 

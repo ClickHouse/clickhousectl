@@ -821,6 +821,98 @@ pub async fn provision_clickhouse(
     })
 }
 
+/// Attach to an externally-provisioned CHC service rather than creating one.
+/// Used by the harness when `CLICKHOUSE_CLOUD_TEST_SERVICE_ID` is set so
+/// multiple per-source test runs can share a single long-lived service.
+/// Does NOT register the service with cleanup — caller manages teardown.
+pub async fn attach_clickhouse(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    password: &str,
+) -> TestResult<ProvisionedClickHouse> {
+    let resp = client.instance_get(org_id, service_id).await?;
+    let mut svc = resp.result.ok_or("service get returned no result")?;
+
+    // ClickPipes' pipe-create endpoint rejects idle services even though the
+    // service can serve queries from idle. The PATCH /state `start` command
+    // is a no-op for idle services (it's intended for `stopped` services);
+    // a query is what actually triggers the wake. Send `SELECT 1` and poll
+    // until the state field flips to `running` so subsequent pipe-creates
+    // succeed.
+    let state = svc.state.to_string();
+    if state == "idle" {
+        eprintln!("  service is idle — sending wake query");
+        let https = svc
+            .endpoints
+            .iter()
+            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
+            .ok_or("service has no https endpoint to wake")?;
+        let username = https.username.clone().unwrap_or_else(|| "default".to_string());
+        let wake_query = ClickHouseQuery::new(&https.host, https.port as u16, &username, password);
+        let _ = wake_query.run_query("SELECT 1 FORMAT TabSeparated").await?;
+
+        svc = poll_until(
+            "clickhouse wake from idle",
+            Duration::from_secs(300),
+            Duration::from_secs(5),
+            || {
+                let client = client.clone();
+                let org_id = org_id.to_string();
+                let service_id = service_id.to_string();
+                async move {
+                    let resp = client.instance_get(&org_id, &service_id).await?;
+                    let svc = resp.result.ok_or("service get returned no result")?;
+                    if svc.state.to_string() == "running" {
+                        Ok(Some(svc))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            },
+        )
+        .await?;
+    } else if state != "running" {
+        return Err(format!(
+            "service {service_id} is in state {state}, expected running or idle"
+        )
+        .into());
+    }
+    if svc.iam_role.is_empty() {
+        return Err(
+            "attached service has no iamRole populated — cannot establish ClickPipes trust".into(),
+        );
+    }
+
+    let https_endpoint = svc
+        .endpoints
+        .iter()
+        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
+        .ok_or("ClickHouse service has no https endpoint")?
+        .clone();
+    let username = https_endpoint
+        .username
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+
+    let query = ClickHouseQuery::new(
+        &https_endpoint.host,
+        https_endpoint.port as u16,
+        &username,
+        password,
+    );
+
+    eprintln!("  attached to existing clickhouse service <redacted>");
+    Ok(ProvisionedClickHouse {
+        service_id: service_id.to_string(),
+        password: password.to_string(),
+        iam_role: svc.iam_role,
+        https_endpoint,
+        username,
+        query,
+    })
+}
+
 // ── ClickHouse HTTP Query Helper ─────────────────────────────────────
 //
 // Thin wrapper around the service's HTTPS endpoint for verifying that
@@ -1571,6 +1663,54 @@ pub async fn wait_for_redpanda_scram_user(
                     .map(|users| users.iter().any(|u| u.as_str() == Some(&username)))
                     .unwrap_or(false);
                 if found { Ok(Some(())) } else { Ok(None) }
+            }
+        },
+    )
+    .await
+}
+
+/// Stable TCP-port probe: succeed only when the port has been open for
+/// `required_consecutive` checks in a row (5 s apart). Catches "port opens,
+/// then closes briefly during a service restart, then opens again" patterns
+/// that would slip past a single-success probe (e.g. MongoDB's bootstrap
+/// restarts mongod with auth enabled mid-script).
+pub async fn wait_for_stable_tcp_port(
+    host: &str,
+    port: u16,
+    required_consecutive: u32,
+    total_timeout: Duration,
+) -> TestResult<()> {
+    let target = format!("{host}:{port}");
+    let consecutive = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    poll_until(
+        &format!("stable tcp port {host}:{port} ({required_consecutive}× in a row)"),
+        total_timeout,
+        Duration::from_secs(5),
+        || {
+            let target = target.clone();
+            let consecutive = consecutive.clone();
+            async move {
+                match tokio::time::timeout(
+                    Duration::from_secs(3),
+                    tokio::net::TcpStream::connect(&target),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {
+                        let n = consecutive
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
+                        if n >= required_consecutive {
+                            Ok(Some(()))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    _ => {
+                        consecutive.store(0, std::sync::atomic::Ordering::Relaxed);
+                        Ok(None)
+                    }
+                }
             }
         },
     )

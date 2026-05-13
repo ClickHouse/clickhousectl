@@ -15,7 +15,6 @@ use super::{
     sanitize_for_topic, verify_seed_rows,
 };
 
-const MYSQL_TARGET_TABLE: &str = "mysql_users";
 const MYSQL_SOURCE_TABLE: &str = "users";
 const MYSQL_SEED_ROW_COUNT: i64 = 3;
 const MYSQL_USER_DATA: &str = include_str!("mysql_user_data.sh.template");
@@ -24,6 +23,39 @@ const MYSQL_INSTANCE_TYPE: &str = "t3.medium";
 const MYSQL_BOOT_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_MYSQL_CLICKPIPE_READY_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_MYSQL_INGEST_TIMEOUT_SECS: u64 = 600;
+
+/// One MySQL ClickPipe variant — same Basic-auth/TLS shape, different
+/// replication semantics. All three reuse the same MySQL EC2 since the
+/// server config (binlog ROW + GTID on) supports any of them.
+struct MysqlVariant {
+    /// Tag for logs + the destination table name suffix.
+    label: &'static str,
+    target_table: &'static str,
+    replication_mode: ClickPipeMySQLPipeSettingsReplicationmode,
+    /// `None` when `replication_mode == Snapshot` (mechanism is unused).
+    replication_mechanism: Option<ClickPipeMySQLPipeSettingsReplicationmechanism>,
+}
+
+const MYSQL_VARIANTS: &[MysqlVariant] = &[
+    MysqlVariant {
+        label: "cdc-gtid",
+        target_table: "mysql_cdc_gtid_users",
+        replication_mode: ClickPipeMySQLPipeSettingsReplicationmode::Cdc,
+        replication_mechanism: Some(ClickPipeMySQLPipeSettingsReplicationmechanism::GTID),
+    },
+    MysqlVariant {
+        label: "cdc-filepos",
+        target_table: "mysql_cdc_filepos_users",
+        replication_mode: ClickPipeMySQLPipeSettingsReplicationmode::Cdc,
+        replication_mechanism: Some(ClickPipeMySQLPipeSettingsReplicationmechanism::FILE_POS),
+    },
+    MysqlVariant {
+        label: "snapshot",
+        target_table: "mysql_snapshot_users",
+        replication_mode: ClickPipeMySQLPipeSettingsReplicationmode::Snapshot,
+        replication_mechanism: None,
+    },
+];
 
 /// Pre-allocate the EIP, generate the server cert with the EIP as SAN, launch
 /// the EC2 with `user_data`, associate the EIP, and return `(public_ip, certs)`.
@@ -134,9 +166,59 @@ async fn run_inner(
     // SQL (user creation, GRANTs). Give it a buffer.
     tokio::time::sleep(Duration::from_secs(45)).await;
 
-    log_phase("MySQL stage: create ClickPipe");
-    let pipe_request = ClickPipePostRequest {
-        name: format!("mysql-{}", ctx.run_id),
+    // Build + run one pipe per replication variant, all against the same
+    // MySQL server. Each variant lands data in its own target table so the
+    // verifications don't collide.
+    for variant in MYSQL_VARIANTS {
+        log_phase(&format!("MySQL stage ({}): create ClickPipe", variant.label));
+        let pipe_request = build_pipe_request(
+            ctx,
+            &db_name,
+            &host_ip,
+            &clickpipe_user,
+            &clickpipe_pass,
+            &certs.ca_pem,
+            variant,
+        );
+
+        let _ = create_pipe_and_wait_running(
+            client,
+            ctx,
+            ch,
+            cleanup,
+            &pipe_request,
+            clickpipe_ready_timeout,
+        )
+        .await?;
+
+        log_phase(&format!(
+            "MySQL stage ({}): verify rows in ClickHouse",
+            variant.label
+        ));
+        verify_seed_rows(
+            ch,
+            variant.target_table,
+            MYSQL_SEED_ROW_COUNT,
+            ingest_timeout,
+            ctx.poll_interval,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn build_pipe_request(
+    ctx: &TestContext,
+    db_name: &str,
+    host_ip: &str,
+    clickpipe_user: &str,
+    clickpipe_pass: &str,
+    ca_pem: &str,
+    variant: &MysqlVariant,
+) -> ClickPipePostRequest {
+    ClickPipePostRequest {
+        name: format!("mysql-{}-{}", variant.label, ctx.run_id),
         // MySQL is a "database pipe" — only `database` is valid at the top
         // level. The per-mapping `targetTable` carries the destination table.
         destination: ClickPipeMutateDestination {
@@ -148,28 +230,22 @@ async fn run_inner(
                 r#type: Some(ClickPipeMutateMySQLSourceType::Mysql),
                 authentication: Some(ClickPipeMutateMySQLSourceAuthentication::Basic),
                 credentials: Some(PLAIN {
-                    username: clickpipe_user.clone(),
-                    password: clickpipe_pass.clone(),
+                    username: clickpipe_user.to_string(),
+                    password: clickpipe_pass.to_string(),
                 }),
-                host: host_ip.clone(),
+                host: host_ip.to_string(),
                 port: 3306,
-                ca_certificate: Some(certs.ca_pem.clone()),
+                ca_certificate: Some(ca_pem.to_string()),
                 settings: ClickPipeMySQLPipeSettings {
-                    // `cdc` = snapshot + ongoing binlog replication, matching
-                    // the Postgres CDC test's shape.
-                    replication_mode: ClickPipeMySQLPipeSettingsReplicationmode::Cdc,
-                    // GTID is enabled on the source (see user_data); the
-                    // alternative is FILE_POS, which we don't need.
-                    replication_mechanism: Some(
-                        ClickPipeMySQLPipeSettingsReplicationmechanism::GTID,
-                    ),
+                    replication_mode: variant.replication_mode.clone(),
+                    replication_mechanism: variant.replication_mechanism.clone(),
                     ..Default::default()
                 },
                 table_mappings: vec![ClickPipeMySQLPipeTableMapping {
                     // For MySQL, `sourceSchemaName` is the database name.
-                    source_schema_name: db_name.clone(),
+                    source_schema_name: db_name.to_string(),
                     source_table: MYSQL_SOURCE_TABLE.to_string(),
-                    target_table: MYSQL_TARGET_TABLE.to_string(),
+                    target_table: variant.target_table.to_string(),
                     table_engine: Some(
                         ClickPipeMySQLPipeTableMappingTableengine::ReplacingMergeTree,
                     ),
@@ -180,24 +256,5 @@ async fn run_inner(
             ..Default::default()
         },
         ..Default::default()
-    };
-
-    let _ = create_pipe_and_wait_running(
-        client,
-        ctx,
-        ch,
-        cleanup,
-        &pipe_request,
-        clickpipe_ready_timeout,
-    )
-    .await?;
-
-    verify_seed_rows(
-        ch,
-        MYSQL_TARGET_TABLE,
-        MYSQL_SEED_ROW_COUNT,
-        ingest_timeout,
-        ctx.poll_interval,
-    )
-    .await
+    }
 }
