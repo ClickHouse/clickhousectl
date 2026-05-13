@@ -27,6 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "client.rs"
 MODELS_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "models.rs"
+META_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "meta.rs"
 SPEC_COVERAGE_TEST_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "tests" / "spec_coverage_test.rs"
 SNAPSHOT_JSON = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "clickhouse_cloud_openapi.json"
 LIVE_SPEC_URL = os.environ.get(
@@ -122,6 +123,38 @@ def parse_non_openapi_client_methods() -> set[str]:
     if not match:
         return set()
     return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def parse_beta_operations() -> set[str]:
+    """Parse `BETA_OPERATIONS` from meta.rs.
+
+    The list mirrors `x-badges` Beta markers in the OpenAPI spec and is the
+    consumer-facing declaration of which client methods back beta endpoints.
+    """
+    if not META_RS.exists():
+        return set()
+    source = META_RS.read_text()
+    match = re.search(
+        r"pub\s+const\s+BETA_OPERATIONS\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return set()
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def spec_beta_operations(spec: dict) -> set[str]:
+    """Extract snake_case operationIds that are tagged Beta via `x-badges`."""
+    beta = set()
+    for path_item in spec.get("paths", {}).values():
+        for method, op in path_item.items():
+            if method not in HTTP_METHODS or not isinstance(op, dict):
+                continue
+            badges = op.get("x-badges") or []
+            if any(b.get("name") == "Beta" for b in badges):
+                beta.add(camel_to_snake(op["operationId"]))
+    return beta
 
 
 def parse_optionality_exemptions() -> set[tuple[str, str]]:
@@ -464,9 +497,13 @@ def build_issue_body(
     field_mismatches: list[dict] | None = None,
     missing_fields: list[dict] | None = None,
     snapshot_staleness: dict | None = None,
+    beta_status_changes: dict | None = None,
 ) -> str:
     snap = snapshot_staleness or {}
     snap_total = sum(len(snap.get(k, set())) for k in ("added_ops", "removed_ops", "added_schemas", "removed_schemas"))
+
+    beta = beta_status_changes or {}
+    beta_total = len(beta.get("newly_beta", set())) + len(beta.get("graduated", set()))
 
     lines = [
         "The live ClickHouse Cloud OpenAPI spec has operations or schemas that the",
@@ -475,6 +512,7 @@ def build_issue_body(
         f"- **Live spec:** `{LIVE_SPEC_URL}`",
         f"- **Client:** `crates/clickhouse-cloud-api/src/client.rs`",
         f"- **Models:** `crates/clickhouse-cloud-api/src/models.rs`",
+        f"- **Beta metadata:** `crates/clickhouse-cloud-api/src/meta.rs`",
         "",
         "## Summary",
         "",
@@ -485,6 +523,7 @@ def build_issue_body(
         f"| Missing model types | {len(missing_types)} |",
         f"| Missing struct fields | {len(missing_fields or [])} |",
         f"| Field optionality mismatches | {len(field_mismatches or [])} |",
+        f"| Beta status changes | {beta_total} |",
         f"| Stale snapshot changes | {snap_total} |",
         "",
     ]
@@ -600,6 +639,35 @@ def build_issue_body(
             )
         lines.append("")
 
+    # ---- Beta status changes ----
+    if beta_total > 0:
+        lines += [
+            "## Beta Status Changes",
+            "",
+            "The live spec's `x-badges` Beta markers have drifted from",
+            "`BETA_OPERATIONS` in `crates/clickhouse-cloud-api/src/meta.rs`.",
+            "Consumers of the typed client (including this CLI) read that constant",
+            "to render `(Beta)` affordances and gate stability-sensitive code paths.",
+            "",
+        ]
+        if beta.get("newly_beta"):
+            lines.append("**Newly Beta in live spec (add to `BETA_OPERATIONS`):**")
+            for name in sorted(beta["newly_beta"]):
+                lines.append(f"- `{name}`")
+            lines.append("")
+        if beta.get("graduated"):
+            lines.append("**Graduated out of Beta in live spec (remove from `BETA_OPERATIONS`):**")
+            for name in sorted(beta["graduated"]):
+                lines.append(f"- `{name}`")
+            lines.append("")
+        lines += [
+            "Regenerate the list with:",
+            "```bash",
+            "python3 scripts/regenerate-beta-lists.py",
+            "```",
+            "",
+        ]
+
     # ---- Stale snapshot ----
     if snap_total > 0:
         lines += [
@@ -712,8 +780,25 @@ def main():
     snapshot_staleness = check_snapshot_staleness(live_spec)
     snap_total = sum(len(v) for v in snapshot_staleness.values())
 
+    # Compare beta status: spec x-badges vs meta.rs BETA_OPERATIONS
+    declared_beta = parse_beta_operations()
+    live_beta = spec_beta_operations(live_spec)
+    beta_status_changes = {
+        "newly_beta": live_beta - declared_beta,
+        "graduated": declared_beta - live_beta,
+    }
+    beta_total = sum(len(v) for v in beta_status_changes.values())
+
     # Report
-    total = len(missing_ops) + len(extra_op_names) + len(missing_types) + len(field_mismatches) + len(missing_fields) + snap_total
+    total = (
+        len(missing_ops)
+        + len(extra_op_names)
+        + len(missing_types)
+        + len(field_mismatches)
+        + len(missing_fields)
+        + beta_total
+        + snap_total
+    )
 
     print(f"Live spec:       {len(spec_method_names)} operations, {len(spec_type_names)} schemas", file=sys.stderr)
     print(f"client.rs:       {len(client_methods)} pub async fn methods", file=sys.stderr)
@@ -724,13 +809,23 @@ def main():
     print(f"Missing types:   {len(missing_types)}", file=sys.stderr)
     print(f"Missing fields:  {len(missing_fields)}", file=sys.stderr)
     print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
+    print(f"Beta changes:    {beta_total}", file=sys.stderr)
     print(f"Stale snapshot:  {snap_total}", file=sys.stderr)
 
     if total == 0:
         print("\nNo drift. Library fully covers the live spec.", file=sys.stderr)
         return
 
-    body = build_issue_body(missing_ops, extra_op_names, missing_types, live_schemas, field_mismatches, missing_fields, snapshot_staleness)
+    body = build_issue_body(
+        missing_ops,
+        extra_op_names,
+        missing_types,
+        live_schemas,
+        field_mismatches,
+        missing_fields,
+        snapshot_staleness,
+        beta_status_changes,
+    )
 
     if args.dry_run:
         print("\n--- Issue body (dry run) ---\n", file=sys.stderr)
