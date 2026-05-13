@@ -27,6 +27,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "client.rs"
 MODELS_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "src" / "models.rs"
+SPEC_COVERAGE_TEST_RS = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "tests" / "spec_coverage_test.rs"
 SNAPSHOT_JSON = REPO_ROOT / "crates" / "clickhouse-cloud-api" / "clickhouse_cloud_openapi.json"
 LIVE_SPEC_URL = os.environ.get(
     "CLICKHOUSE_OPENAPI_SPEC_URL", "https://api.clickhouse.cloud/v1"
@@ -100,6 +101,48 @@ def client_method_names() -> set[str]:
     """Extract all pub async fn names from client.rs."""
     source = CLIENT_RS.read_text()
     return public_items(source, "pub async fn ")
+
+
+def parse_non_openapi_client_methods() -> set[str]:
+    """Parse `NON_OPENAPI_CLIENT_METHODS` from spec_coverage_test.rs.
+
+    The Rust test exempts these client methods from operation coverage because
+    they intentionally back endpoints outside the control-plane OpenAPI spec
+    (e.g. the `queries.clickhouse.cloud` Query API). Re-use the same list here
+    so the drift report does not re-flag them.
+    """
+    if not SPEC_COVERAGE_TEST_RS.exists():
+        return set()
+    source = SPEC_COVERAGE_TEST_RS.read_text()
+    match = re.search(
+        r"const\s+NON_OPENAPI_CLIENT_METHODS\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return set()
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def parse_optionality_exemptions() -> set[tuple[str, str]]:
+    """Parse `OPTIONALITY_EXEMPTIONS` from spec_coverage_test.rs.
+
+    The Rust test deliberately diverges from the spec for these (struct, field)
+    pairs — the API behaves differently from what the spec declares (e.g.
+    rejecting zero-value defaults the spec implies are required). Re-use the
+    same list so the drift report stays in sync with the test.
+    """
+    if not SPEC_COVERAGE_TEST_RS.exists():
+        return set()
+    source = SPEC_COVERAGE_TEST_RS.read_text()
+    match = re.search(
+        r"const\s+OPTIONALITY_EXEMPTIONS\s*:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return set()
+    return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
 
 
 def model_type_names() -> set[str]:
@@ -255,11 +298,13 @@ def parse_model_fields(source: str) -> dict[str, dict[str, bool]]:
 def check_field_optionality(
     spec: dict,
     model_fields: dict[str, dict[str, bool]],
+    exemptions: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """Compare field optionality between spec and models.rs.
 
     Returns list of mismatches: [{schema, field, expected, actual}]
     """
+    exemptions = exemptions or set()
     mismatches = []
     schemas = spec.get("components", {}).get("schemas", {})
 
@@ -277,6 +322,9 @@ def check_field_optionality(
 
         for prop_name in props:
             if prop_name not in fields:
+                continue
+
+            if (pascal_name, prop_name) in exemptions:
                 continue
 
             is_required = prop_name in required_fields
@@ -640,8 +688,9 @@ def main():
     live_ops = spec_operations(live_spec)
     spec_method_names = set(live_ops.keys())
 
+    non_openapi_methods = parse_non_openapi_client_methods()
     missing_op_names = spec_method_names - client_methods
-    extra_op_names = client_methods - spec_method_names
+    extra_op_names = client_methods - spec_method_names - non_openapi_methods
 
     missing_ops = {name: live_ops[name] for name in missing_op_names}
 
@@ -655,7 +704,8 @@ def main():
     # Compare fields
     models_source = MODELS_RS.read_text()
     model_fields = parse_model_fields(models_source)
-    field_mismatches = check_field_optionality(live_spec, model_fields)
+    optionality_exemptions = parse_optionality_exemptions()
+    field_mismatches = check_field_optionality(live_spec, model_fields, optionality_exemptions)
     missing_fields = check_missing_fields(live_spec, model_fields)
 
     # Check committed snapshot staleness

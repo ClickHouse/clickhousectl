@@ -460,12 +460,25 @@ fn assert_field_coverage(spec: &Value) {
     );
 }
 
+/// Schemas where the spec's `required` array lists only newly-added fields;
+/// older fields on the same schema still rely on the description heuristic.
+/// For these we union `required[]` with the description heuristic instead of
+/// treating `required[]` as exclusive.
+///
+/// Remove an entry once the spec is corrected upstream. `PARTIAL_REQUIRED_SCHEMAS`
+/// is mirrored in `scripts/resolve-field-requirements.py`.
+const PARTIAL_REQUIRED_SCHEMAS: &[&str] = &[
+    "Service",
+    "ServiceScalingPatchResponse",
+];
+
 /// Determine which fields in a schema are required AND non-nullable.
 ///
 /// Resolution strategy:
-/// 1. PATCH request schemas (name contains "Patch" and ends with "Request") → all optional
-/// 2. If schema has a `required` array → use it
-/// 3. Otherwise → fields whose description does NOT start with "Optional" are required
+/// 1. PATCH request schemas (name contains "Patch" and ends with "Request") → all optional.
+/// 2. Schemas in `PARTIAL_REQUIRED_SCHEMAS` → required = `required[]` ∪ description heuristic.
+/// 3. Schemas with a `required` array → use it.
+/// 4. Otherwise → fields whose description does NOT start with "Optional" are required.
 ///
 /// Nullable fields (type: ["string", "null"] or oneOf/anyOf with null) are excluded.
 fn resolve_required_fields<'a>(schema_name: &str, schema: &'a Value) -> BTreeSet<&'a str> {
@@ -479,10 +492,24 @@ fn resolve_required_fields<'a>(schema_name: &str, schema: &'a Value) -> BTreeSet
         return BTreeSet::new();
     }
 
-    let required_names: BTreeSet<&str> = if let Some(required) = schema.get("required").and_then(Value::as_array) {
+    let is_partial = PARTIAL_REQUIRED_SCHEMAS.contains(&schema_name);
+
+    let required_names: BTreeSet<&str> = if is_partial {
+        let mut names: BTreeSet<&str> = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        for (name, prop) in props {
+            let desc = prop.get("description").and_then(Value::as_str).unwrap_or("");
+            if !desc.starts_with("Optional") {
+                names.insert(name.as_str());
+            }
+        }
+        names
+    } else if let Some(required) = schema.get("required").and_then(Value::as_array) {
         required.iter().filter_map(Value::as_str).collect()
     } else {
-        // Description heuristic for legacy schemas
         props
             .iter()
             .filter(|(_, prop)| {
