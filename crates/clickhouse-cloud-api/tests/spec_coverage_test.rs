@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
+use clickhouse_cloud_api::BETA_OPERATIONS;
 use serde_json::Value;
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -629,4 +630,65 @@ fn extract_serde_rename(serde_line: &str) -> Option<&str> {
     let value_start = start + "rename = \"".len();
     let end = serde_line[value_start..].find('"')? + value_start;
     Some(&serde_line[value_start..end])
+}
+
+// ---------------------------------------------------------------------------
+// Beta status (x-badges) coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn beta_operations_match_spec() {
+    assert_beta_operations_match(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn beta_operations_match_live_spec() {
+    let spec = load_live_spec().await;
+    assert_beta_operations_match(&spec);
+}
+
+fn assert_beta_operations_match(spec: &Value) {
+    let spec_beta: BTreeSet<String> = spec_beta_operation_ids(spec);
+    let declared: BTreeSet<String> =
+        BETA_OPERATIONS.iter().map(|s| (*s).to_string()).collect();
+
+    let missing: Vec<_> = spec_beta.difference(&declared).cloned().collect();
+    let extra: Vec<_> = declared.difference(&spec_beta).cloned().collect();
+
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "BETA_OPERATIONS drifted from the OpenAPI spec.\n\
+         New beta ops in spec, missing from meta.rs: {:?}\n\
+         No longer beta in spec, still in meta.rs: {:?}\n\
+         Regenerate with: python3 scripts/regenerate-beta-lists.py",
+        missing,
+        extra,
+    );
+}
+
+fn spec_beta_operation_ids(spec: &Value) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for path_item in spec["paths"].as_object().unwrap().values() {
+        for (method, operation) in path_item.as_object().unwrap() {
+            if !matches!(
+                method.as_str(),
+                "get" | "put" | "post" | "delete" | "patch" | "options" | "head" | "trace"
+            ) {
+                continue;
+            }
+            let Some(badges) = operation.get("x-badges").and_then(Value::as_array) else {
+                continue;
+            };
+            let is_beta = badges
+                .iter()
+                .any(|b| b.get("name").and_then(Value::as_str) == Some("Beta"));
+            if is_beta {
+                ids.insert(camel_to_snake(
+                    operation["operationId"].as_str().unwrap(),
+                ));
+            }
+        }
+    }
+    ids
 }
