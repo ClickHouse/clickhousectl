@@ -176,7 +176,7 @@ CONTEXT FOR AGENTS:
         command: ActivityCommands,
     },
 
-    /// Manage ClickHouse Cloud Postgres services (beta)
+    /// Manage ClickHouse Cloud Postgres services (Beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Manage ClickHouse Cloud managed Postgres services. Subcommands cover CRUD, lifecycle
@@ -1631,5 +1631,39 @@ mod tests {
         assert_write(&["clickhousectl", "cloud", "postgres", "restart", "pg-1"], true);
         assert_write(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"], true);
         assert_write(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"], true);
+    }
+
+    /// The `(Beta)` suffix on the Postgres subcommand must agree with the
+    /// library's spec-derived beta metadata. If postgres ever graduates, the
+    /// daily drift check flags it; we then drop the suffix and this test still
+    /// passes (both sides become false).
+    #[test]
+    fn postgres_label_matches_library_beta_status() {
+        use clap::CommandFactory;
+
+        let cmd = Cli::command();
+        let cloud = cmd
+            .find_subcommand("cloud")
+            .expect("cloud subcommand present");
+        let postgres = cloud
+            .find_subcommand("postgres")
+            .expect("postgres subcommand present");
+        let about = postgres
+            .get_about()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        let label_says_beta = about.contains("(Beta)");
+        let spec_says_beta =
+            clickhouse_cloud_api::is_beta_operation("postgres_service_get_list");
+
+        assert_eq!(
+            label_says_beta, spec_says_beta,
+            "Postgres `--help` says Beta={} but the OpenAPI spec (via meta.rs) \
+             says Beta={}. Update the `Postgres` doc comment in cli.rs or \
+             regenerate BETA_OPERATIONS with `python3 scripts/regenerate-beta-lists.py`. \
+             Current `about`: {about:?}",
+            label_says_beta, spec_says_beta,
+        );
     }
 }
