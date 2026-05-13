@@ -1604,8 +1604,8 @@ pub async fn clickpipe_create_postgres(
     let mappings = parse_db_table_mappings(&args.table_mappings)?;
 
     let ca_cert_contents = match args.ca_certificate.as_deref() {
-        Some(path) => std::fs::read_to_string(path)?,
-        None => String::new(),
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
     };
 
     let pg_mappings = mappings
@@ -1628,8 +1628,8 @@ pub async fn clickpipe_create_postgres(
         port: i64::from(args.port),
         database: args.pg_database.clone(),
         authentication: parse_enum(&args.auth)?,
-        iam_role: args.iam_role.clone().unwrap_or_default(),
-        tls_host: args.tls_host.clone().unwrap_or_default(),
+        iam_role: args.iam_role.clone(),
+        tls_host: args.tls_host.clone(),
         ca_certificate: ca_cert_contents,
         settings: ClickPipePostgresPipeSettings {
             replication_mode: parse_enum(&args.replication_mode)?,

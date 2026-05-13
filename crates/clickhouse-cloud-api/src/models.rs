@@ -7543,24 +7543,32 @@ pub struct ClickPipeMutateMySQLSource {
 pub struct ClickPipeMutatePostgresSource {
     #[serde(default)]
     pub authentication: ClickPipeMutatePostgresSourceAuthentication,
-    #[serde(rename = "caCertificate", default)]
-    pub ca_certificate: String,
+    // caCertificate is `undefinedOr(isValidPEMCertificate)` server-side — sending
+    // `""` (the bare-String default) fails PEM validation. Modeled as
+    // `Option<String>` so callers can omit it.
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none", default)]
+    pub ca_certificate: Option<String>,
     #[serde(default)]
     pub credentials: PLAIN,
     #[serde(default)]
     pub database: String,
     #[serde(default)]
     pub host: String,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
+    // iamRole only applies to RDS-style Postgres + IAM_ROLE auth. Spec marks
+    // it required but the server rejects "" for Basic-auth Postgres. Modeled
+    // as Option<String> so callers can omit it; same pattern as ca_certificate.
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    pub iam_role: Option<String>,
     #[serde(default)]
     pub port: i64,
     #[serde(default)]
     pub settings: ClickPipePostgresPipeSettings,
     #[serde(rename = "tableMappings", default)]
     pub table_mappings: Vec<ClickPipePostgresPipeTableMapping>,
-    #[serde(rename = "tlsHost", default)]
-    pub tls_host: String,
+    // tlsHost is only set when the broker cert SAN doesn't match `host`.
+    // Optional in practice; server rejects "" with PEM-style validation.
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    pub tls_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub r#type: Option<ClickPipeMutatePostgresSourceType>,
 }

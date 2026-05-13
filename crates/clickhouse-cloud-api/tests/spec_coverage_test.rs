@@ -334,6 +334,18 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipeMutateDestination", "table"),
     ("ClickPipeMutateDestination", "managedTable"),
     ("ClickPipeMutateDestination", "tableDefinition"),
+    // caCertificate is `undefinedOr(isValidPEMCertificate)` server-side, so
+    // sending "" fails PEM validation. Modeled as Option<String> so callers
+    // omit it when the user doesn't pass --ca-certificate.
+    ("ClickPipeMutatePostgresSource", "caCertificate"),
+    // iamRole only applies to RDS-style Postgres with IAM_ROLE auth — for
+    // Basic-auth Postgres the API rejects an empty string. Spec heuristic
+    // marks required because the schema lacks a `required` array; modeled
+    // as Option<String> so non-RDS callers omit it.
+    ("ClickPipeMutatePostgresSource", "iamRole"),
+    // tlsHost is only used when the broker cert SAN doesn't match `host`.
+    // Optional in practice; API rejects empty defaults.
+    ("ClickPipeMutatePostgresSource", "tlsHost"),
 ];
 
 fn assert_field_optionality(spec: &Value) {
