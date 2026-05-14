@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! S3 (object storage) ClickPipe stage: per-test bucket + fixture + IAM role.
 
 use std::time::Duration;
@@ -5,7 +7,7 @@ use std::time::Duration;
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 use super::{
     StageCtx, StageOutcome, create_pipe_and_wait_running, duration_from_env_or,

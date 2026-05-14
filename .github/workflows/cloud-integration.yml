@@ -69,7 +69,7 @@ jobs:
         run: cargo test -p clickhouse-cloud-api --test integration_postgres_test -- --ignored --nocapture
 
       - name: Run ClickPipe Postgres CDC integration test
-        run: cargo test -p clickhouse-cloud-api --test integration_clickpipe_postgres_cdc_test -- --ignored --nocapture
+        run: cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cdc_test -- --ignored --nocapture
 
       # ClickPipe create smoke tests run against a long-lived ClickHouse Cloud
       # service to avoid the multi-minute service-create cost. Provision a
@@ -78,4 +78,4 @@ jobs:
       # is unset so first-time setup doesn't block PRs.
       - name: Run ClickPipe create smoke suite
         if: ${{ vars.CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID != '' }}
-        run: cargo test -p clickhouse-cloud-api --test integration_clickpipe_smoke_test -- --ignored --nocapture
+        run: cargo test -p clickhouse-cloud-api --test clickpipe_smoke_test -- --ignored --nocapture

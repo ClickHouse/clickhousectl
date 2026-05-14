@@ -11,13 +11,15 @@
 //! read from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`. Provision it once
 //! in the CI workflow (or locally) before running the suite.
 
-mod integration;
+#[path = "../common/mod.rs"]
+mod common;
+mod support;
 
 use std::env;
 
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::{Client, Error};
-use integration::support::*;
+use support::*;
 
 const SERVICE_ID_ENV: &str = "CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID";
 

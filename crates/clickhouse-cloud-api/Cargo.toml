@@ -32,3 +32,42 @@ tokio-postgres = "0.7.17"
 tokio-postgres-rustls = "0.13.0"
 uuid = "1"
 wiremock = "0.6"
+
+# ClickPipes E2E test binaries live under tests/clickpipes/. Cargo only
+# auto-discovers .rs files directly under tests/, so each one is declared here.
+
+[[test]]
+name = "clickpipe_e2e_test"
+path = "tests/clickpipes/e2e_test.rs"
+
+[[test]]
+name = "clickpipe_kafka_test"
+path = "tests/clickpipes/kafka_test.rs"
+
+[[test]]
+name = "clickpipe_kinesis_test"
+path = "tests/clickpipes/kinesis_test.rs"
+
+[[test]]
+name = "clickpipe_mongo_test"
+path = "tests/clickpipes/mongo_test.rs"
+
+[[test]]
+name = "clickpipe_mysql_test"
+path = "tests/clickpipes/mysql_test.rs"
+
+[[test]]
+name = "clickpipe_postgres_cdc_test"
+path = "tests/clickpipes/postgres_cdc_test.rs"
+
+[[test]]
+name = "clickpipe_postgres_ec2_test"
+path = "tests/clickpipes/postgres_ec2_test.rs"
+
+[[test]]
+name = "clickpipe_s3_test"
+path = "tests/clickpipes/s3_test.rs"
+
+[[test]]
+name = "clickpipe_smoke_test"
+path = "tests/clickpipes/smoke_test.rs"

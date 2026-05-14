@@ -8,14 +8,14 @@
 
 // Per-source test binaries only pull in some of the stage re-exports below;
 // the unused ones are intentional, not dead code.
-#![allow(unused_imports)]
+#![allow(dead_code, unused_imports)]
 
 use std::time::Duration;
 
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 pub mod kafka;
 pub mod kinesis;

@@ -1,15 +1,17 @@
+#![allow(dead_code)]
+
 //! Shared harness for ClickPipes E2E test binaries.
 //!
-//! Every test binary (`integration_clickpipe_e2e_test`, `..._s3_test`,
-//! `..._mysql_test`, etc.) follows the same lifecycle: load env, build AWS
-//! clients, provision one ClickHouse Cloud service, run one or more source
-//! stages against it, then tear everything down. [`E2eHarness`] holds the
-//! boilerplate so each per-source test file is ~15 lines.
+//! Every test binary (`clickpipe_e2e_test`, `clickpipe_s3_test`,
+//! `clickpipe_mysql_test`, etc.) follows the same lifecycle: load env, build
+//! AWS clients, provision one ClickHouse Cloud service, run one or more
+//! source stages against it, then tear everything down. [`E2eHarness`] holds
+//! the boilerplate so each per-source test file is ~15 lines.
 
 use std::time::Duration;
 
-use crate::integration::stages::{StageCtx, StageOutcome};
-use crate::integration::support::*;
+use crate::stages::{StageCtx, StageOutcome};
+use crate::support::*;
 
 const DEFAULT_AWS_REGION: &str = "eu-west-1";
 

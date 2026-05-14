@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Kafka (Redpanda) ClickPipe stages: SCRAM-SHA-512 over SASL_SSL, and
 //! MUTUAL_TLS. Each variant launches its own per-test EC2 with Redpanda
 //! configured via `user_data`, a pre-allocated EIP so server certs match the
@@ -8,7 +10,7 @@ use std::time::Duration;
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 use super::{
     StageCtx, StageOutcome, b64, create_pipe_and_wait_running, duration_from_env_or,

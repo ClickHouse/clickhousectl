@@ -1,11 +1,13 @@
-mod integration;
+#[path = "../common/mod.rs"]
+mod common;
+mod support;
 
 use std::str::FromStr;
 use std::time::Duration;
 
 use clickhouse_cloud_api::models::*;
-use integration::support::*;
 use rustls::RootCertStore;
+use support::*;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 const SOURCE_SCHEMA: &str = "public";

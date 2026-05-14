@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Kinesis ClickPipe stage: per-test stream + IAM_ROLE auth.
 //!
 //! Mirrors the S3 stage's IAM_ROLE pattern — the trust policy is scoped to
@@ -9,7 +11,7 @@ use std::time::Duration;
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 use super::{
     StageCtx, StageOutcome, create_pipe_and_wait_running, duration_from_env_or,

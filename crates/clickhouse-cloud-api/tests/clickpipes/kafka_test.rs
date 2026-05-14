@@ -1,11 +1,15 @@
 //! Kafka (Redpanda) ClickPipe E2E — own CHC service, both auth variants
 //! (SCRAM-SHA-512 + TLS, MUTUAL_TLS) on one service.
 
-mod integration;
+#[path = "../common/mod.rs"]
+mod common;
+mod driver;
+mod stages;
+mod support;
 
-use integration::driver::*;
-use integration::stages::*;
-use integration::support::*;
+use driver::*;
+use stages::*;
+use support::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live ClickHouse Cloud + AWS credentials and provisions real resources"]

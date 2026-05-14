@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Postgres-on-EC2 ClickPipe stage: per-test EC2 + Basic auth + CDC.
 //!
 //! Parallel to the MySQL and Mongo stages — launches a t3.medium with
@@ -6,15 +8,15 @@
 //! / `--replication-slot-name`. That's Al's `4f6c2ba` Bug 1 scenario: a
 //! handler regression that sends `""` for those fields would re-trigger
 //! `replicationSlotName: ''` server validation here. Distinct from
-//! `integration_clickpipe_postgres_cdc_test.rs`, which exercises Al's flow
-//! against CHC-managed Postgres via the library, not the CLI.
+//! `clickpipes/postgres_cdc_test.rs`, which exercises Al's flow against
+//! CHC-managed Postgres via the library, not the CLI.
 
 use std::time::Duration;
 
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 use super::{
     StageCtx, StageOutcome, b64, create_pipe_and_wait_running, duration_from_env_or, random_token,

@@ -1,7 +1,7 @@
-mod integration;
+mod common;
 
 use clickhouse_cloud_api::models::*;
-use integration::support::*;
+use common::support::*;
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! MySQL ClickPipe stage: per-test EC2 + Basic auth + CDC (snapshot + binlog
 //! replication). Closest in shape to the Kafka stages — an EC2 in the test
 //! AWS account hosts MySQL 8.0, with TLS terminated against a self-signed cert
@@ -8,7 +10,7 @@ use std::time::Duration;
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 use super::{
     StageCtx, StageOutcome, b64, create_pipe_and_wait_running, duration_from_env_or, random_token,

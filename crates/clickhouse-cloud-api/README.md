@@ -74,7 +74,21 @@ cargo test --test integration_test -- --ignored --nocapture           # ClickHou
 cargo test --test integration_postgres_test -- --ignored --nocapture  # Postgres service CRUD
 ```
 
-Both require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow.
+ClickPipes E2E binaries live under `tests/clickpipes/` and are declared as named `[[test]]` entries in `Cargo.toml`. Each per-source binary provisions its own ClickHouse Cloud service and exercises one source; `clickpipe_e2e_test` runs every stage in parallel against a single shared service:
+
+```bash
+cargo test --test clickpipe_e2e_test -- --ignored --nocapture            # all sources, one CHC service
+cargo test --test clickpipe_s3_test -- --ignored --nocapture             # per-source: S3
+cargo test --test clickpipe_kafka_test -- --ignored --nocapture          # per-source: Kafka (Redpanda)
+cargo test --test clickpipe_kinesis_test -- --ignored --nocapture        # per-source: Kinesis
+cargo test --test clickpipe_mongo_test -- --ignored --nocapture          # per-source: MongoDB
+cargo test --test clickpipe_mysql_test -- --ignored --nocapture          # per-source: MySQL
+cargo test --test clickpipe_postgres_ec2_test -- --ignored --nocapture   # per-source: Postgres-on-EC2
+cargo test --test clickpipe_postgres_cdc_test -- --ignored --nocapture   # CHC-managed Postgres CDC
+cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # create-only smoke against a shared service
+```
+
+All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
 
 The `spec_coverage_test` suite checks three things against the checked-in spec:
 

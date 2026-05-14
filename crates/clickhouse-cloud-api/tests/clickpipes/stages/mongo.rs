@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! MongoDB ClickPipe stage: per-test EC2 + Basic auth + CDC (snapshot + change
 //! streams). Mirrors `mysql.rs` — an EC2 in the test AWS account hosts a
 //! single-node MongoDB replica set, with TLS terminated against a self-signed
@@ -12,7 +14,7 @@ use std::time::Duration;
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
-use crate::integration::support::*;
+use crate::support::*;
 
 use super::{
     StageCtx, StageOutcome, b64, create_pipe_and_wait_running, duration_from_env_or, random_token,

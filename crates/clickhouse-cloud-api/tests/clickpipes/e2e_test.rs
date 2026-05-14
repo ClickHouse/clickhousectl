@@ -5,15 +5,19 @@
 //! bad source is recorded but doesn't abort the rest of the run.
 //!
 //! For debugging a single source in isolation, use the per-source test
-//! binaries (`integration_clickpipe_s3_test`, `..._kafka_test`,
-//! `..._kinesis_test`, `..._mysql_test`). They use the same harness but with
-//! their own freshly-provisioned CHC service.
+//! binaries (`clickpipe_s3_test`, `clickpipe_kafka_test`,
+//! `clickpipe_kinesis_test`, `clickpipe_mysql_test`). They use the same
+//! harness but with their own freshly-provisioned CHC service.
 
-mod integration;
+#[path = "../common/mod.rs"]
+mod common;
+mod driver;
+mod stages;
+mod support;
 
-use integration::driver::*;
-use integration::stages::*;
-use integration::support::*;
+use driver::*;
+use stages::*;
+use support::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live ClickHouse Cloud + AWS credentials and provisions real resources"]

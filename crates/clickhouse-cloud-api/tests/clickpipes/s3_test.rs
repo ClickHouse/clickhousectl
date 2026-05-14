@@ -1,13 +1,17 @@
 //! S3 ClickPipe E2E — own CHC service, single stage.
 //!
 //! For amortised "run everything against one service" use the all-in-one
-//! driver: `cargo test --test integration_clickpipe_e2e_test`.
+//! driver: `cargo test --test clickpipe_e2e_test`.
 
-mod integration;
+#[path = "../common/mod.rs"]
+mod common;
+mod driver;
+mod stages;
+mod support;
 
-use integration::driver::*;
-use integration::stages::*;
-use integration::support::*;
+use driver::*;
+use stages::*;
+use support::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires live ClickHouse Cloud + AWS credentials and provisions real resources"]
