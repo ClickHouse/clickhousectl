@@ -1149,6 +1149,9 @@ pub async fn service_scale(
     let request = ServiceReplicaScalingPatchRequest {
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
+        min_replicas: None,
+        max_replicas: None,
+        replica_memory_gb: None,
         num_replicas: opts.num_replicas.map(f64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
