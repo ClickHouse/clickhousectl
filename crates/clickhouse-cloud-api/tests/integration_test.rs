@@ -239,10 +239,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // Exercise the path that `cloud service query` uses: create a
         // dedicated API key, bind it to the service's query endpoint with
         // role `sql_console_admin`, run `SELECT 1` over HTTP via
-        // queries.clickhouse.cloud, and assert the result. This is the
-        // canonical query path; `cloud service client` (which requires a
-        // local `clickhouse` binary + service password) is on a deprecation
-        // track.
+        // queries.clickhouse.cloud, and assert the result.
 
         log_phase("Query API Endpoint");
 

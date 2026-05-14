@@ -7,6 +7,11 @@ OpenAPI spec. Handles two conventions:
 2. Schemas without `required` — optional fields have descriptions starting
    with "Optional" (legacy GA endpoints)
 
+A subset of schemas (PARTIAL_REQUIRED_SCHEMAS) have a `required` array that
+only lists newly-added fields; older fields on the same schema still rely on
+the description heuristic. For those, the description heuristic also applies
+as a fallback for fields absent from `required[]`.
+
 PATCH request schemas are always treated as all-optional (partial update
 semantics).
 
@@ -47,13 +52,28 @@ def is_patch_schema(schema_name: str) -> bool:
     return "Patch" in schema_name and schema_name.endswith("Request")
 
 
+# Schemas where the spec's `required` array lists only newly-added fields;
+# older fields on the same schema still rely on the description heuristic.
+# Adding a schema here makes its resolution use the union of `required[]`
+# and the description heuristic instead of treating `required[]` as exclusive.
+#
+# Remove an entry once the spec is corrected upstream (the `required[]` array
+# becomes comprehensive for the schema). The Rust test mirrors this list in
+# `tests/spec_coverage_test.rs` and asserts on stale entries.
+PARTIAL_REQUIRED_SCHEMAS: set[str] = {
+    "Service",
+    "ServiceScalingPatchResponse",
+}
+
+
 def resolve_required_fields(schema_name: str, schema: dict) -> tuple[set[str], str]:
     """Returns (set of required non-nullable field names, resolution method).
 
     Resolution strategy:
-    1. PATCH request schemas -> all fields optional
-    2. If schema has a 'required' array -> use it (standard OpenAPI)
-    3. Otherwise -> field is required if description does NOT start with 'Optional'
+    1. PATCH request schemas -> all fields optional.
+    2. If schema is in PARTIAL_REQUIRED_SCHEMAS -> required = (required[] ∪ description heuristic).
+    3. If schema has a `required` array -> use it (standard OpenAPI).
+    4. Otherwise -> field is required if description does NOT start with "Optional".
 
     In all cases, nullable fields are excluded from the required set.
     """
@@ -62,13 +82,20 @@ def resolve_required_fields(schema_name: str, schema: dict) -> tuple[set[str], s
     if is_patch_schema(schema_name):
         return set(), "patch_schema"
 
-    if "required" in schema:
+    if schema_name in PARTIAL_REQUIRED_SCHEMAS:
+        required_names = set(schema.get("required", []))
+        for name, field in props.items():
+            desc = field.get("description", "") or ""
+            if not desc.startswith("Optional"):
+                required_names.add(name)
+        method = "partial_required"
+    elif "required" in schema:
         required_names = set(schema["required"])
         method = "required_array"
     else:
         required_names = set()
         for name, field in props.items():
-            desc = field.get("description", "")
+            desc = field.get("description", "") or ""
             if not desc.startswith("Optional"):
                 required_names.add(name)
         method = "description_heuristic"
