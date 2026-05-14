@@ -143,6 +143,40 @@ clickhousectl local server dotenv --user default --password secret --database my
 
 **Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.
 
+#### Local Postgres (Docker-backed)
+
+When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
+
+```bash
+# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 16, 17, 18 (and any sub-tag like 16-alpine, 17.0, 18-bookworm).
+clickhousectl local install postgres@16
+
+# Start a Postgres instance (defaults: postgres:18, port 5432, user "postgres", db "postgres")
+clickhousectl local postgres start
+clickhousectl local postgres start --name dev --version 16 --port 5433
+clickhousectl local postgres start --user app --password s3cret --database myapp
+clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
+
+# List everything (ClickHouse + Postgres are merged in `server list`)
+clickhousectl local server list
+
+# Connect with psql (uses host psql if installed; otherwise falls back to docker exec)
+clickhousectl local postgres client --name dev
+clickhousectl local postgres client --name dev --query "SELECT 1"
+
+# Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env
+clickhousectl local postgres dotenv --name dev
+
+# Stop / remove. Pass --version when more than one major shares a name.
+clickhousectl local postgres stop dev
+clickhousectl local postgres stop dev --version 16        # disambiguate
+clickhousectl local postgres remove dev
+```
+
+`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, you'll be asked to pick. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory.
+
+Containers are tagged with `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`, `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and `created_by=clickhousectl_<version>` labels. `server list` recovers orphaned containers belonging to the current project via these labels, so deleting `.clickhouse/servers/<name>-pg<major>.json` is non-destructive — the next list/start rediscovers it.
+
 #### Project-local data directory
 
 All server data lives inside `.clickhouse/` in your project directory:
@@ -290,6 +324,11 @@ CLICKHOUSE_PASSWORD=secret clickhousectl cloud service client --name my-service 
 # Use a local client version instead of auto-downloading the matching one
 clickhousectl cloud service client --name my-service --allow-mismatched-client-version
 
+# Run SQL over HTTP via the Query API (no local clickhouse binary needed)
+clickhousectl cloud service query --name my-service --query "SELECT 1"
+clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
+echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
@@ -318,7 +357,7 @@ clickhousectl cloud service reset-password <service-id> \
   --new-password-hash <base64-sha256-hash> \
   --new-double-sha1-hash <mysql-double-sha1-hash>
 
-# Query endpoint management
+# Query endpoint management (manual — for custom roles or sharing keys with other tools)
 clickhousectl cloud service query-endpoint get <service-id>
 clickhousectl cloud service query-endpoint create <service-id> \
   --role admin \
@@ -372,6 +411,19 @@ clickhousectl cloud service delete <service-id> --force
 | `--enable-endpoint` / `--disable-endpoint` | Toggle GA service endpoints (currently `mysql`) |
 | `--private-preview-terms-checked` | Accept private preview terms when required |
 | `--enable-core-dumps` | Enable or disable service core dump collection |
+| `--no-enable-query` | Skip auto-provisioning of the Query API endpoint + per-service key |
+
+#### Query API auto-provisioning
+
+By default, `cloud service create` provisions a Query API endpoint for the new service and creates a dedicated API key bound to it. The key (`keyId`, `keySecret`, and `endpointId`) is stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. `cloud service query` then runs SQL over HTTP using that key — no `clickhouse` binary and no service password required. The key is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org.
+
+For existing services without a stored key, `cloud service query` provisions one lazily on first use. Pass `--no-auto-enable` to fail instead, or `--no-enable-query` on `service create` to skip the create-time hook.
+
+Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. `cloud service delete` removes the stored key from `credentials.json`.
+
+`cloud service query` is the canonical way to run SQL against a cloud service; `cloud service client` (which downloads a matching `clickhouse` binary and connects via the native protocol) is on a deprecation path.
+
+Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override the Query API host (defaults to `https://queries.clickhouse.cloud`).
 
 ### Postgres (beta)
 

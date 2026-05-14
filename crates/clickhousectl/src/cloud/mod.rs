@@ -4,6 +4,7 @@ pub mod client;
 pub mod commands;
 pub mod credentials;
 pub mod postgres;
+pub mod service_query;
 pub mod types;
 
 #[cfg(test)]

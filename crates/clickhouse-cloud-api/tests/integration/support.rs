@@ -355,6 +355,7 @@ pub struct CleanupRegistry {
     /// the service is NOT being deleted (attach mode); when the service is
     /// being deleted, table drops are redundant but harmless.
     tables: Vec<String>,
+    api_key_ids: Vec<String>,
 }
 
 impl CleanupRegistry {
@@ -399,11 +400,21 @@ impl CleanupRegistry {
         self.postgres_ids.append(&mut other.postgres_ids);
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
+        self.api_key_ids.append(&mut other.api_key_ids);
     }
 
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
         self.clickpipes
             .retain(|(svc, pipe)| !(svc == service_id && pipe == clickpipe_id));
+    }
+
+    pub fn register_api_key(&mut self, key_id: impl Into<String>) {
+        self.api_key_ids.push(key_id.into());
+    }
+
+    pub fn unregister_api_key(&mut self, key_id: &str) {
+        self.api_key_ids
+            .retain(|registered| registered != key_id);
     }
 
     pub async fn cleanup(
@@ -415,6 +426,16 @@ impl CleanupRegistry {
         ch_query: Option<&ClickHouseQuery>,
     ) -> Result<(), String> {
         let mut failures = Vec::new();
+
+        // API keys are cleaned up first; they belong to the org, not a
+        // specific service, so they outlive service deletion if leaked.
+        while let Some(key_id) = self.api_key_ids.pop() {
+            match client.openapi_key_delete(org_id, &key_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("api key {key_id}: {e}")),
+            }
+        }
 
         // Drain ClickPipes first so their parent service can be torn down cleanly.
         while let Some((service_id, clickpipe_id)) = self.clickpipes.pop() {
@@ -451,6 +472,7 @@ impl CleanupRegistry {
             // take the tables with it).
             self.tables.clear();
         }
+
 
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {

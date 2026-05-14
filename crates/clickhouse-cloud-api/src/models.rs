@@ -2894,6 +2894,31 @@ impl std::fmt::Display for ClickStackAlertChannelWebhookType {
     }
 }
 
+/// Inline enum for `ClickStackAlertExecutionError.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackAlertExecutionErrorType {
+    #[default]
+    QUERY_ERROR,
+    WEBHOOK_ERROR,
+    INVALID_ALERT,
+    UNKNOWN,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackAlertExecutionErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::QUERY_ERROR => write!(f, "QUERY_ERROR"),
+            Self::WEBHOOK_ERROR => write!(f, "WEBHOOK_ERROR"),
+            Self::INVALID_ALERT => write!(f, "INVALID_ALERT"),
+            Self::UNKNOWN => write!(f, "UNKNOWN"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackAlertResponse.interval`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackAlertResponseInterval {
@@ -3250,6 +3275,29 @@ impl std::fmt::Display for ClickStackFilterType {
     }
 }
 
+/// Inline enum for `ClickStackFilter.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackFilterWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackFilterWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackFilterInput.sourceMetricType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackFilterInputSourcemetrictype {
@@ -3296,6 +3344,29 @@ impl std::fmt::Display for ClickStackFilterInputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::QUERY_EXPRESSION => write!(f, "QUERY_EXPRESSION"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackFilterInput.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackFilterInputWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackFilterInputWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3685,6 +3756,170 @@ impl std::fmt::Display for ClickStackNumberChartSeriesWherelanguage {
     }
 }
 
+/// Inline enum for `ClickStackNumberFormat.numericUnit`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackNumberFormatNumericunit {
+    #[serde(rename = "bytes_iec")]
+    #[default]
+    Bytes_iec,
+    #[serde(rename = "bytes_si")]
+    Bytes_si,
+    #[serde(rename = "bits_iec")]
+    Bits_iec,
+    #[serde(rename = "bits_si")]
+    Bits_si,
+    #[serde(rename = "kibibytes")]
+    Kibibytes,
+    #[serde(rename = "kilobytes")]
+    Kilobytes,
+    #[serde(rename = "mebibytes")]
+    Mebibytes,
+    #[serde(rename = "megabytes")]
+    Megabytes,
+    #[serde(rename = "gibibytes")]
+    Gibibytes,
+    #[serde(rename = "gigabytes")]
+    Gigabytes,
+    #[serde(rename = "tebibytes")]
+    Tebibytes,
+    #[serde(rename = "terabytes")]
+    Terabytes,
+    #[serde(rename = "pebibytes")]
+    Pebibytes,
+    #[serde(rename = "petabytes")]
+    Petabytes,
+    #[serde(rename = "packets_sec")]
+    Packets_sec,
+    #[serde(rename = "bytes_sec_iec")]
+    Bytes_sec_iec,
+    #[serde(rename = "bytes_sec_si")]
+    Bytes_sec_si,
+    #[serde(rename = "bits_sec_iec")]
+    Bits_sec_iec,
+    #[serde(rename = "bits_sec_si")]
+    Bits_sec_si,
+    #[serde(rename = "kibibytes_sec")]
+    Kibibytes_sec,
+    #[serde(rename = "kibibits_sec")]
+    Kibibits_sec,
+    #[serde(rename = "kilobytes_sec")]
+    Kilobytes_sec,
+    #[serde(rename = "kilobits_sec")]
+    Kilobits_sec,
+    #[serde(rename = "mebibytes_sec")]
+    Mebibytes_sec,
+    #[serde(rename = "mebibits_sec")]
+    Mebibits_sec,
+    #[serde(rename = "megabytes_sec")]
+    Megabytes_sec,
+    #[serde(rename = "megabits_sec")]
+    Megabits_sec,
+    #[serde(rename = "gibibytes_sec")]
+    Gibibytes_sec,
+    #[serde(rename = "gibibits_sec")]
+    Gibibits_sec,
+    #[serde(rename = "gigabytes_sec")]
+    Gigabytes_sec,
+    #[serde(rename = "gigabits_sec")]
+    Gigabits_sec,
+    #[serde(rename = "tebibytes_sec")]
+    Tebibytes_sec,
+    #[serde(rename = "tebibits_sec")]
+    Tebibits_sec,
+    #[serde(rename = "terabytes_sec")]
+    Terabytes_sec,
+    #[serde(rename = "terabits_sec")]
+    Terabits_sec,
+    #[serde(rename = "pebibytes_sec")]
+    Pebibytes_sec,
+    #[serde(rename = "pebibits_sec")]
+    Pebibits_sec,
+    #[serde(rename = "petabytes_sec")]
+    Petabytes_sec,
+    #[serde(rename = "petabits_sec")]
+    Petabits_sec,
+    #[serde(rename = "cps")]
+    Cps,
+    #[serde(rename = "ops")]
+    Ops,
+    #[serde(rename = "rps")]
+    Rps,
+    #[serde(rename = "reads_sec")]
+    Reads_sec,
+    #[serde(rename = "wps")]
+    Wps,
+    #[serde(rename = "iops")]
+    Iops,
+    #[serde(rename = "cpm")]
+    Cpm,
+    #[serde(rename = "opm")]
+    Opm,
+    #[serde(rename = "rpm_reads")]
+    Rpm_reads,
+    #[serde(rename = "wpm")]
+    Wpm,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberFormatNumericunit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bytes_iec => write!(f, "bytes_iec"),
+            Self::Bytes_si => write!(f, "bytes_si"),
+            Self::Bits_iec => write!(f, "bits_iec"),
+            Self::Bits_si => write!(f, "bits_si"),
+            Self::Kibibytes => write!(f, "kibibytes"),
+            Self::Kilobytes => write!(f, "kilobytes"),
+            Self::Mebibytes => write!(f, "mebibytes"),
+            Self::Megabytes => write!(f, "megabytes"),
+            Self::Gibibytes => write!(f, "gibibytes"),
+            Self::Gigabytes => write!(f, "gigabytes"),
+            Self::Tebibytes => write!(f, "tebibytes"),
+            Self::Terabytes => write!(f, "terabytes"),
+            Self::Pebibytes => write!(f, "pebibytes"),
+            Self::Petabytes => write!(f, "petabytes"),
+            Self::Packets_sec => write!(f, "packets_sec"),
+            Self::Bytes_sec_iec => write!(f, "bytes_sec_iec"),
+            Self::Bytes_sec_si => write!(f, "bytes_sec_si"),
+            Self::Bits_sec_iec => write!(f, "bits_sec_iec"),
+            Self::Bits_sec_si => write!(f, "bits_sec_si"),
+            Self::Kibibytes_sec => write!(f, "kibibytes_sec"),
+            Self::Kibibits_sec => write!(f, "kibibits_sec"),
+            Self::Kilobytes_sec => write!(f, "kilobytes_sec"),
+            Self::Kilobits_sec => write!(f, "kilobits_sec"),
+            Self::Mebibytes_sec => write!(f, "mebibytes_sec"),
+            Self::Mebibits_sec => write!(f, "mebibits_sec"),
+            Self::Megabytes_sec => write!(f, "megabytes_sec"),
+            Self::Megabits_sec => write!(f, "megabits_sec"),
+            Self::Gibibytes_sec => write!(f, "gibibytes_sec"),
+            Self::Gibibits_sec => write!(f, "gibibits_sec"),
+            Self::Gigabytes_sec => write!(f, "gigabytes_sec"),
+            Self::Gigabits_sec => write!(f, "gigabits_sec"),
+            Self::Tebibytes_sec => write!(f, "tebibytes_sec"),
+            Self::Tebibits_sec => write!(f, "tebibits_sec"),
+            Self::Terabytes_sec => write!(f, "terabytes_sec"),
+            Self::Terabits_sec => write!(f, "terabits_sec"),
+            Self::Pebibytes_sec => write!(f, "pebibytes_sec"),
+            Self::Pebibits_sec => write!(f, "pebibits_sec"),
+            Self::Petabytes_sec => write!(f, "petabytes_sec"),
+            Self::Petabits_sec => write!(f, "petabits_sec"),
+            Self::Cps => write!(f, "cps"),
+            Self::Ops => write!(f, "ops"),
+            Self::Rps => write!(f, "rps"),
+            Self::Reads_sec => write!(f, "reads_sec"),
+            Self::Wps => write!(f, "wps"),
+            Self::Iops => write!(f, "iops"),
+            Self::Cpm => write!(f, "cpm"),
+            Self::Opm => write!(f, "opm"),
+            Self::Rpm_reads => write!(f, "rpm_reads"),
+            Self::Wpm => write!(f, "wpm"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackNumberFormat.output`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackNumberFormatOutput {
@@ -3699,6 +3934,10 @@ pub enum ClickStackNumberFormatOutput {
     Time,
     #[serde(rename = "number")]
     Number,
+    #[serde(rename = "data_rate")]
+    Data_rate,
+    #[serde(rename = "throughput")]
+    Throughput,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -3712,6 +3951,8 @@ impl std::fmt::Display for ClickStackNumberFormatOutput {
             Self::Byte => write!(f, "byte"),
             Self::Time => write!(f, "time"),
             Self::Number => write!(f, "number"),
+            Self::Data_rate => write!(f, "data_rate"),
+            Self::Throughput => write!(f, "throughput"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -6938,14 +7179,14 @@ pub struct ApiKeyPostRequest {
     pub assigned_role_ids: Vec<uuid::Uuid>,
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(rename = "hashData", default)]
-    pub hash_data: ApiKeyHashData,
+    #[serde(rename = "hashData", skip_serializing_if = "Option::is_none", default)]
+    pub hash_data: Option<ApiKeyHashData>,
     #[serde(rename = "ipAccessList", default)]
     pub ip_access_list: Vec<IpAccessListEntry>,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub roles: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub roles: Option<Vec<String>>,
     #[serde(default)]
     pub state: ApiKeyPostRequestState,
 }
@@ -8265,6 +8506,17 @@ pub struct ClickStackAlertChannelWebhook {
     pub webhook_service: Option<String>,
 }
 
+/// `ClickStackAlertExecutionError` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertExecutionError {
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub r#type: ClickStackAlertExecutionErrorType,
+}
+
 /// `ClickStackAlertResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertResponse {
@@ -8274,6 +8526,8 @@ pub struct ClickStackAlertResponse {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none", default)]
     pub dashboard_id: Option<String>,
+    #[serde(rename = "executionErrors", default)]
+    pub execution_errors: Vec<ClickStackAlertExecutionError>,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
     #[serde(default)]
@@ -8300,6 +8554,8 @@ pub struct ClickStackAlertResponse {
     pub team_id: String,
     #[serde(default)]
     pub threshold: f64,
+    #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none", default)]
+    pub threshold_max: Option<f64>,
     #[serde(rename = "thresholdType", default)]
     pub threshold_type: ClickStackAlertResponseThresholdtype,
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
@@ -8385,6 +8641,8 @@ pub struct ClickStackCreateAlertRequest {
     pub source: ClickStackCreateAlertRequestSource,
     #[serde(default)]
     pub threshold: f64,
+    #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none", default)]
+    pub threshold_max: Option<f64>,
     #[serde(rename = "thresholdType", default)]
     pub threshold_type: ClickStackCreateAlertRequestThresholdtype,
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
@@ -8440,6 +8698,10 @@ pub struct ClickStackFilter {
     #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none", default)]
     pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
     pub r#type: ClickStackFilterType,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none", default)]
+    pub where_language: Option<ClickStackFilterWherelanguage>,
 }
 
 /// `ClickStackFilterInput` from the ClickHouse Cloud API.
@@ -8452,6 +8714,10 @@ pub struct ClickStackFilterInput {
     #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none", default)]
     pub source_metric_type: Option<ClickStackFilterInputSourcemetrictype>,
     pub r#type: ClickStackFilterInputType,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none", default)]
+    pub where_language: Option<ClickStackFilterInputWherelanguage>,
 }
 
 /// `ClickStackFilterSettingsColumn` from the ClickHouse Cloud API.
@@ -8726,6 +8992,8 @@ pub struct ClickStackNumberFormat {
     pub factor: f64,
     #[serde(default)]
     pub mantissa: i64,
+    #[serde(rename = "numericUnit", default)]
+    pub numeric_unit: ClickStackNumberFormatNumericunit,
     #[serde(default)]
     pub output: ClickStackNumberFormatOutput,
     #[serde(rename = "thousandSeparated", default)]
@@ -9138,6 +9406,8 @@ pub struct ClickStackUpdateAlertRequest {
     pub source: ClickStackUpdateAlertRequestSource,
     #[serde(default)]
     pub threshold: f64,
+    #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none", default)]
+    pub threshold_max: Option<f64>,
     #[serde(rename = "thresholdType", default)]
     pub threshold_type: ClickStackUpdateAlertRequestThresholdtype,
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
@@ -9166,6 +9436,8 @@ pub struct ClickStackUpdateDashboardRequest {
 pub struct CreateReversePrivateEndpoint {
     #[serde(default)]
     pub description: String,
+    #[serde(rename = "gcpServiceAttachment", skip_serializing_if = "Option::is_none", default)]
+    pub gcp_service_attachment: Option<String>,
     #[serde(rename = "mskAuthentication", skip_serializing_if = "Option::is_none", default)]
     pub msk_authentication: Option<CreateReversePrivateEndpointMskauthentication>,
     #[serde(rename = "mskClusterArn", skip_serializing_if = "Option::is_none", default)]
@@ -9684,6 +9956,8 @@ pub struct ReversePrivateEndpoint {
     pub dns_names: Vec<String>,
     #[serde(rename = "endpointId", default)]
     pub endpoint_id: String,
+    #[serde(rename = "gcpServiceAttachment", skip_serializing_if = "Option::is_none", default)]
+    pub gcp_service_attachment: Option<String>,
     #[serde(default)]
     pub id: uuid::Uuid,
     #[serde(rename = "mskAuthentication", skip_serializing_if = "Option::is_none", default)]
@@ -10409,6 +10683,73 @@ pub struct Service {
 pub struct ServiceAccount {
     #[serde(rename = "serviceAccountFile", default)]
     pub service_account_file: String,
+}
+
+/// `ServiceClickhouseSetting` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSetting {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+}
+
+/// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingSchemaEntry {
+    #[serde(rename = "deprecationNotice", default)]
+    pub deprecation_notice: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub r#enum: Vec<i64>,
+    #[serde(default)]
+    pub example: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub r#type: String,
+    #[serde(default)]
+    pub warning: String,
+}
+
+/// `ServiceClickhouseSettingWarning` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingWarning {
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `ServiceClickhouseSettingsList` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingsList {
+    #[serde(default)]
+    pub settings: Vec<ServiceClickhouseSetting>,
+}
+
+/// `ServiceClickhouseSettingsPatchRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingsPatchRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub settings: Option<String>,
+}
+
+/// `ServiceClickhouseSettingsPatchResponse` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingsPatchResponse {
+    #[serde(default)]
+    pub settings: String,
+    #[serde(default)]
+    pub warnings: Vec<ServiceClickhouseSettingWarning>,
+}
+
+/// `ServiceClickhouseSettingsSchema` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceClickhouseSettingsSchema {
+    #[serde(default)]
+    pub settings: Vec<ServiceClickhouseSettingSchemaEntry>,
 }
 
 /// `ServiceEndpoint` from the ClickHouse Cloud API.

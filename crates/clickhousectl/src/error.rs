@@ -63,6 +63,13 @@ pub enum Error {
 
     #[error("--json and --foreground cannot be used together")]
     JsonForegroundConflict,
+
+    #[error("Docker is not available: {0}")]
+    DockerNotAvailable(String),
+
+    #[error("Docker error: {0}")]
+    #[allow(clippy::enum_variant_names)]
+    DockerError(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

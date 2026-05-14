@@ -1,6 +1,8 @@
 pub mod cli;
 pub mod discovery;
+pub mod docker;
 pub mod output;
+pub mod postgres;
 pub mod server;
 
 use cli::{LocalCommands, ServerCommands};
@@ -40,10 +42,47 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             args,
         } => run_client(name, host, port, query, queries_file, args),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
+        LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
 }
 
+/// If the version spec looks like `postgres@<tag>` or `postgres:<tag>`, extract
+/// the tag. The CLI accepts both `@` (more shell-friendly, no need to quote)
+/// and `:` (matches Docker image syntax).
+fn parse_postgres_install_spec(spec: &str) -> Option<&str> {
+    spec.strip_prefix("postgres@").or_else(|| spec.strip_prefix("postgres:"))
+}
+
+async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
+    postgres::validate_pg_tag(tag)?;
+    let docker = docker::connect().await?;
+    if !force && docker::image_exists(&docker, tag).await? {
+        let out = output::InstallOutput {
+            version: format!("postgres@{tag}"),
+            set_as_default: false,
+        };
+        if !json {
+            eprintln!("postgres:{tag} is already pulled");
+        }
+        output::print_output(&out, json);
+        return Ok(());
+    }
+
+    eprintln!("Pulling postgres:{tag}...");
+    docker::pull_image(&docker, tag).await?;
+
+    let out = output::InstallOutput {
+        version: format!("postgres@{tag}"),
+        set_as_default: false,
+    };
+    output::print_output(&out, json);
+    Ok(())
+}
+
 async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
+    if let Some(tag) = parse_postgres_install_spec(version_spec) {
+        return install_postgres(tag, force, json).await;
+    }
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
@@ -335,6 +374,8 @@ async fn start_server(
             tcp_port,
             started_at: server::now_timestamp(),
             cwd,
+            engine: server::Engine::Clickhouse,
+            container_id: None,
         };
         server::save_server_info(&info)?;
 
@@ -362,6 +403,8 @@ async fn start_server(
             tcp_port,
             started_at: server::now_timestamp(),
             cwd,
+            engine: server::Engine::Clickhouse,
+            container_id: None,
         };
         server::save_server_info(&info)?;
 
@@ -423,7 +466,7 @@ fn dotenv_server(
 
     let content = if path.exists() {
         let existing = std::fs::read_to_string(path)?;
-        update_dotenv(&existing, &vars)
+        update_dotenv(&existing, "CLICKHOUSE_", &vars)
     } else {
         vars.iter()
             .map(|(k, v)| format_dotenv_line("", k, v))
@@ -452,7 +495,7 @@ fn dotenv_server(
 /// Format a dotenv line. Values that are plain alphanumeric tokens are written
 /// bare; anything containing spaces, `#`, quotes, backslashes, or newlines is
 /// double-quoted with inner `"`, `\`, and newlines escaped.
-fn format_dotenv_line(prefix: &str, key: &str, val: &str) -> String {
+pub(crate) fn format_dotenv_line(prefix: &str, key: &str, val: &str) -> String {
     let needs_quoting = val.is_empty()
         || val
             .bytes()
@@ -469,11 +512,10 @@ fn format_dotenv_line(prefix: &str, key: &str, val: &str) -> String {
     }
 }
 
-/// Extract a CLICKHOUSE_* key from a dotenv line, handling optional `export`
-/// prefix and whitespace around `=`.
-/// Returns the bare key (e.g. "CLICKHOUSE_HOST") or None if the line isn't
-/// a CLICKHOUSE_* assignment.
-fn extract_dotenv_key(line: &str) -> Option<&str> {
+/// Extract a `<prefix>*` key from a dotenv line, handling optional `export`
+/// prefix and whitespace around `=`. Returns the bare key (e.g. "CLICKHOUSE_HOST"
+/// for prefix "CLICKHOUSE_") or None if the line isn't a matching assignment.
+fn extract_dotenv_key<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
     let s = line.trim();
     let s = s
         .strip_prefix("export")
@@ -481,31 +523,32 @@ fn extract_dotenv_key(line: &str) -> Option<&str> {
         .unwrap_or(s);
     let eq_pos = s.find('=')?;
     let key = s[..eq_pos].trim_end();
-    if key.starts_with("CLICKHOUSE_") && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
+    if key.starts_with(prefix) && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         Some(key)
     } else {
         None
     }
 }
 
-/// Update an existing .env file: replace CLICKHOUSE_* vars in-place, append any missing ones.
-fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
+/// Update an existing .env file: replace `<prefix>*` vars in-place, append any
+/// missing ones. Lines for the same prefix that aren't in `vars` are preserved
+/// (e.g. a manually-set CLICKHOUSE_PASSWORD survives a host/port-only update).
+pub(crate) fn update_dotenv(existing: &str, prefix: &str, vars: &[(&str, String)]) -> String {
     let mut result = String::new();
     let mut written: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
     for line in existing.lines() {
-        if let Some(key) = extract_dotenv_key(line) {
+        if let Some(key) = extract_dotenv_key(line, prefix) {
             if let Some((_, val)) = vars.iter().find(|(k, _)| *k == key) {
-                let prefix = if line.trim_start().starts_with("export") {
+                let line_prefix = if line.trim_start().starts_with("export") {
                     "export "
                 } else {
                     ""
                 };
-                result.push_str(&format_dotenv_line(prefix, key, val));
+                result.push_str(&format_dotenv_line(line_prefix, key, val));
                 written.insert(key);
             } else {
-                // A CLICKHOUSE_* var we don't manage — keep as-is
+                // A matching-prefix var we don't manage — keep as-is
                 result.push_str(line);
             }
         } else {
@@ -514,7 +557,6 @@ fn update_dotenv(existing: &str, vars: &[(&str, String)]) -> String {
         result.push('\n');
     }
 
-    // Append any vars that weren't already in the file
     for (key, val) in vars {
         if !written.contains(key) {
             result.push_str(&format_dotenv_line("", key, val));
@@ -613,23 +655,50 @@ fn list_servers_local(json: bool) -> Result<()> {
         servers: entries
             .into_iter()
             .map(|e| {
-                let (pid, version, http_port, tcp_port) = match e.info {
-                    Some(info) => (
-                        Some(info.pid),
-                        Some(info.version),
-                        Some(info.http_port),
-                        Some(info.tcp_port),
-                    ),
-                    None => (None, None, None, None),
-                };
+                let running = e.running;
+                let (display_name, pid, version, http_port, tcp_port, engine, container_id) =
+                    match e.info {
+                        Some(info) => {
+                            let is_ch = info.engine == server::Engine::Clickhouse;
+                            let pid = if is_ch && running { Some(info.pid) } else { None };
+                            let http_port = if is_ch { Some(info.http_port) } else { None };
+                            // For Postgres the disk key is `<name>-pg<major>`;
+                            // show users the friendly name without the suffix.
+                            let display = if is_ch {
+                                e.name.clone()
+                            } else {
+                                postgres::user_name_from_key(&e.name).to_string()
+                            };
+                            (
+                                display,
+                                pid,
+                                Some(info.version),
+                                http_port,
+                                Some(info.tcp_port),
+                                info.engine.as_str().to_string(),
+                                info.container_id,
+                            )
+                        }
+                        None => (
+                            e.name.clone(),
+                            None,
+                            None,
+                            None,
+                            None,
+                            "clickhouse".to_string(),
+                            None,
+                        ),
+                    };
                 output::ServerListEntry {
-                    name: e.name,
-                    running: e.running,
+                    name: display_name,
+                    running,
                     pid,
                     version,
                     http_port,
                     tcp_port,
                     project: None,
+                    engine,
+                    container_id,
                 }
             })
             .collect(),
@@ -655,6 +724,8 @@ fn list_servers_global(json: bool) -> Result<()> {
                 http_port: e.http_port,
                 tcp_port: e.tcp_port,
                 project: Some(e.project),
+                engine: e.engine.as_str().to_string(),
+                container_id: e.container_id,
             })
             .collect(),
         total_servers: total,
@@ -701,7 +772,13 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
 }
 
 fn stop_all_servers_local(json: bool) -> Result<()> {
-    let servers = server::list_running_servers();
+    // `local server stop-all` historically only managed ClickHouse processes.
+    // Postgres has its own `local postgres stop-all`; don't silently sweep it
+    // up here.
+    let servers: Vec<_> = server::list_running_servers()
+        .into_iter()
+        .filter(|s| s.engine == server::Engine::Clickhouse)
+        .collect();
     let mut stop_entries = Vec::new();
     for s in &servers {
         if !json {
@@ -801,12 +878,43 @@ mod tests {
     }
 
     #[test]
+    fn parse_postgres_install_spec_recognizes_at_and_colon() {
+        assert_eq!(parse_postgres_install_spec("postgres@16"), Some("16"));
+        assert_eq!(parse_postgres_install_spec("postgres:16-alpine"), Some("16-alpine"));
+        assert_eq!(parse_postgres_install_spec("25.12"), None);
+        assert_eq!(parse_postgres_install_spec("stable"), None);
+    }
+
+    #[test]
+    fn update_dotenv_postgres_prefix_isolates_clickhouse_vars() {
+        let existing = "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\nDATABASE_URL=x\n";
+        let vars = vec![
+            ("POSTGRES_HOST", "localhost".to_string()),
+            ("POSTGRES_PORT", "5432".to_string()),
+        ];
+        let result = update_dotenv(existing, "POSTGRES_", &vars);
+        assert!(result.contains("CLICKHOUSE_HOST=localhost"));
+        assert!(result.contains("CLICKHOUSE_PORT=9000"));
+        assert!(result.contains("POSTGRES_HOST=localhost"));
+        assert!(result.contains("POSTGRES_PORT=5432"));
+    }
+
+    #[test]
+    fn extract_dotenv_key_postgres_prefix() {
+        assert_eq!(
+            extract_dotenv_key("POSTGRES_USER=postgres", "POSTGRES_"),
+            Some("POSTGRES_USER")
+        );
+        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST=x", "POSTGRES_"), None);
+    }
+
+    #[test]
     fn update_dotenv_creates_fresh_content() {
         let vars = vec![
             ("CLICKHOUSE_HOST", "localhost".to_string()),
             ("CLICKHOUSE_PORT", "9000".to_string()),
         ];
-        let result = update_dotenv("", &vars);
+        let result = update_dotenv("", "CLICKHOUSE_", &vars);
         assert_eq!(result, "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PORT=9000\n");
     }
 
@@ -817,7 +925,7 @@ mod tests {
             ("CLICKHOUSE_HOST", "localhost".to_string()),
             ("CLICKHOUSE_PORT", "9000".to_string()),
         ];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("CLICKHOUSE_HOST=localhost"));
         assert!(result.contains("CLICKHOUSE_PORT=9000"));
         assert!(result.contains("DATABASE_URL=postgres://..."));
@@ -829,7 +937,7 @@ mod tests {
     fn update_dotenv_preserves_non_clickhouse_vars() {
         let existing = "FOO=bar\nBAZ=qux\n";
         let vars = vec![("CLICKHOUSE_HOST", "localhost".to_string())];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("FOO=bar"));
         assert!(result.contains("BAZ=qux"));
         assert!(result.contains("CLICKHOUSE_HOST=localhost"));
@@ -842,7 +950,7 @@ mod tests {
             ("CLICKHOUSE_HOST", "localhost".to_string()),
             ("CLICKHOUSE_PORT", "9000".to_string()),
         ];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("CLICKHOUSE_HOST=localhost"));
         assert!(result.contains("CLICKHOUSE_PORT=9000"));
     }
@@ -854,7 +962,7 @@ mod tests {
             ("CLICKHOUSE_HOST", "localhost".to_string()),
             ("CLICKHOUSE_PORT", "9000".to_string()),
         ];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("export CLICKHOUSE_HOST=localhost"));
         assert!(result.contains("export CLICKHOUSE_PORT=9000"));
         assert!(!result.contains("oldhost"));
@@ -865,7 +973,7 @@ mod tests {
     fn update_dotenv_handles_spaces_around_equals() {
         let existing = "CLICKHOUSE_HOST = oldhost\n";
         let vars = vec![("CLICKHOUSE_HOST", "localhost".to_string())];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("CLICKHOUSE_HOST=localhost"));
         assert!(!result.contains("oldhost"));
     }
@@ -874,7 +982,7 @@ mod tests {
     fn update_dotenv_handles_export_with_spaces() {
         let existing = "export CLICKHOUSE_PORT = 1234\nDATABASE_URL=postgres://...\n";
         let vars = vec![("CLICKHOUSE_PORT", "9000".to_string())];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("export CLICKHOUSE_PORT=9000"));
         assert!(result.contains("DATABASE_URL=postgres://..."));
         assert!(!result.contains("1234"));
@@ -885,40 +993,40 @@ mod tests {
         let existing = "CLICKHOUSE_HOST=localhost\nCLICKHOUSE_PASSWORD=secret\n";
         // Only updating HOST — PASSWORD should be left alone
         let vars = vec![("CLICKHOUSE_HOST", "newhost".to_string())];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains("CLICKHOUSE_HOST=newhost"));
         assert!(result.contains("CLICKHOUSE_PASSWORD=secret"));
     }
 
     #[test]
     fn extract_dotenv_key_simple() {
-        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST=localhost"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"), Some("CLICKHOUSE_HOST"));
     }
 
     #[test]
     fn extract_dotenv_key_with_export() {
-        assert_eq!(extract_dotenv_key("export CLICKHOUSE_HOST=localhost"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(extract_dotenv_key("export CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"), Some("CLICKHOUSE_HOST"));
     }
 
     #[test]
     fn extract_dotenv_key_with_spaces() {
-        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST = localhost"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"), Some("CLICKHOUSE_HOST"));
         assert_eq!(
-            extract_dotenv_key("export CLICKHOUSE_HOST = localhost"),
+            extract_dotenv_key("export CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"),
             Some("CLICKHOUSE_HOST")
         );
     }
 
     #[test]
     fn extract_dotenv_key_non_clickhouse() {
-        assert_eq!(extract_dotenv_key("DATABASE_URL=postgres://..."), None);
-        assert_eq!(extract_dotenv_key("export FOO=bar"), None);
+        assert_eq!(extract_dotenv_key("DATABASE_URL=postgres://...", "CLICKHOUSE_"), None);
+        assert_eq!(extract_dotenv_key("export FOO=bar", "CLICKHOUSE_"), None);
     }
 
     #[test]
     fn extract_dotenv_key_comment_and_blank() {
-        assert_eq!(extract_dotenv_key("# CLICKHOUSE_HOST=localhost"), None);
-        assert_eq!(extract_dotenv_key(""), None);
+        assert_eq!(extract_dotenv_key("# CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"), None);
+        assert_eq!(extract_dotenv_key("", "CLICKHOUSE_"), None);
     }
 
     #[test]
@@ -977,7 +1085,7 @@ mod tests {
             ("CLICKHOUSE_HOST", "localhost".to_string()),
             ("CLICKHOUSE_PASSWORD", "my secret#123".to_string()),
         ];
-        let result = update_dotenv("", &vars);
+        let result = update_dotenv("", "CLICKHOUSE_", &vars);
         assert!(result.contains("CLICKHOUSE_HOST=localhost"));
         assert!(result.contains(r#"CLICKHOUSE_PASSWORD="my secret#123""#));
     }
@@ -986,7 +1094,7 @@ mod tests {
     fn update_dotenv_quotes_when_replacing_in_place() {
         let existing = "CLICKHOUSE_PASSWORD=old\n";
         let vars = vec![("CLICKHOUSE_PASSWORD", "new pass".to_string())];
-        let result = update_dotenv(existing, &vars);
+        let result = update_dotenv(existing, "CLICKHOUSE_", &vars);
         assert!(result.contains(r#"CLICKHOUSE_PASSWORD="new pass""#));
     }
 }

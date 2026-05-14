@@ -1,6 +1,7 @@
 /target
 .env
-
+/.env
+/.env.local
 /.agents/
 /.claude/
 /.codex/
@@ -18,3 +19,4 @@
 /.cline/
 /.command-code/
 /.kiro/
+__pycache__/

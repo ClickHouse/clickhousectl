@@ -234,7 +234,397 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "created service was not visible in service list"
         );
 
-        // ── 2. Stop / Start ──────────────────────────────────────────
+        // ── 2. Query API Endpoint ────────────────────────────────────
+        //
+        // Exercise the path that `cloud service query` uses: create a
+        // dedicated API key, bind it to the service's query endpoint with
+        // role `sql_console_admin`, run `SELECT 1` over HTTP via
+        // queries.clickhouse.cloud, and assert the result. This is the
+        // canonical query path; `cloud service client` (which requires a
+        // local `clickhouse` binary + service password) is on a deprecation
+        // track.
+
+        log_phase("Query API Endpoint");
+
+        let query_key = failures
+            .run(&ctx, StepKind::Blocking, "create query API key", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let key_name = format!("{}-query", ctx.service_name());
+                async move {
+                    let body = ApiKeyPostRequest {
+                        name: key_name,
+                        assigned_role_ids: vec![],
+                        expire_at: None,
+                        hash_data: None,
+                        ip_access_list: vec![IpAccessListEntry {
+                            source: "0.0.0.0/0".to_string(),
+                            description: Some(
+                                "clickhousectl integration test query key".to_string(),
+                            ),
+                        }],
+                        roles: None,
+                        state: ApiKeyPostRequestState::Enabled,
+                    };
+                    let resp = client.openapi_key_create(&org_id, &body).await?;
+                    resp.result
+                        .ok_or_else(|| "api key create returned no result".into())
+                }
+            })
+            .await?
+            .expect("blocking steps always return a value");
+        // `query_key.key_id` is the credential id used for HTTP auth on the
+        // query endpoint. Management endpoints (GET/DELETE /keys/{id}) and the
+        // endpoint binding's `openApiKeys` array reference the API key's
+        // resource UUID instead — `query_key.key.id`.
+        let api_key_uuid = query_key.key.id.to_string();
+        cleanup.register_api_key(api_key_uuid.clone());
+
+        // Before binding the key to a query endpoint, calling the Query API
+        // must fail. We don't pin the exact status (the control plane can
+        // return 401/403/404 here depending on which check trips first); we
+        // just require a 4xx so the test catches the regression where the
+        // endpoint silently works without a binding.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "query before endpoint enabled fails",
+                || {
+                    let client = client.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    let key_secret = query_key.key_secret.clone();
+                    async move {
+                        match client
+                            .run_query(
+                                &service_id,
+                                &key_id,
+                                &key_secret,
+                                "SELECT 1",
+                                None,
+                                "TabSeparated",
+                            )
+                            .await
+                        {
+                            Ok(response) => {
+                                let status = response.status();
+                                let body = response.text().await.unwrap_or_default();
+                                Err(format!(
+                                    "expected 4xx before endpoint enabled, got {status}: {}",
+                                    body.trim()
+                                )
+                                .into())
+                            }
+                            Err(clickhouse_cloud_api::Error::Api { status, message })
+                                if (400..500).contains(&status) =>
+                            {
+                                eprintln!(
+                                    "  query without endpoint correctly rejected: {status}: {message}"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => Err(format!(
+                                "expected 4xx before endpoint enabled, got unexpected error: {e}"
+                            )
+                            .into()),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        let initial_endpoint = failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "upsert query endpoint with admin role",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let api_key_uuid = api_key_uuid.clone();
+                    async move {
+                        let body = InstanceServiceQueryApiEndpointsPostRequest {
+                            roles: vec!["sql_console_admin".to_string()],
+                            open_api_keys: vec![api_key_uuid],
+                            allowed_origins: "*".to_string(),
+                        };
+                        let resp = client
+                            .instance_query_endpoint_upsert(&org_id, &service_id, &body)
+                            .await?;
+                        resp.result
+                            .ok_or_else(|| "query endpoint upsert returned no result".into())
+                    }
+                },
+            )
+            .await?
+            .expect("blocking steps always return a value");
+
+        // Endpoint propagation can lag a few seconds behind the upsert; poll
+        // for the first successful query rather than asserting on the first
+        // try.
+        failures
+            .run(&ctx, StepKind::Blocking, "run SELECT 1 via Query API", || {
+                let client = client.clone();
+                let service_id = service_id.clone();
+                let key_id = query_key.key_id.clone();
+                let key_secret = query_key.key_secret.clone();
+                async move {
+                    poll_until(
+                        "query API SELECT 1",
+                        std::time::Duration::from_secs(120),
+                        std::time::Duration::from_secs(5),
+                        || {
+                            let client = client.clone();
+                            let service_id = service_id.clone();
+                            let key_id = key_id.clone();
+                            let key_secret = key_secret.clone();
+                            async move {
+                                match client
+                                    .run_query(
+                                        &service_id,
+                                        &key_id,
+                                        &key_secret,
+                                        "SELECT 1",
+                                        None,
+                                        "TabSeparated",
+                                    )
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        let body = response.text().await.map_err(|e| {
+                                            format!("query response read failed: {e}")
+                                        })?;
+                                        let trimmed = body.trim();
+                                        if trimmed == "1" {
+                                            Ok(Some(()))
+                                        } else {
+                                            Err(format!(
+                                                "unexpected query response: {trimmed:?}"
+                                            )
+                                            .into())
+                                        }
+                                    }
+                                    Err(clickhouse_cloud_api::Error::Api {
+                                        status, message,
+                                    }) if status == 401 || status == 403 || status == 404 => {
+                                        // Propagation delay — keep polling.
+                                        eprintln!(
+                                            "  query endpoint not ready yet ({status}): {message}"
+                                        );
+                                        Ok(None)
+                                    }
+                                    Err(e) => Err(e.into()),
+                                }
+                            }
+                        },
+                    )
+                    .await
+                }
+            })
+            .await?;
+
+        // The query endpoint binding uses `sql_console_admin`, so the key
+        // must be able to write — `cloud service query` is the canonical
+        // path for INSERTs and DDL, not just SELECT. Walk through
+        // CREATE TABLE / INSERT / SELECT to catch regressions where the
+        // role on the binding is silently demoted to read-only.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "CREATE TABLE + INSERT + SELECT via Query API",
+                || {
+                    let client = client.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    let key_secret = query_key.key_secret.clone();
+                    async move {
+                        async fn exec(
+                            client: &clickhouse_cloud_api::Client,
+                            service_id: &str,
+                            key_id: &str,
+                            key_secret: &str,
+                            sql: &str,
+                        ) -> Result<String, Box<dyn std::error::Error>> {
+                            let response = client
+                                .run_query(
+                                    service_id,
+                                    key_id,
+                                    key_secret,
+                                    sql,
+                                    None,
+                                    "TabSeparated",
+                                )
+                                .await?;
+                            response
+                                .text()
+                                .await
+                                .map_err(|e| format!("query response read failed: {e}").into())
+                        }
+
+                        exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "CREATE TABLE clickhousectl_it_write (x UInt32) ENGINE = MergeTree ORDER BY x",
+                        )
+                        .await
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("CREATE TABLE failed (role may not grant writes): {e}").into()
+                        })?;
+                        exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "INSERT INTO clickhousectl_it_write VALUES (1), (2), (3)",
+                        )
+                        .await
+                        .map_err(|e| -> Box<dyn std::error::Error> {
+                            format!("INSERT failed: {e}").into()
+                        })?;
+                        let body = exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "SELECT sum(x) FROM clickhousectl_it_write",
+                        )
+                        .await?;
+                        let trimmed = body.trim();
+                        if trimmed != "6" {
+                            return Err(format!(
+                                "unexpected sum after INSERT: got {trimmed:?}, expected \"6\""
+                            )
+                            .into());
+                        }
+                        // Tidy up: the service is about to be deleted anyway,
+                        // but leaving artifacts behind makes debugging harder
+                        // if cleanup ever short-circuits.
+                        exec(
+                            &client,
+                            &service_id,
+                            &key_id,
+                            &key_secret,
+                            "DROP TABLE clickhousectl_it_write",
+                        )
+                        .await?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // Re-upserting the same endpoint must be idempotent: the resource id
+        // should not change, and the existing credentials should keep working.
+        // Catches regressions where the control plane rotates the binding or
+        // strips `openApiKeys` on a no-op write.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "re-upsert query endpoint is idempotent",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let api_key_uuid = api_key_uuid.clone();
+                    let initial_endpoint = initial_endpoint.clone();
+                    async move {
+                        let body = InstanceServiceQueryApiEndpointsPostRequest {
+                            roles: vec!["sql_console_admin".to_string()],
+                            open_api_keys: vec![api_key_uuid.clone()],
+                            allowed_origins: "*".to_string(),
+                        };
+                        let resp = client
+                            .instance_query_endpoint_upsert(&org_id, &service_id, &body)
+                            .await?;
+                        let endpoint = resp
+                            .result
+                            .ok_or("re-upsert returned no result")?;
+                        if endpoint.id != initial_endpoint.id {
+                            return Err(format!(
+                                "re-upsert changed endpoint id: {} -> {}",
+                                initial_endpoint.id, endpoint.id
+                            )
+                            .into());
+                        }
+                        if !endpoint.open_api_keys.contains(&api_key_uuid) {
+                            return Err(format!(
+                                "re-upsert dropped our key from openApiKeys: {:?}",
+                                endpoint.open_api_keys
+                            )
+                            .into());
+                        }
+                        if !endpoint.roles.iter().any(|r| r == "sql_console_admin") {
+                            return Err(format!(
+                                "re-upsert dropped sql_console_admin role: {:?}",
+                                endpoint.roles
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "SELECT 1 still works after re-upsert",
+                || {
+                    let client = client.clone();
+                    let service_id = service_id.clone();
+                    let key_id = query_key.key_id.clone();
+                    let key_secret = query_key.key_secret.clone();
+                    async move {
+                        let response = client
+                            .run_query(
+                                &service_id,
+                                &key_id,
+                                &key_secret,
+                                "SELECT 1",
+                                None,
+                                "TabSeparated",
+                            )
+                            .await?;
+                        let body = response
+                            .text()
+                            .await
+                            .map_err(|e| format!("query response read failed: {e}"))?;
+                        let trimmed = body.trim();
+                        if trimmed == "1" {
+                            Ok(())
+                        } else {
+                            Err(format!(
+                                "unexpected query response after re-upsert: {trimmed:?}"
+                            )
+                            .into())
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(&ctx, StepKind::Blocking, "delete query API key", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let api_key_uuid = api_key_uuid.clone();
+                async move {
+                    client.openapi_key_delete(&org_id, &api_key_uuid).await?;
+                    Ok(())
+                }
+            })
+            .await?;
+        cleanup.unregister_api_key(&api_key_uuid);
+
+        // ── 3. Stop / Start ──────────────────────────────────────────
 
         log_phase("Stop And Start");
         failures
@@ -313,7 +703,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 3. Rename & Settings ─────────────────────────────────────
+        // ── 4. Rename & Settings ─────────────────────────────────────
 
         log_phase("Rename And Settings");
         failures
@@ -522,7 +912,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 4. IP Access ─────────────────────────────────────────────
+        // ── 5. IP Access ─────────────────────────────────────────────
 
         log_phase("IP Access");
         failures
@@ -727,7 +1117,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
-        // ── 5. Scaling ───────────────────────────────────────────────
+        // ── 6. Scaling ───────────────────────────────────────────────
 
         log_phase("Scaling");
         failures
@@ -826,7 +1216,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 6. Delete ────────────────────────────────────────────────
+        // ── 7. Delete ────────────────────────────────────────────────
 
         log_phase("Delete");
 

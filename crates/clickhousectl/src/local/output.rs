@@ -213,6 +213,10 @@ pub struct ServerListEntry {
     pub tcp_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// "clickhouse" or "postgres".
+    pub engine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -230,6 +234,24 @@ struct ServerListRow {
     status: String,
     #[tabled(rename = "PID")]
     pid: String,
+    #[tabled(rename = "Version")]
+    version: String,
+    #[tabled(rename = "HTTP Port")]
+    http_port: String,
+    #[tabled(rename = "TCP Port")]
+    tcp_port: String,
+}
+
+#[derive(Tabled)]
+struct ServerListRowWithEngine {
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Engine")]
+    engine: String,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "ID")]
+    pid_or_container: String,
     #[tabled(rename = "Version")]
     version: String,
     #[tabled(rename = "HTTP Port")]
@@ -264,6 +286,44 @@ impl fmt::Display for ServerListOutput {
         }
 
         let has_project = self.servers.iter().any(|e| e.project.is_some());
+        let has_postgres = self.servers.iter().any(|e| e.engine == "postgres");
+
+        if !has_project && has_postgres {
+            // Show an engine-aware table that combines PID (ClickHouse) and
+            // container short-id (Postgres) into a single "ID" column.
+            let rows: Vec<ServerListRowWithEngine> = self
+                .servers
+                .iter()
+                .map(|e| {
+                    let id = if e.engine == "postgres" {
+                        e.container_id
+                            .as_deref()
+                            .map(|s| s.chars().take(12).collect::<String>())
+                            .unwrap_or_default()
+                    } else {
+                        e.pid.map(|p| p.to_string()).unwrap_or_default()
+                    };
+                    ServerListRowWithEngine {
+                        name: e.name.clone(),
+                        engine: e.engine.clone(),
+                        status: if e.running { "running".into() } else { "stopped".into() },
+                        pid_or_container: id,
+                        version: e.version.clone().unwrap_or_default(),
+                        http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
+                        tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                    }
+                })
+                .collect();
+            let table = Table::new(rows).with(Style::markdown()).to_string();
+            writeln!(f, "{table}")?;
+            return write!(
+                f,
+                "\n{} server{}, {} running",
+                self.total_servers,
+                if self.total_servers == 1 { "" } else { "s" },
+                self.total_running_servers
+            );
+        }
 
         if has_project {
             let rows: Vec<ServerListRowGlobal> = self
@@ -313,6 +373,59 @@ impl fmt::Display for ServerListOutput {
             if self.total_servers == 1 { "" } else { "s" },
             self.total_running_servers
         )
+    }
+}
+
+// ── postgres start ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PostgresStartOutput {
+    pub name: String,
+    pub container_id: String,
+    pub image: String,
+    pub port: u16,
+    pub user: String,
+    pub password: String,
+    pub database: String,
+}
+
+impl fmt::Display for PostgresStartOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let short = self.container_id.chars().take(12).collect::<String>();
+        writeln!(
+            f,
+            "Postgres '{}' running (container: {})",
+            self.name, short
+        )?;
+        writeln!(f, "  Image:    {}", self.image)?;
+        writeln!(f, "  Port:     {}", self.port)?;
+        writeln!(f, "  User:     {}", self.user)?;
+        writeln!(f, "  Password: {}", self.password)?;
+        writeln!(f, "  Database: {}", self.database)?;
+        write!(
+            f,
+            "  Connect:  clickhousectl local postgres client --name {}",
+            self.name
+        )
+    }
+}
+
+// ── postgres dotenv ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PostgresDotenvOutput {
+    pub file: String,
+    pub server: String,
+    pub vars: Vec<DotenvVar>,
+}
+
+impl fmt::Display for PostgresDotenvOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Wrote to {} (postgres '{}')", self.file, self.server)?;
+        for var in &self.vars {
+            writeln!(f, "  {}={}", var.key, var.value)?;
+        }
+        Ok(())
     }
 }
 
@@ -575,6 +688,8 @@ mod tests {
                     http_port: Some(8123),
                     tcp_port: Some(9000),
                     project: None,
+                    engine: "clickhouse".to_string(),
+                    container_id: None,
                 },
                 ServerListEntry {
                     name: "test".to_string(),
@@ -584,6 +699,8 @@ mod tests {
                     http_port: None,
                     tcp_port: None,
                     project: None,
+                    engine: "clickhouse".to_string(),
+                    container_id: None,
                 },
             ],
             total_servers: 2,
@@ -830,6 +947,8 @@ mod tests {
                     http_port: Some(8123),
                     tcp_port: Some(9000),
                     project: None,
+                    engine: "clickhouse".to_string(),
+                    container_id: None,
                 },
                 ServerListEntry {
                     name: "test".to_string(),
@@ -839,6 +958,8 @@ mod tests {
                     http_port: None,
                     tcp_port: None,
                     project: None,
+                    engine: "clickhouse".to_string(),
+                    container_id: None,
                 },
             ],
             total_servers: 2,
@@ -882,6 +1003,8 @@ mod tests {
                 http_port: Some(8123),
                 tcp_port: Some(9000),
                 project: None,
+                    engine: "clickhouse".to_string(),
+                    container_id: None,
             }],
             total_servers: 1,
             total_running_servers: 1,

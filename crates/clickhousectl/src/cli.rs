@@ -44,7 +44,8 @@ pub enum Commands {
 CONTEXT FOR AGENTS:
   Manage local ClickHouse installations: install versions, run queries, manage servers.
   Typical workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
-  Use `clickhousectl local <command> --help` for details on each subcommand.")]
+  Use `clickhousectl local <command> --help` for details on each subcommand.
+  For a local Postgres instance via Docker, see `clickhousectl local postgres --help`.")]
     Local(LocalArgs),
 
     /// Work with serverless ClickHouse in ClickHouse Cloud

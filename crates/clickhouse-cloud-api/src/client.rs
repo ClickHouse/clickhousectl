@@ -122,6 +122,77 @@ impl Client {
         }
     }
 
+    /// Run a SQL statement against a service's Query API endpoint.
+    ///
+    /// Hits `queries.clickhouse.cloud` (override via the
+    /// `CLICKHOUSE_CLOUD_QUERY_HOST` env var) using Basic auth with the
+    /// provided `key_id`/`key_secret` — a per-service key bound to a
+    /// query endpoint with role `sql_console_read_only` (or
+    /// `sql_console_admin`). This bypasses the client's primary auth
+    /// because Query API keys are scoped to a single service.
+    ///
+    /// Returns the streaming response so the caller can forward it to
+    /// stdout or buffer it into memory.
+    pub async fn run_query(
+        &self,
+        service_id: &str,
+        key_id: &str,
+        key_secret: &str,
+        sql: &str,
+        database: Option<&str>,
+        format: &str,
+    ) -> Result<reqwest::Response, Error> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RunQueryBody<'a> {
+            run_id: String,
+            sql: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            database: Option<&'a str>,
+        }
+
+        let host = std::env::var("CLICKHOUSE_CLOUD_QUERY_HOST")
+            .unwrap_or_else(|_| "https://queries.clickhouse.cloud".to_string());
+        let url = format!(
+            "{}/service/{}/run",
+            host.trim_end_matches('/'),
+            service_id,
+        );
+
+        let body = RunQueryBody {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            sql,
+            database,
+        };
+
+        let response = self
+            .http
+            .post(url)
+            .query(&[("format", format)])
+            .basic_auth(key_id, Some(key_secret))
+            .header("content-type", "text/plain;charset=UTF-8")
+            .header("x-service-type", "clickhouse")
+            .header("auth-provider", "custom")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: if body_text.is_empty() {
+                    format!("Query API returned {status}")
+                } else {
+                    body_text
+                },
+            });
+        }
+
+        Ok(response)
+    }
+
     /// Get list of available organizations
     pub async fn organization_get_list(
         &self,
@@ -600,6 +671,123 @@ impl Client {
         user_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
         let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
+        let req = self.request(reqwest::Method::DELETE, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// List all available roles for an organization
+    pub async fn organization_roles_get_list(
+        &self,
+        organization_id: &str,
+    ) -> Result<ApiResponse<Vec<RBACRole>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Create a new role
+    pub async fn organization_role_post(
+        &self,
+        organization_id: &str,
+        body: &RoleCreateRequest,
+    ) -> Result<ApiResponse<RBACRole>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles");
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get role details
+    pub async fn organization_role_get(
+        &self,
+        organization_id: &str,
+        role_id: &str,
+    ) -> Result<ApiResponse<RBACRole>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Update a role
+    pub async fn organization_role_patch(
+        &self,
+        organization_id: &str,
+        role_id: &str,
+        body: &RoleUpdateRequest,
+    ) -> Result<ApiResponse<RBACRole>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
+        let mut req = self.request(reqwest::Method::PATCH, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Delete a role
+    pub async fn organization_role_delete(
+        &self,
+        organization_id: &str,
+        role_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2216,6 +2404,101 @@ impl Client {
         for f in filters {
             req = req.query(&[("filter", f)]);
         }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// List ClickHouse settings
+    pub async fn service_clickhouse_settings_list_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<ServiceClickhouseSettingsList>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Update ClickHouse settings
+    pub async fn service_clickhouse_settings_update(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &ServiceClickhouseSettingsPatchRequest,
+    ) -> Result<ApiResponse<ServiceClickhouseSettingsPatchResponse>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
+        let mut req = self.request(reqwest::Method::PATCH, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get ClickHouse settings schema
+    pub async fn service_clickhouse_settings_schema_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<ServiceClickhouseSettingsSchema>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/schema");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get ClickHouse setting
+    pub async fn service_clickhouse_setting_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        setting_name: &str,
+    ) -> Result<ApiResponse<ServiceClickhouseSetting>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}");
+        let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
