@@ -149,47 +149,53 @@ async fn run_inner(
     )
     .await?;
 
-    log_phase("Mongo stage: create ClickPipe (via CLI)");
+    log_phase("Mongo stage: create ClickPipe");
 
     cleanup.register_table(MONGO_TARGET_TABLE);
 
     let pipe_name = format!("mongo-{}", ctx.run_id);
     let mongo_uri = format!("mongodb://{host_ip}:27017");
-    let table_mapping = format!("{db_name}.{MONGO_SOURCE_COLLECTION}:{MONGO_TARGET_TABLE}");
-    let ca_path =
-        crate::integration::cli::write_temp_file(&ctx.run_id, "mongo-ca.pem", &certs.ca_pem)?;
 
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-    let _ = super::create_pipe_via_cli_and_wait_running(
-        &cli,
+    let pipe_request = ClickPipePostRequest {
+        name: pipe_name,
+        // MongoDB is a "database pipe" — only `database` is valid at the top
+        // level. The per-mapping `targetTable` carries the destination table.
+        destination: ClickPipeMutateDestination {
+            database: "default".to_string(),
+            ..Default::default()
+        },
+        source: ClickPipePostSource {
+            mongodb: Some(ClickPipeMutateMongoDBSource {
+                uri: mongo_uri,
+                credentials: Some(PLAIN {
+                    username: clickpipe_user.clone(),
+                    password: clickpipe_pass.clone(),
+                }),
+                ca_certificate: Some(certs.ca_pem.clone()),
+                read_preference: ClickPipeMutateMongoDBSourceReadpreference::Primary,
+                settings: ClickPipeMongoDBPipeSettings {
+                    replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
+                    ..Default::default()
+                },
+                table_mappings: vec![ClickPipeMongoDBPipeTableMapping {
+                    source_database_name: db_name.clone(),
+                    source_collection: MONGO_SOURCE_COLLECTION.to_string(),
+                    target_table: MONGO_TARGET_TABLE.to_string(),
+                    table_engine: None,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let _ = create_pipe_and_wait_running(
         client,
         ctx,
         ch,
         cleanup,
-        &[
-            "clickpipe",
-            "create",
-            "mongodb",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--uri",
-            &mongo_uri,
-            "--username",
-            &clickpipe_user,
-            "--password",
-            &clickpipe_pass,
-            "--table-mapping",
-            &table_mapping,
-            "--replication-mode",
-            "cdc",
-            "--read-preference",
-            "primary",
-            "--ca-certificate",
-            &ca_path,
-            "--org-id",
-            &ctx.org_id,
-        ],
+        &pipe_request,
         clickpipe_ready_timeout,
     )
     .await?;

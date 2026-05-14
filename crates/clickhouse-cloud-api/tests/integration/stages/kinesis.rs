@@ -11,7 +11,10 @@ use clickhouse_cloud_api::Client;
 
 use crate::integration::support::*;
 
-use super::{StageCtx, StageOutcome, duration_from_env_or};
+use super::{
+    StageCtx, StageOutcome, create_pipe_and_wait_running, duration_from_env_or,
+    managed_destination_users,
+};
 
 const KINESIS_TARGET_TABLE: &str = "kinesis_users";
 const KINESIS_SEED_ROW_COUNT: i64 = 3;
@@ -152,50 +155,35 @@ async fn run_inner(
     // on a transient AccessDenied.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    log_phase("Kinesis stage: create ClickPipe (via CLI)");
+    log_phase("Kinesis stage: create ClickPipe");
 
     cleanup.register_table(KINESIS_TARGET_TABLE);
 
     let pipe_name = format!("kinesis-{}", ctx.run_id);
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-    let _ = super::create_pipe_via_cli_and_wait_running(
-        &cli,
+    let pipe_request = ClickPipePostRequest {
+        name: pipe_name,
+        source: ClickPipePostSource {
+            kinesis: Some(ClickPipePostKinesisSource {
+                authentication: ClickPipePostKinesisSourceAuthentication::IAM_ROLE,
+                iam_role: Some(role_arn),
+                format: ClickPipePostKinesisSourceFormat::JSONEachRow,
+                region: aws_region.to_string(),
+                stream_name: stream_name.clone(),
+                iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        destination: managed_destination_users(KINESIS_TARGET_TABLE),
+        ..Default::default()
+    };
+
+    let _ = create_pipe_and_wait_running(
         client,
         ctx,
         ch,
         cleanup,
-        &[
-            "clickpipe",
-            "create",
-            "kinesis",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--stream-name",
-            &stream_name,
-            "--region",
-            aws_region,
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "default",
-            "--table",
-            KINESIS_TARGET_TABLE,
-            "--column",
-            "id:Int64",
-            "--column",
-            "name:String",
-            "--column",
-            "email:String",
-            "--auth",
-            "IAM_ROLE",
-            "--iam-role",
-            &role_arn,
-            "--iterator-type",
-            "TRIM_HORIZON",
-            "--org-id",
-            &ctx.org_id,
-        ],
+        &pipe_request,
         clickpipe_ready_timeout,
     )
     .await?;

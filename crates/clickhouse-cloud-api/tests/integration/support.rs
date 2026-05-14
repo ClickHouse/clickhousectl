@@ -1533,13 +1533,28 @@ pub async fn create_open_security_group(
     name: &str,
     ingress_ports: &[i32],
 ) -> TestResult<String> {
-    use aws_sdk_ec2::types::{IpPermission, IpRange};
+    use aws_sdk_ec2::types::{IpPermission, IpRange, ResourceType, Tag, TagSpecification};
+
+    // Tag at creation so the IAM policy gating these tests can scope
+    // DeleteSecurityGroup / AuthorizeSecurityGroupIngress by
+    // `aws:ResourceTag/managed_by`.
+    let tag_spec = TagSpecification::builder()
+        .resource_type(ResourceType::SecurityGroup)
+        .tags(Tag::builder().key("Name").value(name).build())
+        .tags(
+            Tag::builder()
+                .key("managed_by")
+                .value("clickhousectl_e2e")
+                .build(),
+        )
+        .build();
 
     let sg = ec2
         .create_security_group()
         .vpc_id(vpc_id)
         .group_name(name)
         .description(format!("clickhousectl e2e ({name})"))
+        .tag_specifications(tag_spec)
         .send()
         .await?;
     let sg_id = sg.group_id().ok_or("CreateSecurityGroup returned no id")?.to_string();
@@ -1605,9 +1620,31 @@ pub async fn launch_ec2_instance(
         )
         .build();
 
-    let tag_spec = TagSpecification::builder()
+    // Tag the instance and every resource RunInstances creates alongside it
+    // (root volume, primary network interface). Volumes/NICs go away with the
+    // instance, but tagging them at creation lets a tightly-scoped IAM policy
+    // gate `aws:ResourceTag/managed_by` on every action against them.
+    let instance_tags = TagSpecification::builder()
         .resource_type(ResourceType::Instance)
         .tags(Tag::builder().key("Name").value(name_tag).build())
+        .tags(
+            Tag::builder()
+                .key("managed_by")
+                .value("clickhousectl_e2e")
+                .build(),
+        )
+        .build();
+    let volume_tags = TagSpecification::builder()
+        .resource_type(ResourceType::Volume)
+        .tags(
+            Tag::builder()
+                .key("managed_by")
+                .value("clickhousectl_e2e")
+                .build(),
+        )
+        .build();
+    let nic_tags = TagSpecification::builder()
+        .resource_type(ResourceType::NetworkInterface)
         .tags(
             Tag::builder()
                 .key("managed_by")
@@ -1625,7 +1662,9 @@ pub async fn launch_ec2_instance(
         .user_data(ud_b64)
         .network_interfaces(nic)
         .block_device_mappings(root_volume)
-        .tag_specifications(tag_spec)
+        .tag_specifications(instance_tags)
+        .tag_specifications(volume_tags)
+        .tag_specifications(nic_tags)
         .send()
         .await?;
 
@@ -1686,11 +1725,25 @@ pub async fn launch_ec2_instance(
 pub async fn allocate_elastic_ip(
     ec2: &aws_sdk_ec2::Client,
 ) -> TestResult<(String, String)> {
-    use aws_sdk_ec2::types::DomainType;
+    use aws_sdk_ec2::types::{DomainType, ResourceType, Tag, TagSpecification};
+
+    // Tag at creation so the IAM policy gating these tests can scope
+    // ReleaseAddress / Associate / Disassociate by
+    // `aws:ResourceTag/managed_by`.
+    let tag_spec = TagSpecification::builder()
+        .resource_type(ResourceType::ElasticIp)
+        .tags(
+            Tag::builder()
+                .key("managed_by")
+                .value("clickhousectl_e2e")
+                .build(),
+        )
+        .build();
 
     let resp = ec2
         .allocate_address()
         .domain(DomainType::Vpc)
+        .tag_specifications(tag_spec)
         .send()
         .await?;
     let ip = resp.public_ip().ok_or("AllocateAddress returned no public_ip")?.to_string();
@@ -1904,26 +1957,30 @@ pub async fn create_clickpipes_iam_role(
     })
     .to_string();
 
+    // Tag at CreateRole so the role is never visible to AWS untagged. A
+    // tightly-scoped IAM policy can require `aws:RequestTag/managed_by` on
+    // iam:CreateRole, which this satisfies; the previous CreateRole→TagRole
+    // pattern left a window where the role existed without the tag.
+    let aws_tags: Vec<Tag> = tags
+        .iter()
+        .map(|(k, v)| Tag::builder().key(k).value(v).build())
+        .collect::<Result<_, _>>()?;
+
     let resp = iam
         .create_role()
         .role_name(role_name)
         .assume_role_policy_document(trust_policy)
+        .set_tags(if aws_tags.is_empty() {
+            None
+        } else {
+            Some(aws_tags)
+        })
         .send()
         .await?;
     let role_arn = resp
         .role()
         .map(|r| r.arn().to_string())
         .ok_or("CreateRole returned no role")?;
-
-    if !tags.is_empty() {
-        let aws_tags: Vec<Tag> = tags
-            .iter()
-            .map(|(k, v)| Tag::builder().key(k).value(v).build())
-            .collect::<Result<_, _>>()?;
-        if let Err(e) = iam.tag_role().role_name(role_name).set_tags(Some(aws_tags)).send().await {
-            eprintln!("  warn: failed to tag iam role (continuing): {e}");
-        }
-    }
 
     iam.put_role_policy()
         .role_name(role_name)
@@ -1990,9 +2047,9 @@ pub async fn create_kinesis_stream(
         for (k, v) in tags {
             req = req.tags(k, v);
         }
-        if let Err(e) = req.send().await {
-            eprintln!("  warn: failed to tag kinesis stream (continuing): {e}");
-        }
+        // Fail loudly: an untagged stream can't be deleted by a tag-scoped
+        // IAM policy and would leak past the test run.
+        req.send().await?;
     }
 
     Ok(arn)

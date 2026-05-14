@@ -11,13 +11,14 @@
 
 use std::time::Duration;
 
+use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 
 use crate::integration::support::*;
 
 use super::{
-    StageCtx, StageOutcome, b64, create_pipe_via_cli_and_wait_running, duration_from_env_or,
-    random_token, sanitize_for_topic, verify_seed_rows,
+    StageCtx, StageOutcome, b64, create_pipe_and_wait_running, duration_from_env_or, random_token,
+    sanitize_for_topic, verify_seed_rows,
 };
 
 const POSTGRES_SOURCE_TABLE: &str = "pg_users";
@@ -42,14 +43,13 @@ struct PostgresVariant {
     /// land. Most variants have one entry; the multi-mapping variant has two
     /// (different source tables, different spot rows).
     mappings: &'static [(&'static str, &'static str, i64, &'static str)],
-    /// CLI value for `--replication-mode`.
-    replication_mode: &'static str,
-    /// `Some(name)` to pass `--publication-name <name>`. `None` omits the
-    /// flag entirely — for cdc this exercises Al's Bug 1 scenario where the
+    replication_mode: ClickPipePostgresPipeSettingsReplicationmode,
+    /// `Some(name)` sets `publicationName` on the pipe settings. `None`
+    /// omits it — for cdc this exercises Al's Bug 1 scenario where the
     /// server auto-creates the publication.
     publication_name: Option<&'static str>,
-    /// `Some(name)` to pass `--tls-host <name>`. Requires the server cert to
-    /// have `name` as a DNS SAN (we add `POSTGRES_TLS_HOST_NAME` to every
+    /// `Some(name)` sets `tlsHost` on the source. Requires the server cert
+    /// to have `name` as a DNS SAN (we add `POSTGRES_TLS_HOST_NAME` to every
     /// cert; only the `cdc-tls-host` variant actually exercises it).
     tls_host: Option<&'static str>,
 }
@@ -63,7 +63,7 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
     PostgresVariant {
         label: "cdc-auto",
         mappings: &[("pg_users", "postgres_cdc_auto_users", 1, "Ada Lovelace")],
-        replication_mode: "cdc",
+        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
         // Both flags omitted — Al's Bug 1 scenario.
         publication_name: None,
         tls_host: None,
@@ -71,7 +71,7 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
     PostgresVariant {
         label: "cdc-explicit",
         mappings: &[("pg_users", "postgres_cdc_explicit_users", 1, "Ada Lovelace")],
-        replication_mode: "cdc",
+        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
         // Pre-created in user_data; pipe references it by name.
         publication_name: Some("pg_pub_explicit"),
         tls_host: None,
@@ -79,7 +79,7 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
     PostgresVariant {
         label: "snapshot",
         mappings: &[("pg_users", "postgres_snapshot_users", 1, "Ada Lovelace")],
-        replication_mode: "snapshot",
+        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Snapshot,
         publication_name: None,
         tls_host: None,
     },
@@ -92,7 +92,7 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
             ("pg_users", "postgres_multi_a_users", 1, "Ada Lovelace"),
             ("pg_users_more", "postgres_multi_b_users", 101, "Joan Clarke"),
         ],
-        replication_mode: "cdc",
+        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
         publication_name: None,
         tls_host: None,
     },
@@ -102,7 +102,7 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
         // baked into the cert. Catches handler regressions that drop or
         // mis-route the `--tls-host` flag in the postgres source body.
         mappings: &[("pg_users", "postgres_tls_host_users", 1, "Ada Lovelace")],
-        replication_mode: "cdc",
+        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
         publication_name: None,
         tls_host: Some(POSTGRES_TLS_HOST_NAME),
     },
@@ -244,20 +244,15 @@ async fn run_inner(
         }
     }
 
-    let ca_path =
-        crate::integration::cli::write_temp_file(&ctx.run_id, "postgres-ca.pem", &certs.ca_pem)?;
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-
     // Run all variants in parallel against the same EC2 / Postgres server.
     // Each variant gets its own scratch CleanupRegistry which we merge back
     // into the caller's after `tokio::join!` resolves — same pattern as the
     // multi-stage driver. No Mutex needed because the registries are
     // disjoint until merge time.
-    log_phase("Postgres stage: run all variants in parallel (via CLI)");
+    log_phase("Postgres stage: run all variants in parallel");
 
     let (out_a, out_b, out_c, out_d, out_e) = tokio::join!(
         run_variant(
-            &cli,
             client,
             ctx,
             ch,
@@ -265,13 +260,12 @@ async fn run_inner(
             &db_name,
             &clickpipe_user,
             &clickpipe_pass,
-            &ca_path,
+            &certs.ca_pem,
             &POSTGRES_VARIANTS[0],
             clickpipe_ready_timeout,
             ingest_timeout,
         ),
         run_variant(
-            &cli,
             client,
             ctx,
             ch,
@@ -279,13 +273,12 @@ async fn run_inner(
             &db_name,
             &clickpipe_user,
             &clickpipe_pass,
-            &ca_path,
+            &certs.ca_pem,
             &POSTGRES_VARIANTS[1],
             clickpipe_ready_timeout,
             ingest_timeout,
         ),
         run_variant(
-            &cli,
             client,
             ctx,
             ch,
@@ -293,13 +286,12 @@ async fn run_inner(
             &db_name,
             &clickpipe_user,
             &clickpipe_pass,
-            &ca_path,
+            &certs.ca_pem,
             &POSTGRES_VARIANTS[2],
             clickpipe_ready_timeout,
             ingest_timeout,
         ),
         run_variant(
-            &cli,
             client,
             ctx,
             ch,
@@ -307,13 +299,12 @@ async fn run_inner(
             &db_name,
             &clickpipe_user,
             &clickpipe_pass,
-            &ca_path,
+            &certs.ca_pem,
             &POSTGRES_VARIANTS[3],
             clickpipe_ready_timeout,
             ingest_timeout,
         ),
         run_variant(
-            &cli,
             client,
             ctx,
             ch,
@@ -321,7 +312,7 @@ async fn run_inner(
             &db_name,
             &clickpipe_user,
             &clickpipe_pass,
-            &ca_path,
+            &certs.ca_pem,
             &POSTGRES_VARIANTS[4],
             clickpipe_ready_timeout,
             ingest_timeout,
@@ -364,13 +355,12 @@ async fn run_inner(
     Ok(())
 }
 
-/// Run one Postgres variant against the shared EC2: build CLI args, invoke
-/// the binary, register the pipe + poll Running, then verify rows landed in
+/// Run one Postgres variant against the shared EC2: build the create
+/// request, register the pipe + poll Running, then verify rows landed in
 /// the variant's target table. Returns the sub-registry so the caller can
 /// merge it for teardown (pipes still get cleaned up on failure).
 #[allow(clippy::too_many_arguments)]
 async fn run_variant(
-    cli: &crate::integration::cli::ClickhousectlCli,
     client: &Client,
     ctx: &TestContext,
     ch: &ProvisionedClickHouse,
@@ -378,73 +368,65 @@ async fn run_variant(
     db_name: &str,
     clickpipe_user: &str,
     clickpipe_pass: &str,
-    ca_path: &str,
+    ca_pem: &str,
     variant: &PostgresVariant,
     clickpipe_ready_timeout: Duration,
     ingest_timeout: Duration,
 ) -> (TestResult<()>, CleanupRegistry) {
     let mut sub_cleanup = CleanupRegistry::default();
     let result = async {
-        let pipe_name = format!("postgres-{}-{}", variant.label, ctx.run_id);
-        let port_str = "5432";
+        let pipe_request = ClickPipePostRequest {
+            name: format!("postgres-{}-{}", variant.label, ctx.run_id),
+            // Postgres is a "database pipe" — only `database` is valid at
+            // the top level. The per-mapping `targetTable` carries the
+            // destination table.
+            destination: ClickPipeMutateDestination {
+                database: "default".to_string(),
+                ..Default::default()
+            },
+            source: ClickPipePostSource {
+                postgres: Some(ClickPipeMutatePostgresSource {
+                    r#type: Some(ClickPipeMutatePostgresSourceType::Postgres),
+                    authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
+                    credentials: PLAIN {
+                        username: clickpipe_user.to_string(),
+                        password: clickpipe_pass.to_string(),
+                    },
+                    host: host_ip.to_string(),
+                    port: 5432,
+                    database: db_name.to_string(),
+                    ca_certificate: Some(ca_pem.to_string()),
+                    tls_host: variant.tls_host.map(str::to_string),
+                    settings: ClickPipePostgresPipeSettings {
+                        replication_mode: variant.replication_mode.clone(),
+                        publication_name: variant.publication_name.map(str::to_string),
+                        ..Default::default()
+                    },
+                    table_mappings: variant
+                        .mappings
+                        .iter()
+                        .map(|(src, dst, _, _)| ClickPipePostgresPipeTableMapping {
+                            source_schema_name: "public".to_string(),
+                            source_table: (*src).to_string(),
+                            target_table: (*dst).to_string(),
+                            table_engine:
+                                ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
-        // Format each `(source_table, target_table)` mapping as the CLI's
-        // `schema.table:target_table` syntax. Owned Strings here so the &str
-        // references in `args` stay alive for the duration of the CLI call.
-        let mapping_strs: Vec<String> = variant
-            .mappings
-            .iter()
-            .map(|(src, dst, _, _)| format!("public.{src}:{dst}"))
-            .collect();
-
-        let mut args: Vec<&str> = vec![
-            "clickpipe",
-            "create",
-            "postgres",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--host",
-            host_ip,
-            "--port",
-            port_str,
-            "--pg-database",
-            db_name,
-            "--username",
-            clickpipe_user,
-            "--password",
-            clickpipe_pass,
-            "--postgres-type",
-            "postgres",
-            "--replication-mode",
-            variant.replication_mode,
-            "--auth",
-            "basic",
-            "--ca-certificate",
-            ca_path,
-            "--org-id",
-            &ctx.org_id,
-        ];
-        for mapping in &mapping_strs {
-            args.push("--table-mapping");
-            args.push(mapping.as_str());
-        }
-        if let Some(pub_name) = variant.publication_name {
-            args.push("--publication-name");
-            args.push(pub_name);
-        }
-        if let Some(tls_host) = variant.tls_host {
-            args.push("--tls-host");
-            args.push(tls_host);
-        }
-
-        let _ = create_pipe_via_cli_and_wait_running(
-            cli,
+        let _ = create_pipe_and_wait_running(
             client,
             ctx,
             ch,
             &mut sub_cleanup,
-            &args,
+            &pipe_request,
             clickpipe_ready_timeout,
         )
         .await?;

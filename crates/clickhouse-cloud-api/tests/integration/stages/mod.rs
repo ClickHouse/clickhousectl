@@ -153,60 +153,6 @@ pub async fn create_pipe_and_wait_running(
     Ok(clickpipe_id)
 }
 
-/// CLI-driven equivalent of [`create_pipe_and_wait_running`]. Invokes the
-/// `clickhousectl` binary instead of building the request struct in-process,
-/// so the whole stack (clap parsing → handler → HTTP → API) is exercised.
-/// This is what structurally catches the Al-bug class — if a future handler
-/// regression sends `""` for an unset arg, the CLI process either prints an
-/// error and exits non-zero, or the API rejects the create.
-pub async fn create_pipe_via_cli_and_wait_running(
-    cli: &crate::integration::cli::ClickhousectlCli,
-    client: &Client,
-    ctx: &TestContext,
-    ch: &ProvisionedClickHouse,
-    cleanup: &mut CleanupRegistry,
-    args: &[&str],
-    ready_timeout: Duration,
-) -> TestResult<String> {
-    let pipe_json = cli.run_cloud_json(args)?;
-    let clickpipe_id = pipe_json["id"]
-        .as_str()
-        .ok_or("CLI clickpipe-create response had no `id` field")?
-        .to_string();
-    cleanup.register_clickpipe(ch.service_id.clone(), clickpipe_id.clone());
-    eprintln!("  provisioned clickpipe via CLI: <redacted>");
-
-    poll_until(
-        "clickpipe Running state",
-        ready_timeout,
-        ctx.poll_interval,
-        || {
-            let client = client.clone();
-            let org_id = ctx.org_id.clone();
-            let service_id = ch.service_id.clone();
-            let clickpipe_id = clickpipe_id.clone();
-            async move {
-                let resp = client
-                    .click_pipe_get(&org_id, &service_id, &clickpipe_id)
-                    .await?;
-                let pipe = resp.result.ok_or("clickpipe get returned no result")?;
-                match pipe.state {
-                    ClickPipeState::Running | ClickPipeState::Completed => Ok(Some(pipe)),
-                    ClickPipeState::Failed | ClickPipeState::InternalError => Err(format!(
-                        "clickpipe entered terminal failure state {}",
-                        pipe.state
-                    )
-                    .into()),
-                    _ => Ok(None),
-                }
-            }
-        },
-    )
-    .await?;
-
-    Ok(clickpipe_id)
-}
-
 /// Wait until `default.{table}` reflects at least `expected_count` rows, then
 /// spot-check a known row: `SELECT name FROM default.{table} WHERE id = {spot_id}`
 /// must return `spot_name`. Most callers use `(1, "Ada Lovelace")` — the

@@ -7,7 +7,10 @@ use clickhouse_cloud_api::Client;
 
 use crate::integration::support::*;
 
-use super::{StageCtx, StageOutcome, duration_from_env_or};
+use super::{
+    StageCtx, StageOutcome, create_pipe_and_wait_running, duration_from_env_or,
+    managed_destination_users,
+};
 
 const S3_TARGET_TABLE: &str = "s3_users";
 const S3_SEED_ROW_COUNT: i64 = 3;
@@ -121,7 +124,7 @@ async fn run_inner(
     // on a transient AccessDenied.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    log_phase("S3 stage: create ClickPipe (via CLI)");
+    log_phase("S3 stage: create ClickPipe");
 
     // Register the destination table for teardown — when running against a
     // shared CHC service, the table outlives the pipe and a re-run would
@@ -131,44 +134,29 @@ async fn run_inner(
     let object_url = format!("https://{bucket}.s3.{aws_region}.amazonaws.com/{S3_FIXTURE_KEY}");
     let pipe_name = format!("s3-{}", ctx.run_id);
 
-    // CLI-driven invocation: exercises clap → handler → HTTP → API end-to-end.
-    // Argument shape matches what a user would type:
-    //   clickhousectl cloud clickpipe create object-storage <service_id> --name ... --json
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-    let _ = super::create_pipe_via_cli_and_wait_running(
-        &cli,
+    let pipe_request = ClickPipePostRequest {
+        name: pipe_name,
+        source: ClickPipePostSource {
+            object_storage: Some(ClickPipePostObjectStorageSource {
+                r#type: ClickPipePostObjectStorageSourceType::default(),
+                format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
+                url: object_url,
+                authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
+                iam_role: Some(role_arn),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        destination: managed_destination_users(S3_TARGET_TABLE),
+        ..Default::default()
+    };
+
+    let _ = create_pipe_and_wait_running(
         client,
         ctx,
         ch,
         cleanup,
-        &[
-            "clickpipe",
-            "create",
-            "object-storage",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--source-url",
-            &object_url,
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "default",
-            "--table",
-            S3_TARGET_TABLE,
-            "--column",
-            "id:Int64",
-            "--column",
-            "name:String",
-            "--column",
-            "email:String",
-            "--storage-type",
-            "s3",
-            "--iam-role",
-            &role_arn,
-            "--org-id",
-            &ctx.org_id,
-        ],
+        &pipe_request,
         clickpipe_ready_timeout,
     )
     .await?;

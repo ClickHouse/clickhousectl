@@ -169,10 +169,6 @@ async fn run_inner(
     // Build + run one pipe per replication variant, all against the same
     // MySQL server. Each variant lands data in its own target table so the
     // verifications don't collide.
-    let ca_path =
-        crate::integration::cli::write_temp_file(&ctx.run_id, "mysql-ca.pem", &certs.ca_pem)?;
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-    let port_str = "3306";
 
     // Register ALL variant tables up-front so partial failures (e.g. variant
     // 2 fails) still leave every table queued for cleanup. Otherwise a
@@ -184,63 +180,26 @@ async fn run_inner(
 
     for variant in MYSQL_VARIANTS {
         log_phase(&format!(
-            "MySQL stage ({}): create ClickPipe (via CLI)",
+            "MySQL stage ({}): create ClickPipe",
             variant.label
         ));
-        let pipe_name = format!("mysql-{}-{}", variant.label, ctx.run_id);
-        let table_mapping = format!("{db_name}.{MYSQL_SOURCE_TABLE}:{}", variant.target_table);
-        let replication_mode = match variant.replication_mode {
-            ClickPipeMySQLPipeSettingsReplicationmode::Cdc => "cdc",
-            ClickPipeMySQLPipeSettingsReplicationmode::Snapshot => "snapshot",
-            ClickPipeMySQLPipeSettingsReplicationmode::Cdc_only => "cdc_only",
-            _ => "cdc",
-        };
-        let replication_mechanism = match variant.replication_mechanism.as_ref() {
-            Some(ClickPipeMySQLPipeSettingsReplicationmechanism::GTID) => Some("GTID"),
-            Some(ClickPipeMySQLPipeSettingsReplicationmechanism::FILE_POS) => Some("FILE_POS"),
-            _ => None,
-        };
 
-        let mut args: Vec<&str> = vec![
-            "clickpipe",
-            "create",
-            "mysql",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--host",
+        let pipe_request = build_pipe_request(
+            ctx,
+            &db_name,
             &host_ip,
-            "--port",
-            port_str,
-            "--username",
             &clickpipe_user,
-            "--password",
             &clickpipe_pass,
-            "--table-mapping",
-            &table_mapping,
-            "--mysql-type",
-            "mysql",
-            "--replication-mode",
-            replication_mode,
-            "--auth",
-            "basic",
-            "--ca-certificate",
-            &ca_path,
-            "--org-id",
-            &ctx.org_id,
-        ];
-        if let Some(mech) = replication_mechanism {
-            args.push("--replication-mechanism");
-            args.push(mech);
-        }
+            &certs.ca_pem,
+            variant,
+        );
 
-        let _ = super::create_pipe_via_cli_and_wait_running(
-            &cli,
+        let _ = create_pipe_and_wait_running(
             client,
             ctx,
             ch,
             cleanup,
-            &args,
+            &pipe_request,
             clickpipe_ready_timeout,
         )
         .await?;

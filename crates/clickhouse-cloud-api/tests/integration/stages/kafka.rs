@@ -147,63 +147,47 @@ async fn run_scram_tls_inner(
     // right after, and ClickPipes can't consume without those.
     tokio::time::sleep(Duration::from_secs(15)).await;
 
-    log_phase("Kafka stage (scram-tls): create ClickPipe (via CLI)");
+    log_phase("Kafka stage (scram-tls): create ClickPipe");
 
     cleanup.register_table(KAFKA_SCRAM_TLS_TARGET_TABLE);
 
     let pipe_name = format!("kafka-scram-tls-{}", ctx.run_id);
     let brokers = format!("{broker_ip}:9092");
     let consumer_group = format!("clickpipe-scram-tls-{}", ctx.run_id);
-    let ca_path =
-        crate::integration::cli::write_temp_file(&ctx.run_id, "kafka-scram-ca.pem", &certs.ca_pem)?;
 
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-    let _ = super::create_pipe_via_cli_and_wait_running(
-        &cli,
+    let pipe_request = ClickPipePostRequest {
+        name: pipe_name,
+        source: ClickPipePostSource {
+            kafka: Some(ClickPipePostKafkaSource {
+                r#type: ClickPipePostKafkaSourceType::Redpanda,
+                format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+                brokers,
+                topics: topic.clone(),
+                authentication: ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512,
+                credentials: serde_json::json!({
+                    "username": clickpipe_user,
+                    "password": clickpipe_pass,
+                }),
+                consumer_group: Some(consumer_group),
+                ca_certificate: Some(certs.ca_pem.clone()),
+                offset: Some(ClickPipeKafkaOffset {
+                    strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
+                    timestamp: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        destination: managed_destination_users(KAFKA_SCRAM_TLS_TARGET_TABLE),
+        ..Default::default()
+    };
+
+    let _ = create_pipe_and_wait_running(
         client,
         ctx,
         ch,
         cleanup,
-        &[
-            "clickpipe",
-            "create",
-            "kafka",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--brokers",
-            &brokers,
-            "--topics",
-            &topic,
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "default",
-            "--table",
-            KAFKA_SCRAM_TLS_TARGET_TABLE,
-            "--column",
-            "id:Int64",
-            "--column",
-            "name:String",
-            "--column",
-            "email:String",
-            "--kafka-type",
-            "redpanda",
-            "--consumer-group",
-            &consumer_group,
-            "--auth",
-            "SCRAM-SHA-512",
-            "--username",
-            &clickpipe_user,
-            "--password",
-            &clickpipe_pass,
-            "--ca-certificate",
-            &ca_path,
-            "--offset",
-            "from_beginning",
-            "--org-id",
-            &ctx.org_id,
-        ],
+        &pipe_request,
         clickpipe_ready_timeout,
     )
     .await?;
@@ -277,78 +261,49 @@ async fn run_mtls_inner(
     wait_for_tcp_port(&broker_ip, 9092, Duration::from_secs(REDPANDA_BOOT_TIMEOUT_SECS)).await?;
     tokio::time::sleep(Duration::from_secs(60)).await;
 
-    log_phase("Kafka stage (mtls): create ClickPipe (via CLI)");
+    log_phase("Kafka stage (mtls): create ClickPipe");
 
     cleanup.register_table(KAFKA_MTLS_TARGET_TABLE);
 
     let pipe_name = format!("kafka-mtls-{}", ctx.run_id);
     let brokers = format!("{broker_ip}:9092");
     let consumer_group = format!("clickpipe-mtls-{}", ctx.run_id);
-    let ca_path = crate::integration::cli::write_temp_file(
-        &ctx.run_id,
-        "kafka-mtls-ca.pem",
-        &certs.ca_pem,
-    )?;
-    let client_cert_path = crate::integration::cli::write_temp_file(
-        &ctx.run_id,
-        "kafka-mtls-client.crt",
-        &certs.client_cert_pem,
-    )?;
-    let client_key_path = crate::integration::cli::write_temp_file(
-        &ctx.run_id,
-        "kafka-mtls-client.key",
-        &certs.client_key_pem,
-    )?;
 
-    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
-    let _ = super::create_pipe_via_cli_and_wait_running(
-        &cli,
+    let pipe_request = ClickPipePostRequest {
+        name: pipe_name,
+        source: ClickPipePostSource {
+            kafka: Some(ClickPipePostKafkaSource {
+                // type=redpanda rejects MUTUAL_TLS; use generic kafka (broker
+                // is still the Redpanda instance).
+                r#type: ClickPipePostKafkaSourceType::Kafka,
+                format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+                brokers,
+                topics: topic.clone(),
+                authentication: ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS,
+                credentials: serde_json::json!({
+                    "certificate": certs.client_cert_pem,
+                    "privateKey": certs.client_key_pem,
+                }),
+                consumer_group: Some(consumer_group),
+                ca_certificate: Some(certs.ca_pem.clone()),
+                offset: Some(ClickPipeKafkaOffset {
+                    strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
+                    timestamp: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        destination: managed_destination_users(KAFKA_MTLS_TARGET_TABLE),
+        ..Default::default()
+    };
+
+    let _ = create_pipe_and_wait_running(
         client,
         ctx,
         ch,
         cleanup,
-        &[
-            "clickpipe",
-            "create",
-            "kafka",
-            &ch.service_id,
-            "--name",
-            &pipe_name,
-            "--brokers",
-            &brokers,
-            "--topics",
-            &topic,
-            "--format",
-            "JSONEachRow",
-            "--database",
-            "default",
-            "--table",
-            KAFKA_MTLS_TARGET_TABLE,
-            "--column",
-            "id:Int64",
-            "--column",
-            "name:String",
-            "--column",
-            "email:String",
-            // type=redpanda rejects MUTUAL_TLS; use generic kafka (broker
-            // is still the Redpanda instance).
-            "--kafka-type",
-            "kafka",
-            "--consumer-group",
-            &consumer_group,
-            "--auth",
-            "MUTUAL_TLS",
-            "--client-certificate",
-            &client_cert_path,
-            "--client-key",
-            &client_key_path,
-            "--ca-certificate",
-            &ca_path,
-            "--offset",
-            "from_beginning",
-            "--org-id",
-            &ctx.org_id,
-        ],
+        &pipe_request,
         clickpipe_ready_timeout,
     )
     .await?;
