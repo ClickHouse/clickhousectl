@@ -143,28 +143,6 @@ cargo run -p clickhousectl -- local client --query "SELECT 1"
 
 ## Testing model
 
-The repo follows a strict split between **API-library** testing and **CLI** testing. Both crates carry their own weight — neither leans on the other to cover what it should cover itself.
-
-### Cloud API library (`crates/clickhouse-cloud-api/`) — real integration tests
-
-- **Target: 100% coverage of the OpenAPI spec via real cloud integration tests.** Every path/method in the spec should have at least one integration test that hits the real ClickHouse Cloud API. Coverage gaps are bugs in the test suite.
-- **Cost is not a valid reason to skip an integration test.** Spinning up real services, instances, or backups for a test is acceptable. If a path is expensive to exercise, the answer is to make the test efficient (reuse fixtures, parallelize, tear down promptly) — not to mock it out or skip it.
-- **All cloud integration testing happens against the HTTP client library, invoked directly from Rust.** Tests call `Client` methods (`crates/clickhouse-cloud-api/src/client.rs`) directly — they do not shell out to the `clickhousectl` binary. The library is the unit under test; the CLI is irrelevant to library coverage.
-- Integration test files live in `crates/clickhouse-cloud-api/tests/integration_*.rs`, with shared fixtures/stages in `crates/clickhouse-cloud-api/tests/integration/` (driver, support, per-source stages like `postgres.rs`, `kafka.rs`, etc.).
-- `spec_coverage_test.rs` enforces that every spec operation has a corresponding client method and every schema field has a matching model field — it is the structural floor; integration tests are the behavioural ceiling.
-
-### CLI (`crates/clickhousectl/`) — request-shape contract tests
-
-- **The CLI's job is to translate user input into correct request bodies for the library.** That translation is a contract between the CLI and the library's request models, and it must be tested extensively.
-- **CLI tests assert on the shape of the request the CLI produces**, not on cloud behaviour. Use `wiremock` to stand up a local mock API, point the CLI at it, and assert on the captured request body's JSON shape. See `crates/clickhousectl/tests/cli_request_shape_test.rs` for the pattern.
-- This guards against handler-level regressions (e.g. `args.foo.clone().unwrap_or_default()` serializing `""` for an optional field that the API rejects when empty). These bugs are invisible to library integration tests because the library is never called with the broken shape — only the CLI produces it.
-- **Every new CLI subcommand that builds a request body needs a request-shape test.** Cover at least: the minimum-required-args shape, the all-optional-flags-set shape, and any flag whose optionality affects serialization (`Option<T>` vs `T`, `skip_serializing_if`, enums, nested structs).
-- CLI tests do not need cloud credentials and run in milliseconds — there is no cost excuse for missing coverage here either.
-
-### Summary
-
-| Layer | What it tests | Against what | Why |
-|---|---|---|---|
-| `clickhouse-cloud-api` integration tests | Library behaviour end-to-end | Real ClickHouse Cloud API | Catch API drift, real-world failures, schema mismatches |
-| `clickhousectl` request-shape tests | CLI → library request bodies | `wiremock` mock server | Catch handler regressions that produce wrong JSON shapes |
-| `spec_coverage_test.rs` | Client/model surface vs spec | OpenAPI spec JSON | Structural floor — every endpoint and field exists |
+- **`clickhouse-cloud-api`**: real cloud integration tests, target 100% OpenAPI spec coverage. Call `Client` directly from Rust — never via the CLI. Cost is not a reason to skip a test. Tests in `tests/integration_*.rs`, shared fixtures in `tests/integration/`.
+- **`clickhousectl`**: request-shape tests via `wiremock` (`tests/cli_request_shape_test.rs`). Assert the JSON the CLI sends matches the library's request models — this is the CLI↔lib contract. Every new subcommand that builds a request body needs one.
+- **`spec_coverage_test.rs`**: structural floor — every spec operation/field has a matching client method/model field.
