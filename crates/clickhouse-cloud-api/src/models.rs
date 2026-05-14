@@ -4919,6 +4919,29 @@ impl std::fmt::Display for CreateReversePrivateEndpointType {
     }
 }
 
+/// Inline enum for `CurrentScaling.effectiveAutoscalingMode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum CurrentScalingEffectiveautoscalingmode {
+    #[serde(rename = "vertical")]
+    #[default]
+    Vertical,
+    #[serde(rename = "horizontal")]
+    Horizontal,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for CurrentScalingEffectiveautoscalingmode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Vertical => write!(f, "vertical"),
+            Self::Horizontal => write!(f, "horizontal"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `GcpBackupBucket.bucketProvider`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum GcpBackupBucketBucketprovider {
@@ -9452,6 +9475,27 @@ pub struct CreateReversePrivateEndpoint {
     pub vpc_resource_share_arn: Option<String>,
 }
 
+/// `CurrentScaling` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CurrentScaling {
+    #[serde(rename = "activeEntryId", default)]
+    pub active_entry_id: uuid::Uuid,
+    #[serde(rename = "effectiveAutoscalingMode", default)]
+    pub effective_autoscaling_mode: CurrentScalingEffectiveautoscalingmode,
+    #[serde(rename = "effectiveIdleScaling", default)]
+    pub effective_idle_scaling: bool,
+    #[serde(rename = "effectiveIdleTimeoutMinutes", default)]
+    pub effective_idle_timeout_minutes: i64,
+    #[serde(rename = "effectiveMaxReplicaMemoryGb", default)]
+    pub effective_max_replica_memory_gb: f64,
+    #[serde(rename = "effectiveMaxReplicas", default)]
+    pub effective_max_replicas: i64,
+    #[serde(rename = "effectiveMinReplicaMemoryGb", default)]
+    pub effective_min_replica_memory_gb: f64,
+    #[serde(rename = "effectiveMinReplicas", default)]
+    pub effective_min_replicas: i64,
+}
+
 /// `GcpBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucket {
@@ -9997,6 +10041,102 @@ pub struct RoleUpdateRequest {
     pub name: String,
     #[serde(default)]
     pub policies: Vec<RBACPolicyCreateRequest>,
+}
+
+/// `ScalingSchedule` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScalingSchedule {
+    #[serde(rename = "activeEntryId", skip_serializing_if = "Option::is_none", default)]
+    pub active_entry_id: Option<uuid::Uuid>,
+    #[serde(rename = "baseConfig", default)]
+    pub base_config: ScalingScheduleBaseConfig,
+    #[serde(default)]
+    pub entries: Vec<ScalingScheduleEntry>,
+}
+
+/// `ScalingScheduleBaseConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScalingScheduleBaseConfig {
+    #[serde(rename = "idleScaling", default)]
+    pub idle_scaling: bool,
+    #[serde(rename = "idleTimeoutMinutes", default)]
+    pub idle_timeout_minutes: i64,
+    #[serde(rename = "maxReplicaMemoryGb", default)]
+    pub max_replica_memory_gb: f64,
+    #[serde(rename = "maxReplicas", default)]
+    pub max_replicas: i64,
+    #[serde(rename = "minReplicaMemoryGb", default)]
+    pub min_replica_memory_gb: f64,
+    #[serde(rename = "minReplicas", default)]
+    pub min_replicas: i64,
+}
+
+/// `ScalingScheduleEntry` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScalingScheduleEntry {
+    #[serde(rename = "endHourUtc", default)]
+    pub end_hour_utc: i64,
+    #[serde(default)]
+    pub id: uuid::Uuid,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none", default)]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none", default)]
+    pub idle_timeout_minutes: Option<i64>,
+    #[serde(rename = "isActiveNow", default)]
+    pub is_active_now: bool,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub max_replicas: Option<i64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub min_replicas: Option<i64>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "startHourUtc", default)]
+    pub start_hour_utc: i64,
+    #[serde(default)]
+    pub weekdays: Vec<i64>,
+}
+
+/// `ScalingScheduleEntryRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScalingScheduleEntryRequest {
+    #[serde(rename = "endHourUtc", default)]
+    pub end_hour_utc: i64,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none", default)]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none", default)]
+    pub idle_timeout_minutes: Option<i64>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub max_replicas: Option<i64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub min_replicas: Option<i64>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "startHourUtc", default)]
+    pub start_hour_utc: i64,
+    #[serde(default)]
+    pub weekdays: Vec<i64>,
+}
+
+/// `ScalingSchedulePatchRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScalingSchedulePatchRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub entries: Option<Vec<ScalingScheduleEntryRequest>>,
+}
+
+/// `ScalingSchedulePostRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ScalingSchedulePostRequest {
+    #[serde(default)]
+    pub entries: Vec<ScalingScheduleEntryRequest>,
 }
 
 /// `ScimEnterpriseManager` from the ClickHouse Cloud API.
@@ -10618,6 +10758,8 @@ pub struct Service {
     pub compliance_type: ServiceCompliancetype,
     #[serde(rename = "createdAt", default)]
     pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(rename = "currentScaling", default)]
+    pub current_scaling: CurrentScaling,
     #[serde(rename = "dataWarehouseId", default)]
     pub data_warehouse_id: String,
     #[serde(rename = "enableCoreDumps", default)]
@@ -10648,10 +10790,14 @@ pub struct Service {
     pub is_readonly: bool,
     #[serde(rename = "maxReplicaMemoryGb", default)]
     pub max_replica_memory_gb: f64,
+    #[serde(rename = "maxReplicas", default)]
+    pub max_replicas: f64,
     #[serde(rename = "maxTotalMemoryGb", default)]
     pub max_total_memory_gb: f64,
     #[serde(rename = "minReplicaMemoryGb", default)]
     pub min_replica_memory_gb: f64,
+    #[serde(rename = "minReplicas", default)]
+    pub min_replicas: f64,
     #[serde(rename = "minTotalMemoryGb", default)]
     pub min_total_memory_gb: f64,
     #[serde(default)]
@@ -10668,6 +10814,10 @@ pub struct Service {
     pub region: ServiceRegion,
     #[serde(rename = "releaseChannel", default)]
     pub release_channel: ServiceReleasechannel,
+    #[serde(rename = "replicaMemoryGb", default)]
+    pub replica_memory_gb: f64,
+    #[serde(rename = "scalingSchedule", default)]
+    pub scaling_schedule: ScalingSchedule,
     #[serde(default)]
     pub state: ServiceState,
     #[serde(default)]
@@ -10901,10 +11051,16 @@ pub struct ServiceReplicaScalingPatchRequest {
     pub idle_timeout_minutes: Option<f64>,
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub max_replicas: Option<f64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub min_replicas: Option<f64>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
     pub num_replicas: Option<f64>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub replica_memory_gb: Option<f64>,
 }
 
 /// `ServiceScalingPatchRequest` from the ClickHouse Cloud API.
@@ -10935,6 +11091,8 @@ pub struct ServiceScalingPatchResponse {
     pub compliance_type: ServiceScalingPatchResponseCompliancetype,
     #[serde(rename = "createdAt", default)]
     pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(rename = "currentScaling", default)]
+    pub current_scaling: CurrentScaling,
     #[serde(rename = "dataWarehouseId", default)]
     pub data_warehouse_id: String,
     #[serde(rename = "enableCoreDumps", default)]
@@ -10965,10 +11123,14 @@ pub struct ServiceScalingPatchResponse {
     pub is_readonly: bool,
     #[serde(rename = "maxReplicaMemoryGb", default)]
     pub max_replica_memory_gb: f64,
+    #[serde(rename = "maxReplicas", default)]
+    pub max_replicas: f64,
     #[serde(rename = "maxTotalMemoryGb", default)]
     pub max_total_memory_gb: f64,
     #[serde(rename = "minReplicaMemoryGb", default)]
     pub min_replica_memory_gb: f64,
+    #[serde(rename = "minReplicas", default)]
+    pub min_replicas: f64,
     #[serde(rename = "minTotalMemoryGb", default)]
     pub min_total_memory_gb: f64,
     #[serde(default)]
@@ -10985,6 +11147,10 @@ pub struct ServiceScalingPatchResponse {
     pub region: ServiceScalingPatchResponseRegion,
     #[serde(rename = "releaseChannel", default)]
     pub release_channel: ServiceScalingPatchResponseReleasechannel,
+    #[serde(rename = "replicaMemoryGb", default)]
+    pub replica_memory_gb: f64,
+    #[serde(rename = "scalingSchedule", default)]
+    pub scaling_schedule: ScalingSchedule,
     #[serde(default)]
     pub state: ServiceScalingPatchResponseState,
     #[serde(default)]

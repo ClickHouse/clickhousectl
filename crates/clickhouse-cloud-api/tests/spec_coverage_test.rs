@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
+use clickhouse_cloud_api::BETA_OPERATIONS;
 use serde_json::Value;
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -504,12 +505,25 @@ fn assert_field_coverage(spec: &Value) {
     );
 }
 
+/// Schemas where the spec's `required` array lists only newly-added fields;
+/// older fields on the same schema still rely on the description heuristic.
+/// For these we union `required[]` with the description heuristic instead of
+/// treating `required[]` as exclusive.
+///
+/// Remove an entry once the spec is corrected upstream. `PARTIAL_REQUIRED_SCHEMAS`
+/// is mirrored in `scripts/resolve-field-requirements.py`.
+const PARTIAL_REQUIRED_SCHEMAS: &[&str] = &[
+    "Service",
+    "ServiceScalingPatchResponse",
+];
+
 /// Determine which fields in a schema are required AND non-nullable.
 ///
 /// Resolution strategy:
-/// 1. PATCH request schemas (name contains "Patch" and ends with "Request") → all optional
-/// 2. If schema has a `required` array → use it
-/// 3. Otherwise → fields whose description does NOT start with "Optional" are required
+/// 1. PATCH request schemas (name contains "Patch" and ends with "Request") → all optional.
+/// 2. Schemas in `PARTIAL_REQUIRED_SCHEMAS` → required = `required[]` ∪ description heuristic.
+/// 3. Schemas with a `required` array → use it.
+/// 4. Otherwise → fields whose description does NOT start with "Optional" are required.
 ///
 /// Nullable fields (type: ["string", "null"] or oneOf/anyOf with null) are excluded.
 fn resolve_required_fields<'a>(schema_name: &str, schema: &'a Value) -> BTreeSet<&'a str> {
@@ -523,10 +537,24 @@ fn resolve_required_fields<'a>(schema_name: &str, schema: &'a Value) -> BTreeSet
         return BTreeSet::new();
     }
 
-    let required_names: BTreeSet<&str> = if let Some(required) = schema.get("required").and_then(Value::as_array) {
+    let is_partial = PARTIAL_REQUIRED_SCHEMAS.contains(&schema_name);
+
+    let required_names: BTreeSet<&str> = if is_partial {
+        let mut names: BTreeSet<&str> = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        for (name, prop) in props {
+            let desc = prop.get("description").and_then(Value::as_str).unwrap_or("");
+            if !desc.starts_with("Optional") {
+                names.insert(name.as_str());
+            }
+        }
+        names
+    } else if let Some(required) = schema.get("required").and_then(Value::as_array) {
         required.iter().filter_map(Value::as_str).collect()
     } else {
-        // Description heuristic for legacy schemas
         props
             .iter()
             .filter(|(_, prop)| {
@@ -646,4 +674,65 @@ fn extract_serde_rename(serde_line: &str) -> Option<&str> {
     let value_start = start + "rename = \"".len();
     let end = serde_line[value_start..].find('"')? + value_start;
     Some(&serde_line[value_start..end])
+}
+
+// ---------------------------------------------------------------------------
+// Beta status (x-badges) coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn beta_operations_match_spec() {
+    assert_beta_operations_match(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn beta_operations_match_live_spec() {
+    let spec = load_live_spec().await;
+    assert_beta_operations_match(&spec);
+}
+
+fn assert_beta_operations_match(spec: &Value) {
+    let spec_beta: BTreeSet<String> = spec_beta_operation_ids(spec);
+    let declared: BTreeSet<String> =
+        BETA_OPERATIONS.iter().map(|s| (*s).to_string()).collect();
+
+    let missing: Vec<_> = spec_beta.difference(&declared).cloned().collect();
+    let extra: Vec<_> = declared.difference(&spec_beta).cloned().collect();
+
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "BETA_OPERATIONS drifted from the OpenAPI spec.\n\
+         New beta ops in spec, missing from meta.rs: {:?}\n\
+         No longer beta in spec, still in meta.rs: {:?}\n\
+         Regenerate with: python3 scripts/regenerate-beta-lists.py",
+        missing,
+        extra,
+    );
+}
+
+fn spec_beta_operation_ids(spec: &Value) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for path_item in spec["paths"].as_object().unwrap().values() {
+        for (method, operation) in path_item.as_object().unwrap() {
+            if !matches!(
+                method.as_str(),
+                "get" | "put" | "post" | "delete" | "patch" | "options" | "head" | "trace"
+            ) {
+                continue;
+            }
+            let Some(badges) = operation.get("x-badges").and_then(Value::as_array) else {
+                continue;
+            };
+            let is_beta = badges
+                .iter()
+                .any(|b| b.get("name").and_then(Value::as_str) == Some("Beta"));
+            if is_beta {
+                ids.insert(camel_to_snake(
+                    operation["operationId"].as_str().unwrap(),
+                ));
+            }
+        }
+    }
+    ids
 }

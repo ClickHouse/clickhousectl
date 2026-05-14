@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-766864",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-795280",
       "email": "support@clickhouse.com"
     }
   },
@@ -2212,7 +2212,7 @@
     "/v1/organizations/{organizationId}/services/{serviceId}/replicaScaling": {
       "patch": {
         "summary": "Update service auto scaling settings",
-        "description": "Updates minimum and maximum memory limits per replica and idle mode scaling behavior for the service. The memory settings are available only for \"production\" services and must be a multiple of 4 starting from 8GB. Please contact support to enable adjustment of numReplicas.",
+        "description": "Updates minimum and maximum memory limits per replica and idle mode scaling behavior for the service. Supports both vertical autoscaling (fixed replica count, variable memory) and horizontal autoscaling (variable replica count, fixed memory). The memory settings are available only for \"production\" services and must be a multiple of 4 starting from 8GB. For vertical autoscaling, please contact support to enable adjustment of numReplicas. For horizontal autoscaling (minReplicas/maxReplicas/replicaMemoryGb), contact support to enable the feature for your organization.",
         "operationId": "instanceReplicaScalingUpdate",
         "parameters": [
           {
@@ -2671,6 +2671,371 @@
         },
         "tags": [
           "Prometheus"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule": {
+      "get": {
+        "summary": "Get service autoscaling schedule",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns the autoscaling schedule for a service. Returns 404 if no schedule has been configured or if the schedule was cleared. Requires the scheduled autoscaling feature to be enabled for the organization.",
+        "operationId": "scalingScheduleGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ScalingSchedule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create or replace service autoscaling schedule",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Creates or fully replaces the autoscaling schedule for a service. Pass an empty `entries` array to clear the schedule — a subsequent GET will return 404, and the response will contain an empty `baseConfig` (all fields absent). The base scaling config (applied when no entry is active) is managed separately via the `replicaScaling` endpoint. Requires the scheduled autoscaling feature to be enabled for the organization.",
+        "operationId": "scalingScheduleUpsert",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScalingSchedulePostRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ScalingSchedule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "patch": {
+        "summary": "Replace service autoscaling schedule",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Fully replaces the autoscaling schedule for a service. Note: this is a full replacement — `entries` is required and partial updates (omitting `entries` to update only `baseConfig`) are not supported. Pass an empty `entries` array to clear the schedule — a subsequent GET will return 404, and the response will contain an empty `baseConfig` (all fields absent). Requires the scheduled autoscaling feature to be enabled for the organization.",
+        "operationId": "scalingScheduleReplace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScalingSchedulePatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ScalingSchedule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
         ]
       }
     },
@@ -14160,6 +14525,254 @@
           "value": "staging"
         }
       },
+      "ScalingScheduleEntry": {
+        "properties": {
+          "id": {
+            "description": "Unique identifier for this schedule entry.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "description": "Human-readable label for this schedule entry.",
+            "type": "string"
+          },
+          "weekdays": {
+            "type": "array",
+            "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "startHourUtc": {
+            "description": "UTC hour (0–23) when this entry becomes active (inclusive).",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23
+          },
+          "endHourUtc": {
+            "description": "UTC hour (1–24) when this entry deactivates (exclusive). Must differ from startHourUtc. Set to 24 to end at midnight. Values less than startHourUtc create an overnight window spanning midnight.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 24
+          },
+          "minReplicaMemoryGb": {
+            "description": "Minimum memory per replica (Gb) during this window.",
+            "type": "number"
+          },
+          "maxReplicaMemoryGb": {
+            "description": "Maximum memory per replica (Gb) during this window.",
+            "type": "number"
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas during this window. Must equal maxReplicas — schedule entries specify a fixed replica count per window.",
+            "type": "integer"
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas during this window. Must equal minReplicas — schedule entries specify a fixed replica count per window.",
+            "type": "integer"
+          },
+          "idleScaling": {
+            "description": "Whether idle scaling is enabled during this window.",
+            "type": "boolean"
+          },
+          "idleTimeoutMinutes": {
+            "description": "Idle timeout in minutes during this window.",
+            "type": "integer"
+          },
+          "isActiveNow": {
+            "description": "Whether this entry is currently active. Scheduled times are indicative — actions are applied on a best-effort basis and may be delayed by a few minutes.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "weekdays",
+          "startHourUtc",
+          "endHourUtc",
+          "isActiveNow"
+        ]
+      },
+      "ScalingScheduleBaseConfig": {
+        "properties": {
+          "minReplicaMemoryGb": {
+            "description": "Minimum memory per replica (Gb) when no schedule entry is active.",
+            "type": "number"
+          },
+          "maxReplicaMemoryGb": {
+            "description": "Maximum memory per replica (Gb) when no schedule entry is active.",
+            "type": "number"
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas when no schedule entry is active.",
+            "type": "integer"
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas when no schedule entry is active.",
+            "type": "integer"
+          },
+          "idleScaling": {
+            "description": "Whether idle scaling is enabled when no schedule entry is active.",
+            "type": "boolean"
+          },
+          "idleTimeoutMinutes": {
+            "description": "Idle timeout in minutes when no schedule entry is active.",
+            "type": "integer"
+          }
+        }
+      },
+      "ScalingSchedule": {
+        "properties": {
+          "entries": {
+            "type": "array",
+            "description": "List of schedule entries.",
+            "items": {
+              "$ref": "#/components/schemas/ScalingScheduleEntry"
+            }
+          },
+          "baseConfig": {
+            "$ref": "#/components/schemas/ScalingScheduleBaseConfig"
+          },
+          "activeEntryId": {
+            "description": "ID of the currently-active schedule entry. Absent when no entry is active and the base config is in effect.",
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "entries",
+          "baseConfig"
+        ]
+      },
+      "ScalingScheduleEntryRequest": {
+        "properties": {
+          "name": {
+            "description": "Human-readable label for this schedule entry.",
+            "type": "string",
+            "example": "Business hours"
+          },
+          "weekdays": {
+            "type": "array",
+            "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "startHourUtc": {
+            "description": "UTC hour (0–23) when this entry becomes active (inclusive).",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 23,
+            "example": 9
+          },
+          "endHourUtc": {
+            "description": "UTC hour (1–24) when this entry deactivates (exclusive). Must differ from startHourUtc. Set to 24 to end at midnight. Values less than startHourUtc create an overnight window spanning midnight.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 24,
+            "example": 17
+          },
+          "minReplicaMemoryGb": {
+            "description": "Minimum memory per replica (Gb) during this window.",
+            "type": "number"
+          },
+          "maxReplicaMemoryGb": {
+            "description": "Maximum memory per replica (Gb) during this window.",
+            "type": "number"
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas during this window.",
+            "type": "integer"
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas during this window.",
+            "type": "integer"
+          },
+          "idleScaling": {
+            "description": "Whether idle scaling is enabled during this window.",
+            "type": "boolean"
+          },
+          "idleTimeoutMinutes": {
+            "description": "Idle timeout in minutes during this window.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "weekdays",
+          "startHourUtc",
+          "endHourUtc"
+        ]
+      },
+      "ScalingSchedulePostRequest": {
+        "properties": {
+          "entries": {
+            "type": "array",
+            "description": "List of schedule entries. Pass an empty array to clear the schedule.",
+            "items": {
+              "$ref": "#/components/schemas/ScalingScheduleEntryRequest"
+            }
+          }
+        },
+        "required": [
+          "entries"
+        ]
+      },
+      "ScalingSchedulePatchRequest": {
+        "properties": {
+          "entries": {
+            "type": "array",
+            "description": "Full list of schedule entries. Replaces any existing schedule. Pass an empty array to clear the schedule.",
+            "items": {
+              "$ref": "#/components/schemas/ScalingScheduleEntryRequest"
+            }
+          }
+        },
+        "required": [
+          "entries"
+        ]
+      },
+      "CurrentScaling": {
+        "properties": {
+          "effectiveAutoscalingMode": {
+            "description": "Autoscaling mode currently in effect on the running service. May diverge from the configured baseline mode while a schedule entry is active.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ]
+          },
+          "effectiveMinReplicaMemoryGb": {
+            "description": "Minimum memory per replica (Gb) currently applied to the running service. May diverge from the top-level `minReplicaMemoryGb` baseline while a schedule entry is active.",
+            "type": "number"
+          },
+          "effectiveMaxReplicaMemoryGb": {
+            "description": "Maximum memory per replica (Gb) currently applied to the running service. May diverge from the top-level `maxReplicaMemoryGb` baseline while a schedule entry is active. In horizontal autoscaling mode equals `effectiveMinReplicaMemoryGb`.",
+            "type": "number"
+          },
+          "effectiveMinReplicas": {
+            "description": "Minimum number of replicas currently applied to the running service. May diverge from the baseline while a schedule entry is active. In vertical autoscaling mode equals `effectiveMaxReplicas` (vertical mode runs a fixed replica count).",
+            "type": "integer"
+          },
+          "effectiveMaxReplicas": {
+            "description": "Maximum number of replicas currently applied to the running service. May diverge from the baseline while a schedule entry is active.",
+            "type": "integer"
+          },
+          "effectiveIdleScaling": {
+            "description": "Whether idle scaling is currently in effect on the service. May diverge from the top-level `idleScaling` baseline while a schedule entry is active.",
+            "type": "boolean"
+          },
+          "effectiveIdleTimeoutMinutes": {
+            "description": "Idle timeout in minutes currently in effect on the service. May diverge from the top-level `idleTimeoutMinutes` baseline while a schedule entry is active.",
+            "type": "integer"
+          },
+          "activeEntryId": {
+            "description": "ID of the schedule entry whose values are currently applied to the service. Absent when no entry is active.",
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
       "ServiceEndpoint": {
         "properties": {
           "protocol": {
@@ -14302,7 +14915,7 @@
             "deprecated": true
           },
           "minTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -14311,7 +14924,7 @@
             "deprecated": true
           },
           "maxTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -14336,11 +14949,33 @@
             "example": 120
           },
           "numReplicas": {
-            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers.",
+            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
             "type": "number",
             "minimum": 1,
             "maximum": 20,
             "example": 3
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 1
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 5
+          },
+          "replicaMemoryGb": {
+            "description": "Fixed memory per replica in Gb for horizontal autoscaling. Present only when the service uses horizontal autoscaling. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4,
+            "example": 32
           },
           "idleScaling": {
             "description": "When set to true the service is allowed to scale down to zero when idle. True by default.",
@@ -14455,8 +15090,17 @@
           "enableCoreDumps": {
             "description": "True if the service's underline infra is enabled for collecting core dumps. This is an experimental feature",
             "type": "boolean"
+          },
+          "scalingSchedule": {
+            "$ref": "#/components/schemas/ScalingSchedule"
+          },
+          "currentScaling": {
+            "$ref": "#/components/schemas/CurrentScaling"
           }
-        }
+        },
+        "required": [
+          "currentScaling"
+        ]
       },
       "PrivateEndpointConfig": {
         "properties": {
@@ -21723,7 +22367,7 @@
             }
           },
           "minTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -21732,7 +22376,7 @@
             "deprecated": true
           },
           "maxTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -21757,7 +22401,7 @@
             "example": 120
           },
           "numReplicas": {
-            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers.",
+            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
             "type": "number",
             "minimum": 1,
             "maximum": 20,
@@ -21920,7 +22564,7 @@
       "ServiceScalingPatchRequest": {
         "properties": {
           "minTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -21929,7 +22573,7 @@
             "deprecated": true
           },
           "maxTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -22055,7 +22699,7 @@
             "deprecated": true
           },
           "minTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `minReplicaMemoryGb` instead. Minimum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and greater than or equal to 24. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -22064,7 +22708,7 @@
             "deprecated": true
           },
           "maxTotalMemoryGb": {
-            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services.",
+            "description": "DEPRECATED - inaccurate for services with non-default numbers of replicas. Use `maxReplicaMemoryGb` instead. Maximum memory of three workers during auto-scaling in Gb. Available only for 'production' services. Must be a multiple of 12 and lower than or equal to 360 for non paid services or 1068 for paid services. Always absent for horizontal-autoscaling services (replica count is variable).",
             "type": "number",
             "minimum": 24,
             "maximum": 1068,
@@ -22073,7 +22717,7 @@
             "deprecated": true
           },
           "minReplicaMemoryGb": {
-            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8.",
+            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8. Present only when the service uses vertical autoscaling.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -22081,7 +22725,7 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum auto-scaling memory in Gb for a single replica . Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services.",
+            "description": "Maximum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services. Present only when the service uses vertical autoscaling.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -22089,11 +22733,33 @@
             "example": 120
           },
           "numReplicas": {
-            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers.",
+            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
             "type": "number",
             "minimum": 1,
             "maximum": 20,
             "example": 3
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 1
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 5
+          },
+          "replicaMemoryGb": {
+            "description": "Fixed memory per replica in Gb for horizontal autoscaling. Present only when the service uses horizontal autoscaling. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4,
+            "example": 32
           },
           "idleScaling": {
             "description": "When set to true the service is allowed to scale down to zero when idle. True by default.",
@@ -22208,13 +22874,22 @@
           "enableCoreDumps": {
             "description": "True if the service's underline infra is enabled for collecting core dumps. This is an experimental feature",
             "type": "boolean"
+          },
+          "scalingSchedule": {
+            "$ref": "#/components/schemas/ScalingSchedule"
+          },
+          "currentScaling": {
+            "$ref": "#/components/schemas/CurrentScaling"
           }
-        }
+        },
+        "required": [
+          "currentScaling"
+        ]
       },
       "ServiceReplicaScalingPatchRequest": {
         "properties": {
           "minReplicaMemoryGb": {
-            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8.",
+            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8. Used for vertical autoscaling. Mutually exclusive with replicaMemoryGb.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -22222,7 +22897,7 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum auto-scaling memory in Gb for a single replica . Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services.",
+            "description": "Maximum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services. Used for vertical autoscaling. Mutually exclusive with replicaMemoryGb.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -22230,11 +22905,33 @@
             "example": 120
           },
           "numReplicas": {
-            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers.",
+            "description": "Fixed replica count for vertical autoscaling. Mutually exclusive with minReplicas/maxReplicas. Please contact support to enable adjustment of numReplicas. When switching from horizontal autoscaling mode the existing replica memory is preserved as the new vertical min/max range; include minReplicaMemoryGb/maxReplicaMemoryGb in the same request to set an explicit range.",
             "type": "number",
             "minimum": 1,
             "maximum": 20,
             "example": 3
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas for horizontal autoscaling. Must be provided together with maxReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service.",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 1
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas for horizontal autoscaling. Must be provided together with minReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service.",
+            "type": "number",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 5
+          },
+          "replicaMemoryGb": {
+            "description": "Fixed memory per replica in Gb for horizontal autoscaling. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services. Mutually exclusive with minReplicaMemoryGb/maxReplicaMemoryGb. Requires horizontal autoscaling to be enabled for the service.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4,
+            "example": 32
           },
           "idleScaling": {
             "description": "When set to true the service is allowed to scale down to zero when idle. True by default.",

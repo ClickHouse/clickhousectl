@@ -205,7 +205,7 @@ CONTEXT FOR AGENTS:
   Most commands need a service ID — get it from `clickhousectl cloud service list`.
   Org ID is auto-detected if you have only one org; otherwise pass --org-id.
   Write commands (create, delete, start, stop, update, scale) require API key auth — OAuth is read-only.
-  Use `client` to open a clickhouse-client session to a service.
+  Use `query` to run SQL against a service over HTTP.
   Related: `clickhousectl cloud org list` for org IDs.")]
     Service {
         #[command(subcommand)]
@@ -295,7 +295,6 @@ impl CloudCommands {
             CloudCommands::Service { command } => match command {
                 ServiceCommands::List { .. } => false,
                 ServiceCommands::Get { .. } => false,
-                ServiceCommands::Client { .. } => false,
                 ServiceCommands::Prometheus { .. } => false,
                 ServiceCommands::Query { .. } => false,
                 ServiceCommands::Create { .. } => true,
@@ -758,54 +757,6 @@ CONTEXT FOR AGENTS:
     BackupConfig {
         #[command(subcommand)]
         command: BackupConfigCommands,
-    },
-
-    /// Connect to a cloud service with clickhouse-client
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Mirrors `clickhousectl local client` but for cloud services. Auto-downloads the matching
-  ClickHouse version. Use CLICKHOUSE_PASSWORD env var to avoid interactive prompts.
-  Related: `clickhousectl cloud service list` to find service names/IDs.")]
-    Client {
-        /// Service name to connect to
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Service ID to connect to
-        #[arg(long)]
-        id: Option<String>,
-
-        /// Execute a SQL query
-        #[arg(long, short)]
-        query: Option<String>,
-
-        /// Execute queries from a SQL file
-        #[arg(long)]
-        queries_file: Option<String>,
-
-        /// Database user (default: "default")
-        #[arg(long, default_value = "default")]
-        user: String,
-
-        /// Database password (or set CLICKHOUSE_PASSWORD env var)
-        #[arg(long)]
-        password: Option<String>,
-
-        /// Use current local default version instead of the service's version
-        #[arg(long)]
-        allow_mismatched_client_version: bool,
-
-        /// Reset the service password via API and use it for this connection (destructive)
-        #[arg(long, hide = true)]
-        generate_password: bool,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Additional arguments to pass to clickhouse-client
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
     },
 
     /// Get service Prometheus metrics
@@ -2449,25 +2400,8 @@ mod tests {
 
         // Service reads
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
-        assert_write(
-            &["clickhousectl", "cloud", "service", "get", "svc-1"],
-            false,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "service",
-                "client",
-                "--id",
-                "svc-1",
-            ],
-            false,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
-            false,
-        );
+        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
+        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
 
         // Backup reads
         assert_write(

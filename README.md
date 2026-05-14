@@ -314,16 +314,6 @@ clickhousectl cloud service create --name my-service \
 clickhousectl cloud service start <service-id>
 clickhousectl cloud service stop <service-id>
 
-# Connect to a cloud service with clickhouse-client
-clickhousectl cloud service client --name my-service --password secret
-clickhousectl cloud service client --id <service-id> -q "SELECT 1" --password secret
-
-# Use CLICKHOUSE_PASSWORD env var (recommended for scripts/agents)
-CLICKHOUSE_PASSWORD=secret clickhousectl cloud service client --name my-service -q "SELECT count() FROM system.tables"
-
-# Use a local client version instead of auto-downloading the matching one
-clickhousectl cloud service client --name my-service --allow-mismatched-client-version
-
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
 clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
@@ -421,7 +411,7 @@ For existing services without a stored key, `cloud service query` provisions one
 
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. `cloud service delete` removes the stored key from `credentials.json`.
 
-`cloud service query` is the canonical way to run SQL against a cloud service; `cloud service client` (which downloads a matching `clickhouse` binary and connects via the native protocol) is on a deprecation path.
+`cloud service query` is the canonical way to run SQL against a cloud service.
 
 Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override the Query API host (defaults to `https://queries.clickhouse.cloud`).
 
