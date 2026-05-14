@@ -1662,17 +1662,6 @@ pub async fn clickpipe_create_postgres(
             replication_mode: parse_enum(&args.replication_mode)?,
             publication_name: args.publication_name.clone(),
             replication_slot_name: args.replication_slot_name.clone(),
-            // The API rejects 0 for these numeric fields with
-            // "Value must be >= 1"; `Default::default()` for an i64 is 0,
-            // so callers that don't set them explicitly get rejected. The
-            // CLI doesn't expose flags for these tuning knobs today, so
-            // populate sensible defaults that match the staging defaults
-            // Al's PG CDC library test uses.
-            sync_interval_seconds: 60,
-            pull_batch_size: 100_000,
-            initial_load_parallelism: 4,
-            snapshot_num_rows_per_partition: 100_000,
-            snapshot_number_of_parallel_tables: 4,
             ..Default::default()
         },
         table_mappings: pg_mappings,

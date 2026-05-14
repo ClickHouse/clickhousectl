@@ -339,6 +339,18 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // `Option<String>` so callers can omit them.
     ("ClickPipePostgresPipeSettings", "publicationName"),
     ("ClickPipePostgresPipeSettings", "replicationSlotName"),
+    // Numeric settings all carry `minimum: 1` (or `minimum: 1000` for
+    // snapshotNumRowsPerPartition). The schema has no `required` array, so the
+    // heuristic infers required for everyone and the generator emits bare `i64`.
+    // `Default::default()` gives `0`, which the API rejects with
+    // "Value must be >= 1". Confirmed via cloud_clickpipe_postgres_ec2 that the
+    // API accepts the request when these keys are absent and picks server-side
+    // defaults — so they're modelled as `Option<i64>` with skip_serializing_if.
+    ("ClickPipePostgresPipeSettings", "syncIntervalSeconds"),
+    ("ClickPipePostgresPipeSettings", "pullBatchSize"),
+    ("ClickPipePostgresPipeSettings", "initialLoadParallelism"),
+    ("ClickPipePostgresPipeSettings", "snapshotNumRowsPerPartition"),
+    ("ClickPipePostgresPipeSettings", "snapshotNumberOfParallelTables"),
     // Four destination fields are "Required field for all pipe types except
     // database pipes (Postgres, MySQL, BigQuery)" per their descriptions, but
     // the schema lacks a `required` array so the heuristic infers required

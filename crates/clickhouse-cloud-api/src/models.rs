@@ -8304,22 +8304,22 @@ pub struct ClickPipePostgresPipeSettings {
     pub delete_on_merge: bool,
     #[serde(rename = "enableFailoverSlots", default)]
     pub enable_failover_slots: bool,
-    #[serde(rename = "initialLoadParallelism", default)]
-    pub initial_load_parallelism: i64,
+    #[serde(rename = "initialLoadParallelism", skip_serializing_if = "Option::is_none", default)]
+    pub initial_load_parallelism: Option<i64>,
     #[serde(rename = "publicationName", skip_serializing_if = "Option::is_none", default)]
     pub publication_name: Option<String>,
-    #[serde(rename = "pullBatchSize", default)]
-    pub pull_batch_size: i64,
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none", default)]
+    pub pull_batch_size: Option<i64>,
     #[serde(rename = "replicationMode", default)]
     pub replication_mode: ClickPipePostgresPipeSettingsReplicationmode,
     #[serde(rename = "replicationSlotName", skip_serializing_if = "Option::is_none", default)]
     pub replication_slot_name: Option<String>,
-    #[serde(rename = "snapshotNumRowsPerPartition", default)]
-    pub snapshot_num_rows_per_partition: i64,
-    #[serde(rename = "snapshotNumberOfParallelTables", default)]
-    pub snapshot_number_of_parallel_tables: i64,
-    #[serde(rename = "syncIntervalSeconds", default)]
-    pub sync_interval_seconds: i64,
+    #[serde(rename = "snapshotNumRowsPerPartition", skip_serializing_if = "Option::is_none", default)]
+    pub snapshot_num_rows_per_partition: Option<i64>,
+    #[serde(rename = "snapshotNumberOfParallelTables", skip_serializing_if = "Option::is_none", default)]
+    pub snapshot_number_of_parallel_tables: Option<i64>,
+    #[serde(rename = "syncIntervalSeconds", skip_serializing_if = "Option::is_none", default)]
+    pub sync_interval_seconds: Option<i64>,
 }
 
 /// `ClickPipePostgresPipeTableMapping` from the ClickHouse Cloud API.

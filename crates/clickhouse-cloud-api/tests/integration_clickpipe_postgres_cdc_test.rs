@@ -265,11 +265,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         // the Default impl gives every i64 a 0, so we set sensible
                         // values explicitly. (Same issue exists in the CLI's
                         // clickpipe create postgres handler — track separately.)
-                        sync_interval_seconds: 60,
-                        pull_batch_size: 100_000,
-                        initial_load_parallelism: 4,
-                        snapshot_num_rows_per_partition: 100_000,
-                        snapshot_number_of_parallel_tables: 4,
+                        sync_interval_seconds: Some(60),
+                        pull_batch_size: Some(100_000),
+                        initial_load_parallelism: Some(4),
+                        snapshot_num_rows_per_partition: Some(100_000),
+                        snapshot_number_of_parallel_tables: Some(4),
                         ..Default::default()
                     },
                     table_mappings: vec![ClickPipePostgresPipeTableMapping {
