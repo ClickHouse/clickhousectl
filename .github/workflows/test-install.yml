@@ -9,6 +9,9 @@ on:
       - "crates/clickhousectl/Cargo.toml"
       - ".github/workflows/test-install.yml"
 
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     name: Unit Tests
