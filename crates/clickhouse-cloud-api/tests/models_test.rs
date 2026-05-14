@@ -542,8 +542,11 @@ fn serialize_service_state_patch_request_stop() {
 fn serialize_service_replica_scaling_patch_request() {
     let req = ServiceReplicaScalingPatchRequest {
         num_replicas: Some(5.0),
+        min_replicas: None,
+        max_replicas: None,
         min_replica_memory_gb: Some(16.0),
         max_replica_memory_gb: Some(64.0),
+        replica_memory_gb: None,
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(10.0),
     };
