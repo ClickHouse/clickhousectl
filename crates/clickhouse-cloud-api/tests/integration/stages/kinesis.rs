@@ -152,32 +152,50 @@ async fn run_inner(
     // on a transient AccessDenied.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    log_phase("Kinesis stage: create ClickPipe");
+    log_phase("Kinesis stage: create ClickPipe (via CLI)");
 
-    let pipe_request = ClickPipePostRequest {
-        name: format!("kinesis-{}", ctx.run_id),
-        destination: super::managed_destination_users(KINESIS_TARGET_TABLE),
-        source: ClickPipePostSource {
-            kinesis: Some(ClickPipePostKinesisSource {
-                authentication: ClickPipePostKinesisSourceAuthentication::IAM_ROLE,
-                iam_role: Some(role_arn.clone()),
-                stream_name: stream_name.clone(),
-                region: aws_region.to_string(),
-                format: ClickPipePostKinesisSourceFormat::JSONEachRow,
-                iterator_type: ClickPipePostKinesisSourceIteratortype::TRIM_HORIZON,
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    cleanup.register_table(KINESIS_TARGET_TABLE);
 
-    let _ = super::create_pipe_and_wait_running(
+    let pipe_name = format!("kinesis-{}", ctx.run_id);
+    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
+    let _ = super::create_pipe_via_cli_and_wait_running(
+        &cli,
         client,
         ctx,
         ch,
         cleanup,
-        &pipe_request,
+        &[
+            "clickpipe",
+            "create",
+            "kinesis",
+            &ch.service_id,
+            "--name",
+            &pipe_name,
+            "--stream-name",
+            &stream_name,
+            "--region",
+            aws_region,
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "default",
+            "--table",
+            KINESIS_TARGET_TABLE,
+            "--column",
+            "id:Int64",
+            "--column",
+            "name:String",
+            "--column",
+            "email:String",
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            &role_arn,
+            "--iterator-type",
+            "TRIM_HORIZON",
+            "--org-id",
+            &ctx.org_id,
+        ],
         clickpipe_ready_timeout,
     )
     .await?;
@@ -187,6 +205,8 @@ async fn run_inner(
         ch,
         KINESIS_TARGET_TABLE,
         KINESIS_SEED_ROW_COUNT,
+        1,
+        "Ada Lovelace",
         ingest_timeout,
         ctx.poll_interval,
     )

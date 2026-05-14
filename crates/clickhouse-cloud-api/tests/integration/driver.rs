@@ -145,13 +145,20 @@ impl E2eHarness {
             aws_config,
             iam,
             ec2,
+            ch,
             mut cleanup,
             mut aws_cleanup,
             ..
         } = self;
 
         let cleanup_result = cleanup
-            .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval)
+            .cleanup(
+                &client,
+                &ctx.org_id,
+                ctx.delete_timeout,
+                ctx.poll_interval,
+                Some(&ch.query),
+            )
             .await;
         let aws_cleanup_result = aws_cleanup.cleanup(&aws_config, &iam, &ec2).await;
 

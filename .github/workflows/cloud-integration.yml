@@ -29,12 +29,17 @@ jobs:
     env:
       CLICKHOUSE_CLOUD_API_KEY: ${{ secrets.CLICKHOUSE_CLOUD_API_KEY }}
       CLICKHOUSE_CLOUD_API_SECRET: ${{ secrets.CLICKHOUSE_CLOUD_API_SECRET }}
+      # Defaults to https://api.clickhouse.cloud (production) when unset. Set
+      # the repo variable to https://api.control-plane.clickhouse-staging.com
+      # to run integration tests against staging.
+      CLICKHOUSE_CLOUD_API_BASE_URL: ${{ vars.CLICKHOUSE_CLOUD_API_BASE_URL }}
       CLICKHOUSE_CLOUD_TEST_ORG_ID: ${{ secrets.CLICKHOUSE_CLOUD_TEST_ORG_ID }}
       CLICKHOUSE_CLOUD_TEST_PROVIDER: ${{ secrets.CLICKHOUSE_CLOUD_TEST_PROVIDER }}
       CLICKHOUSE_CLOUD_TEST_REGION: ${{ secrets.CLICKHOUSE_CLOUD_TEST_REGION }}
       CLICKHOUSE_CLOUD_TEST_TIMEOUT_CREATE_SECS: ${{ vars.CLICKHOUSE_CLOUD_TEST_TIMEOUT_CREATE_SECS || '1800' }}
       CLICKHOUSE_CLOUD_TEST_TIMEOUT_DELETE_SECS: ${{ vars.CLICKHOUSE_CLOUD_TEST_TIMEOUT_DELETE_SECS || '900' }}
       CLICKHOUSE_CLOUD_TEST_TIMEOUT_STEADY_STATE_SECS: ${{ vars.CLICKHOUSE_CLOUD_TEST_TIMEOUT_STEADY_STATE_SECS || '1800' }}
+      CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID: ${{ vars.CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID }}
       RUST_TEST_THREADS: 1
 
     steps:
@@ -51,3 +56,12 @@ jobs:
 
       - name: Run ClickPipe Postgres CDC integration test
         run: cargo test -p clickhouse-cloud-api --test integration_clickpipe_postgres_cdc_test -- --ignored --nocapture
+
+      # ClickPipe create smoke tests run against a long-lived ClickHouse Cloud
+      # service to avoid the multi-minute service-create cost. Provision a
+      # service once and set the CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID
+      # repository variable to its ID. The step is skipped if that variable
+      # is unset so first-time setup doesn't block PRs.
+      - name: Run ClickPipe create smoke suite
+        if: ${{ vars.CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID != '' }}
+        run: cargo test -p clickhouse-cloud-api --test integration_clickpipe_smoke_test -- --ignored --nocapture

@@ -169,24 +169,78 @@ async fn run_inner(
     // Build + run one pipe per replication variant, all against the same
     // MySQL server. Each variant lands data in its own target table so the
     // verifications don't collide.
-    for variant in MYSQL_VARIANTS {
-        log_phase(&format!("MySQL stage ({}): create ClickPipe", variant.label));
-        let pipe_request = build_pipe_request(
-            ctx,
-            &db_name,
-            &host_ip,
-            &clickpipe_user,
-            &clickpipe_pass,
-            &certs.ca_pem,
-            variant,
-        );
+    let ca_path =
+        crate::integration::cli::write_temp_file(&ctx.run_id, "mysql-ca.pem", &certs.ca_pem)?;
+    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
+    let port_str = "3306";
 
-        let _ = create_pipe_and_wait_running(
+    // Register ALL variant tables up-front so partial failures (e.g. variant
+    // 2 fails) still leave every table queued for cleanup. Otherwise a
+    // leftover table from variant N+1 of a prior run blocks the next test
+    // run indefinitely.
+    for variant in MYSQL_VARIANTS {
+        cleanup.register_table(variant.target_table);
+    }
+
+    for variant in MYSQL_VARIANTS {
+        log_phase(&format!(
+            "MySQL stage ({}): create ClickPipe (via CLI)",
+            variant.label
+        ));
+        let pipe_name = format!("mysql-{}-{}", variant.label, ctx.run_id);
+        let table_mapping = format!("{db_name}.{MYSQL_SOURCE_TABLE}:{}", variant.target_table);
+        let replication_mode = match variant.replication_mode {
+            ClickPipeMySQLPipeSettingsReplicationmode::Cdc => "cdc",
+            ClickPipeMySQLPipeSettingsReplicationmode::Snapshot => "snapshot",
+            ClickPipeMySQLPipeSettingsReplicationmode::Cdc_only => "cdc_only",
+            _ => "cdc",
+        };
+        let replication_mechanism = match variant.replication_mechanism.as_ref() {
+            Some(ClickPipeMySQLPipeSettingsReplicationmechanism::GTID) => Some("GTID"),
+            Some(ClickPipeMySQLPipeSettingsReplicationmechanism::FILE_POS) => Some("FILE_POS"),
+            _ => None,
+        };
+
+        let mut args: Vec<&str> = vec![
+            "clickpipe",
+            "create",
+            "mysql",
+            &ch.service_id,
+            "--name",
+            &pipe_name,
+            "--host",
+            &host_ip,
+            "--port",
+            port_str,
+            "--username",
+            &clickpipe_user,
+            "--password",
+            &clickpipe_pass,
+            "--table-mapping",
+            &table_mapping,
+            "--mysql-type",
+            "mysql",
+            "--replication-mode",
+            replication_mode,
+            "--auth",
+            "basic",
+            "--ca-certificate",
+            &ca_path,
+            "--org-id",
+            &ctx.org_id,
+        ];
+        if let Some(mech) = replication_mechanism {
+            args.push("--replication-mechanism");
+            args.push(mech);
+        }
+
+        let _ = super::create_pipe_via_cli_and_wait_running(
+            &cli,
             client,
             ctx,
             ch,
             cleanup,
-            &pipe_request,
+            &args,
             clickpipe_ready_timeout,
         )
         .await?;
@@ -199,6 +253,8 @@ async fn run_inner(
             ch,
             variant.target_table,
             MYSQL_SEED_ROW_COUNT,
+            1,
+            "Ada Lovelace",
             ingest_timeout,
             ctx.poll_interval,
         )

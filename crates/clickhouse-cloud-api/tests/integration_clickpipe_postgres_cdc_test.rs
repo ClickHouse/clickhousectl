@@ -246,7 +246,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             source: ClickPipePostSource {
                 postgres: Some(ClickPipeMutatePostgresSource {
                     authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
-                    ca_certificate: pg_ca_pem.clone().unwrap_or_default(),
+                    ca_certificate: pg_ca_pem.clone(),
                     credentials: PLAIN {
                         username: pg_ready.username.clone(),
                         password: pg_ready.password.clone(),
@@ -401,7 +401,13 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval)
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
         .await;
 
     match (test_result, cleanup_result) {

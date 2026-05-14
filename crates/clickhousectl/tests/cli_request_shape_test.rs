@@ -860,3 +860,255 @@ async fn bigquery_destination_omits_table_columns_managed_table_definition() {
         );
     }
 }
+
+// ── Postgres expansion ─────────────────────────────────────────────────────
+//
+// Beyond the absence cases above, these tests cover:
+//   - The inverse: when --publication-name / --tls-host / --iam-role ARE
+//     passed, the body must contain them with the exact value.
+//   - Each `--postgres-type` enum variant flows through unchanged.
+//   - Each `--replication-mode` enum variant.
+//   - Multiple --table-mapping flags produce an array of N entries.
+//   - --auth IAM_ROLE selects the right auth and serialises iamRole.
+
+fn postgres_args_minimal() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "postgres",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "pg",
+        "--port",
+        "5432",
+        "--pg-database",
+        "test",
+        "--username",
+        "u",
+        "--password",
+        "p",
+        "--table-mapping",
+        "public.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[tokio::test]
+async fn postgres_publication_name_serializes_when_provided() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.push("--publication-name".into());
+    args.push("my_pub".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["settings"]["publicationName"], "my_pub",
+        "publicationName should round-trip the user-provided value"
+    );
+}
+
+#[tokio::test]
+async fn postgres_replication_slot_name_serializes_when_provided() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.push("--replication-slot-name".into());
+    args.push("my_slot".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["settings"]["replicationSlotName"], "my_slot",
+        "replicationSlotName should round-trip the user-provided value"
+    );
+}
+
+#[tokio::test]
+async fn postgres_tls_host_serializes_when_provided() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.push("--tls-host".into());
+    args.push("pg.example.com".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["tlsHost"], "pg.example.com",
+        "tlsHost should round-trip the user-provided value"
+    );
+}
+
+#[tokio::test]
+async fn postgres_iam_role_serializes_when_provided() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.push("--iam-role".into());
+    args.push("arn:aws:iam::123:role/x".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["iamRole"], "arn:aws:iam::123:role/x",
+        "iamRole should round-trip the user-provided value"
+    );
+}
+
+#[tokio::test]
+async fn postgres_ca_certificate_file_contents_flow_to_body() {
+    use std::io::Write;
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let ca_path = dir.path().join("ca.pem");
+    let pem = "-----BEGIN CERTIFICATE-----\nCA_PEM_CONTENT\n-----END CERTIFICATE-----\n";
+    std::fs::File::create(&ca_path)
+        .unwrap()
+        .write_all(pem.as_bytes())
+        .unwrap();
+
+    let mut args = postgres_args_minimal();
+    args.push("--ca-certificate".into());
+    args.push(ca_path.to_str().unwrap().to_string());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert!(
+        body["source"]["postgres"]["caCertificate"]
+            .as_str()
+            .map(|s| s.contains("CA_PEM_CONTENT"))
+            .unwrap_or(false),
+        "caCertificate body should contain the file's PEM content, got {}",
+        body["source"]["postgres"]["caCertificate"]
+    );
+}
+
+#[tokio::test]
+async fn postgres_replication_mode_snapshot_serializes() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    let idx = args.iter().position(|a| a == "cdc").unwrap();
+    args[idx] = "snapshot".into();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["settings"]["replicationMode"], "snapshot",
+    );
+}
+
+#[tokio::test]
+async fn postgres_replication_mode_cdc_only_serializes() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    let idx = args.iter().position(|a| a == "cdc").unwrap();
+    args[idx] = "cdc_only".into();
+    // cdc_only typically requires explicit publication + slot to be useful;
+    // assert the wire shape regardless.
+    args.push("--publication-name".into());
+    args.push("p".into());
+    args.push("--replication-slot-name".into());
+    args.push("s".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["settings"]["replicationMode"], "cdc_only",
+    );
+}
+
+#[tokio::test]
+async fn postgres_multiple_table_mappings_serialize_as_array() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    // Append a second --table-mapping. The first one was set in
+    // `postgres_args_minimal` as public.t:t.
+    args.push("--table-mapping".into());
+    args.push("public.t2:t2_dst".into());
+    args.push("--table-mapping".into());
+    args.push("other_schema.t3:t3_dst".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let mappings = body["source"]["postgres"]["tableMappings"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!(
+                "tableMappings should be an array, got: {}",
+                body["source"]["postgres"]["tableMappings"]
+            )
+        });
+    assert_eq!(
+        mappings.len(),
+        3,
+        "expected 3 table mappings (minimal default + 2 added), got {}: {:?}",
+        mappings.len(),
+        mappings
+    );
+    let target_tables: Vec<&str> = mappings
+        .iter()
+        .filter_map(|m| m["targetTable"].as_str())
+        .collect();
+    assert!(target_tables.contains(&"t"));
+    assert!(target_tables.contains(&"t2_dst"));
+    assert!(target_tables.contains(&"t3_dst"));
+}
+
+// Each --postgres-type value should serialize to the matching enum string.
+// The OpenAPI enum has 11 variants; the CLI accepts them via PossibleValuesParser
+// and the handler uses parse_enum to convert. A regression here would
+// silently change the source type the server uses to route the connection.
+
+macro_rules! postgres_type_test {
+    ($test_name:ident, $cli_value:literal, $wire_value:literal) => {
+        #[tokio::test]
+        async fn $test_name() {
+            let mock = start_mock_clickpipes_api().await;
+            let mut args = postgres_args_minimal();
+            args.push("--postgres-type".into());
+            args.push($cli_value.into());
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+            assert_eq!(
+                body["source"]["postgres"]["type"], $wire_value,
+                "--postgres-type {} should serialize to wire value {}",
+                $cli_value, $wire_value,
+            );
+        }
+    };
+}
+
+postgres_type_test!(postgres_type_postgres_serializes, "postgres", "postgres");
+postgres_type_test!(postgres_type_supabase_serializes, "supabase", "supabase");
+postgres_type_test!(postgres_type_neon_serializes, "neon", "neon");
+postgres_type_test!(postgres_type_alloydb_serializes, "alloydb", "alloydb");
+postgres_type_test!(
+    postgres_type_planetscale_serializes,
+    "planetscale",
+    "planetscale"
+);
+postgres_type_test!(
+    postgres_type_rdspostgres_serializes,
+    "rdspostgres",
+    "rdspostgres"
+);
+postgres_type_test!(
+    postgres_type_aurorapostgres_serializes,
+    "aurorapostgres",
+    "aurorapostgres"
+);
+postgres_type_test!(
+    postgres_type_cloudsqlpostgres_serializes,
+    "cloudsqlpostgres",
+    "cloudsqlpostgres"
+);
+postgres_type_test!(
+    postgres_type_azurepostgres_serializes,
+    "azurepostgres",
+    "azurepostgres"
+);
+postgres_type_test!(
+    postgres_type_crunchybridge_serializes,
+    "crunchybridge",
+    "crunchybridge"
+);
+postgres_type_test!(postgres_type_tigerdata_serializes, "tigerdata", "tigerdata");

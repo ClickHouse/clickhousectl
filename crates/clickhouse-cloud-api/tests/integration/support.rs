@@ -351,6 +351,10 @@ pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
     clickpipes: Vec<(String, String)>,
+    /// `default.<table>` names to DROP during teardown. Only relevant when
+    /// the service is NOT being deleted (attach mode); when the service is
+    /// being deleted, table drops are redundant but harmless.
+    tables: Vec<String>,
 }
 
 impl CleanupRegistry {
@@ -380,12 +384,21 @@ impl CleanupRegistry {
         self.clickpipes.push((service_id.into(), clickpipe_id.into()));
     }
 
+    /// Register a `default.<table>` destination table so teardown drops it.
+    /// Stages call this just before pipe-create — once the table exists,
+    /// ClickPipes refuses a future pipe-create against the same name unless
+    /// it's empty, so test re-runs against a shared CHC service collide.
+    pub fn register_table(&mut self, table: impl Into<String>) {
+        self.tables.push(table.into());
+    }
+
     /// Drain another registry's entries into this one. Used by the parallel
     /// driver to fold per-stage registries back into the parent for teardown.
     pub fn merge_from(&mut self, mut other: CleanupRegistry) {
         self.service_ids.append(&mut other.service_ids);
         self.postgres_ids.append(&mut other.postgres_ids);
         self.clickpipes.append(&mut other.clickpipes);
+        self.tables.append(&mut other.tables);
     }
 
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
@@ -393,7 +406,14 @@ impl CleanupRegistry {
             .retain(|(svc, pipe)| !(svc == service_id && pipe == clickpipe_id));
     }
 
-    pub async fn cleanup(&mut self, client: &Client, org_id: &str, delete_timeout: Duration, poll_interval: Duration) -> Result<(), String> {
+    pub async fn cleanup(
+        &mut self,
+        client: &Client,
+        org_id: &str,
+        delete_timeout: Duration,
+        poll_interval: Duration,
+        ch_query: Option<&ClickHouseQuery>,
+    ) -> Result<(), String> {
         let mut failures = Vec::new();
 
         // Drain ClickPipes first so their parent service can be torn down cleanly.
@@ -410,6 +430,26 @@ impl CleanupRegistry {
             {
                 failures.push(format!("clickpipe {service_id}/{clickpipe_id}: {error}"));
             }
+        }
+
+        // Drop registered destination tables BEFORE deleting the service —
+        // once the service is gone we can't query. If the service is also
+        // being deleted, drops are redundant but harmless; if we're attached
+        // to a shared service, drops are essential to avoid re-run collision.
+        if let Some(query) = ch_query {
+            while let Some(table) = self.tables.pop() {
+                eprintln!("  cleanup: drop table default.{table}");
+                if let Err(error) = query
+                    .run_query(&format!("DROP TABLE IF EXISTS default.{table}"))
+                    .await
+                {
+                    failures.push(format!("drop table {table}: {error}"));
+                }
+            }
+        } else {
+            // No query helper passed — clear the queue (service deletion will
+            // take the tables with it).
+            self.tables.clear();
         }
 
         while let Some(service_id) = self.service_ids.pop() {
@@ -701,7 +741,7 @@ fn bool_from_env(name: &str) -> TestResult<bool> {
     }
 }
 
-fn required_env(name: &str) -> TestResult<String> {
+pub fn required_env(name: &str) -> TestResult<String> {
     let value =
         env::var(name).map_err(|_| format!("missing required environment variable {name}"))?;
     if value.is_empty() {
@@ -1319,6 +1359,17 @@ pub struct RedpandaCerts {
 }
 
 pub fn generate_redpanda_certs(broker_ip: &str, client_cn: &str) -> TestResult<RedpandaCerts> {
+    generate_redpanda_certs_with_dns_sans(broker_ip, client_cn, &[])
+}
+
+/// Same as `generate_redpanda_certs` but allows attaching extra DNS SANs to
+/// the server cert. Used by the Postgres stage to exercise `--tls-host`:
+/// ClickPipes connects to the IP but validates the cert against a DNS name.
+pub fn generate_redpanda_certs_with_dns_sans(
+    broker_ip: &str,
+    client_cn: &str,
+    extra_dns_sans: &[&str],
+) -> TestResult<RedpandaCerts> {
     use rcgen::{
         BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType,
     };
@@ -1339,12 +1390,22 @@ pub fn generate_redpanda_certs(broker_ip: &str, client_cn: &str) -> TestResult<R
     let ca_pem = ca_cert.pem();
     let issuer = Issuer::new(ca_params, ca_key);
 
-    // Server cert: SAN = broker_ip, so ClickPipes' TLS validation matches.
+    // Server cert: SAN = broker_ip + any caller-supplied DNS names.
     let server_key = KeyPair::generate()?;
     let mut server_params = CertificateParams::new(Vec::<String>::new())?;
     server_params
         .subject_alt_names
         .push(SanType::IpAddress(parsed_ip));
+    for dns in extra_dns_sans {
+        // `SanType::DnsName` wraps a private `Ia5String`; rcgen exposes
+        // `TryFrom<&str>` so we go through that without naming the type.
+        let ia5 = (*dns)
+            .try_into()
+            .map_err(|e| format!("invalid DNS SAN {dns}: {e}"))?;
+        server_params
+            .subject_alt_names
+            .push(SanType::DnsName(ia5));
+    }
     server_params
         .distinguished_name
         .push(DnType::CommonName, "redpanda-broker");

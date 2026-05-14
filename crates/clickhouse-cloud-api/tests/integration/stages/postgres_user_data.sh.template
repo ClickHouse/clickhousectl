@@ -1,0 +1,116 @@
+#!/bin/bash
+# PostgreSQL 16 bootstrap for the ClickPipes Postgres E2E stage.
+#
+# CDC requires `wal_level = logical`, plus a user with REPLICATION + LOGIN
+# privileges and CREATE on the database (so ClickPipes can auto-create the
+# publication when --publication-name isn't passed — Al's Bug 1 scenario).
+# We give the clickpipe user ownership of the seeded table so it has CREATE
+# on the publication's target.
+#
+# TLS uses a self-signed cert with the EIP as SAN, matching the same pattern
+# as the MySQL and Mongo stages.
+set -euxo pipefail
+sleep 5
+
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -y
+sudo apt-get install -y postgresql-16 postgresql-contrib-16
+
+# TLS material. PG requires the key file to be 0600 owned by postgres user.
+sudo mkdir -p /etc/postgresql/16/main/tls
+echo "__SERVER_CERT_B64__" | base64 -d | sudo tee /etc/postgresql/16/main/tls/server.crt > /dev/null
+echo "__SERVER_KEY_B64__"  | base64 -d | sudo tee /etc/postgresql/16/main/tls/server.key > /dev/null
+sudo chown -R postgres:postgres /etc/postgresql/16/main/tls
+sudo chmod 600 /etc/postgresql/16/main/tls/server.key
+sudo chmod 644 /etc/postgresql/16/main/tls/server.crt
+
+# Drop-in postgresql.conf for CDC + external listener + TLS. File name sorts
+# late so Ubuntu's main `postgresql.conf` doesn't override it on
+# `include_dir 'conf.d'` load (PG processes config files in lexical order).
+sudo mkdir -p /etc/postgresql/16/main/conf.d
+sudo tee /etc/postgresql/16/main/conf.d/zz-clickpipe-e2e.conf > /dev/null <<EOF
+listen_addresses = '*'
+wal_level = logical
+max_wal_senders = 10
+max_replication_slots = 10
+ssl = on
+ssl_cert_file = '/etc/postgresql/16/main/tls/server.crt'
+ssl_key_file = '/etc/postgresql/16/main/tls/server.key'
+EOF
+
+# pg_hba.conf: allow TLS-only external connections (including replication
+# connections, which use a separate `replication` pseudo-database).
+sudo tee -a /etc/postgresql/16/main/pg_hba.conf > /dev/null <<EOF
+
+# clickpipes e2e — external TLS connections
+hostssl all         all 0.0.0.0/0 scram-sha-256
+hostssl replication all 0.0.0.0/0 scram-sha-256
+EOF
+
+# Restart picks up wal_level (requires full restart, not just reload).
+sudo systemctl restart postgresql
+
+# Wait for postgres to accept local connections again.
+for i in $(seq 1 60); do
+  if sudo -u postgres psql -c 'SELECT 1' >/dev/null 2>&1; then
+    echo "[bootstrap] postgres up after $((i*2))s: $(date -u +%H:%M:%S)"
+    break
+  fi
+  sleep 2
+done
+
+DB_NAME="__DB_NAME__"
+CP_USER="__CLICKPIPE_USER__"
+CP_PASS="__CLICKPIPE_PASS__"
+
+# Bootstrap: user, database, table, seed. ClickPipes will auto-create the
+# publication + slot at pipe-create time when --publication-name and
+# --replication-slot-name are omitted; the user needs CREATE on the DB
+# (granted via OWNER) and REPLICATION to do that.
+sudo -u postgres psql <<SQL
+CREATE USER ${CP_USER} WITH LOGIN REPLICATION PASSWORD '${CP_PASS}';
+CREATE DATABASE ${DB_NAME} OWNER ${CP_USER};
+SQL
+
+sudo -u postgres psql -d ${DB_NAME} <<SQL
+CREATE TABLE pg_users (
+  id BIGINT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL
+);
+-- REPLICA IDENTITY FULL ensures CDC delivers all column values for UPDATEs
+-- and DELETEs, not just the PK. Required for replication into wide
+-- destination tables.
+ALTER TABLE pg_users REPLICA IDENTITY FULL;
+ALTER TABLE pg_users OWNER TO ${CP_USER};
+INSERT INTO pg_users (id, name, email) VALUES
+  (1, 'Ada Lovelace',      'ada@example.com'),
+  (2, 'Grace Hopper',      'grace@example.com'),
+  (3, 'Margaret Hamilton', 'margaret@example.com');
+
+-- Pre-create the explicit publication for the cdc-explicit variant. The
+-- cdc-auto variant DOESN'T use this — it tests the auto-create path that
+-- caught Al's Bug 1. Owner must be the clickpipe user so it can drop/use
+-- the publication when connecting.
+CREATE PUBLICATION pg_pub_explicit FOR TABLE pg_users;
+ALTER PUBLICATION pg_pub_explicit OWNER TO ${CP_USER};
+
+-- Second source table for the multi-table-mapping variant. Different shape
+-- (one extra column) so we can spot-check the variant actually reads from
+-- this table rather than aliasing the first.
+CREATE TABLE pg_users_more (
+  id BIGINT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  signup_year INT NOT NULL
+);
+ALTER TABLE pg_users_more REPLICA IDENTITY FULL;
+ALTER TABLE pg_users_more OWNER TO ${CP_USER};
+INSERT INTO pg_users_more (id, name, email, signup_year) VALUES
+  (101, 'Joan Clarke',   'joan@example.com',   1939),
+  (102, 'Hedy Lamarr',   'hedy@example.com',   1940),
+  (103, 'Karen Sparck',  'karen@example.com',  1958);
+SQL
+
+sudo touch /var/lib/postgresql-bootstrap-complete
+echo "[bootstrap] complete: $(date -u +%H:%M:%S)"

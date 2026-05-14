@@ -19,7 +19,7 @@ use super::{
     sanitize_for_topic, verify_seed_rows,
 };
 
-const MONGO_TARGET_TABLE_PREFIX: &str = "mongo_users_";
+const MONGO_TARGET_TABLE: &str = "mongo_users";
 const MONGO_SOURCE_COLLECTION: &str = "users";
 const MONGO_SEED_ROW_COUNT: i64 = 3;
 const MONGO_USER_DATA: &str = include_str!("mongo_user_data.sh.template");
@@ -117,14 +117,6 @@ async fn run_inner(
     let db_name = format!("e2e_{}", ctx.run_id.replace('-', "_"));
     let admin_user = format!("admin_{}", ctx.run_id.replace('-', "_"));
     let admin_pass = random_token(32);
-    // Per-run target table so a shared CHC service doesn't collide on
-    // re-runs (ClickPipes rejects pipe-create against an existing non-empty
-    // table).
-    let target_table = format!(
-        "{}{}",
-        MONGO_TARGET_TABLE_PREFIX,
-        ctx.run_id.replace('-', "_")
-    );
     let clickpipe_user = format!("clickpipe_{}", ctx.run_id.replace('-', "_"));
     let clickpipe_pass = random_token(32);
 
@@ -157,55 +149,47 @@ async fn run_inner(
     )
     .await?;
 
-    log_phase("Mongo stage: create ClickPipe");
-    // Mongo URI carries the host:port and (optionally) credentials. We pass
-    // credentials separately in the `credentials` field so they don't end up
-    // in API logs as part of the URI; the URI itself is `mongodb://host:port`.
-    let mongo_uri = format!("mongodb://{host_ip}:27017");
-    let pipe_request = ClickPipePostRequest {
-        name: format!("mongo-{}", ctx.run_id),
-        // Mongo is a "database pipe" — only `database` is valid at the top
-        // level. The per-mapping `targetTable` carries the destination table.
-        destination: ClickPipeMutateDestination {
-            database: "default".to_string(),
-            ..Default::default()
-        },
-        source: ClickPipePostSource {
-            mongodb: Some(ClickPipeMutateMongoDBSource {
-                uri: mongo_uri,
-                credentials: Some(PLAIN {
-                    username: clickpipe_user.clone(),
-                    password: clickpipe_pass.clone(),
-                }),
-                ca_certificate: Some(certs.ca_pem.clone()),
-                read_preference: ClickPipeMutateMongoDBSourceReadpreference::Primary,
-                settings: ClickPipeMongoDBPipeSettings {
-                    // `cdc` = snapshot + change-stream tailing, matching
-                    // the MySQL/Postgres CDC stages.
-                    replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
-                    ..Default::default()
-                },
-                table_mappings: vec![ClickPipeMongoDBPipeTableMapping {
-                    source_database_name: db_name.clone(),
-                    source_collection: MONGO_SOURCE_COLLECTION.to_string(),
-                    target_table: target_table.clone(),
-                    table_engine: Some(
-                        ClickPipeMongoDBPipeTableMappingTableengine::ReplacingMergeTree,
-                    ),
-                }],
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    log_phase("Mongo stage: create ClickPipe (via CLI)");
 
-    let _ = create_pipe_and_wait_running(
+    cleanup.register_table(MONGO_TARGET_TABLE);
+
+    let pipe_name = format!("mongo-{}", ctx.run_id);
+    let mongo_uri = format!("mongodb://{host_ip}:27017");
+    let table_mapping = format!("{db_name}.{MONGO_SOURCE_COLLECTION}:{MONGO_TARGET_TABLE}");
+    let ca_path =
+        crate::integration::cli::write_temp_file(&ctx.run_id, "mongo-ca.pem", &certs.ca_pem)?;
+
+    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
+    let _ = super::create_pipe_via_cli_and_wait_running(
+        &cli,
         client,
         ctx,
         ch,
         cleanup,
-        &pipe_request,
+        &[
+            "clickpipe",
+            "create",
+            "mongodb",
+            &ch.service_id,
+            "--name",
+            &pipe_name,
+            "--uri",
+            &mongo_uri,
+            "--username",
+            &clickpipe_user,
+            "--password",
+            &clickpipe_pass,
+            "--table-mapping",
+            &table_mapping,
+            "--replication-mode",
+            "cdc",
+            "--read-preference",
+            "primary",
+            "--ca-certificate",
+            &ca_path,
+            "--org-id",
+            &ctx.org_id,
+        ],
         clickpipe_ready_timeout,
     )
     .await?;
@@ -222,9 +206,8 @@ async fn run_inner(
         ctx.poll_interval,
         || {
             let query = ch.query.clone();
-            let target_table = target_table.clone();
             async move {
-                match query.count_rows(&target_table).await {
+                match query.count_rows(MONGO_TARGET_TABLE).await {
                     Ok(count) if count >= MONGO_SEED_ROW_COUNT => Ok(Some(count)),
                     Ok(_) => Ok(None),
                     Err(e) => Err(e),

@@ -121,39 +121,67 @@ async fn run_inner(
     // on a transient AccessDenied.
     tokio::time::sleep(Duration::from_secs(10)).await;
 
-    log_phase("S3 stage: create ClickPipe");
+    log_phase("S3 stage: create ClickPipe (via CLI)");
+
+    // Register the destination table for teardown — when running against a
+    // shared CHC service, the table outlives the pipe and a re-run would
+    // collide on "table exists and is not empty".
+    cleanup.register_table(S3_TARGET_TABLE);
 
     let object_url = format!("https://{bucket}.s3.{aws_region}.amazonaws.com/{S3_FIXTURE_KEY}");
+    let pipe_name = format!("s3-{}", ctx.run_id);
 
-    let pipe_request = ClickPipePostRequest {
-        name: format!("s3-{}", ctx.run_id),
-        destination: super::managed_destination_users(S3_TARGET_TABLE),
-        source: ClickPipePostSource {
-            object_storage: Some(ClickPipePostObjectStorageSource {
-                r#type: ClickPipePostObjectStorageSourceType::default(),
-                format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
-                url: object_url,
-                authentication: Some(
-                    ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE,
-                ),
-                iam_role: Some(role_arn.clone()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    let _ = super::create_pipe_and_wait_running(
+    // CLI-driven invocation: exercises clap → handler → HTTP → API end-to-end.
+    // Argument shape matches what a user would type:
+    //   clickhousectl cloud clickpipe create object-storage <service_id> --name ... --json
+    let cli = crate::integration::cli::ClickhousectlCli::from_env()?;
+    let _ = super::create_pipe_via_cli_and_wait_running(
+        &cli,
         client,
         ctx,
         ch,
         cleanup,
-        &pipe_request,
+        &[
+            "clickpipe",
+            "create",
+            "object-storage",
+            &ch.service_id,
+            "--name",
+            &pipe_name,
+            "--source-url",
+            &object_url,
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "default",
+            "--table",
+            S3_TARGET_TABLE,
+            "--column",
+            "id:Int64",
+            "--column",
+            "name:String",
+            "--column",
+            "email:String",
+            "--storage-type",
+            "s3",
+            "--iam-role",
+            &role_arn,
+            "--org-id",
+            &ctx.org_id,
+        ],
         clickpipe_ready_timeout,
     )
     .await?;
 
     log_phase("S3 stage: verify rows in ClickHouse");
-    super::verify_seed_rows(ch, S3_TARGET_TABLE, S3_SEED_ROW_COUNT, ingest_timeout, ctx.poll_interval).await
+    super::verify_seed_rows(
+        ch,
+        S3_TARGET_TABLE,
+        S3_SEED_ROW_COUNT,
+        1,
+        "Ada Lovelace",
+        ingest_timeout,
+        ctx.poll_interval,
+    )
+    .await
 }
