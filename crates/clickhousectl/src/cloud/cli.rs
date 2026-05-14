@@ -1221,9 +1221,9 @@ pub struct ObjectStorageCreateArgs {
     #[arg(long)]
     pub path: Option<String>,
 
-    /// GCP service account key (base64-encoded JSON key file)
+    /// Path to GCP service account JSON key file
     #[arg(long)]
-    pub service_account_key: Option<String>,
+    pub service_account_file: Option<String>,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]

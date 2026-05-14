@@ -347,6 +347,62 @@ async fn s3_pipe_omits_iam_role_and_queue_url_when_not_passed() {
     }
 }
 
+// `--service-account-file` for GCS object-storage points at a JSON key on disk;
+// the handler must read the file and base64-encode its contents into
+// `source.objectStorage.serviceAccountKey`, matching the BigQuery flow.
+#[tokio::test]
+async fn gcs_service_account_file_is_read_and_base64_encoded() {
+    use std::io::Write;
+    let mock = start_mock_clickpipes_api().await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sa_path = dir.path().join("service-account.json");
+    let sa_contents = br#"{"type":"service_account","project_id":"test"}"#;
+    let mut sa_file = std::fs::File::create(&sa_path).unwrap();
+    sa_file.write_all(sa_contents).unwrap();
+
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "gcs-pipe",
+            "--source-url",
+            "https://storage.googleapis.com/bucket/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--storage-type",
+            "gcs",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--column",
+            "id:Int64",
+            "--service-account-file",
+            sa_path.to_str().unwrap(),
+            "--org-id",
+            "11dfa1ec-767d-43cb-bfad-618ce2aaf959",
+        ],
+    )
+    .await;
+
+    let gcs = &body["source"]["objectStorage"];
+    assert_eq!(gcs["authentication"], "SERVICE_ACCOUNT");
+    let expected = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        sa_contents,
+    );
+    assert_eq!(
+        gcs["serviceAccountKey"].as_str(),
+        Some(expected.as_str()),
+        "serviceAccountKey on the wire should be base64 of the file contents: {gcs}",
+    );
+}
+
 // Extra postgres coverage: --tls-host, --iam-role, --ca-certificate (file)
 // should all be absent from the wire body when their CLI flags aren't set.
 

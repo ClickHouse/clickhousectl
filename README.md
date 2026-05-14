@@ -540,6 +540,16 @@ clickhousectl cloud clickpipe create object-storage <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
+# From Google Cloud Storage (object storage)
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-gcs-pipe \
+  --storage-type gcs \
+  --source-url 'https://storage.googleapis.com/bucket/data/**' \
+  --format JSONEachRow \
+  --service-account-file ./sa-key.json \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
 # From Kafka / Redpanda / Confluent / MSK
 clickhousectl cloud clickpipe create kafka <service-id> \
   --name my-kafka-pipe \

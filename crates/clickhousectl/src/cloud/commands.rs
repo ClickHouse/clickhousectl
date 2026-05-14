@@ -1062,10 +1062,15 @@ pub async fn clickpipe_create_s3(
                 .map(|_| ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING)
         })
         .or_else(|| {
-            args.service_account_key
+            args.service_account_file
                 .as_ref()
                 .map(|_| ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
         });
+
+    let service_account_key = match args.service_account_file.as_deref() {
+        Some(path) => Some(read_gcp_service_account_file(path)?),
+        None => None,
+    };
 
     let source = ClickPipePostObjectStorageSource {
         r#type: parse_enum(&args.storage_type)?,
@@ -1081,7 +1086,7 @@ pub async fn clickpipe_create_s3(
         connection_string: args.connection_string.clone(),
         azure_container_name: args.azure_container_name.clone(),
         path: args.path.clone(),
-        service_account_key: args.service_account_key.clone(),
+        service_account_key,
     };
 
     let request = ClickPipePostRequest {
@@ -1581,6 +1586,18 @@ fn build_destination(
     }
 }
 
+/// Read a GCP service-account JSON key file from disk and return the
+/// base64-encoded contents. Used by both the object-storage and BigQuery
+/// `create` handlers — the upstream API wants the encoded blob regardless
+/// of which source it ends up on.
+fn read_gcp_service_account_file(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(path)?;
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        contents.as_bytes(),
+    ))
+}
+
 /// Print the standard "created" confirmation for any create_* handler.
 fn print_created(
     clickpipe: &clickhouse_cloud_api::models::ClickPipe,
@@ -1840,11 +1857,7 @@ pub async fn clickpipe_create_bigquery(
     };
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
-    let sa_contents = std::fs::read_to_string(&args.service_account_file)?;
-    let sa_b64 = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        sa_contents.as_bytes(),
-    );
+    let sa_b64 = read_gcp_service_account_file(&args.service_account_file)?;
 
     // BigQuery uses `dataset.table:target_table` format.
     let bq_mappings: Vec<ClickPipeBigQueryPipeTableMapping> = args
