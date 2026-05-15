@@ -36,6 +36,7 @@ jobs:
       CLICKHOUSE_CLOUD_TEST_ORG_ID: ${{ secrets.CLICKHOUSE_CLOUD_TEST_ORG_ID }}
       CLICKHOUSE_CLOUD_TEST_PROVIDER: ${{ secrets.CLICKHOUSE_CLOUD_TEST_PROVIDER }}
       CLICKHOUSE_CLOUD_TEST_REGION: ${{ secrets.CLICKHOUSE_CLOUD_TEST_REGION }}
+      CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID: ${{ secrets.CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID }}
       CLICKHOUSE_CLOUD_TEST_TIMEOUT_CREATE_SECS: ${{ vars.CLICKHOUSE_CLOUD_TEST_TIMEOUT_CREATE_SECS || '1800' }}
       CLICKHOUSE_CLOUD_TEST_TIMEOUT_DELETE_SECS: ${{ vars.CLICKHOUSE_CLOUD_TEST_TIMEOUT_DELETE_SECS || '900' }}
       CLICKHOUSE_CLOUD_TEST_TIMEOUT_STEADY_STATE_SECS: ${{ vars.CLICKHOUSE_CLOUD_TEST_TIMEOUT_STEADY_STATE_SECS || '1800' }}
@@ -67,6 +68,9 @@ jobs:
 
       - name: Run cloud Postgres integration suite
         run: cargo test -p clickhouse-cloud-api --test integration_postgres_test -- --ignored --nocapture
+
+      - name: Run cloud Org integration suite
+        run: cargo test -p clickhouse-cloud-api --test integration_org_test -- --ignored --nocapture
 
       - name: Run ClickPipe Postgres CDC integration test
         run: cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cdc_test -- --ignored --nocapture
