@@ -51,6 +51,58 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         assert_eq!(org.id.to_string(), ctx.org_id);
 
+        // ── Org Observability ───────────────────────────────────────
+        //
+        // Read-only checks against org-scoped endpoints that don't
+        // require any fixture beyond the org itself. Both steps are
+        // NonBlocking — they exist purely to detect live API drift.
+
+        log_phase("Org Observability");
+
+        failures
+            .run(&ctx, StepKind::NonBlocking, "organization prometheus", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let metrics = client.organization_prometheus_get(&org_id, None).await?;
+                    if metrics.trim().is_empty() {
+                        return Err("organization prometheus returned empty output".into());
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "organization private endpoint config list",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let cloud_provider = ctx.provider.clone();
+                    let region_id = ctx.region.clone();
+                    async move {
+                        // Deprecated endpoint; we just confirm the call
+                        // succeeds and deserializes. The test org may
+                        // not have a private endpoint configured for
+                        // this region, so an empty endpoint_service_id
+                        // is acceptable.
+                        #[allow(deprecated)]
+                        let _resp = client
+                            .organization_private_endpoint_config_get_list(
+                                &org_id,
+                                &cloud_provider,
+                                &region_id,
+                            )
+                            .await?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
         failures.finish()
     }
     .await;
