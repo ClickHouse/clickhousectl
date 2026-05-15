@@ -65,11 +65,18 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
         log_phase("Custom Roles CRUD");
 
         let role_name = format!("clickhousectl-it-role-{}", ctx.run_id);
-        let initial_permissions = vec!["control-plane:organization:view".to_string()];
-        let updated_permissions = vec![
-            "control-plane:organization:view".to_string(),
-            "control-plane:service:view".to_string(),
-        ];
+        // Permissions on a single policy must share a resource scope; the
+        // API rejects mixed-scope policies ("All permissions in a policy
+        // must target the same resource scope"). The create step uses one
+        // org-scoped policy; the patch step extends to a second
+        // service-scoped policy, exercising the multi-policy code path.
+        let initial_org_permissions = vec!["control-plane:organization:view".to_string()];
+        let patched_service_permissions = vec!["control-plane:service:view".to_string()];
+        let all_patched_permissions: Vec<String> = initial_org_permissions
+            .iter()
+            .chain(patched_service_permissions.iter())
+            .cloned()
+            .collect();
 
         // List roles before creation so we can sanity-check that the
         // created role is genuinely new (id absent from the pre-state).
@@ -97,7 +104,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 let client = client.clone();
                 let org_id = ctx.org_id.clone();
                 let role_name = role_name.clone();
-                let permissions = initial_permissions.clone();
+                let permissions = initial_org_permissions.clone();
                 async move {
                     // Org-scoped resources must reference the literal org
                     // id; the API rejects `organization/*` ("Organization *
@@ -177,7 +184,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
 
             let role_id_clone = role_id.clone();
             let role_name_clone = role_name.clone();
-            let initial_permissions_clone = initial_permissions.clone();
+            let initial_org_permissions_clone = initial_org_permissions.clone();
             failures
                 .run(
                     &ctx,
@@ -188,7 +195,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let org_id = ctx.org_id.clone();
                         let role_id = role_id_clone;
                         let expected_name = role_name_clone;
-                        let expected_permissions = initial_permissions_clone;
+                        let expected_permissions = initial_org_permissions_clone;
                         async move {
                             let resp = client.organization_role_get(&org_id, &role_id).await?;
                             let role = resp
@@ -235,12 +242,16 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 )
                 .await?;
 
-            // Patch the role: extend the permissions list. PATCH on this
-            // endpoint replaces the full set, so we send name + actors
-            // unchanged plus a single policy with the new permissions.
+            // Patch the role: extend the permissions to a second policy
+            // with a different resource scope. PATCH replaces the full
+            // policy set, so we send name + actors unchanged plus two
+            // policies — one org-scoped (kept from create) and one
+            // service-scoped (new). Mixing scopes inside a single policy
+            // is rejected by the API.
             let role_id_clone = role_id.clone();
             let role_name_clone = role_name.clone();
-            let updated_permissions_clone = updated_permissions.clone();
+            let org_perms_clone = initial_org_permissions.clone();
+            let service_perms_clone = patched_service_permissions.clone();
             failures
                 .run(
                     &ctx,
@@ -251,18 +262,27 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let org_id = ctx.org_id.clone();
                         let role_id = role_id_clone;
                         let name = role_name_clone;
-                        let permissions = updated_permissions_clone;
+                        let org_perms = org_perms_clone;
+                        let service_perms = service_perms_clone;
                         async move {
-                            let resource = format!("organization/{org_id}");
+                            let org_resource = format!("organization/{org_id}");
                             let body = RoleUpdateRequest {
                                 name,
                                 actors: vec![],
-                                policies: vec![RBACPolicyCreateRequest {
-                                    allow_deny: RBACPolicyCreateRequestAllowdeny::ALLOW,
-                                    permissions,
-                                    resources: vec![resource],
-                                    tags: None,
-                                }],
+                                policies: vec![
+                                    RBACPolicyCreateRequest {
+                                        allow_deny: RBACPolicyCreateRequestAllowdeny::ALLOW,
+                                        permissions: org_perms,
+                                        resources: vec![org_resource],
+                                        tags: None,
+                                    },
+                                    RBACPolicyCreateRequest {
+                                        allow_deny: RBACPolicyCreateRequestAllowdeny::ALLOW,
+                                        permissions: service_perms,
+                                        resources: vec!["instance/*".to_string()],
+                                        tags: None,
+                                    },
+                                ],
                             };
                             client
                                 .organization_role_patch(&org_id, &role_id, &body)
@@ -277,7 +297,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             // permissions in the PATCH response, but a follow-up GET is
             // what real callers will observe.
             let role_id_clone = role_id.clone();
-            let updated_permissions_clone = updated_permissions.clone();
+            let expected_all_clone = all_patched_permissions.clone();
             failures
                 .run(
                     &ctx,
@@ -287,7 +307,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let client = client.clone();
                         let org_id = ctx.org_id.clone();
                         let role_id = role_id_clone;
-                        let expected_permissions = updated_permissions_clone;
+                        let expected_permissions = expected_all_clone;
                         async move {
                             let resp = client.organization_role_get(&org_id, &role_id).await?;
                             let role = resp
