@@ -88,20 +88,36 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     let cloud_provider = ctx.provider.clone();
                     let region_id = ctx.region.clone();
                     async move {
-                        // Deprecated endpoint; we just confirm the call
-                        // succeeds and deserializes. The test org may
-                        // not have a private endpoint configured for
-                        // this region, so an empty endpoint_service_id
-                        // is acceptable.
+                        // Deprecated endpoint. The API requires an existing
+                        // instance in the requested provider+region before
+                        // it returns a config, but this suite is
+                        // deliberately service-less. Treat the
+                        // "no created instances" 400 as the expected
+                        // response: it still proves auth, routing and the
+                        // 400 deserialization path. Any other response
+                        // (including a 200) is fine too — the integration
+                        // service suite covers the populated path with a
+                        // real instance.
                         #[allow(deprecated)]
-                        let _resp = client
+                        let result = client
                             .organization_private_endpoint_config_get_list(
                                 &org_id,
                                 &cloud_provider,
                                 &region_id,
                             )
-                            .await?;
-                        Ok(())
+                            .await;
+                        match result {
+                            Ok(_) => Ok(()),
+                            Err(clickhouse_cloud_api::Error::Api { status: 400, message })
+                                if message.contains("no created instances") =>
+                            {
+                                eprintln!(
+                                    "  expected 400 (no instances in region) — endpoint reachable"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => Err(e.into()),
+                        }
                     }
                 },
             )
