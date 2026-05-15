@@ -421,6 +421,11 @@ pub struct CleanupRegistry {
     api_key_ids: Vec<String>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
+    /// Pending member-role restores: `(user_id, original_role)` pairs that
+    /// teardown will PATCH back, even on failure. Registered by the org
+    /// suite before mutating a member's role so the post-test org state
+    /// always equals the pre-test state.
+    member_role_restores: Vec<(String, MemberPatchRequestRole)>,
 }
 
 impl CleanupRegistry {
@@ -499,6 +504,23 @@ impl CleanupRegistry {
             .retain(|registered| registered != invitation_id);
     }
 
+    /// Record the original role of an org member so teardown can restore it
+    /// even if the test body panics. Call this immediately after capturing
+    /// the current role, before issuing any mutating `member_update`.
+    pub fn register_member_role_restore(
+        &mut self,
+        user_id: impl Into<String>,
+        original_role: MemberPatchRequestRole,
+    ) {
+        self.member_role_restores
+            .push((user_id.into(), original_role));
+    }
+
+    pub fn unregister_member_role_restore(&mut self, user_id: &str) {
+        self.member_role_restores
+            .retain(|(registered, _)| registered != user_id);
+    }
+
     pub async fn cleanup(
         &mut self,
         client: &Client,
@@ -508,6 +530,25 @@ impl CleanupRegistry {
         ch_query: Option<&ClickHouseQuery>,
     ) -> Result<(), String> {
         let mut failures = Vec::new();
+
+        // Restore mutated member roles first. The org suite captures the
+        // pre-test role here before flipping it; if we leave a member with
+        // the wrong role, every subsequent run starts with bad state. A
+        // 404 means the user is no longer in the org and we have nothing
+        // to do.
+        while let Some((user_id, original_role)) = self.member_role_restores.pop() {
+            let body = MemberPatchRequest {
+                role: Some(original_role.clone()),
+                ..Default::default()
+            };
+            match client.member_update(org_id, &user_id, &body).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "member role restore {user_id} -> {original_role}: {e}"
+                )),
+            }
+        }
 
         // Invitations and roles are org-scoped and cheap to delete; clear
         // them first so a botched service teardown doesn't leak them.
