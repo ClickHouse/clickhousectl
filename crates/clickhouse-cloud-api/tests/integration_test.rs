@@ -909,7 +909,219 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 5. IP Access ─────────────────────────────────────────────
+        // ── 5. Private Endpoints ─────────────────────────────────────
+        //
+        // Cover `instance_private_endpoint_create` and
+        // `instance_private_endpoint_config_get` against the live service.
+        //
+        // `instance_private_endpoint_config_get` should always succeed: it
+        // returns the service-side endpoint service id + private DNS hostname
+        // and does not need a real provider-side endpoint to exist.
+        //
+        // `instance_private_endpoint_create` requires a `ServicPrivateEndpointePostRequest`
+        // whose `id` is a provider-specific identifier (AWS `vpce-…`, GCP
+        // numeric PSC id, Azure GUID). The control plane validates that id
+        // against the underlying provider, so a synthetic value with no real
+        // cloud resource behind it is expected to be rejected with a 4xx.
+        //
+        // The assertion is therefore: the call must either succeed (in which
+        // case we register inline cleanup, re-read config, and remove the
+        // binding) OR fail with an unambiguous 4xx structured error. Any
+        // other outcome — 5xx, network error, or a 200 with malformed payload
+        // — is treated as a real failure recorded via FailureRecorder. This
+        // is the "assertion-on-error" fallback called out in issue #160.
+
+        log_phase("Private Endpoints");
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "private endpoint config get",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client
+                            .instance_private_endpoint_config_get(&org_id, &service_id)
+                            .await?;
+                        let config = resp.result.ok_or(
+                            "instance_private_endpoint_config_get returned no result",
+                        )?;
+                        if config.endpoint_service_id.is_empty() {
+                            return Err(
+                                "private endpoint config returned empty endpointServiceId"
+                                    .into(),
+                            );
+                        }
+                        if config.private_dns_hostname.is_empty() {
+                            return Err(
+                                "private endpoint config returned empty privateDnsHostname"
+                                    .into(),
+                            );
+                        }
+                        eprintln!(
+                            "  private endpoint config: endpointServiceId len={} privateDnsHostname len={}",
+                            config.endpoint_service_id.len(),
+                            config.private_dns_hostname.len()
+                        );
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // Build a provider-shaped but synthetic endpoint id. `ctx.run_id`
+        // is embedded so concurrent test runs and post-mortems can trace
+        // which run wrote which (rejected) id.
+        let synthetic_endpoint_id = synthetic_private_endpoint_id(&ctx);
+        let create_body = ServicPrivateEndpointePostRequest {
+            id: synthetic_endpoint_id.clone(),
+            description: format!("clickhousectl-it private endpoint {}", ctx.run_id),
+        };
+
+        // The endpoint we just attempted to attach (only set if create
+        // succeeded). Hosts the inline cleanup that fires after the
+        // re-read of `private_endpoint_config_get`.
+        let mut created_endpoint_id: Option<String> = None;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "private endpoint create (synthetic id)",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let create_body = create_body.clone();
+                    let synthetic_endpoint_id = synthetic_endpoint_id.clone();
+                    let created_endpoint_id = &mut created_endpoint_id;
+                    async move {
+                        match client
+                            .instance_private_endpoint_create(
+                                &org_id,
+                                &service_id,
+                                &create_body,
+                            )
+                            .await
+                        {
+                            Ok(resp) => {
+                                let endpoint = resp.result.ok_or(
+                                    "instance_private_endpoint_create returned no result",
+                                )?;
+                                if endpoint.id != synthetic_endpoint_id {
+                                    return Err(format!(
+                                        "private endpoint create returned unexpected id: \
+                                         got {}, expected {}",
+                                        endpoint.id, synthetic_endpoint_id
+                                    )
+                                    .into());
+                                }
+                                eprintln!(
+                                    "  private endpoint create unexpectedly succeeded \
+                                     (provider={}, region={}); registering inline cleanup",
+                                    endpoint.cloud_provider, endpoint.region
+                                );
+                                *created_endpoint_id = Some(endpoint.id);
+                                Ok(())
+                            }
+                            Err(clickhouse_cloud_api::Error::Api { status, message })
+                                if (400..500).contains(&status) =>
+                            {
+                                // Expected path: the API rejected the
+                                // synthetic id because no real cloud resource
+                                // backs it. The structured error shape
+                                // (status + message) is what we assert on.
+                                eprintln!(
+                                    "  private endpoint create correctly rejected \
+                                     synthetic id with {status}: {message}"
+                                );
+                                if message.trim().is_empty() {
+                                    return Err(format!(
+                                        "private endpoint create returned {status} \
+                                         with empty error body"
+                                    )
+                                    .into());
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(format!(
+                                "private endpoint create returned unexpected error \
+                                 (expected 4xx or success): {e}"
+                            )
+                            .into()),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        // Re-read the config endpoint after the create attempt: even when
+        // the create is rejected we want a second `config_get` call in the
+        // mix so transient deserialization regressions on the GET path
+        // surface.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "private endpoint config get after create attempt",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client
+                            .instance_private_endpoint_config_get(&org_id, &service_id)
+                            .await?;
+                        resp.result
+                            .ok_or("private endpoint config get returned no result")?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // If create succeeded, the synthetic endpoint is now associated with
+        // the service via `privateEndpointIds`. Detach it inline so the
+        // service can later be deleted cleanly — the service delete path
+        // does not implicitly free a private endpoint binding.
+        if let Some(endpoint_id) = created_endpoint_id.clone() {
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "detach synthetic private endpoint from service",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        let endpoint_id = endpoint_id.clone();
+                        async move {
+                            client
+                                .instance_update(
+                                    &org_id,
+                                    &service_id,
+                                    &ServicePatchRequest {
+                                        private_endpoint_ids: Some(
+                                            InstancePrivateEndpointsPatch {
+                                                add: vec![],
+                                                remove: vec![endpoint_id],
+                                            },
+                                        ),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+        }
+
+        // ── 6. IP Access ─────────────────────────────────────────────
 
         log_phase("IP Access");
         failures
@@ -1114,7 +1326,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
-        // ── 6. Scaling ───────────────────────────────────────────────
+        // ── 7. Scaling ───────────────────────────────────────────────
 
         log_phase("Scaling");
         failures
@@ -1213,7 +1425,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 7. Delete ────────────────────────────────────────────────
+        // ── 8. Delete ────────────────────────────────────────────────
 
         log_phase("Delete");
 
@@ -1415,4 +1627,53 @@ async fn scale_service_and_wait(
     .await?;
 
     Ok(())
+}
+
+/// Builds a provider-shaped but synthetic private endpoint id that embeds
+/// `ctx.run_id`. The format is plausible enough for the control plane to
+/// accept syntactically but the underlying cloud resource does not exist,
+/// so the create call is expected to be rejected with a 4xx. The run id is
+/// embedded so a leaked id in API logs can be traced back to a specific
+/// test run.
+fn synthetic_private_endpoint_id(ctx: &TestContext) -> String {
+    // Reduce the run id to a hex-safe slug capped at 16 chars to fit inside
+    // provider id formats.
+    let slug: String = ctx
+        .run_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .take(16)
+        .collect();
+    let padded = format!("{slug:0<16}");
+    match ctx.provider.as_str() {
+        // AWS VPC endpoint ids look like `vpce-0123456789abcdef0` (17 hex
+        // chars after the prefix).
+        "aws" => format!("vpce-{}0", &padded[..16]),
+        // GCP Private Service Connect endpoint ids are decimal strings. We
+        // pick a 19-digit value seeded by the run id hash so different runs
+        // collide neither with each other nor with real PSC endpoints.
+        "gcp" => {
+            let hash: u64 = ctx.run_id.bytes().fold(0u64, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(b as u64)
+            });
+            format!("{:019}", hash % 10u64.pow(19))
+        }
+        // Azure private endpoint resource ids are GUIDs. Synthesize one
+        // from the run id slug.
+        "azure" => {
+            let s = format!("{padded:0<32}");
+            format!(
+                "{}-{}-{}-{}-{}",
+                &s[..8],
+                &s[8..12],
+                &s[12..16],
+                &s[16..20],
+                &s[20..32]
+            )
+        }
+        // Unknown providers: pick something that contains the run id so it
+        // is traceable. The API will reject it; that is the assertion.
+        _ => format!("clickhousectl-it-{}", ctx.run_id),
+    }
 }
