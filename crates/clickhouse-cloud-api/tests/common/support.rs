@@ -372,6 +372,10 @@ pub struct CleanupRegistry {
     /// being deleted, table drops are redundant but harmless.
     tables: Vec<String>,
     api_key_ids: Vec<String>,
+    // Query endpoint bindings reference an API key; they must be deleted
+    // before the key they point to, otherwise we can't distinguish "binding
+    // cleanup works" from "API key was already gone."
+    query_endpoint_service_ids: Vec<String>,
 }
 
 impl CleanupRegistry {
@@ -433,6 +437,15 @@ impl CleanupRegistry {
             .retain(|registered| registered != key_id);
     }
 
+    pub fn register_query_endpoint(&mut self, service_id: impl Into<String>) {
+        self.query_endpoint_service_ids.push(service_id.into());
+    }
+
+    pub fn unregister_query_endpoint(&mut self, service_id: &str) {
+        self.query_endpoint_service_ids
+            .retain(|registered| registered != service_id);
+    }
+
     pub async fn cleanup(
         &mut self,
         client: &Client,
@@ -443,8 +456,19 @@ impl CleanupRegistry {
     ) -> Result<(), String> {
         let mut failures = Vec::new();
 
-        // API keys are cleaned up first; they belong to the org, not a
-        // specific service, so they outlive service deletion if leaked.
+        // Query endpoint bindings reference an API key, so drop them first.
+        // The service itself may still be around; that's fine — we're just
+        // removing the binding so the API key can be deleted cleanly next.
+        while let Some(service_id) = self.query_endpoint_service_ids.pop() {
+            match client.instance_query_endpoint_delete(org_id, &service_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("query endpoint on {service_id}: {e}")),
+            }
+        }
+
+        // API keys are cleaned up before services; they belong to the org,
+        // not a specific service, so they outlive service deletion if leaked.
         while let Some(key_id) = self.api_key_ids.pop() {
             match client.openapi_key_delete(org_id, &key_id).await {
                 Ok(_) => {}
