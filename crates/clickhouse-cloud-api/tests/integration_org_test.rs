@@ -99,13 +99,18 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 let role_name = role_name.clone();
                 let permissions = initial_permissions.clone();
                 async move {
+                    // Org-scoped resources must reference the literal org
+                    // id; the API rejects `organization/*` ("Organization *
+                    // must match the role's organization") even though
+                    // `instance/*` is a valid wildcard form.
+                    let resource = format!("organization/{org_id}");
                     let body = RoleCreateRequest {
                         name: role_name.clone(),
                         actors: vec![],
                         policies: vec![RBACPolicyCreateRequest {
                             allow_deny: RBACPolicyCreateRequestAllowdeny::ALLOW,
                             permissions,
-                            resources: vec!["organization/*".to_string()],
+                            resources: vec![resource],
                             tags: None,
                         }],
                     };
@@ -248,13 +253,14 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let name = role_name_clone;
                         let permissions = updated_permissions_clone;
                         async move {
+                            let resource = format!("organization/{org_id}");
                             let body = RoleUpdateRequest {
                                 name,
                                 actors: vec![],
                                 policies: vec![RBACPolicyCreateRequest {
                                     allow_deny: RBACPolicyCreateRequestAllowdeny::ALLOW,
                                     permissions,
-                                    resources: vec!["organization/*".to_string()],
+                                    resources: vec![resource],
                                     tags: None,
                                 }],
                             };
