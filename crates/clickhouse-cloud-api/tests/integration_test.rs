@@ -1242,11 +1242,20 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let org_id = ctx.org_id.clone();
                     let service_id = service_id.clone();
                     async move {
-                        let resp = client
-                            .scaling_schedule_get(&org_id, &service_id)
-                            .await?;
-                        resp.result
-                            .ok_or_else(|| "scaling_schedule get returned no result".into())
+                        // A freshly-created service has no autoscaling schedule
+                        // configured, and the API responds with 404 rather than
+                        // an empty `ScalingSchedule`. Treat that as the canonical
+                        // empty pre-state so the round-trip can still exercise
+                        // upsert/replace; any other error still surfaces.
+                        match client.scaling_schedule_get(&org_id, &service_id).await {
+                            Ok(resp) => resp
+                                .result
+                                .ok_or_else(|| "scaling_schedule get returned no result".into()),
+                            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+                                Ok(ScalingSchedule::default())
+                            }
+                            Err(e) => Err(e.into()),
+                        }
                     }
                 },
             )
@@ -1256,8 +1265,14 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // pre-state. If the initial GET failed, restoring afterwards
         // would risk leaving a synthetic schedule on the service.
         if let Some(pre_state) = pre_schedule {
-            cleanup
-                .register_scaling_schedule_restore(service_id.clone(), pre_state.clone());
+            // Skip restore registration when pre-state is empty: the API
+            // rejects upserts with an empty `entries` array, and there is
+            // nothing meaningful to restore. Cleanup of synthetic entries
+            // is still covered by the service-delete teardown below.
+            if !pre_state.entries.is_empty() {
+                cleanup
+                    .register_scaling_schedule_restore(service_id.clone(), pre_state.clone());
+            }
             eprintln!(
                 "  captured scaling_schedule pre-state: {} entries",
                 pre_state.entries.len()
