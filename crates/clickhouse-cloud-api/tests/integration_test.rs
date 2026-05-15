@@ -1213,7 +1213,142 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 7. Delete ────────────────────────────────────────────────
+        // Vertical scaling round-trip via the deprecated
+        // `instance_scaling_update` endpoint (PATCH /scaling). This is
+        // distinct from `instance_replica_scaling_update` (PATCH
+        // /replicaScaling) exercised above: the deprecated endpoint takes
+        // `minTotalMemoryGb` / `maxTotalMemoryGb` and only the vertical
+        // axis. We enter this phase at 1 replica @ base_memory_gb so the
+        // total-memory body maps directly to per-replica memory; round-trip
+        // back to the entry state so subsequent phases see the expected
+        // base.
+        let pre_vertical = failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "capture pre-state for deprecated vertical scaling",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client.instance_get(&org_id, &service_id).await?;
+                        resp.result
+                            .ok_or_else(|| "service get returned no result".into())
+                    }
+                },
+            )
+            .await?
+            .expect("blocking steps always return a value");
+        // Sanity: the deprecated body's totals only equal per-replica when
+        // num_replicas == 1. We rely on the previous step landing us there.
+        assert_eq!(pre_vertical.num_replicas, base_replicas);
+        let pre_min_total = pre_vertical.min_total_memory_gb;
+        let pre_max_total = pre_vertical.max_total_memory_gb;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "deprecated vertical scale up to 16 GB",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        scale_service_vertical_and_wait(
+                            &client,
+                            &org_id,
+                            &service_id,
+                            Some(scaled_memory_gb),
+                            Some(scaled_memory_gb),
+                            "deprecated vertical scale up",
+                            timeout,
+                            interval,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "deprecated vertical scale back to pre-state",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        scale_service_vertical_and_wait(
+                            &client,
+                            &org_id,
+                            &service_id,
+                            Some(pre_min_total),
+                            Some(pre_max_total),
+                            "deprecated vertical scale restore",
+                            timeout,
+                            interval,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
+        // ── 7. Password ──────────────────────────────────────────────
+        //
+        // `instance_password_update` rotates the service password. The
+        // query path used by the rest of the suite is openapi-key-based,
+        // so the rotated password is not consumed anywhere — the pass
+        // condition is just a successful response that surfaces a fresh
+        // password. We pass an empty body so the server generates a new
+        // password and returns it; no re-rotation is needed because the
+        // service is about to be deleted.
+
+        log_phase("Password");
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "rotate service password",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let run_id = ctx.run_id.clone();
+                    async move {
+                        let resp = client
+                            .instance_password_update(
+                                &org_id,
+                                &service_id,
+                                &ServicePasswordPatchRequest::default(),
+                            )
+                            .await?;
+                        let result = resp
+                            .result
+                            .ok_or("password update returned no result")?;
+                        if result.password.is_empty() {
+                            return Err("password update response had empty password".into());
+                        }
+                        eprintln!(
+                            "  password rotated (length={}, run_id={})",
+                            result.password.len(),
+                            run_id
+                        );
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // ── 8. Delete ────────────────────────────────────────────────
 
         log_phase("Delete");
 
@@ -1366,6 +1501,7 @@ async fn poll_for_ip_presence(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scale_service_and_wait(
     client: &Client,
     org_id: &str,
@@ -1404,6 +1540,56 @@ async fn scale_service_and_wait(
                 if min_memory_gb.is_none_or(|v| svc.min_replica_memory_gb == v)
                     && max_memory_gb.is_none_or(|v| svc.max_replica_memory_gb == v)
                     && replicas.is_none_or(|v| svc.num_replicas == v)
+                {
+                    Ok(Some(()))
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
+async fn scale_service_vertical_and_wait(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    min_total_memory_gb: Option<f64>,
+    max_total_memory_gb: Option<f64>,
+    description: &str,
+    timeout: std::time::Duration,
+    interval: std::time::Duration,
+) -> TestResult<()> {
+    client
+        .instance_scaling_update(
+            org_id,
+            service_id,
+            &ServiceScalingPatchRequest {
+                min_total_memory_gb,
+                max_total_memory_gb,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    poll_until(
+        &format!("{description} visibility"),
+        timeout,
+        interval,
+        || {
+            let client = client.clone();
+            let org_id = org_id.to_string();
+            let service_id = service_id.to_string();
+            async move {
+                let resp = client.instance_get(&org_id, &service_id).await?;
+                let svc = resp.result.ok_or("service get returned no result")?;
+                if min_total_memory_gb.is_none_or(|v| svc.min_total_memory_gb == v)
+                    && max_total_memory_gb.is_none_or(|v| svc.max_total_memory_gb == v)
                 {
                     Ok(Some(()))
                 } else {
