@@ -64,10 +64,14 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 let client = client.clone();
                 let org_id = ctx.org_id.clone();
                 async move {
-                    let metrics = client.organization_prometheus_get(&org_id, None).await?;
-                    if metrics.trim().is_empty() {
-                        return Err("organization prometheus returned empty output".into());
-                    }
+                    // The org-level prometheus exporter returns empty
+                    // output when no service in the org is emitting metrics
+                    // at request time. This suite deliberately does not
+                    // provision a service, so empty output is a valid
+                    // response — coverage here is that the call succeeds.
+                    // The service-level prometheus endpoint is covered with
+                    // a non-empty assertion in integration_test.rs.
+                    let _metrics = client.organization_prometheus_get(&org_id, None).await?;
                     Ok(())
                 }
             })
