@@ -16,6 +16,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let mut failures = FailureRecorder::default();
         let base_memory_gb = 8.0_f64;
         let scaled_memory_gb = 16.0_f64;
+        // The deprecated `instance_scaling_update` endpoint validates
+        // `minTotalMemoryGb`/`maxTotalMemoryGb` as multiples of 12, unlike
+        // the modern `instance_replica_scaling_update` endpoint which
+        // accepts multiples of 4. Use a dedicated pair of values for the
+        // deprecated round-trip to satisfy that constraint.
+        let deprecated_base_total_memory_gb = 12.0_f64;
+        let deprecated_scaled_total_memory_gb = 24.0_f64;
         let base_replicas = 1.0_f64;
         let scaled_replicas = 3.0_f64;
         let primary_ip = "203.0.113.10/32";
@@ -1218,10 +1225,40 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // distinct from `instance_replica_scaling_update` (PATCH
         // /replicaScaling) exercised above: the deprecated endpoint takes
         // `minTotalMemoryGb` / `maxTotalMemoryGb` and only the vertical
-        // axis. We enter this phase at 1 replica @ base_memory_gb so the
-        // total-memory body maps directly to per-replica memory; round-trip
-        // back to the entry state so subsequent phases see the expected
-        // base.
+        // axis. The deprecated endpoint additionally requires the totals to
+        // be multiples of 12, so we first move via the modern endpoint to
+        // `deprecated_base_total_memory_gb` before the round-trip. We stay
+        // at 1 replica so the total-memory body maps directly to
+        // per-replica memory.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "land on multiple-of-12 memory before deprecated phase",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        scale_service_and_wait(
+                            &client,
+                            &org_id,
+                            &service_id,
+                            Some(deprecated_base_total_memory_gb),
+                            Some(deprecated_base_total_memory_gb),
+                            Some(base_replicas),
+                            "modern scale to deprecated base",
+                            timeout,
+                            interval,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
         let pre_vertical = failures
             .run(
                 &ctx,
@@ -1250,7 +1287,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .run(
                 &ctx,
                 StepKind::NonBlocking,
-                "deprecated vertical scale up to 16 GB",
+                "deprecated vertical scale up to 24 GB",
                 || {
                     let client = client.clone();
                     let org_id = ctx.org_id.clone();
@@ -1262,8 +1299,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             &client,
                             &org_id,
                             &service_id,
-                            Some(scaled_memory_gb),
-                            Some(scaled_memory_gb),
+                            Some(deprecated_scaled_total_memory_gb),
+                            Some(deprecated_scaled_total_memory_gb),
                             "deprecated vertical scale up",
                             timeout,
                             interval,
