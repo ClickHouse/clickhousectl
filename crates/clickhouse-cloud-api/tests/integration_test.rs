@@ -909,7 +909,267 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 5. IP Access ─────────────────────────────────────────────
+        // ── 5. ClickHouse Settings ───────────────────────────────────
+        //
+        // Round-trip a service-level ClickHouse setting through the four
+        // settings endpoints (`schema`, `list`, `update`, `get`) and capture
+        // the original value so cleanup can restore it.
+        //
+        // The schema endpoint does not expose a "restartRequired" flag, so we
+        // pick from a curated allowlist of well-known runtime-changeable
+        // settings (no restart required). We intersect the allowlist with the
+        // schema returned at test time, so we only touch a setting the cloud
+        // control plane currently advertises as configurable. If none of the
+        // allowlisted settings appear in the schema this phase records a
+        // non-blocking failure rather than guessing at an unknown setting.
+
+        log_phase("ClickHouse Settings");
+
+        let settings_schema = failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "clickhouse settings schema get",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client
+                            .service_clickhouse_settings_schema_get(&org_id, &service_id)
+                            .await?;
+                        let schema = resp
+                            .result
+                            .ok_or("clickhouse settings schema returned no result")?;
+                        if schema.settings.is_empty() {
+                            return Err("clickhouse settings schema returned no entries".into());
+                        }
+                        Ok(schema)
+                    }
+                },
+            )
+            .await?;
+
+        if let Some(schema) = settings_schema {
+            // Curated allowlist of ClickHouse settings that are safe to mutate
+            // on a running service and do not require a restart. All of these
+            // are per-query / per-user runtime knobs — changing them does not
+            // bounce the server. Ordered by preference; first match wins.
+            //
+            // Hardcoded because the schema endpoint does not carry a
+            // restart-required marker today; using a curated list is the
+            // conservative alternative to picking blindly.
+            const NO_RESTART_CANDIDATES: &[&str] = &[
+                "max_concurrent_queries_for_user",
+                "max_threads",
+                "max_memory_usage_for_user",
+                "min_insert_block_size_rows",
+            ];
+
+            let chosen = NO_RESTART_CANDIDATES.iter().find_map(|name| {
+                schema
+                    .settings
+                    .iter()
+                    .find(|entry| entry.name == *name)
+                    .cloned()
+            });
+
+            if let Some(entry) = chosen {
+                let setting_name = entry.name.clone();
+                eprintln!("  chose setting: {setting_name} (type: {})", entry.r#type);
+
+                let list_resp = failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "clickhouse settings list get",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let service_id = service_id.clone();
+                            async move {
+                                let resp = client
+                                    .service_clickhouse_settings_list_get(
+                                        &org_id,
+                                        &service_id,
+                                    )
+                                    .await?;
+                                let list = resp.result.ok_or(
+                                    "clickhouse settings list returned no result",
+                                )?;
+                                if list.settings.is_empty() {
+                                    return Err(
+                                        "clickhouse settings list returned no entries".into(),
+                                    );
+                                }
+                                Ok(list)
+                            }
+                        },
+                    )
+                    .await?;
+
+                let original_value = list_resp.as_ref().and_then(|list| {
+                    list.settings
+                        .iter()
+                        .find(|s| s.name == setting_name)
+                        .map(|s| s.value.clone())
+                });
+
+                if let Some(original) = original_value {
+                    eprintln!("  current value: {original}");
+
+                    // Pick a new numeric value that differs from the current
+                    // one. The candidates are all integer-typed settings, so
+                    // we parse the current value as an integer; if parsing
+                    // fails we bail to the next pre-set safe value below.
+                    let new_value = match original.parse::<u64>() {
+                        Ok(0) => "1".to_string(),
+                        Ok(n) => (n.saturating_add(1)).to_string(),
+                        Err(_) => "1".to_string(),
+                    };
+
+                    // Register the restore BEFORE attempting the mutation so
+                    // a failed mid-mutation still triggers a cleanup attempt.
+                    cleanup.register_clickhouse_setting_restore(
+                        service_id.clone(),
+                        setting_name.clone(),
+                        original.clone(),
+                    );
+
+                    // The `settings` field on the API is a JSON-encoded string
+                    // (the spec example is "{\"compatibility\":\"24.8\"}"). Build
+                    // it with serde_json so the inner JSON escapes correctly
+                    // regardless of what the setting name/value look like.
+                    let patch_body_settings = serde_json::to_string(
+                        &serde_json::json!({ setting_name.clone(): new_value.clone() }),
+                    )?;
+                    let update_ok = failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "clickhouse settings update",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let service_id = service_id.clone();
+                                let body = ServiceClickhouseSettingsPatchRequest {
+                                    settings: Some(patch_body_settings.clone()),
+                                };
+                                async move {
+                                    let resp = client
+                                        .service_clickhouse_settings_update(
+                                            &org_id,
+                                            &service_id,
+                                            &body,
+                                        )
+                                        .await?;
+                                    if resp.result.is_none() {
+                                        return Err(
+                                            "clickhouse settings update returned no result"
+                                                .into(),
+                                        );
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        )
+                        .await?;
+
+                    if update_ok.is_some() {
+                        failures
+                            .run(
+                                &ctx,
+                                StepKind::NonBlocking,
+                                "clickhouse setting get reflects update",
+                                || {
+                                    let client = client.clone();
+                                    let org_id = ctx.org_id.clone();
+                                    let service_id = service_id.clone();
+                                    let setting_name = setting_name.clone();
+                                    let expected = new_value.clone();
+                                    let interval = ctx.poll_interval;
+                                    async move {
+                                        // The control plane may take a few
+                                        // seconds to propagate the change to
+                                        // the per-setting GET endpoint, so
+                                        // poll briefly rather than asserting
+                                        // on the first read.
+                                        poll_until(
+                                            "clickhouse setting reflects update",
+                                            std::time::Duration::from_secs(60),
+                                            interval,
+                                            || {
+                                                let client = client.clone();
+                                                let org_id = org_id.clone();
+                                                let service_id = service_id.clone();
+                                                let setting_name = setting_name.clone();
+                                                let expected = expected.clone();
+                                                async move {
+                                                    let resp = client
+                                                        .service_clickhouse_setting_get(
+                                                            &org_id,
+                                                            &service_id,
+                                                            &setting_name,
+                                                        )
+                                                        .await?;
+                                                    let got = resp.result.ok_or(
+                                                        "clickhouse setting get returned no result",
+                                                    )?;
+                                                    if got.value == expected {
+                                                        Ok(Some(()))
+                                                    } else {
+                                                        Ok(None)
+                                                    }
+                                                }
+                                            },
+                                        )
+                                        .await
+                                    }
+                                },
+                            )
+                            .await?;
+                    }
+                } else {
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "clickhouse settings round-trip: capture original value",
+                            || {
+                                let setting_name = setting_name.clone();
+                                async move {
+                                    let err: Box<dyn std::error::Error> = format!(
+                                        "setting {setting_name} not present in settings list — \
+                                         cannot capture original value for round-trip"
+                                    )
+                                    .into();
+                                    Err::<(), _>(err)
+                                }
+                            },
+                        )
+                        .await?;
+                }
+            } else {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "clickhouse settings round-trip: pick candidate",
+                        || async move {
+                            let err: Box<dyn std::error::Error> = format!(
+                                "none of the no-restart-required candidates {:?} appeared in \
+                                 the schema — schema may have changed",
+                                NO_RESTART_CANDIDATES
+                            )
+                            .into();
+                            Err::<(), _>(err)
+                        },
+                    )
+                    .await?;
+            }
+        }
+
+        // ── 6. IP Access ─────────────────────────────────────────────
 
         log_phase("IP Access");
         failures
@@ -1114,7 +1374,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
-        // ── 6. Scaling ───────────────────────────────────────────────
+        // ── 7. Scaling ───────────────────────────────────────────────
 
         log_phase("Scaling");
         failures
@@ -1213,7 +1473,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 7. Delete ────────────────────────────────────────────────
+        // ── 8. Delete ────────────────────────────────────────────────
 
         log_phase("Delete");
 
