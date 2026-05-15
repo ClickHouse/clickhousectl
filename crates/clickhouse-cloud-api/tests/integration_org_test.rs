@@ -178,6 +178,12 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         original_role_ids, target_role_ids, original_role_ids,
                     );
 
+                    // The PATCH response body can echo the *pre-change*
+                    // state (the API treats the update as eventually
+                    // consistent), so we don't assert on its body — we
+                    // only require it to return a result. The subsequent
+                    // GET poll is the source of truth for whether the
+                    // update propagated.
                     let target_for_patch = target_role_ids.clone();
                     failures
                         .run(
@@ -188,31 +194,18 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 let client = client.clone();
                                 let org_id = ctx.org_id.clone();
                                 let user_id = secondary_user_id.clone();
-                                let target = target_for_patch.clone();
                                 let body = MemberPatchRequest {
-                                    assigned_role_ids: Some(target.clone()),
+                                    assigned_role_ids: Some(target_for_patch.clone()),
                                     ..Default::default()
                                 };
                                 async move {
                                     let resp = client
                                         .member_update(&org_id, &user_id, &body)
                                         .await?;
-                                    let updated = resp
-                                        .result
-                                        .ok_or("member update returned no result")?;
-                                    let got: std::collections::HashSet<String> = updated
-                                        .assigned_roles
-                                        .iter()
-                                        .map(|ar| ar.role_id.to_string())
-                                        .collect();
-                                    let want: std::collections::HashSet<String> =
-                                        target.into_iter().collect();
-                                    if got != want {
-                                        return Err(format!(
-                                            "member update echoed unexpected role ids {got:?}; \
-                                             wanted {want:?}"
-                                        )
-                                        .into());
+                                    if resp.result.is_none() {
+                                        return Err(
+                                            "member update returned no result".into(),
+                                        );
                                     }
                                     Ok(())
                                 }
@@ -232,24 +225,42 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 let user_id = secondary_user_id.clone();
                                 let want: std::collections::HashSet<String> =
                                     target_for_get.into_iter().collect();
+                                let interval = ctx.poll_interval;
                                 async move {
-                                    let resp = client.member_get(&org_id, &user_id).await?;
-                                    let member = resp
-                                        .result
-                                        .ok_or("member get returned no result")?;
-                                    let got: std::collections::HashSet<String> = member
-                                        .assigned_roles
-                                        .iter()
-                                        .map(|ar| ar.role_id.to_string())
-                                        .collect();
-                                    if got != want {
-                                        return Err(format!(
-                                            "post-flip GET returned role ids {got:?}; \
-                                             wanted {want:?}"
-                                        )
-                                        .into());
-                                    }
-                                    Ok(())
+                                    // Poll for propagation. The PATCH is
+                                    // accepted immediately but the GET
+                                    // endpoint may lag by a few seconds.
+                                    poll_until(
+                                        "member assignedRoleIds reflects flip",
+                                        std::time::Duration::from_secs(30),
+                                        interval,
+                                        || {
+                                            let client = client.clone();
+                                            let org_id = org_id.clone();
+                                            let user_id = user_id.clone();
+                                            let want = want.clone();
+                                            async move {
+                                                let resp = client
+                                                    .member_get(&org_id, &user_id)
+                                                    .await?;
+                                                let member = resp.result.ok_or(
+                                                    "member get returned no result",
+                                                )?;
+                                                let got: std::collections::HashSet<String> =
+                                                    member
+                                                        .assigned_roles
+                                                        .iter()
+                                                        .map(|ar| ar.role_id.to_string())
+                                                        .collect();
+                                                if got == want {
+                                                    Ok(Some(()))
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                        },
+                                    )
+                                    .await
                                 }
                             },
                         )
@@ -258,7 +269,9 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     // Eager restore (best-effort). The cleanup registry
                     // still owns the safety net; this just keeps the org
                     // clean if the remaining test body needs to read the
-                    // original assignments.
+                    // original assignments. Same eventual-consistency
+                    // caveat applies — assert via poll, not the PATCH
+                    // response.
                     let original_for_restore = original_role_ids.clone();
                     failures
                         .run(
@@ -274,28 +287,49 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                     assigned_role_ids: Some(want_ids.clone()),
                                     ..Default::default()
                                 };
+                                let interval = ctx.poll_interval;
                                 async move {
                                     let resp = client
                                         .member_update(&org_id, &user_id, &body)
                                         .await?;
-                                    let restored = resp
-                                        .result
-                                        .ok_or("member restore returned no result")?;
-                                    let got: std::collections::HashSet<String> = restored
-                                        .assigned_roles
-                                        .iter()
-                                        .map(|ar| ar.role_id.to_string())
-                                        .collect();
+                                    if resp.result.is_none() {
+                                        return Err(
+                                            "member restore returned no result".into(),
+                                        );
+                                    }
                                     let want: std::collections::HashSet<String> =
                                         want_ids.into_iter().collect();
-                                    if got != want {
-                                        return Err(format!(
-                                            "restore echoed unexpected role ids {got:?}; \
-                                             wanted {want:?}"
-                                        )
-                                        .into());
-                                    }
-                                    Ok(())
+                                    poll_until(
+                                        "member assignedRoleIds reflects restore",
+                                        std::time::Duration::from_secs(30),
+                                        interval,
+                                        || {
+                                            let client = client.clone();
+                                            let org_id = org_id.clone();
+                                            let user_id = user_id.clone();
+                                            let want = want.clone();
+                                            async move {
+                                                let resp = client
+                                                    .member_get(&org_id, &user_id)
+                                                    .await?;
+                                                let member = resp.result.ok_or(
+                                                    "member get returned no result",
+                                                )?;
+                                                let got: std::collections::HashSet<String> =
+                                                    member
+                                                        .assigned_roles
+                                                        .iter()
+                                                        .map(|ar| ar.role_id.to_string())
+                                                        .collect();
+                                                if got == want {
+                                                    Ok(Some(()))
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                        },
+                                    )
+                                    .await
                                 }
                             },
                         )
