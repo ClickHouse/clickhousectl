@@ -121,120 +121,196 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 "secondary member email was empty"
             );
 
-            // Capture-and-flip. The teardown task is registered before the
-            // mutating call so a panic between here and the next assertion
-            // can't leave the fixture with the wrong role.
-            let original_role = member_role_for_restore(&secondary_member.role);
-            let target_role = flip_member_role(&secondary_member.role);
-            cleanup.register_member_role_restore(
-                secondary_user_id.clone(),
-                original_role.clone(),
-            );
+            // Custom Roles round-trip. Orgs that have migrated to Custom
+            // Roles reject the legacy `role` enum on PATCH ("Organization
+            // has migrated to Custom Roles. Use 'assignedRoleIds' instead
+            // of 'role'."), so the round-trip swaps the secondary user's
+            // assignedRoleIds and restores the original set.
+            //
+            // The teardown task is registered before the mutating call so
+            // a panic between here and the next assertion can't leave the
+            // fixture with the wrong assignments.
 
-            let original_role_str = secondary_member.role.to_string();
-            let target_role_str = target_role.to_string();
-            eprintln!(
-                "  member role round-trip: {original_role_str} -> {target_role_str} -> {original_role_str}"
-            );
+            let original_role_ids: Vec<String> = secondary_member
+                .assigned_roles
+                .iter()
+                .map(|ar| ar.role_id.to_string())
+                .collect();
 
-            let target_role_for_flip = target_role.clone();
-            failures
+            let org_roles = failures
                 .run(
                     &ctx,
                     StepKind::NonBlocking,
-                    "flip secondary member role",
+                    "list org roles for member round-trip",
                     || {
                         let client = client.clone();
                         let org_id = ctx.org_id.clone();
-                        let user_id = secondary_user_id.clone();
-                        let target = target_role_for_flip.clone();
-                        let body = MemberPatchRequest {
-                            role: Some(target.clone()),
-                            ..Default::default()
-                        };
                         async move {
-                            let resp = client.member_update(&org_id, &user_id, &body).await?;
-                            let updated = resp
-                                .result
-                                .ok_or("member update returned no result")?;
-                            if updated.role.to_string() != target.to_string() {
-                                return Err(format!(
-                                    "member update echoed unexpected role {}; wanted {}",
-                                    updated.role, target
-                                )
-                                .into());
-                            }
-                            Ok(())
+                            let resp = client.organization_roles_get_list(&org_id).await?;
+                            resp.result.ok_or_else(|| "org roles list returned no result".into())
                         }
                     },
                 )
                 .await?;
 
-            let target_role_for_get = target_role.clone();
-            failures
-                .run(
-                    &ctx,
-                    StepKind::NonBlocking,
-                    "verify flipped role via GET",
-                    || {
-                        let client = client.clone();
-                        let org_id = ctx.org_id.clone();
-                        let user_id = secondary_user_id.clone();
-                        let want = target_role_for_get.to_string();
-                        async move {
-                            let resp = client.member_get(&org_id, &user_id).await?;
-                            let member = resp.result.ok_or("member get returned no result")?;
-                            if member.role.to_string() != want {
-                                return Err(format!(
-                                    "post-flip GET returned role {}; wanted {}",
-                                    member.role, want
-                                )
-                                .into());
-                            }
-                            Ok(())
-                        }
-                    },
-                )
-                .await?;
+            if let Some(org_roles) = org_roles {
+                let originals: std::collections::HashSet<&str> =
+                    original_role_ids.iter().map(|s| s.as_str()).collect();
+                let candidate_extra = org_roles
+                    .iter()
+                    .map(|r| r.id.clone())
+                    .find(|id| !originals.contains(id.as_str()));
 
-            // Eager restore (best-effort). The cleanup registry still
-            // owns the safety net; this just keeps the org clean if the
-            // remaining test body needs to read the original role.
-            let original_role_for_restore = original_role.clone();
-            failures
-                .run(
-                    &ctx,
-                    StepKind::NonBlocking,
-                    "restore secondary member role",
-                    || {
-                        let client = client.clone();
-                        let org_id = ctx.org_id.clone();
-                        let user_id = secondary_user_id.clone();
-                        let want = original_role_for_restore.clone();
-                        let body = MemberPatchRequest {
-                            role: Some(want.clone()),
-                            ..Default::default()
-                        };
-                        async move {
-                            let resp = client.member_update(&org_id, &user_id, &body).await?;
-                            let restored = resp
-                                .result
-                                .ok_or("member restore returned no result")?;
-                            if restored.role.to_string() != want.to_string() {
-                                return Err(format!(
-                                    "restore echoed unexpected role {}; wanted {}",
-                                    restored.role, want
-                                )
-                                .into());
-                            }
-                            Ok(())
-                        }
-                    },
-                )
-                .await?;
-            // Eager restore succeeded — drop the registry entry so cleanup
-            // doesn't issue a redundant PATCH at teardown.
-            cleanup.unregister_member_role_restore(&secondary_user_id);
+                let target_role_ids: Option<Vec<String>> = match candidate_extra {
+                    Some(extra) => Some(vec![extra]),
+                    None if !original_role_ids.is_empty() => Some(Vec::new()),
+                    None => None,
+                };
+
+                if let Some(target_role_ids) = target_role_ids {
+                    cleanup.register_member_role_restore(
+                        secondary_user_id.clone(),
+                        original_role_ids.clone(),
+                    );
+
+                    eprintln!(
+                        "  member assignedRoleIds round-trip: {:?} -> {:?} -> {:?}",
+                        original_role_ids, target_role_ids, original_role_ids,
+                    );
+
+                    let target_for_patch = target_role_ids.clone();
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "flip secondary member assignedRoleIds",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let user_id = secondary_user_id.clone();
+                                let target = target_for_patch.clone();
+                                let body = MemberPatchRequest {
+                                    assigned_role_ids: Some(target.clone()),
+                                    ..Default::default()
+                                };
+                                async move {
+                                    let resp = client
+                                        .member_update(&org_id, &user_id, &body)
+                                        .await?;
+                                    let updated = resp
+                                        .result
+                                        .ok_or("member update returned no result")?;
+                                    let got: std::collections::HashSet<String> = updated
+                                        .assigned_roles
+                                        .iter()
+                                        .map(|ar| ar.role_id.to_string())
+                                        .collect();
+                                    let want: std::collections::HashSet<String> =
+                                        target.into_iter().collect();
+                                    if got != want {
+                                        return Err(format!(
+                                            "member update echoed unexpected role ids {got:?}; \
+                                             wanted {want:?}"
+                                        )
+                                        .into());
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        )
+                        .await?;
+
+                    let target_for_get = target_role_ids.clone();
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "verify flipped assignedRoleIds via GET",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let user_id = secondary_user_id.clone();
+                                let want: std::collections::HashSet<String> =
+                                    target_for_get.into_iter().collect();
+                                async move {
+                                    let resp = client.member_get(&org_id, &user_id).await?;
+                                    let member = resp
+                                        .result
+                                        .ok_or("member get returned no result")?;
+                                    let got: std::collections::HashSet<String> = member
+                                        .assigned_roles
+                                        .iter()
+                                        .map(|ar| ar.role_id.to_string())
+                                        .collect();
+                                    if got != want {
+                                        return Err(format!(
+                                            "post-flip GET returned role ids {got:?}; \
+                                             wanted {want:?}"
+                                        )
+                                        .into());
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        )
+                        .await?;
+
+                    // Eager restore (best-effort). The cleanup registry
+                    // still owns the safety net; this just keeps the org
+                    // clean if the remaining test body needs to read the
+                    // original assignments.
+                    let original_for_restore = original_role_ids.clone();
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "restore secondary member assignedRoleIds",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let user_id = secondary_user_id.clone();
+                                let want_ids = original_for_restore.clone();
+                                let body = MemberPatchRequest {
+                                    assigned_role_ids: Some(want_ids.clone()),
+                                    ..Default::default()
+                                };
+                                async move {
+                                    let resp = client
+                                        .member_update(&org_id, &user_id, &body)
+                                        .await?;
+                                    let restored = resp
+                                        .result
+                                        .ok_or("member restore returned no result")?;
+                                    let got: std::collections::HashSet<String> = restored
+                                        .assigned_roles
+                                        .iter()
+                                        .map(|ar| ar.role_id.to_string())
+                                        .collect();
+                                    let want: std::collections::HashSet<String> =
+                                        want_ids.into_iter().collect();
+                                    if got != want {
+                                        return Err(format!(
+                                            "restore echoed unexpected role ids {got:?}; \
+                                             wanted {want:?}"
+                                        )
+                                        .into());
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        )
+                        .await?;
+                    // Eager restore succeeded — drop the registry entry so
+                    // cleanup doesn't issue a redundant PATCH at teardown.
+                    cleanup.unregister_member_role_restore(&secondary_user_id);
+                } else {
+                    eprintln!(
+                        "  SKIP assignedRoleIds round-trip: org has no role distinct \
+                         from the secondary user's current assignments and the user \
+                         has no roles to drop"
+                    );
+                }
+            }
         }
 
         // ── Invitations ─────────────────────────────────────────────
@@ -397,26 +473,3 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
     }
 }
 
-/// Convert a member's current role into the equivalent PATCH request role
-/// so the cleanup registry can restore it via `member_update`. The two
-/// enums are structurally identical but distinct types in the generated
-/// model.
-fn member_role_for_restore(role: &MemberRole) -> MemberPatchRequestRole {
-    match role {
-        MemberRole::Admin => MemberPatchRequestRole::Admin,
-        MemberRole::Developer => MemberPatchRequestRole::Developer,
-        MemberRole::Unknown(s) => MemberPatchRequestRole::Unknown(s.clone()),
-    }
-}
-
-/// Pick the target role for the round-trip. Flip Admin <-> Developer so
-/// the PATCH always produces a visible state change; for any unknown
-/// custom role the spec might add later, fall back to Admin (and the
-/// registry still restores to the captured original).
-fn flip_member_role(role: &MemberRole) -> MemberPatchRequestRole {
-    match role {
-        MemberRole::Admin => MemberPatchRequestRole::Developer,
-        MemberRole::Developer => MemberPatchRequestRole::Admin,
-        MemberRole::Unknown(_) => MemberPatchRequestRole::Admin,
-    }
-}

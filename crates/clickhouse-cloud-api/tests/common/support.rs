@@ -421,11 +421,13 @@ pub struct CleanupRegistry {
     api_key_ids: Vec<String>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
-    /// Pending member-role restores: `(user_id, original_role)` pairs that
-    /// teardown will PATCH back, even on failure. Registered by the org
-    /// suite before mutating a member's role so the post-test org state
-    /// always equals the pre-test state.
-    member_role_restores: Vec<(String, MemberPatchRequestRole)>,
+    /// Pending member-role restores: `(user_id, original_assigned_role_ids)`
+    /// pairs that teardown will PATCH back, even on failure. Registered by
+    /// the org suite before mutating a member's role assignments so the
+    /// post-test org state always equals the pre-test state. Custom Roles
+    /// has replaced the legacy `role` enum, so the restore stores the full
+    /// list of role ids and teardown patches `assignedRoleIds` directly.
+    member_role_restores: Vec<(String, Vec<String>)>,
 }
 
 impl CleanupRegistry {
@@ -504,16 +506,17 @@ impl CleanupRegistry {
             .retain(|registered| registered != invitation_id);
     }
 
-    /// Record the original role of an org member so teardown can restore it
-    /// even if the test body panics. Call this immediately after capturing
-    /// the current role, before issuing any mutating `member_update`.
+    /// Record the original assigned role ids of an org member so teardown
+    /// can restore them even if the test body panics. Call this immediately
+    /// after capturing the current assignments, before issuing any
+    /// mutating `member_update`.
     pub fn register_member_role_restore(
         &mut self,
         user_id: impl Into<String>,
-        original_role: MemberPatchRequestRole,
+        original_assigned_role_ids: Vec<String>,
     ) {
         self.member_role_restores
-            .push((user_id.into(), original_role));
+            .push((user_id.into(), original_assigned_role_ids));
     }
 
     pub fn unregister_member_role_restore(&mut self, user_id: &str) {
@@ -536,16 +539,18 @@ impl CleanupRegistry {
         // the wrong role, every subsequent run starts with bad state. A
         // 404 means the user is no longer in the org and we have nothing
         // to do.
-        while let Some((user_id, original_role)) = self.member_role_restores.pop() {
+        while let Some((user_id, original_assigned_role_ids)) =
+            self.member_role_restores.pop()
+        {
             let body = MemberPatchRequest {
-                role: Some(original_role.clone()),
+                assigned_role_ids: Some(original_assigned_role_ids.clone()),
                 ..Default::default()
             };
             match client.member_update(org_id, &user_id, &body).await {
                 Ok(_) => {}
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
                 Err(e) => failures.push(format!(
-                    "member role restore {user_id} -> {original_role}: {e}"
+                    "member role restore {user_id} -> {original_assigned_role_ids:?}: {e}"
                 )),
             }
         }
