@@ -413,6 +413,13 @@ impl FailureRecorder {
 
 // ── Cleanup Registry ─────────────────────────────────────────────────
 
+#[derive(Debug, Clone)]
+pub struct ClickhouseSettingRestore {
+    pub service_id: String,
+    pub setting_name: String,
+    pub original_value: String,
+}
+
 #[derive(Default)]
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
@@ -435,6 +442,7 @@ pub struct CleanupRegistry {
     query_endpoint_service_ids: Vec<String>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
+    clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
 }
 
 impl CleanupRegistry {
@@ -502,6 +510,8 @@ impl CleanupRegistry {
             .append(&mut other.query_endpoint_service_ids);
         self.role_ids.append(&mut other.role_ids);
         self.invitation_ids.append(&mut other.invitation_ids);
+        self.clickhouse_setting_restores
+            .append(&mut other.clickhouse_setting_restores);
     }
 
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
@@ -544,6 +554,25 @@ impl CleanupRegistry {
             .retain(|registered| registered != invitation_id);
     }
 
+    pub fn register_clickhouse_setting_restore(
+        &mut self,
+        service_id: impl Into<String>,
+        setting_name: impl Into<String>,
+        original_value: impl Into<String>,
+    ) {
+        self.clickhouse_setting_restores.push(ClickhouseSettingRestore {
+            service_id: service_id.into(),
+            setting_name: setting_name.into(),
+            original_value: original_value.into(),
+        });
+    }
+
+    pub fn unregister_clickhouse_setting_restore(&mut self, service_id: &str, setting_name: &str) {
+        self.clickhouse_setting_restores.retain(|restore| {
+            !(restore.service_id == service_id && restore.setting_name == setting_name)
+        });
+    }
+
     pub async fn cleanup(
         &mut self,
         client: &Client,
@@ -553,6 +582,41 @@ impl CleanupRegistry {
         ch_query: Option<&ClickHouseQuery>,
     ) -> Result<(), String> {
         let mut failures = Vec::new();
+
+        // Restore any ClickHouse settings before deleting the service that owns
+        // them. If the service is already gone (e.g. test deleted it as part of
+        // its body) the restore call will 404 and is skipped.
+        while let Some(restore) = self.clickhouse_setting_restores.pop() {
+            // The `settings` field on the API is a JSON-encoded string; build
+            // it with serde_json so quotes / backslashes in the original value
+            // round-trip correctly.
+            let inner = match serde_json::to_string(&serde_json::json!({
+                restore.setting_name.clone(): restore.original_value.clone(),
+            })) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!(
+                        "serialize clickhouse setting restore body for {} on {}: {}",
+                        restore.setting_name, restore.service_id, e
+                    ));
+                    continue;
+                }
+            };
+            let body = ServiceClickhouseSettingsPatchRequest {
+                settings: Some(inner),
+            };
+            match client
+                .service_clickhouse_settings_update(org_id, &restore.service_id, &body)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "restore clickhouse setting {} on service {}: {}",
+                    restore.setting_name, restore.service_id, e
+                )),
+            }
+        }
 
         // Query endpoint bindings reference an API key, so drop them first.
         // The service itself may still be around; that's fine — we're just
