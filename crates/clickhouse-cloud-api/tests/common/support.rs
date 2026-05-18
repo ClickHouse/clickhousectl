@@ -443,6 +443,12 @@ pub struct CleanupRegistry {
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
+    scaling_schedule_restores: Vec<ScalingScheduleRestore>,
+}
+
+pub struct ScalingScheduleRestore {
+    pub service_id: String,
+    pub pre_state: ScalingSchedule,
 }
 
 impl CleanupRegistry {
@@ -573,6 +579,30 @@ impl CleanupRegistry {
         });
     }
 
+    /// Register a scaling schedule pre-state for restore during cleanup.
+    ///
+    /// Cleanup runs the restore via `scaling_schedule_upsert` before
+    /// service deletion so the POST has a valid target. If the service
+    /// was already deleted in-test, the restore tolerates a 404; on the
+    /// happy path the caller should call
+    /// [`unregister_scaling_schedule_restore`] before deleting the
+    /// service to keep the registry tidy.
+    pub fn register_scaling_schedule_restore(
+        &mut self,
+        service_id: impl Into<String>,
+        pre_state: ScalingSchedule,
+    ) {
+        self.scaling_schedule_restores.push(ScalingScheduleRestore {
+            service_id: service_id.into(),
+            pre_state,
+        });
+    }
+
+    pub fn unregister_scaling_schedule_restore(&mut self, service_id: &str) {
+        self.scaling_schedule_restores
+            .retain(|registered| registered.service_id != service_id);
+    }
+
     pub async fn cleanup(
         &mut self,
         client: &Client,
@@ -615,6 +645,18 @@ impl CleanupRegistry {
                     "restore clickhouse setting {} on service {}: {}",
                     restore.setting_name, restore.service_id, e
                 )),
+            }
+        }
+
+        // Restore scaling schedules before service deletion so the
+        // restore POST can still find the service. If the service is
+        // already gone (in-test delete succeeded), 404 is tolerated.
+        while let Some(restore) = self.scaling_schedule_restores.pop() {
+            if let Err(error) = restore_scaling_schedule(client, org_id, &restore).await {
+                failures.push(format!(
+                    "scaling schedule restore {service_id}: {error}",
+                    service_id = restore.service_id
+                ));
             }
         }
 
@@ -723,6 +765,48 @@ impl CleanupRegistry {
         } else {
             Err(failures.join("\n"))
         }
+    }
+}
+
+async fn restore_scaling_schedule(
+    client: &Client,
+    org_id: &str,
+    restore: &ScalingScheduleRestore,
+) -> TestResult<()> {
+    eprintln!("  cleanup: restoring scaling schedule pre-state");
+    let body = ScalingSchedulePostRequest {
+        entries: restore
+            .pre_state
+            .entries
+            .iter()
+            .map(scaling_schedule_entry_to_request)
+            .collect(),
+    };
+    match client
+        .scaling_schedule_upsert(org_id, &restore.service_id, &body)
+        .await
+    {
+        Ok(_) => Ok(()),
+        // Service deleted before cleanup ran — nothing to restore against.
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn scaling_schedule_entry_to_request(
+    entry: &ScalingScheduleEntry,
+) -> ScalingScheduleEntryRequest {
+    ScalingScheduleEntryRequest {
+        end_hour_utc: entry.end_hour_utc,
+        idle_scaling: entry.idle_scaling,
+        idle_timeout_minutes: entry.idle_timeout_minutes,
+        max_replica_memory_gb: entry.max_replica_memory_gb,
+        max_replicas: entry.max_replicas,
+        min_replica_memory_gb: entry.min_replica_memory_gb,
+        min_replicas: entry.min_replicas,
+        name: entry.name.clone(),
+        start_hour_utc: entry.start_hour_utc,
+        weekdays: entry.weekdays.clone(),
     }
 }
 

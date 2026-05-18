@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-795280",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-799307",
       "email": "support@clickhouse.com"
     }
   },
@@ -2914,10 +2914,10 @@
           }
         ]
       },
-      "patch": {
-        "summary": "Replace service autoscaling schedule",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Fully replaces the autoscaling schedule for a service. Note: this is a full replacement — `entries` is required and partial updates (omitting `entries` to update only `baseConfig`) are not supported. Pass an empty `entries` array to clear the schedule — a subsequent GET will return 404, and the response will contain an empty `baseConfig` (all fields absent). Requires the scheduled autoscaling feature to be enabled for the organization.",
-        "operationId": "scalingScheduleReplace",
+      "delete": {
+        "summary": "Delete service scheduled scaling",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Deletes the autoscaling schedule for a service. If a schedule entry is currently active, the base scaling config is restored to the instance before the schedule is removed. Returns 404 if no schedule exists. Requires the scheduled autoscaling feature to be enabled for the organization.",
+        "operationId": "scalingScheduleDelete",
         "parameters": [
           {
             "in": "path",
@@ -2940,15 +2940,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScalingSchedulePatchRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Successful response",
@@ -2966,9 +2957,6 @@
                       "type": "string",
                       "description": "Unique id assigned to every request. UUIDv4",
                       "format": "uuid"
-                    },
-                    "result": {
-                      "$ref": "#/components/schemas/ScalingSchedule"
                     }
                   }
                 }
@@ -9295,6 +9283,98 @@
         ]
       }
     },
+    "/v1/organizations/{organizationId}/postgres/prometheus": {
+      "get": {
+        "summary": "Get organization PostgreSQL metrics",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns Prometheus metrics for all PostgreSQL services in an organization. Maximum 100 services supported.",
+        "operationId": "postgresOrgPrometheusGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the requested organization.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain; charset=UTF-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Prometheus"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
     "/v1/organizations/{organizationId}/postgres/{postgresId}": {
       "get": {
         "summary": "Get PostgreSQL service details",
@@ -10618,6 +10698,108 @@
         },
         "tags": [
           "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/postgres/{postgresId}/prometheus": {
+      "get": {
+        "summary": "Get PostgreSQL service metrics",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns Prometheus metrics for a PostgreSQL service.",
+        "operationId": "postgresInstancePrometheusGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the requested Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "text/plain; charset=UTF-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Prometheus"
         ],
         "x-badges": [
           {
@@ -14709,20 +14891,6 @@
           "entries": {
             "type": "array",
             "description": "List of schedule entries. Pass an empty array to clear the schedule.",
-            "items": {
-              "$ref": "#/components/schemas/ScalingScheduleEntryRequest"
-            }
-          }
-        },
-        "required": [
-          "entries"
-        ]
-      },
-      "ScalingSchedulePatchRequest": {
-        "properties": {
-          "entries": {
-            "type": "array",
-            "description": "Full list of schedule entries. Replaces any existing schedule. Pass an empty array to clear the schedule.",
             "items": {
               "$ref": "#/components/schemas/ScalingScheduleEntryRequest"
             }
@@ -21451,6 +21619,20 @@
               "serializable"
             ]
           },
+          "ssl_min_protocol_version": {
+            "type": "string",
+            "description": "Sets the minimum SSL/TLS protocol version allowed for client connections.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/ssl_min_protocol_version/"
+            },
+            "example": "TLSv1.3",
+            "enum": [
+              "TLSv1",
+              "TLSv1.1",
+              "TLSv1.2",
+              "TLSv1.3"
+            ]
+          },
           "maintenance_work_mem": {
             "type": [
               "string",
@@ -21706,15 +21888,12 @@
         "title": "VM size",
         "description": "The VM size for a Postgres service.",
         "enum": [
-          "c6gd.medium",
           "c6gd.large",
           "c6gd.xlarge",
           "c6gd.2xlarge",
           "c6gd.4xlarge",
           "c6gd.8xlarge",
-          "c6gd.12xlarge",
           "c6gd.16xlarge",
-          "c6gd.metal",
           "i7i.large",
           "i7i.xlarge",
           "i7i.2xlarge",
@@ -21723,9 +21902,6 @@
           "i7i.12xlarge",
           "i7i.16xlarge",
           "i7i.24xlarge",
-          "i7i.metal-24xl",
-          "i7i.48xlarge",
-          "i7i.metal-48xl",
           "i7ie.large",
           "i7ie.xlarge",
           "i7ie.2xlarge",
@@ -21734,19 +21910,13 @@
           "i7ie.12xlarge",
           "i7ie.18xlarge",
           "i7ie.24xlarge",
-          "i7ie.metal-24xl",
-          "i7ie.48xlarge",
-          "i7ie.metal-48xl",
           "i8g.large",
           "i8g.xlarge",
           "i8g.2xlarge",
           "i8g.4xlarge",
           "i8g.8xlarge",
-          "i8g.12xlarge",
           "i8g.16xlarge",
           "i8g.24xlarge",
-          "i8g.metal-24xl",
-          "i8g.48xlarge",
           "i8ge.large",
           "i8ge.xlarge",
           "i8ge.2xlarge",
@@ -21755,74 +21925,24 @@
           "i8ge.12xlarge",
           "i8ge.18xlarge",
           "i8ge.24xlarge",
-          "i8ge.metal-24xl",
-          "i8ge.48xlarge",
-          "i8ge.metal-48xl",
-          "m6a.large",
-          "m6a.xlarge",
-          "m6a.2xlarge",
-          "m6a.4xlarge",
-          "m6a.8xlarge",
-          "m6a.12xlarge",
-          "m6a.16xlarge",
-          "m6a.24xlarge",
-          "m6a.32xlarge",
-          "m6a.48xlarge",
-          "m6a.metal",
-          "m6gd.medium",
           "m6gd.large",
           "m6gd.xlarge",
           "m6gd.2xlarge",
           "m6gd.4xlarge",
           "m6gd.8xlarge",
-          "m6gd.12xlarge",
           "m6gd.16xlarge",
-          "m6gd.metal",
           "m6id.large",
           "m6id.xlarge",
           "m6id.2xlarge",
           "m6id.4xlarge",
           "m6id.8xlarge",
-          "m6id.12xlarge",
           "m6id.16xlarge",
-          "m6id.24xlarge",
-          "m6id.32xlarge",
-          "m6id.metal",
-          "m7a.medium",
-          "m7a.large",
-          "m7a.xlarge",
-          "m7a.2xlarge",
-          "m7a.4xlarge",
-          "m7a.8xlarge",
-          "m7a.12xlarge",
-          "m7a.16xlarge",
-          "m7a.24xlarge",
-          "m7a.32xlarge",
-          "m7a.48xlarge",
-          "m7a.metal-48xl",
-          "m7i.large",
-          "m7i.xlarge",
-          "m7i.2xlarge",
-          "m7i.4xlarge",
-          "m7i.8xlarge",
-          "m7i.12xlarge",
-          "m7i.16xlarge",
-          "m7i.24xlarge",
-          "m7i.metal-24xl",
-          "m7i.48xlarge",
-          "m7i.metal-48xl",
-          "m8gd.medium",
           "m8gd.large",
           "m8gd.xlarge",
           "m8gd.2xlarge",
           "m8gd.4xlarge",
           "m8gd.8xlarge",
-          "m8gd.12xlarge",
           "m8gd.16xlarge",
-          "m8gd.24xlarge",
-          "m8gd.metal-24xl",
-          "m8gd.48xlarge",
-          "m8gd.metal-48xl",
           "r6gd.medium",
           "r6gd.large",
           "r6gd.xlarge",
@@ -21831,7 +21951,6 @@
           "r6gd.8xlarge",
           "r6gd.12xlarge",
           "r6gd.16xlarge",
-          "r6gd.metal",
           "r6id.large",
           "r6id.xlarge",
           "r6id.2xlarge",
@@ -21841,7 +21960,6 @@
           "r6id.16xlarge",
           "r6id.24xlarge",
           "r6id.32xlarge",
-          "r6id.metal",
           "r8gd.medium",
           "r8gd.large",
           "r8gd.xlarge",
@@ -21851,9 +21969,7 @@
           "r8gd.12xlarge",
           "r8gd.16xlarge",
           "r8gd.24xlarge",
-          "r8gd.metal-24xl",
-          "r8gd.48xlarge",
-          "r8gd.metal-48xl"
+          "r8gd.48xlarge"
         ]
       },
       "pgHaType": {
@@ -21893,7 +22009,7 @@
           "$ref": "#/components/schemas/ResourceTagsV1"
         },
         "title": "Postgres Tags",
-        "description": "Tags associated with the Postgres service."
+        "description": "Tags associated with the Postgres service. Tag keys starting with “chc_” are reserved for internal use."
       },
       "pgNameProperty": {
         "type": "string",
@@ -21952,9 +22068,6 @@
           "size": {
             "$ref": "#/components/schemas/pgSize"
           },
-          "storageSize": {
-            "$ref": "#/components/schemas/pgStorageSize"
-          },
           "haType": {
             "$ref": "#/components/schemas/pgHaType"
           },
@@ -21980,9 +22093,6 @@
           "size": {
             "$ref": "#/components/schemas/pgSize"
           },
-          "storageSize": {
-            "$ref": "#/components/schemas/pgStorageSize"
-          },
           "haType": {
             "$ref": "#/components/schemas/pgHaType"
           },
@@ -21991,6 +22101,9 @@
           },
           "id": {
             "$ref": "#/components/schemas/pgIdProperty"
+          },
+          "storageSize": {
+            "$ref": "#/components/schemas/pgStorageSize"
           },
           "state": {
             "$ref": "#/components/schemas/pgStateProperty"
@@ -22036,9 +22149,6 @@
           "size": {
             "$ref": "#/components/schemas/pgSize"
           },
-          "storageSize": {
-            "$ref": "#/components/schemas/pgStorageSize"
-          },
           "haType": {
             "$ref": "#/components/schemas/pgHaType"
           },
@@ -22056,17 +22166,13 @@
           "name",
           "provider",
           "region",
-          "size",
-          "storageSize"
+          "size"
         ]
       },
       "PostgresServicePatchRequest": {
         "properties": {
           "size": {
             "$ref": "#/components/schemas/pgSize"
-          },
-          "storageSize": {
-            "$ref": "#/components/schemas/pgStorageSize"
           },
           "haType": {
             "$ref": "#/components/schemas/pgHaType"
@@ -22155,9 +22261,6 @@
           },
           "size": {
             "$ref": "#/components/schemas/pgSize"
-          },
-          "storageSize": {
-            "$ref": "#/components/schemas/pgStorageSize"
           },
           "haType": {
             "$ref": "#/components/schemas/pgHaType"
