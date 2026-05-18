@@ -40,12 +40,18 @@ if [ -z "$LATEST" ]; then
 fi
 echo "Latest release: $LATEST"
 
-# Download binary
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/clickhousectl-${TARGET}"
+# Download archive
+ARCHIVE_NAME="clickhousectl-${TARGET}-${LATEST}.tar.gz"
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/${ARCHIVE_NAME}"
 echo "Downloading ${DOWNLOAD_URL}..."
 
 mkdir -p "$INSTALL_DIR"
-curl -fsSL "$DOWNLOAD_URL" -o "${INSTALL_DIR}/${BINARY_NAME}"
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+curl -fsSL "$DOWNLOAD_URL" -o "${TMPDIR}/${ARCHIVE_NAME}"
+tar -xzf "${TMPDIR}/${ARCHIVE_NAME}" -C "$TMPDIR"
+mv "${TMPDIR}/clickhousectl-${TARGET}-${LATEST}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
 
 echo "Installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"

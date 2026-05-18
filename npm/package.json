@@ -1,0 +1,40 @@
+{
+  "name": "clickhousectl",
+  "version": "0.2.0",
+  "description": "The CLI for ClickHouse: local and cloud.",
+  "homepage": "https://github.com/ClickHouse/clickhousectl",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickHouse/clickhousectl.git"
+  },
+  "license": "Apache-2.0",
+  "bin": {
+    "clickhousectl": "bin/cli.js",
+    "chctl": "bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/cli.js",
+    "install.js",
+    "README.md"
+  ],
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "clickhouse",
+    "cli",
+    "database",
+    "cloud"
+  ]
+}

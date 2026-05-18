@@ -2,6 +2,17 @@
 name = "clickhousectl"
 version = "0.2.0"
 edition = "2024"
+description = "The CLI for ClickHouse: local and cloud."
+license = "Apache-2.0"
+repository = "https://github.com/ClickHouse/clickhousectl"
+homepage = "https://github.com/ClickHouse/clickhousectl"
+keywords = ["clickhouse", "cli", "database", "cloud"]
+categories = ["command-line-utilities", "database"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ name }-{ target }-v{ version }/{ bin }{ binary-ext }"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

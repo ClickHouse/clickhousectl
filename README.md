@@ -26,11 +26,39 @@ curl https://clickhouse.com/cli | sh
 
 The install script will download the correct version for your OS and install to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
 
-### From source
+### `cargo binstall`
+
+If you already have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall), this pulls the prebuilt binary from GitHub Releases:
 
 ```bash
-cargo install --path .
+cargo binstall clickhousectl
 ```
+
+### npm
+
+```bash
+npm install -g clickhousectl
+```
+
+This installs an npm wrapper package that downloads the matching prebuilt binary from GitHub Releases at install time. Both `clickhousectl` and `chctl` are exposed as commands. If you use `npm install --ignore-scripts`, the download is skipped — fall back to one of the other install paths.
+
+### From crates.io
+
+Builds from source:
+
+```bash
+cargo install clickhousectl
+```
+
+### From this repo
+
+```bash
+cargo install --path crates/clickhousectl
+```
+
+### Direct download
+
+Prebuilt archives for each release are attached to the [GitHub release](https://github.com/ClickHouse/clickhousectl/releases). Archives are named `clickhousectl-{target}-v{version}.tar.gz` and contain a single directory of the same name with the `clickhousectl` binary inside. Supported targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`.
 
 ## Local
 

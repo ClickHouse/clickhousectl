@@ -1,4 +1,8 @@
 /target
+/npm/node_modules/
+/npm/vendor/
+/npm/package-lock.json
+/npm/*.tgz
 .env
 /.env
 /.env.local
