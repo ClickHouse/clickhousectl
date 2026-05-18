@@ -26,6 +26,11 @@ pub struct TestContext {
     pub provider: String,
     pub region: String,
     pub run_id: String,
+    /// Existing second user in the test org. Only required by the org
+    /// integration suite (members, invitations); other suites leave it unset.
+    /// Use [`TestContext::secondary_user_id`] to get the value with a
+    /// suite-specific error message.
+    pub secondary_user_id: Option<String>,
     pub create_timeout: Duration,
     pub delete_timeout: Duration,
     pub steady_state_timeout: Duration,
@@ -40,6 +45,10 @@ impl fmt::Debug for TestContext {
             .field("provider", &self.provider)
             .field("region", &self.region)
             .field("run_id", &self.run_id)
+            .field(
+                "secondary_user_id",
+                &self.secondary_user_id.as_ref().map(|_| "<redacted>"),
+            )
             .field("create_timeout", &self.create_timeout)
             .field("delete_timeout", &self.delete_timeout)
             .field("steady_state_timeout", &self.steady_state_timeout)
@@ -75,6 +84,7 @@ impl TestContext {
             provider: required_env("CLICKHOUSE_CLOUD_TEST_PROVIDER")?,
             region: required_env("CLICKHOUSE_CLOUD_TEST_REGION")?,
             run_id,
+            secondary_user_id: optional_env("CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID"),
             create_timeout: duration_from_env(
                 "CLICKHOUSE_CLOUD_TEST_TIMEOUT_CREATE_SECS",
                 DEFAULT_CREATE_TIMEOUT_SECS,
@@ -132,6 +142,10 @@ impl TestContext {
         format!("clickhousectl-it-pg-{}", self.run_id)
     }
 
+    pub fn postgres_replica_name(&self) -> String {
+        format!("clickhousectl-it-pgrr-{}", self.run_id)
+    }
+
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
         vec![
             ResourceTagsV1 {
@@ -153,6 +167,43 @@ impl TestContext {
         vec![
             "tag:managed_by=clickhousectl_it".to_string(),
             "tag:suite=postgres_crud".to_string(),
+            format!("tag:run_id={}", self.run_id),
+        ]
+    }
+
+    /// Returns the secondary user id, erroring if the env var is not set.
+    /// Call this from the org integration suite (members, invitations) where
+    /// the fixture is mandatory.
+    pub fn secondary_user_id(&self) -> TestResult<&str> {
+        self.secondary_user_id.as_deref().ok_or_else(|| {
+            "CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID is required for the org integration \
+             suite — set it to the id of an existing second user in the test org"
+                .into()
+        })
+    }
+
+    /// Tags applied to org-scoped resources that support tagging.
+    pub fn org_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("org".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run_id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn org_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=org".to_string(),
             format!("tag:run_id={}", self.run_id),
         ]
     }
@@ -362,16 +413,36 @@ impl FailureRecorder {
 
 // ── Cleanup Registry ─────────────────────────────────────────────────
 
+#[derive(Debug, Clone)]
+pub struct ClickhouseSettingRestore {
+    pub service_id: String,
+    pub setting_name: String,
+    pub original_value: String,
+}
+
 #[derive(Default)]
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
+    // Read replicas are tracked separately from primary postgres services so
+    // we can guarantee they are torn down first. The ClickHouse Cloud API
+    // refuses to delete a primary that still has live replicas, so cleanup
+    // order matters when a test fails mid-way and the on-success teardown
+    // never runs.
+    postgres_replica_ids: Vec<String>,
     clickpipes: Vec<(String, String)>,
     /// `default.<table>` names to DROP during teardown. Only relevant when
     /// the service is NOT being deleted (attach mode); when the service is
     /// being deleted, table drops are redundant but harmless.
     tables: Vec<String>,
     api_key_ids: Vec<String>,
+    // Query endpoint bindings reference an API key; they must be deleted
+    // before the key they point to, otherwise we can't distinguish "binding
+    // cleanup works" from "API key was already gone."
+    query_endpoint_service_ids: Vec<String>,
+    role_ids: Vec<String>,
+    invitation_ids: Vec<String>,
+    clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
     scaling_schedule_restores: Vec<ScalingScheduleRestore>,
 }
 
@@ -399,6 +470,23 @@ impl CleanupRegistry {
             .retain(|registered| registered != postgres_id);
     }
 
+    /// Register a Postgres read-replica id for cleanup.
+    ///
+    /// Replicas registered here are torn down before any primary Postgres
+    /// service registered via [`Self::register_postgres`], because the live
+    /// API rejects deleting a primary while replicas still reference it.
+    /// Always register the replica immediately after the create call
+    /// returns its id, before any further interaction, so a mid-test
+    /// failure cannot leak the replica and break the primary delete.
+    pub fn register_postgres_replica(&mut self, replica_id: impl Into<String>) {
+        self.postgres_replica_ids.push(replica_id.into());
+    }
+
+    pub fn unregister_postgres_replica(&mut self, replica_id: &str) {
+        self.postgres_replica_ids
+            .retain(|registered| registered != replica_id);
+    }
+
     pub fn register_clickpipe(
         &mut self,
         service_id: impl Into<String>,
@@ -420,9 +508,16 @@ impl CleanupRegistry {
     pub fn merge_from(&mut self, mut other: CleanupRegistry) {
         self.service_ids.append(&mut other.service_ids);
         self.postgres_ids.append(&mut other.postgres_ids);
+        self.postgres_replica_ids.append(&mut other.postgres_replica_ids);
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
         self.api_key_ids.append(&mut other.api_key_ids);
+        self.query_endpoint_service_ids
+            .append(&mut other.query_endpoint_service_ids);
+        self.role_ids.append(&mut other.role_ids);
+        self.invitation_ids.append(&mut other.invitation_ids);
+        self.clickhouse_setting_restores
+            .append(&mut other.clickhouse_setting_restores);
     }
 
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
@@ -437,6 +532,51 @@ impl CleanupRegistry {
     pub fn unregister_api_key(&mut self, key_id: &str) {
         self.api_key_ids
             .retain(|registered| registered != key_id);
+    }
+
+    pub fn register_query_endpoint(&mut self, service_id: impl Into<String>) {
+        self.query_endpoint_service_ids.push(service_id.into());
+    }
+
+    pub fn unregister_query_endpoint(&mut self, service_id: &str) {
+        self.query_endpoint_service_ids
+            .retain(|registered| registered != service_id);
+    }
+
+    pub fn register_role(&mut self, role_id: impl Into<String>) {
+        self.role_ids.push(role_id.into());
+    }
+
+    pub fn unregister_role(&mut self, role_id: &str) {
+        self.role_ids.retain(|registered| registered != role_id);
+    }
+
+    pub fn register_invitation(&mut self, invitation_id: impl Into<String>) {
+        self.invitation_ids.push(invitation_id.into());
+    }
+
+    pub fn unregister_invitation(&mut self, invitation_id: &str) {
+        self.invitation_ids
+            .retain(|registered| registered != invitation_id);
+    }
+
+    pub fn register_clickhouse_setting_restore(
+        &mut self,
+        service_id: impl Into<String>,
+        setting_name: impl Into<String>,
+        original_value: impl Into<String>,
+    ) {
+        self.clickhouse_setting_restores.push(ClickhouseSettingRestore {
+            service_id: service_id.into(),
+            setting_name: setting_name.into(),
+            original_value: original_value.into(),
+        });
+    }
+
+    pub fn unregister_clickhouse_setting_restore(&mut self, service_id: &str, setting_name: &str) {
+        self.clickhouse_setting_restores.retain(|restore| {
+            !(restore.service_id == service_id && restore.setting_name == setting_name)
+        });
     }
 
     /// Register a scaling schedule pre-state for restore during cleanup.
@@ -473,6 +613,41 @@ impl CleanupRegistry {
     ) -> Result<(), String> {
         let mut failures = Vec::new();
 
+        // Restore any ClickHouse settings before deleting the service that owns
+        // them. If the service is already gone (e.g. test deleted it as part of
+        // its body) the restore call will 404 and is skipped.
+        while let Some(restore) = self.clickhouse_setting_restores.pop() {
+            // The `settings` field on the API is a JSON-encoded string; build
+            // it with serde_json so quotes / backslashes in the original value
+            // round-trip correctly.
+            let inner = match serde_json::to_string(&serde_json::json!({
+                restore.setting_name.clone(): restore.original_value.clone(),
+            })) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!(
+                        "serialize clickhouse setting restore body for {} on {}: {}",
+                        restore.setting_name, restore.service_id, e
+                    ));
+                    continue;
+                }
+            };
+            let body = ServiceClickhouseSettingsPatchRequest {
+                settings: Some(inner),
+            };
+            match client
+                .service_clickhouse_settings_update(org_id, &restore.service_id, &body)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "restore clickhouse setting {} on service {}: {}",
+                    restore.setting_name, restore.service_id, e
+                )),
+            }
+        }
+
         // Restore scaling schedules before service deletion so the
         // restore POST can still find the service. If the service is
         // already gone (in-test delete succeeded), 404 is tolerated.
@@ -485,7 +660,36 @@ impl CleanupRegistry {
             }
         }
 
-        // API keys are cleaned up first; they belong to the org, not a
+        // Query endpoint bindings reference an API key, so drop them first.
+        // The service itself may still be around; that's fine — we're just
+        // removing the binding so the API key can be deleted cleanly next.
+        while let Some(service_id) = self.query_endpoint_service_ids.pop() {
+            match client.instance_query_endpoint_delete(org_id, &service_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("query endpoint on {service_id}: {e}")),
+            }
+        }
+
+        // Invitations and roles are org-scoped and cheap to delete; clear
+        // them before API keys so a botched service teardown doesn't leak them.
+        while let Some(invitation_id) = self.invitation_ids.pop() {
+            match client.invitation_delete(org_id, &invitation_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("invitation {invitation_id}: {e}")),
+            }
+        }
+
+        while let Some(role_id) = self.role_ids.pop() {
+            match client.organization_role_delete(org_id, &role_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("role {role_id}: {e}")),
+            }
+        }
+
+        // API keys are cleaned up next; they belong to the org, not a
         // specific service, so they outlive service deletion if leaked.
         while let Some(key_id) = self.api_key_ids.pop() {
             match client.openapi_key_delete(org_id, &key_id).await {
@@ -535,6 +739,18 @@ impl CleanupRegistry {
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
                 failures.push(format!("{service_id}: {error}"));
+            }
+        }
+
+        // Replicas MUST be deleted before primaries. The live API will
+        // refuse a primary delete that still has replicas attached, which
+        // would then leak the primary too.
+        while let Some(replica_id) = self.postgres_replica_ids.pop() {
+            if let Err(error) =
+                ensure_postgres_gone(client, org_id, &replica_id, delete_timeout, poll_interval)
+                    .await
+            {
+                failures.push(format!("postgres replica {replica_id}: {error}"));
             }
         }
 
@@ -1137,5 +1353,12 @@ impl ClickHouseQuery {
         } else {
             Ok(Some(value.to_string()))
         }
+    }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    match env::var(name) {
+        Ok(value) if !value.is_empty() => Some(value),
+        _ => None,
     }
 }
