@@ -26,6 +26,11 @@ pub struct TestContext {
     pub provider: String,
     pub region: String,
     pub run_id: String,
+    /// Existing second user in the test org. Only required by the org
+    /// integration suite (members, invitations); other suites leave it unset.
+    /// Use [`TestContext::secondary_user_id`] to get the value with a
+    /// suite-specific error message.
+    pub secondary_user_id: Option<String>,
     pub create_timeout: Duration,
     pub delete_timeout: Duration,
     pub steady_state_timeout: Duration,
@@ -40,6 +45,10 @@ impl fmt::Debug for TestContext {
             .field("provider", &self.provider)
             .field("region", &self.region)
             .field("run_id", &self.run_id)
+            .field(
+                "secondary_user_id",
+                &self.secondary_user_id.as_ref().map(|_| "<redacted>"),
+            )
             .field("create_timeout", &self.create_timeout)
             .field("delete_timeout", &self.delete_timeout)
             .field("steady_state_timeout", &self.steady_state_timeout)
@@ -75,6 +84,7 @@ impl TestContext {
             provider: required_env("CLICKHOUSE_CLOUD_TEST_PROVIDER")?,
             region: required_env("CLICKHOUSE_CLOUD_TEST_REGION")?,
             run_id,
+            secondary_user_id: optional_env("CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID"),
             create_timeout: duration_from_env(
                 "CLICKHOUSE_CLOUD_TEST_TIMEOUT_CREATE_SECS",
                 DEFAULT_CREATE_TIMEOUT_SECS,
@@ -153,6 +163,43 @@ impl TestContext {
         vec![
             "tag:managed_by=clickhousectl_it".to_string(),
             "tag:suite=postgres_crud".to_string(),
+            format!("tag:run_id={}", self.run_id),
+        ]
+    }
+
+    /// Returns the secondary user id, erroring if the env var is not set.
+    /// Call this from the org integration suite (members, invitations) where
+    /// the fixture is mandatory.
+    pub fn secondary_user_id(&self) -> TestResult<&str> {
+        self.secondary_user_id.as_deref().ok_or_else(|| {
+            "CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID is required for the org integration \
+             suite — set it to the id of an existing second user in the test org"
+                .into()
+        })
+    }
+
+    /// Tags applied to org-scoped resources that support tagging.
+    pub fn org_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("org".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run_id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn org_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=org".to_string(),
             format!("tag:run_id={}", self.run_id),
         ]
     }
@@ -372,6 +419,8 @@ pub struct CleanupRegistry {
     /// being deleted, table drops are redundant but harmless.
     tables: Vec<String>,
     api_key_ids: Vec<String>,
+    role_ids: Vec<String>,
+    invitation_ids: Vec<String>,
 }
 
 impl CleanupRegistry {
@@ -433,6 +482,23 @@ impl CleanupRegistry {
             .retain(|registered| registered != key_id);
     }
 
+    pub fn register_role(&mut self, role_id: impl Into<String>) {
+        self.role_ids.push(role_id.into());
+    }
+
+    pub fn unregister_role(&mut self, role_id: &str) {
+        self.role_ids.retain(|registered| registered != role_id);
+    }
+
+    pub fn register_invitation(&mut self, invitation_id: impl Into<String>) {
+        self.invitation_ids.push(invitation_id.into());
+    }
+
+    pub fn unregister_invitation(&mut self, invitation_id: &str) {
+        self.invitation_ids
+            .retain(|registered| registered != invitation_id);
+    }
+
     pub async fn cleanup(
         &mut self,
         client: &Client,
@@ -443,7 +509,25 @@ impl CleanupRegistry {
     ) -> Result<(), String> {
         let mut failures = Vec::new();
 
-        // API keys are cleaned up first; they belong to the org, not a
+        // Invitations and roles are org-scoped and cheap to delete; clear
+        // them first so a botched service teardown doesn't leak them.
+        while let Some(invitation_id) = self.invitation_ids.pop() {
+            match client.invitation_delete(org_id, &invitation_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("invitation {invitation_id}: {e}")),
+            }
+        }
+
+        while let Some(role_id) = self.role_ids.pop() {
+            match client.organization_role_delete(org_id, &role_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("role {role_id}: {e}")),
+            }
+        }
+
+        // API keys are cleaned up next; they belong to the org, not a
         // specific service, so they outlive service deletion if leaked.
         while let Some(key_id) = self.api_key_ids.pop() {
             match client.openapi_key_delete(org_id, &key_id).await {
@@ -1053,5 +1137,12 @@ impl ClickHouseQuery {
         } else {
             Ok(Some(value.to_string()))
         }
+    }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    match env::var(name) {
+        Ok(value) if !value.is_empty() => Some(value),
+        _ => None,
     }
 }
