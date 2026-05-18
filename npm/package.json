@@ -13,6 +13,7 @@
     "chctl": "bin/cli.js"
   },
   "scripts": {
+    "prepack": "cp ../README.md README.md",
     "postinstall": "node install.js"
   },
   "files": [

@@ -8,6 +8,7 @@ repository = "https://github.com/ClickHouse/clickhousectl"
 homepage = "https://github.com/ClickHouse/clickhousectl"
 keywords = ["clickhouse", "cli", "database", "cloud"]
 categories = ["command-line-utilities", "database"]
+readme = "../../README.md"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
