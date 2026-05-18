@@ -1213,7 +1213,211 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 7. Delete ────────────────────────────────────────────────
+        // ── 7. Scaling Schedule (Beta) ───────────────────────────────
+        //
+        // Exercise the Beta scaling_schedule_{get,upsert,delete} trio
+        // for shape coverage. Schedule entries are chosen to be inert:
+        //
+        //  - replica counts and memory match the current service state
+        //    (1 replica, 8 GB), so even if an entry happens to be active
+        //    during the test run it cannot drive any real scaling action;
+        //  - the upsert window covers a single hour (1 a.m. – 2 a.m. UTC)
+        //    on Sunday only, with the same inert replica config so the
+        //    entry's effect is always a no-op regardless of when the
+        //    suite runs.
+        //
+        // The pre-state (typically an empty schedule) is captured here
+        // and restored as a cleanup step, not a test-body step.
+
+        log_phase("Scaling Schedule");
+
+        let pre_schedule = failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "scaling_schedule get pre-state",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        // A freshly-created service has no autoscaling schedule
+                        // configured, and the API responds with 404 rather than
+                        // an empty `ScalingSchedule`. Treat that as the canonical
+                        // empty pre-state so the round-trip can still exercise
+                        // upsert/replace; any other error still surfaces.
+                        match client.scaling_schedule_get(&org_id, &service_id).await {
+                            Ok(resp) => resp
+                                .result
+                                .ok_or_else(|| "scaling_schedule get returned no result".into()),
+                            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+                                Ok(ScalingSchedule::default())
+                            }
+                            Err(e) => Err(e.into()),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        // Only run the round-trip if we successfully captured the
+        // pre-state. If the initial GET failed, restoring afterwards
+        // would risk leaving a synthetic schedule on the service.
+        if let Some(pre_state) = pre_schedule {
+            // Skip restore registration when pre-state is empty: the API
+            // rejects upserts with an empty `entries` array, and there is
+            // nothing meaningful to restore. Cleanup of synthetic entries
+            // is still covered by the service-delete teardown below.
+            if !pre_state.entries.is_empty() {
+                cleanup
+                    .register_scaling_schedule_restore(service_id.clone(), pre_state.clone());
+            }
+            eprintln!(
+                "  captured scaling_schedule pre-state: {} entries",
+                pre_state.entries.len()
+            );
+
+            // 7a. Upsert a synthetic-but-inert schedule.
+            let upsert_entry = ScalingScheduleEntryRequest {
+                name: "clickhousectl-it-upsert-window".to_string(),
+                weekdays: vec![0], // Sunday only
+                start_hour_utc: 1,
+                end_hour_utc: 2,
+                min_replica_memory_gb: Some(base_memory_gb),
+                max_replica_memory_gb: Some(base_memory_gb),
+                min_replicas: Some(base_replicas as i64),
+                max_replicas: Some(base_replicas as i64),
+                idle_scaling: Some(true),
+                idle_timeout_minutes: Some(5),
+            };
+
+            let upserted = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "scaling_schedule upsert inert window",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        let entry = upsert_entry.clone();
+                        async move {
+                            let body = ScalingSchedulePostRequest {
+                                entries: vec![entry],
+                            };
+                            let resp = client
+                                .scaling_schedule_upsert(&org_id, &service_id, &body)
+                                .await?;
+                            resp.result.ok_or_else(|| {
+                                "scaling_schedule upsert returned no result".into()
+                            })
+                        }
+                    },
+                )
+                .await?;
+
+            // 7b. GET and confirm the upsert is visible.
+            if upserted.is_some() {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "scaling_schedule get reflects upsert",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let service_id = service_id.clone();
+                            let expected_name = upsert_entry.name.clone();
+                            async move {
+                                let resp = client
+                                    .scaling_schedule_get(&org_id, &service_id)
+                                    .await?;
+                                let schedule = resp.result.ok_or(
+                                    "scaling_schedule get returned no result after upsert",
+                                )?;
+                                if schedule.entries.len() != 1 {
+                                    return Err(format!(
+                                        "expected 1 entry after upsert, got {}",
+                                        schedule.entries.len()
+                                    )
+                                    .into());
+                                }
+                                let entry = &schedule.entries[0];
+                                if entry.name != expected_name {
+                                    return Err(format!(
+                                        "upserted entry name mismatch: got {:?}, expected {:?}",
+                                        entry.name, expected_name
+                                    )
+                                    .into());
+                                }
+                                if entry.start_hour_utc != 1 || entry.end_hour_utc != 2 {
+                                    return Err(format!(
+                                        "upserted entry window mismatch: got {}-{} UTC, expected 1-2",
+                                        entry.start_hour_utc, entry.end_hour_utc
+                                    )
+                                    .into());
+                                }
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+            }
+
+            // 7c. Delete the schedule.
+            let deleted = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "scaling_schedule delete",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        async move {
+                            client
+                                .scaling_schedule_delete(&org_id, &service_id)
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+
+            // 7d. GET should now return 404 (no schedule configured).
+            if deleted.is_some() {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "scaling_schedule get returns 404 after delete",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let service_id = service_id.clone();
+                            async move {
+                                match client
+                                    .scaling_schedule_get(&org_id, &service_id)
+                                    .await
+                                {
+                                    Err(clickhouse_cloud_api::Error::Api {
+                                        status: 404,
+                                        ..
+                                    }) => Ok(()),
+                                    Ok(_) => Err(
+                                        "scaling_schedule get returned a schedule after delete"
+                                            .into(),
+                                    ),
+                                    Err(e) => Err(e.into()),
+                                }
+                            }
+                        },
+                    )
+                    .await?;
+            }
+        }
+
+        // ── 8. Delete ────────────────────────────────────────────────
 
         log_phase("Delete");
 
@@ -1309,6 +1513,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 },
             )
             .await?;
+        cleanup.unregister_scaling_schedule_restore(&service_id);
         cleanup.unregister_service(&service_id);
 
         failures.finish()
