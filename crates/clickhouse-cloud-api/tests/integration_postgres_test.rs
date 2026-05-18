@@ -354,6 +354,305 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
+        // ── Read Replica ────────────────────────────────────────────
+        //
+        // Cleanup-order note: the live API refuses to delete a primary while
+        // any read replica still references it, so the replica MUST be torn
+        // down BEFORE the primary. We rely on two complementary mechanisms:
+        //
+        //   1. `CleanupRegistry::register_postgres_replica` below — invoked
+        //      *immediately* after create returns the id. The cleanup phase
+        //      deletes registered replicas before registered primaries, so
+        //      a mid-test panic between create and the in-body teardown
+        //      cannot leak the replica and brick the primary delete.
+        //   2. An explicit in-body teardown of the replica that runs before
+        //      the primary Delete phase below, plus
+        //      `unregister_postgres_replica` to keep the registry tidy on
+        //      the happy path.
+
+        log_phase("Read Replica");
+
+        let replica_tags = {
+            let mut t = ctx.postgres_run_tags();
+            t.push(ResourceTagsV1 {
+                key: "phase".to_string(),
+                value: Some("read_replica".to_string()),
+            });
+            t
+        };
+
+        let replica = failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "create postgres read replica",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let postgres_id = postgres_id.clone();
+                    let body = PostgresServiceReadReplicaRequest {
+                        name: ctx.postgres_replica_name(),
+                        tags: Some(replica_tags.clone()),
+                        ..Default::default()
+                    };
+                    async move {
+                        let resp = client
+                            .postgres_instance_create_read_replica(
+                                &org_id,
+                                &postgres_id,
+                                &body,
+                            )
+                            .await?;
+                        resp.result.ok_or_else(|| {
+                            "postgres read replica create returned no result".into()
+                        })
+                    }
+                },
+            )
+            .await?
+            .expect("blocking steps always return a value");
+
+        let replica_id = replica.id.to_string();
+        eprintln!("postgres_replica_id: <redacted>");
+        // Register before any further interaction so a panic in a later
+        // step cannot leak the replica.
+        cleanup.register_postgres_replica(replica_id.clone());
+
+        // The create response should mark the new service as a replica.
+        // Soft-assert via the FailureRecorder so spec drift on this single
+        // field doesn't take the whole run down.
+        let replica_was_primary_on_create = replica.is_primary;
+        let replica_name_on_create = replica.name.clone();
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "verify replica create response marks is_primary=false",
+                || async move {
+                    if replica_was_primary_on_create {
+                        return Err(format!(
+                            "expected replica `{replica_name_on_create}` to have isPrimary=false on create response"
+                        )
+                        .into());
+                    }
+                    Ok(())
+                },
+            )
+            .await?;
+
+        let replica_ready = failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "wait for postgres read replica running",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let replica_id = replica_id.clone();
+                    async move {
+                        poll_until(
+                            "postgres replica running state",
+                            ctx.steady_state_timeout,
+                            ctx.poll_interval,
+                            || {
+                                let client = client.clone();
+                                let org_id = org_id.clone();
+                                let replica_id = replica_id.clone();
+                                async move {
+                                    let resp = client
+                                        .postgres_service_get(&org_id, &replica_id)
+                                        .await?;
+                                    let svc = resp
+                                        .result
+                                        .ok_or("postgres replica get returned no result")?;
+                                    if svc.state.to_string() == "running" {
+                                        Ok(Some(svc))
+                                    } else {
+                                        Ok(None)
+                                    }
+                                }
+                            },
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?
+            .expect("blocking steps always return a value");
+
+        assert_eq!(replica_ready.name, ctx.postgres_replica_name());
+        assert!(
+            !replica_ready.is_primary,
+            "running read replica reported isPrimary=true"
+        );
+        assert!(
+            !replica_ready.hostname.is_empty(),
+            "running postgres replica returned empty hostname"
+        );
+        assert!(
+            !replica_ready.connection_string.is_empty(),
+            "running postgres replica returned empty connection string"
+        );
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "verify replica appears in postgres_service_get_list alongside primary",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let primary_id = postgres_id.clone();
+                    let replica_id = replica_id.clone();
+                    async move {
+                        let resp = client.postgres_service_get_list(&org_id).await?;
+                        let services = resp
+                            .result
+                            .ok_or("postgres list returned no result")?;
+                        let primary_seen =
+                            services.iter().any(|s| s.id.to_string() == primary_id);
+                        let replica_entry = services
+                            .iter()
+                            .find(|s| s.id.to_string() == replica_id);
+                        if !primary_seen {
+                            return Err(
+                                "primary postgres service no longer visible in list after replica create"
+                                    .into(),
+                            );
+                        }
+                        let Some(replica_entry) = replica_entry else {
+                            return Err(
+                                "created read replica was not visible in postgres_service_get_list"
+                                    .into(),
+                            );
+                        };
+                        if replica_entry.is_primary {
+                            return Err(
+                                "replica entry in list reported isPrimary=true".into(),
+                            );
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "verify postgres_service_get on replica returns expected primary reference",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let replica_id = replica_id.clone();
+                    let expected_provider = ctx.provider.clone();
+                    let expected_region = ctx.region.clone();
+                    async move {
+                        let resp = client
+                            .postgres_service_get(&org_id, &replica_id)
+                            .await?;
+                        let svc = resp
+                            .result
+                            .ok_or("postgres replica get returned no result")?;
+                        if svc.is_primary {
+                            return Err(
+                                "GET on replica id returned isPrimary=true".into(),
+                            );
+                        }
+                        // A read replica inherits provider+region from its
+                        // primary. These are the closest "primary reference"
+                        // signals the current API surface exposes on the
+                        // PostgresService model.
+                        if svc.provider.to_string() != expected_provider {
+                            return Err(format!(
+                                "replica provider `{}` did not match primary `{}`",
+                                svc.provider, expected_provider
+                            )
+                            .into());
+                        }
+                        if svc.region != expected_region {
+                            return Err(format!(
+                                "replica region `{}` did not match primary `{}`",
+                                svc.region, expected_region
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // Explicit replica teardown BEFORE the primary Delete phase. This is
+        // Blocking: if it fails the primary delete will fail too, which is
+        // a cleanup-order failure that would leak resources. The replica is
+        // also tracked by the cleanup registry as a safety net.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "delete postgres read replica before primary",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let replica_id = replica_id.clone();
+                    async move {
+                        client
+                            .postgres_service_delete(&org_id, &replica_id)
+                            .await?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "confirm postgres read replica is gone after delete",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let replica_id = replica_id.clone();
+                    let timeout = ctx.delete_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        poll_until("postgres replica deletion", timeout, interval, || {
+                            let client = client.clone();
+                            let org_id = org_id.clone();
+                            let replica_id = replica_id.clone();
+                            async move {
+                                match client
+                                    .postgres_service_get(&org_id, &replica_id)
+                                    .await
+                                {
+                                    Ok(_) => Ok(None),
+                                    Err(clickhouse_cloud_api::Error::Api {
+                                        status: 404, ..
+                                    }) => Ok(Some(())),
+                                    Err(e) => {
+                                        let message = e.to_string();
+                                        if message.contains("404")
+                                            || message.contains("not found")
+                                        {
+                                            Ok(Some(()))
+                                        } else {
+                                            Err(e.into())
+                                        }
+                                    }
+                                }
+                            }
+                        })
+                        .await?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+        cleanup.unregister_postgres_replica(&replica_id);
+
         // ── Delete ──────────────────────────────────────────────────
 
         log_phase("Delete");

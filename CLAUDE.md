@@ -149,6 +149,6 @@ cargo run -p clickhousectl -- local client --query "SELECT 1"
 
 ## Testing model
 
-- **`clickhouse-cloud-api`**: real cloud integration tests, target 100% OpenAPI spec coverage. Call `Client` directly from Rust — never via the CLI. Cost is not a reason to skip a test. Top-level binaries `tests/integration_*.rs`, shared handlers in `tests/common/`, ClickPipes-specific modules in `tests/clickpipes/`.
+- **`clickhouse-cloud-api`**: real cloud integration tests, target 100% OpenAPI spec coverage. Call `Client` directly from Rust — never via the CLI. Cost is not a reason to skip a test. Top-level binaries `tests/integration_*.rs` (`integration_test` = ClickHouse service CRUD, `integration_postgres_test` = Postgres CRUD, `integration_org_test` = org-scoped endpoints — the org suite needs `CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID`), shared handlers in `tests/common/`, ClickPipes-specific modules in `tests/clickpipes/`.
 - **`clickhousectl`**: request-shape tests via `wiremock` (`tests/cli_request_shape_test.rs`). Assert the JSON the CLI sends matches the library's request models — this is the CLI↔lib contract. Every new subcommand that builds a request body needs one.
 - **`spec_coverage_test.rs`**: structural floor — every spec operation/field has a matching client method/model field.
