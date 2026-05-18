@@ -2760,6 +2760,66 @@ async fn organization_prometheus_without_filter() {
     assert!(resp.contains("metric"));
 }
 
+#[tokio::test]
+async fn postgres_instance_prometheus_get_returns_metrics() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/prometheus"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("# HELP pg_metric\npg_metric 7\n"),
+        )
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .postgres_instance_prometheus_get("org-1", "pg-1")
+        .await
+        .unwrap();
+    assert!(resp.contains("pg_metric"));
+}
+
+#[tokio::test]
+async fn postgres_org_prometheus_get_returns_metrics() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/prometheus"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string("# HELP pg_org_metric\npg_org_metric 3\n"),
+        )
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .postgres_org_prometheus_get("org-1")
+        .await
+        .unwrap();
+    assert!(resp.contains("pg_org_metric"));
+}
+
+#[tokio::test]
+async fn scaling_schedule_delete_succeeds() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/svc-1/scalingSchedule"))
+        .respond_with(ok_json(serde_json::json!({
+            "status": 200,
+            "requestId": "00000000-0000-0000-0000-000000000000"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .scaling_schedule_delete("org-1", "svc-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
 // ===========================================================================
 // Base URL handling
 // ===========================================================================
