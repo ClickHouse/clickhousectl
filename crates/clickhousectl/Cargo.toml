@@ -2,7 +2,7 @@
 name = "clickhousectl"
 version = "0.2.0"
 edition = "2024"
-description = "The official ClickHouse CLI: local ClickHouse version manager and ClickHouse Cloud control plane."
+description = "The CLI for ClickHouse: local and cloud."
 license = "Apache-2.0"
 repository = "https://github.com/ClickHouse/clickhousectl"
 homepage = "https://github.com/ClickHouse/clickhousectl"
