@@ -202,10 +202,10 @@ fn collect_schema_refs(value: &Value) -> BTreeSet<String> {
 fn collect_schema_refs_inner(value: &Value, refs: &mut BTreeSet<String>) {
     match value {
         Value::Object(map) => {
-            if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
-                if let Some(schema_name) = reference.strip_prefix("#/components/schemas/") {
-                    refs.insert(schema_name.to_string());
-                }
+            if let Some(reference) = map.get("$ref").and_then(Value::as_str)
+                && let Some(schema_name) = reference.strip_prefix("#/components/schemas/")
+            {
+                refs.insert(schema_name.to_string());
             }
 
             for child in map.values() {
@@ -595,17 +595,17 @@ fn resolve_required_fields<'a>(schema_name: &str, schema: &'a Value) -> BTreeSet
 
 fn is_field_nullable(prop: &Value) -> bool {
     // type: ["string", "null"]
-    if let Some(types) = prop.get("type").and_then(Value::as_array) {
-        if types.iter().any(|t| t.as_str() == Some("null")) {
-            return true;
-        }
+    if let Some(types) = prop.get("type").and_then(Value::as_array)
+        && types.iter().any(|t| t.as_str() == Some("null"))
+    {
+        return true;
     }
     // oneOf/anyOf with a null variant
     for key in &["oneOf", "anyOf"] {
-        if let Some(variants) = prop.get(*key).and_then(Value::as_array) {
-            if variants.iter().any(|v| v.get("type").and_then(Value::as_str) == Some("null")) {
-                return true;
-            }
+        if let Some(variants) = prop.get(*key).and_then(Value::as_array)
+            && variants.iter().any(|v| v.get("type").and_then(Value::as_str) == Some("null"))
+        {
+            return true;
         }
     }
     false
@@ -627,52 +627,52 @@ fn parse_model_fields(source: &str) -> HashMap<String, HashMap<String, FieldInfo
         let line = lines[i].trim_start();
 
         // Detect struct start
-        if let Some(rest) = line.strip_prefix("pub struct ") {
-            if let Some(struct_name) = identifier_prefix(rest) {
-                let struct_name = struct_name.to_string();
-                i += 1;
-                let mut fields: HashMap<String, FieldInfo> = HashMap::new();
-                let mut pending_rename: Option<String> = None;
+        if let Some(rest) = line.strip_prefix("pub struct ")
+            && let Some(struct_name) = identifier_prefix(rest)
+        {
+            let struct_name = struct_name.to_string();
+            i += 1;
+            let mut fields: HashMap<String, FieldInfo> = HashMap::new();
+            let mut pending_rename: Option<String> = None;
 
-                while i < lines.len() {
-                    let line = lines[i].trim();
+            while i < lines.len() {
+                let line = lines[i].trim();
 
-                    if line == "}" {
-                        break;
-                    }
-
-                    // Extract rename from serde attribute
-                    if line.starts_with("#[serde(") {
-                        if let Some(rename) = extract_serde_rename(line) {
-                            pending_rename = Some(rename.to_string());
-                        }
-                    }
-
-                    // Extract field definition
-                    if let Some(rest) = line.strip_prefix("pub ") {
-                        if let Some(colon_pos) = rest.find(':') {
-                            let rust_field_name = rest[..colon_pos].trim();
-                            let type_str = rest[colon_pos + 1..].trim().trim_end_matches(',');
-                            let is_option = type_str.starts_with("Option<");
-
-                            // Use rename as spec name, or fall back to rust field name
-                            // Strip r# prefix from raw identifiers (e.g., r#type -> type)
-                            let spec_name = pending_rename.take().unwrap_or_else(|| {
-                                rust_field_name
-                                    .strip_prefix("r#")
-                                    .unwrap_or(rust_field_name)
-                                    .to_string()
-                            });
-
-                            fields.insert(spec_name, FieldInfo { is_option });
-                        }
-                    }
-
-                    i += 1;
+                if line == "}" {
+                    break;
                 }
 
-                result.insert(struct_name, fields);
+                // Extract rename from serde attribute
+                if line.starts_with("#[serde(")
+                    && let Some(rename) = extract_serde_rename(line)
+                {
+                    pending_rename = Some(rename.to_string());
+                }
+
+                // Extract field definition
+                if let Some(rest) = line.strip_prefix("pub ")
+                    && let Some(colon_pos) = rest.find(':')
+                {
+                    let rust_field_name = rest[..colon_pos].trim();
+                    let type_str = rest[colon_pos + 1..].trim().trim_end_matches(',');
+                    let is_option = type_str.starts_with("Option<");
+
+                    // Use rename as spec name, or fall back to rust field name
+                    // Strip r# prefix from raw identifiers (e.g., r#type -> type)
+                    let spec_name = pending_rename.take().unwrap_or_else(|| {
+                        rust_field_name
+                            .strip_prefix("r#")
+                            .unwrap_or(rust_field_name)
+                            .to_string()
+                    });
+
+                    fields.insert(spec_name, FieldInfo { is_option });
+                }
+
+                i += 1;
             }
+
+            result.insert(struct_name, fields);
         }
 
         i += 1;
