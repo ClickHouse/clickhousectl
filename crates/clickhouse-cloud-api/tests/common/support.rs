@@ -429,6 +429,10 @@ pub struct CleanupRegistry {
     /// being deleted, table drops are redundant but harmless.
     tables: Vec<String>,
     api_key_ids: Vec<String>,
+    // Query endpoint bindings reference an API key; they must be deleted
+    // before the key they point to, otherwise we can't distinguish "binding
+    // cleanup works" from "API key was already gone."
+    query_endpoint_service_ids: Vec<String>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
 }
@@ -494,6 +498,10 @@ impl CleanupRegistry {
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
         self.api_key_ids.append(&mut other.api_key_ids);
+        self.query_endpoint_service_ids
+            .append(&mut other.query_endpoint_service_ids);
+        self.role_ids.append(&mut other.role_ids);
+        self.invitation_ids.append(&mut other.invitation_ids);
     }
 
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
@@ -508,6 +516,15 @@ impl CleanupRegistry {
     pub fn unregister_api_key(&mut self, key_id: &str) {
         self.api_key_ids
             .retain(|registered| registered != key_id);
+    }
+
+    pub fn register_query_endpoint(&mut self, service_id: impl Into<String>) {
+        self.query_endpoint_service_ids.push(service_id.into());
+    }
+
+    pub fn unregister_query_endpoint(&mut self, service_id: &str) {
+        self.query_endpoint_service_ids
+            .retain(|registered| registered != service_id);
     }
 
     pub fn register_role(&mut self, role_id: impl Into<String>) {
@@ -537,8 +554,19 @@ impl CleanupRegistry {
     ) -> Result<(), String> {
         let mut failures = Vec::new();
 
+        // Query endpoint bindings reference an API key, so drop them first.
+        // The service itself may still be around; that's fine — we're just
+        // removing the binding so the API key can be deleted cleanly next.
+        while let Some(service_id) = self.query_endpoint_service_ids.pop() {
+            match client.instance_query_endpoint_delete(org_id, &service_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("query endpoint on {service_id}: {e}")),
+            }
+        }
+
         // Invitations and roles are org-scoped and cheap to delete; clear
-        // them first so a botched service teardown doesn't leak them.
+        // them before API keys so a botched service teardown doesn't leak them.
         while let Some(invitation_id) = self.invitation_ids.pop() {
             match client.invitation_delete(org_id, &invitation_id).await {
                 Ok(_) => {}

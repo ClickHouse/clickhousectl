@@ -364,6 +364,65 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?
             .expect("blocking steps always return a value");
+        // Register the binding for cleanup BEFORE doing anything else with it.
+        // The registry deletes query endpoints before API keys, so a panic
+        // mid-phase still leaves the org tidy.
+        cleanup.register_query_endpoint(service_id.clone());
+
+        // GET the binding back and assert it matches the upsert. Catches
+        // regressions where the control plane stores something different from
+        // what we sent (roles silently demoted, openApiKeys dropped, etc).
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "get query endpoint matches upsert",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let api_key_uuid = api_key_uuid.clone();
+                    let initial_endpoint = initial_endpoint.clone();
+                    async move {
+                        let resp = client
+                            .instance_query_endpoint_get(&org_id, &service_id)
+                            .await?;
+                        let endpoint = resp
+                            .result
+                            .ok_or("query endpoint get returned no result")?;
+                        if endpoint.id != initial_endpoint.id {
+                            return Err(format!(
+                                "get returned different endpoint id: {} (upsert) vs {} (get)",
+                                initial_endpoint.id, endpoint.id
+                            )
+                            .into());
+                        }
+                        if !endpoint.roles.iter().any(|r| r == "sql_console_admin") {
+                            return Err(format!(
+                                "get missing sql_console_admin role: {:?}",
+                                endpoint.roles
+                            )
+                            .into());
+                        }
+                        if !endpoint.open_api_keys.contains(&api_key_uuid) {
+                            return Err(format!(
+                                "get missing our key from openApiKeys: {:?}",
+                                endpoint.open_api_keys
+                            )
+                            .into());
+                        }
+                        if endpoint.allowed_origins != "*" {
+                            return Err(format!(
+                                "get returned unexpected allowedOrigins: {:?}",
+                                endpoint.allowed_origins
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
 
         // Endpoint propagation can lag a few seconds behind the upsert; poll
         // for the first successful query rather than asserting on the first
@@ -609,6 +668,65 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "unexpected query response after re-upsert: {trimmed:?}"
                             )
                             .into())
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        // Delete the binding BEFORE the API key so we can distinguish
+        // "binding cleanup works" from "API key was already gone."
+        failures
+            .run(&ctx, StepKind::NonBlocking, "delete query endpoint", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let service_id = service_id.clone();
+                async move {
+                    client
+                        .instance_query_endpoint_delete(&org_id, &service_id)
+                        .await?;
+                    Ok(())
+                }
+            })
+            .await?;
+        cleanup.unregister_query_endpoint(&service_id);
+
+        // GET must now report the binding is gone. The control plane returns
+        // 404 once the binding is deleted; accept any 4xx in case the exact
+        // status drifts, but require an error rather than a stale 200.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "get query endpoint after delete returns 4xx",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        match client
+                            .instance_query_endpoint_get(&org_id, &service_id)
+                            .await
+                        {
+                            Ok(resp) => {
+                                Err(format!(
+                                    "expected 4xx after delete, got 200 with result: {:?}",
+                                    resp.result
+                                )
+                                .into())
+                            }
+                            Err(clickhouse_cloud_api::Error::Api { status, message })
+                                if (400..500).contains(&status) =>
+                            {
+                                eprintln!(
+                                    "  query endpoint correctly absent after delete: {status}: {message}"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => Err(format!(
+                                "expected 4xx after delete, got unexpected error: {e}"
+                            )
+                            .into()),
                         }
                     }
                 },
