@@ -1,6 +1,6 @@
 {
   "name": "clickhousectl",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The CLI for ClickHouse: local and cloud.",
   "homepage": "https://github.com/ClickHouse/clickhousectl",
   "repository": {
@@ -13,6 +13,7 @@
     "chctl": "bin/cli.js"
   },
   "scripts": {
+    "prepack": "cp ../README.md README.md",
     "postinstall": "node install.js"
   },
   "files": [

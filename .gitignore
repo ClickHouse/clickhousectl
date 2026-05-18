@@ -3,6 +3,7 @@
 /npm/vendor/
 /npm/package-lock.json
 /npm/*.tgz
+/npm/README.md
 .env
 /.env
 /.env.local
