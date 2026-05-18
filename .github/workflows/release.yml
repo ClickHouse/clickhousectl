@@ -131,6 +131,7 @@ jobs:
     name: Create Release
     needs: [build, smoke-test]
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
