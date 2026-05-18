@@ -142,6 +142,10 @@ impl TestContext {
         format!("clickhousectl-it-pg-{}", self.run_id)
     }
 
+    pub fn postgres_replica_name(&self) -> String {
+        format!("clickhousectl-it-pgrr-{}", self.run_id)
+    }
+
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
         vec![
             ResourceTagsV1 {
@@ -413,6 +417,12 @@ impl FailureRecorder {
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
+    // Read replicas are tracked separately from primary postgres services so
+    // we can guarantee they are torn down first. The ClickHouse Cloud API
+    // refuses to delete a primary that still has live replicas, so cleanup
+    // order matters when a test fails mid-way and the on-success teardown
+    // never runs.
+    postgres_replica_ids: Vec<String>,
     clickpipes: Vec<(String, String)>,
     /// `default.<table>` names to DROP during teardown. Only relevant when
     /// the service is NOT being deleted (attach mode); when the service is
@@ -442,6 +452,23 @@ impl CleanupRegistry {
             .retain(|registered| registered != postgres_id);
     }
 
+    /// Register a Postgres read-replica id for cleanup.
+    ///
+    /// Replicas registered here are torn down before any primary Postgres
+    /// service registered via [`Self::register_postgres`], because the live
+    /// API rejects deleting a primary while replicas still reference it.
+    /// Always register the replica immediately after the create call
+    /// returns its id, before any further interaction, so a mid-test
+    /// failure cannot leak the replica and break the primary delete.
+    pub fn register_postgres_replica(&mut self, replica_id: impl Into<String>) {
+        self.postgres_replica_ids.push(replica_id.into());
+    }
+
+    pub fn unregister_postgres_replica(&mut self, replica_id: &str) {
+        self.postgres_replica_ids
+            .retain(|registered| registered != replica_id);
+    }
+
     pub fn register_clickpipe(
         &mut self,
         service_id: impl Into<String>,
@@ -463,6 +490,7 @@ impl CleanupRegistry {
     pub fn merge_from(&mut self, mut other: CleanupRegistry) {
         self.service_ids.append(&mut other.service_ids);
         self.postgres_ids.append(&mut other.postgres_ids);
+        self.postgres_replica_ids.append(&mut other.postgres_replica_ids);
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
         self.api_key_ids.append(&mut other.api_key_ids);
@@ -577,6 +605,18 @@ impl CleanupRegistry {
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
                 failures.push(format!("{service_id}: {error}"));
+            }
+        }
+
+        // Replicas MUST be deleted before primaries. The live API will
+        // refuse a primary delete that still has replicas attached, which
+        // would then leak the primary too.
+        while let Some(replica_id) = self.postgres_replica_ids.pop() {
+            if let Err(error) =
+                ensure_postgres_gone(client, org_id, &replica_id, delete_timeout, poll_interval)
+                    .await
+            {
+                failures.push(format!("postgres replica {replica_id}: {error}"));
             }
         }
 
