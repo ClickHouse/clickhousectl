@@ -6651,6 +6651,35 @@ impl std::fmt::Display for PgConfigDefaultTransactionIsolation {
     }
 }
 
+/// Inline enum for `pgConfig.ssl_min_protocol_version`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigSslMinProtocolVersion {
+    #[serde(rename = "TLSv1")]
+    #[default]
+    TlsV1,
+    #[serde(rename = "TLSv1.1")]
+    TlsV1_1,
+    #[serde(rename = "TLSv1.2")]
+    TlsV1_2,
+    #[serde(rename = "TLSv1.3")]
+    TlsV1_3,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigSslMinProtocolVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TlsV1 => write!(f, "TLSv1"),
+            Self::TlsV1_1 => write!(f, "TLSv1.1"),
+            Self::TlsV1_2 => write!(f, "TLSv1.2"),
+            Self::TlsV1_3 => write!(f, "TLSv1.3"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `pgConfig.wal_compression`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgConfigWalCompression {
@@ -10125,13 +10154,6 @@ pub struct ScalingScheduleEntryRequest {
     pub weekdays: Vec<i64>,
 }
 
-/// `ScalingSchedulePatchRequest` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ScalingSchedulePatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub entries: Option<Vec<ScalingScheduleEntryRequest>>,
-}
-
 /// `ScalingSchedulePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingSchedulePostRequest {
@@ -11265,6 +11287,8 @@ pub struct PgConfig {
     pub min_wal_size: serde_json::Value,
     #[serde(default)]
     pub random_page_cost: f64,
+    #[serde(default)]
+    pub ssl_min_protocol_version: PgConfigSslMinProtocolVersion,
     #[serde(default)]
     pub statement_timeout: serde_json::Value,
     #[serde(default)]
