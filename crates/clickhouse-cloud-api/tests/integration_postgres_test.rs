@@ -1,7 +1,7 @@
-mod integration;
+mod common;
 
 use clickhouse_cloud_api::models::*;
-use integration::support::*;
+use common::support::*;
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
@@ -420,7 +420,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval)
+        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval, None)
         .await;
 
     match (test_result, cleanup_result) {

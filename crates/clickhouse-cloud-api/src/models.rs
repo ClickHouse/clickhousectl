@@ -7547,18 +7547,25 @@ pub struct ClickPipeDestinationColumn {
 pub struct ClickPipeDestinationTableDefinition {
     #[serde(default)]
     pub engine: ClickPipeDestinationTableEngine,
-    #[serde(rename = "partitionBy", default)]
+    // API rejects empty strings / empty arrays for these keys. Spec has no
+    // `required` array so the description-heuristic treats them as required;
+    // skip at serialize time when unset instead of modeling as Option<T>.
+    #[serde(rename = "partitionBy", skip_serializing_if = "String::is_empty", default)]
     pub partition_by: String,
-    #[serde(rename = "primaryKey", default)]
+    #[serde(rename = "primaryKey", skip_serializing_if = "String::is_empty", default)]
     pub primary_key: String,
-    #[serde(rename = "sortingKey", default)]
+    #[serde(rename = "sortingKey", skip_serializing_if = "Vec::is_empty", default)]
     pub sorting_key: Vec<String>,
 }
 
 /// `ClickPipeDestinationTableEngine` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeDestinationTableEngine {
-    #[serde(rename = "columnIds", default)]
+    // columnIds only valid for SummingMergeTree. Skip when empty to avoid API
+    // rejection for MergeTree/ReplacingMergeTree/Null engines. Spec has no
+    // `required` array so the heuristic treats this as required; API rejects
+    // empty values despite that.
+    #[serde(rename = "columnIds", skip_serializing_if = "Vec::is_empty", default)]
     pub column_ids: Vec<String>,
     #[serde(default)]
     pub r#type: ClickPipeDestinationTableEngineType,
@@ -7718,18 +7725,23 @@ pub struct ClickPipeMutateBigQuerySource {
 /// `ClickPipeMutateDestination` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutateDestination {
-    #[serde(default)]
+    // The spec describes `columns`, `managedTable`, `table`, and
+    // `tableDefinition` as "Required field for all pipe types except database
+    // pipes (Postgres, MySQL, BigQuery)" — all four must be omitted entirely
+    // for database pipes. Modeled with skip-when-empty / Option so callers can
+    // build a single destination type and database pipes serialize cleanly.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub columns: Vec<ClickPipeDestinationColumn>,
     #[serde(default)]
     pub database: String,
-    #[serde(rename = "managedTable", default)]
-    pub managed_table: bool,
-    #[serde(default)]
+    #[serde(rename = "managedTable", skip_serializing_if = "Option::is_none", default)]
+    pub managed_table: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub roles: Vec<String>,
-    #[serde(default)]
-    pub table: String,
-    #[serde(rename = "tableDefinition", default)]
-    pub table_definition: ClickPipeDestinationTableDefinition,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub table: Option<String>,
+    #[serde(rename = "tableDefinition", skip_serializing_if = "Option::is_none", default)]
+    pub table_definition: Option<ClickPipeDestinationTableDefinition>,
 }
 
 /// `ClickPipeMutateKafkaSchemaRegistry` from the ClickHouse Cloud API.
@@ -7795,24 +7807,32 @@ pub struct ClickPipeMutateMySQLSource {
 pub struct ClickPipeMutatePostgresSource {
     #[serde(default)]
     pub authentication: ClickPipeMutatePostgresSourceAuthentication,
-    #[serde(rename = "caCertificate", default)]
-    pub ca_certificate: String,
+    // caCertificate is `undefinedOr(isValidPEMCertificate)` server-side — sending
+    // `""` (the bare-String default) fails PEM validation. Modeled as
+    // `Option<String>` so callers can omit it.
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none", default)]
+    pub ca_certificate: Option<String>,
     #[serde(default)]
     pub credentials: PLAIN,
     #[serde(default)]
     pub database: String,
     #[serde(default)]
     pub host: String,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
+    // iamRole only applies to RDS-style Postgres + IAM_ROLE auth. Spec marks
+    // it required but the server rejects "" for Basic-auth Postgres. Modeled
+    // as Option<String> so callers can omit it; same pattern as ca_certificate.
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    pub iam_role: Option<String>,
     #[serde(default)]
     pub port: i64,
     #[serde(default)]
     pub settings: ClickPipePostgresPipeSettings,
     #[serde(rename = "tableMappings", default)]
     pub table_mappings: Vec<ClickPipePostgresPipeTableMapping>,
-    #[serde(rename = "tlsHost", default)]
-    pub tls_host: String,
+    // tlsHost is only set when the broker cert SAN doesn't match `host`.
+    // Optional in practice; server rejects "" with PEM-style validation.
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    pub tls_host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub r#type: Option<ClickPipeMutatePostgresSourceType>,
 }
@@ -8140,8 +8160,8 @@ pub struct ClickPipePatchSource {
     pub mysql: Option<ClickPipePatchMySQLSource>,
     #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none", default)]
     pub object_storage: Option<ClickPipePatchObjectStorageSource>,
-    #[serde(default)]
-    pub postgres: ClickPipePatchPostgresSource,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub postgres: Option<ClickPipePatchPostgresSource>,
     #[serde(rename = "validateSamples", default)]
     pub validate_samples: bool,
 }
@@ -8236,14 +8256,20 @@ pub struct ClickPipePostObjectStorageSource {
 pub struct ClickPipePostRequest {
     #[serde(default)]
     pub destination: ClickPipeMutateDestination,
-    #[serde(rename = "fieldMappings", default)]
+    // Empty arrays rejected by some API paths and never useful on create —
+    // skip when empty. Non-Option to match the spec description heuristic.
+    #[serde(rename = "fieldMappings", skip_serializing_if = "Vec::is_empty", default)]
     pub field_mappings: Vec<ClickPipeFieldMapping>,
     #[serde(default)]
     pub name: String,
-    #[serde(default)]
-    pub scaling: ClickPipeScaling,
-    #[serde(default)]
-    pub settings: ClickPipeSettings,
+    // scaling block default-serializes as {replicas: 0, ...} which the API
+    // rejects ("replicas: Not between 1 and 40"). Modeled as Option so the
+    // whole block is omitted when the caller doesn't set it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scaling: Option<ClickPipeScaling>,
+    // settings default-serializes as `{}` which the API also rejects.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub settings: Option<ClickPipeSettings>,
     #[serde(default)]
     pub source: ClickPipePostSource,
 }
@@ -8263,8 +8289,8 @@ pub struct ClickPipePostSource {
     pub mysql: Option<ClickPipeMutateMySQLSource>,
     #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none", default)]
     pub object_storage: Option<ClickPipePostObjectStorageSource>,
-    #[serde(default)]
-    pub postgres: ClickPipeMutatePostgresSource,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub postgres: Option<ClickPipeMutatePostgresSource>,
     #[serde(rename = "validateSamples", default)]
     pub validate_samples: bool,
 }
@@ -8278,22 +8304,22 @@ pub struct ClickPipePostgresPipeSettings {
     pub delete_on_merge: bool,
     #[serde(rename = "enableFailoverSlots", default)]
     pub enable_failover_slots: bool,
-    #[serde(rename = "initialLoadParallelism", default)]
-    pub initial_load_parallelism: i64,
-    #[serde(rename = "publicationName", default)]
-    pub publication_name: String,
-    #[serde(rename = "pullBatchSize", default)]
-    pub pull_batch_size: i64,
+    #[serde(rename = "initialLoadParallelism", skip_serializing_if = "Option::is_none", default)]
+    pub initial_load_parallelism: Option<i64>,
+    #[serde(rename = "publicationName", skip_serializing_if = "Option::is_none", default)]
+    pub publication_name: Option<String>,
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none", default)]
+    pub pull_batch_size: Option<i64>,
     #[serde(rename = "replicationMode", default)]
     pub replication_mode: ClickPipePostgresPipeSettingsReplicationmode,
-    #[serde(rename = "replicationSlotName", default)]
-    pub replication_slot_name: String,
-    #[serde(rename = "snapshotNumRowsPerPartition", default)]
-    pub snapshot_num_rows_per_partition: i64,
-    #[serde(rename = "snapshotNumberOfParallelTables", default)]
-    pub snapshot_number_of_parallel_tables: i64,
-    #[serde(rename = "syncIntervalSeconds", default)]
-    pub sync_interval_seconds: i64,
+    #[serde(rename = "replicationSlotName", skip_serializing_if = "Option::is_none", default)]
+    pub replication_slot_name: Option<String>,
+    #[serde(rename = "snapshotNumRowsPerPartition", skip_serializing_if = "Option::is_none", default)]
+    pub snapshot_num_rows_per_partition: Option<i64>,
+    #[serde(rename = "snapshotNumberOfParallelTables", skip_serializing_if = "Option::is_none", default)]
+    pub snapshot_number_of_parallel_tables: Option<i64>,
+    #[serde(rename = "syncIntervalSeconds", skip_serializing_if = "Option::is_none", default)]
+    pub sync_interval_seconds: Option<i64>,
 }
 
 /// `ClickPipePostgresPipeTableMapping` from the ClickHouse Cloud API.

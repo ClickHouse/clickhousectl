@@ -23,6 +23,12 @@ cargo clippy                         # lint
 
 No separate lint CI — just `cargo build` and `cargo test` must pass.
 
+Integration tests for `clickhouse-cloud-api`:
+
+- `tests/common/support.rs` — generic test infra (`TestContext`, `FailureRecorder`, `CleanupRegistry`, `poll_until`, logging, env helpers, ClickHouse provisioning, HTTP query helper). Used by every integration binary.
+- `tests/integration_test.rs`, `tests/integration_postgres_test.rs` — cloud-service / Postgres-service CRUD lifecycle suites (auto-discovered). Use `mod common; use common::support::*;`.
+- `tests/clickpipes/` — ClickPipes E2E suite. `support.rs` here holds AWS/EC2/Kinesis/Redpanda helpers and `pub use`-re-exports `crate::common::support::*`, so callers get both surfaces from `use crate::support::*;`. Contains `driver.rs`, `stages/`, one binary per source (`s3_test.rs`, `kafka_test.rs`, `kinesis_test.rs`, `mongo_test.rs`, `mysql_test.rs`, `postgres_ec2_test.rs`, `postgres_cdc_test.rs`, `smoke_test.rs`) and an all-sources `e2e_test.rs`. Each binary is declared as an explicit `[[test]]` entry in `Cargo.toml` (`clickpipe_<name>_test`) because cargo doesn't auto-discover `.rs` files in `tests/` subdirectories; add a matching entry when introducing a new one. Each binary also does `#[path = "../common/mod.rs"] mod common;` so the re-export resolves.
+
 Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release.yml`). The CLI crate uses `rustls-tls` instead of OpenSSL to support this.
 
 ## Architecture

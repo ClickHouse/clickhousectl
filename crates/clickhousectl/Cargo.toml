@@ -25,9 +25,12 @@ tabled = "0.20.0"
 clickhouse-cloud-api = { version = "0.2.0", path = "../clickhouse-cloud-api" }
 uuid = { version = "1.23.0", features = ["v4"] }
 is-ai-agent = "0.2.1"
+base64 = "0.22.1"
 bollard = "0.21.0"
 crossterm = "0.29.0"
 rand = "0.10.1"
 
 [dev-dependencies]
+serde_json = "1"
 tempfile = "3.27.0"
+wiremock = "0.6.5"

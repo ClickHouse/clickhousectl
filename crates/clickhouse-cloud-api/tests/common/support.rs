@@ -1,3 +1,13 @@
+// Generic integration-test infrastructure: env-driven test context, failure
+// recording, polling, logging, ClickHouse Cloud provisioning, and the HTTP
+// query helper. Shared by every integration binary (cloud CRUD lifecycle and
+// ClickPipes E2E). ClickPipes-specific AWS/EC2/Kinesis/Redpanda helpers live
+// in `tests/clickpipes/support.rs`, which re-exports this module so callers
+// can pull both surfaces from a single `use crate::support::*;`.
+//
+// Each test binary uses a different subset — silence dead_code for the rest.
+#![allow(dead_code)]
+
 use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
 use std::env;
@@ -146,12 +156,103 @@ impl TestContext {
             format!("tag:run_id={}", self.run_id),
         ]
     }
+
+    pub fn clickpipe_service_name(&self) -> String {
+        format!("clickhousectl-it-cp-{}", self.run_id)
+    }
+
+    pub fn clickpipe_postgres_service_name(&self) -> String {
+        format!("clickhousectl-it-cp-pg-{}", self.run_id)
+    }
+
+    pub fn clickpipe_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("clickpipe_postgres_cdc".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run_id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn clickpipe_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=clickpipe_postgres_cdc".to_string(),
+            format!("tag:run_id={}", self.run_id),
+        ]
+    }
+
+    /// Shared service name for the multi-source E2E driver — one ClickHouse
+    /// service hosts all per-source stages in a run.
+    pub fn clickpipe_e2e_service_name(&self) -> String {
+        format!("clickhousectl-it-cp-e2e-{}", self.run_id)
+    }
+
+    pub fn clickpipe_e2e_run_tags(&self) -> Vec<ResourceTagsV1> {
+        vec![
+            ResourceTagsV1 {
+                key: "managed_by".to_string(),
+                value: Some("clickhousectl_it".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "suite".to_string(),
+                value: Some("clickpipe_e2e".to_string()),
+            },
+            ResourceTagsV1 {
+                key: "run_id".to_string(),
+                value: Some(self.run_id.clone()),
+            },
+        ]
+    }
+
+    pub fn clickpipe_e2e_run_tag_filters(&self) -> Vec<String> {
+        vec![
+            "tag:managed_by=clickhousectl_it".to_string(),
+            "tag:suite=clickpipe_e2e".to_string(),
+            format!("tag:run_id={}", self.run_id),
+        ]
+    }
+
+    /// S3 bucket names must be globally unique, 3–63 chars, lowercase letters,
+    /// digits, hyphens. `run_id` is already constrained to safe chars.
+    pub fn aws_s3_bucket_name(&self) -> String {
+        let raw = format!("clickhousectl-e2e-s3-{}", self.run_id);
+        // S3 forbids underscores; substitute for safety even if run_id is clean today.
+        raw.replace('_', "-").to_ascii_lowercase()
+    }
+
+    pub fn aws_iam_role_name(&self) -> String {
+        format!("clickhousectl-e2e-s3-{}", self.run_id)
+    }
+
+    /// Kinesis stream names: 1–128 chars, `[A-Za-z0-9_.-]`. `run_id` is already
+    /// safe but keep this distinct from the S3 role/bucket names for clarity.
+    pub fn aws_kinesis_stream_name(&self) -> String {
+        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+    }
+
+    /// IAM role name dedicated to the Kinesis stage (trust scoped to the
+    /// per-test CHC service principal).
+    pub fn aws_kinesis_iam_role_name(&self) -> String {
+        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+    }
 }
 
 pub fn create_client() -> TestResult<Client> {
     let key = required_env("CLICKHOUSE_CLOUD_API_KEY")?;
     let secret = required_env("CLICKHOUSE_CLOUD_API_SECRET")?;
-    Ok(Client::new(key, secret))
+    match env::var("CLICKHOUSE_CLOUD_API_BASE_URL").ok().filter(|s| !s.is_empty()) {
+        Some(base_url) => Ok(Client::with_base_url(base_url, key, secret)),
+        None => Ok(Client::new(key, secret)),
+    }
 }
 
 // ── Failure Recorder ─────────────────────────────────────────────────
@@ -265,6 +366,11 @@ impl FailureRecorder {
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
+    clickpipes: Vec<(String, String)>,
+    /// `default.<table>` names to DROP during teardown. Only relevant when
+    /// the service is NOT being deleted (attach mode); when the service is
+    /// being deleted, table drops are redundant but harmless.
+    tables: Vec<String>,
     api_key_ids: Vec<String>,
 }
 
@@ -287,6 +393,37 @@ impl CleanupRegistry {
             .retain(|registered| registered != postgres_id);
     }
 
+    pub fn register_clickpipe(
+        &mut self,
+        service_id: impl Into<String>,
+        clickpipe_id: impl Into<String>,
+    ) {
+        self.clickpipes.push((service_id.into(), clickpipe_id.into()));
+    }
+
+    /// Register a `default.<table>` destination table so teardown drops it.
+    /// Stages call this just before pipe-create — once the table exists,
+    /// ClickPipes refuses a future pipe-create against the same name unless
+    /// it's empty, so test re-runs against a shared CHC service collide.
+    pub fn register_table(&mut self, table: impl Into<String>) {
+        self.tables.push(table.into());
+    }
+
+    /// Drain another registry's entries into this one. Used by the parallel
+    /// driver to fold per-stage registries back into the parent for teardown.
+    pub fn merge_from(&mut self, mut other: CleanupRegistry) {
+        self.service_ids.append(&mut other.service_ids);
+        self.postgres_ids.append(&mut other.postgres_ids);
+        self.clickpipes.append(&mut other.clickpipes);
+        self.tables.append(&mut other.tables);
+        self.api_key_ids.append(&mut other.api_key_ids);
+    }
+
+    pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
+        self.clickpipes
+            .retain(|(svc, pipe)| !(svc == service_id && pipe == clickpipe_id));
+    }
+
     pub fn register_api_key(&mut self, key_id: impl Into<String>) {
         self.api_key_ids.push(key_id.into());
     }
@@ -296,7 +433,14 @@ impl CleanupRegistry {
             .retain(|registered| registered != key_id);
     }
 
-    pub async fn cleanup(&mut self, client: &Client, org_id: &str, delete_timeout: Duration, poll_interval: Duration) -> Result<(), String> {
+    pub async fn cleanup(
+        &mut self,
+        client: &Client,
+        org_id: &str,
+        delete_timeout: Duration,
+        poll_interval: Duration,
+        ch_query: Option<&ClickHouseQuery>,
+    ) -> Result<(), String> {
         let mut failures = Vec::new();
 
         // API keys are cleaned up first; they belong to the org, not a
@@ -308,6 +452,43 @@ impl CleanupRegistry {
                 Err(e) => failures.push(format!("api key {key_id}: {e}")),
             }
         }
+
+        // Drain ClickPipes first so their parent service can be torn down cleanly.
+        while let Some((service_id, clickpipe_id)) = self.clickpipes.pop() {
+            if let Err(error) = ensure_clickpipe_gone(
+                client,
+                org_id,
+                &service_id,
+                &clickpipe_id,
+                delete_timeout,
+                poll_interval,
+            )
+            .await
+            {
+                failures.push(format!("clickpipe {service_id}/{clickpipe_id}: {error}"));
+            }
+        }
+
+        // Drop registered destination tables BEFORE deleting the service —
+        // once the service is gone we can't query. If the service is also
+        // being deleted, drops are redundant but harmless; if we're attached
+        // to a shared service, drops are essential to avoid re-run collision.
+        if let Some(query) = ch_query {
+            while let Some(table) = self.tables.pop() {
+                eprintln!("  cleanup: drop table default.{table}");
+                if let Err(error) = query
+                    .run_query(&format!("DROP TABLE IF EXISTS default.{table}"))
+                    .await
+                {
+                    failures.push(format!("drop table {table}: {error}"));
+                }
+            }
+        } else {
+            // No query helper passed — clear the queue (service deletion will
+            // take the tables with it).
+            self.tables.clear();
+        }
+
 
         while let Some(service_id) = self.service_ids.pop() {
             if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
@@ -395,6 +576,46 @@ async fn ensure_service_gone(
         let service_id = service_id.to_string();
         async move {
             match client.instance_get(&org_id, &service_id).await {
+                Ok(_) => Ok(None),
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
+                Err(e) => Err(e.into()),
+            }
+        }
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn ensure_clickpipe_gone(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    clickpipe_id: &str,
+    delete_timeout: Duration,
+    poll_interval: Duration,
+) -> TestResult<()> {
+    eprintln!("  cleanup: ensuring clickpipe is gone");
+
+    match client.click_pipe_get(org_id, service_id, clickpipe_id).await {
+        Ok(_) => {}
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
+        Err(_) => {}
+    }
+
+    match client.click_pipe_delete(org_id, service_id, clickpipe_id).await {
+        Ok(_) => {}
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    }
+
+    poll_until("clickpipe deletion", delete_timeout, poll_interval, || {
+        let client = client.clone();
+        let org_id = org_id.to_string();
+        let service_id = service_id.to_string();
+        let clickpipe_id = clickpipe_id.to_string();
+        async move {
+            match client.click_pipe_get(&org_id, &service_id, &clickpipe_id).await {
                 Ok(_) => Ok(None),
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
                 Err(e) => Err(e.into()),
@@ -558,11 +779,279 @@ fn bool_from_env(name: &str) -> TestResult<bool> {
     }
 }
 
-fn required_env(name: &str) -> TestResult<String> {
+pub fn required_env(name: &str) -> TestResult<String> {
     let value =
         env::var(name).map_err(|_| format!("missing required environment variable {name}"))?;
     if value.is_empty() {
         return Err(format!("{name} is set but empty (secrets unavailable in fork PRs?)").into());
     }
     Ok(value)
+}
+
+// ── ClickHouse Service Provisioning ──────────────────────────────────
+//
+// Reusable across E2E stages — a single provisioned service can host
+// multiple per-source stages back-to-back, amortising the ~1 min
+// provisioning + ~3 min teardown over N source tests.
+
+pub struct ProvisionedClickHouse {
+    pub service_id: String,
+    pub password: String,
+    /// The CHC service's ClickPipes IAM principal — put this in the trust
+    /// policy of any IAM role that ClickPipes will assume for this service.
+    pub iam_role: String,
+    pub https_endpoint: ServiceEndpoint,
+    pub username: String,
+    pub query: ClickHouseQuery,
+}
+
+/// Create a ClickHouse Cloud service, wait for steady state, and bundle the
+/// metadata that source stages need to operate against it. Registers the
+/// service with `cleanup` so teardown is automatic regardless of which step
+/// later fails.
+pub async fn provision_clickhouse(
+    client: &Client,
+    ctx: &TestContext,
+    cleanup: &mut CleanupRegistry,
+    service_name: &str,
+    tags: Vec<ResourceTagsV1>,
+) -> TestResult<ProvisionedClickHouse> {
+    let body = ServicePostRequest {
+        name: service_name.to_string(),
+        provider: ServicePostRequestProvider::Unknown(ctx.provider.clone()),
+        region: ServicePostRequestRegion::Unknown(ctx.region.clone()),
+        min_replica_memory_gb: Some(8.0),
+        max_replica_memory_gb: Some(8.0),
+        num_replicas: Some(1.0),
+        idle_scaling: Some(true),
+        idle_timeout_minutes: Some(5.0),
+        ip_access_list: vec![IpAccessListEntry {
+            source: "0.0.0.0/0".to_string(),
+            description: Some("clickpipe integration test".to_string()),
+        }],
+        tags: Some(tags),
+        ..Default::default()
+    };
+
+    let created = client
+        .instance_create(&ctx.org_id, &body)
+        .await?
+        .result
+        .ok_or("service create returned no result")?;
+    let service_id = created.service.id.to_string();
+    let password = created.password.clone();
+    cleanup.register_service(service_id.clone());
+    eprintln!("  provisioned clickhouse id <redacted>");
+
+    let svc = poll_until(
+        "clickhouse steady state",
+        ctx.steady_state_timeout,
+        ctx.poll_interval,
+        || {
+            let client = client.clone();
+            let org_id = ctx.org_id.clone();
+            let service_id = service_id.clone();
+            async move {
+                let resp = client.instance_get(&org_id, &service_id).await?;
+                let svc = resp.result.ok_or("service get returned no result")?;
+                let state = svc.state.to_string();
+                if matches!(state.as_str(), "running" | "idle") {
+                    Ok(Some(svc))
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+    )
+    .await?;
+
+    if svc.iam_role.is_empty() {
+        return Err(
+            "provisioned service has no iamRole populated — cannot establish ClickPipes trust".into(),
+        );
+    }
+
+    let https_endpoint = svc
+        .endpoints
+        .iter()
+        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
+        .ok_or("ClickHouse service has no https endpoint")?
+        .clone();
+    let username = https_endpoint
+        .username
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+
+    let query = ClickHouseQuery::new(
+        &https_endpoint.host,
+        https_endpoint.port as u16,
+        &username,
+        &password,
+    );
+
+    Ok(ProvisionedClickHouse {
+        service_id,
+        password,
+        iam_role: svc.iam_role,
+        https_endpoint,
+        username,
+        query,
+    })
+}
+
+/// Attach to an externally-provisioned CHC service rather than creating one.
+/// Used by the harness when `CLICKHOUSE_CLOUD_TEST_SERVICE_ID` is set so
+/// multiple per-source test runs can share a single long-lived service.
+/// Does NOT register the service with cleanup — caller manages teardown.
+pub async fn attach_clickhouse(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    password: &str,
+) -> TestResult<ProvisionedClickHouse> {
+    let resp = client.instance_get(org_id, service_id).await?;
+    let mut svc = resp.result.ok_or("service get returned no result")?;
+
+    // ClickPipes' pipe-create endpoint rejects idle services even though the
+    // service can serve queries from idle. The PATCH /state `start` command
+    // is a no-op for idle services (it's intended for `stopped` services);
+    // a query is what actually triggers the wake. Send `SELECT 1` and poll
+    // until the state field flips to `running` so subsequent pipe-creates
+    // succeed.
+    let state = svc.state.to_string();
+    if state == "idle" {
+        eprintln!("  service is idle — sending wake query");
+        let https = svc
+            .endpoints
+            .iter()
+            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
+            .ok_or("service has no https endpoint to wake")?;
+        let username = https.username.clone().unwrap_or_else(|| "default".to_string());
+        let wake_query = ClickHouseQuery::new(&https.host, https.port as u16, &username, password);
+        let _ = wake_query.run_query("SELECT 1 FORMAT TabSeparated").await?;
+
+        svc = poll_until(
+            "clickhouse wake from idle",
+            Duration::from_secs(300),
+            Duration::from_secs(5),
+            || {
+                let client = client.clone();
+                let org_id = org_id.to_string();
+                let service_id = service_id.to_string();
+                async move {
+                    let resp = client.instance_get(&org_id, &service_id).await?;
+                    let svc = resp.result.ok_or("service get returned no result")?;
+                    if svc.state.to_string() == "running" {
+                        Ok(Some(svc))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            },
+        )
+        .await?;
+    } else if state != "running" {
+        return Err(format!(
+            "service {service_id} is in state {state}, expected running or idle"
+        )
+        .into());
+    }
+    if svc.iam_role.is_empty() {
+        return Err(
+            "attached service has no iamRole populated — cannot establish ClickPipes trust".into(),
+        );
+    }
+
+    let https_endpoint = svc
+        .endpoints
+        .iter()
+        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
+        .ok_or("ClickHouse service has no https endpoint")?
+        .clone();
+    let username = https_endpoint
+        .username
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+
+    let query = ClickHouseQuery::new(
+        &https_endpoint.host,
+        https_endpoint.port as u16,
+        &username,
+        password,
+    );
+
+    eprintln!("  attached to existing clickhouse service <redacted>");
+    Ok(ProvisionedClickHouse {
+        service_id: service_id.to_string(),
+        password: password.to_string(),
+        iam_role: svc.iam_role,
+        https_endpoint,
+        username,
+        query,
+    })
+}
+
+// ── ClickHouse HTTP Query Helper ─────────────────────────────────────
+//
+// Thin wrapper around the service's HTTPS endpoint for verifying that
+// rows arrived. The PG CDC test has its own inline copy; we'll leave
+// that alone but new tests should use this shared one.
+
+#[derive(Clone)]
+pub struct ClickHouseQuery {
+    base_url: String,
+    username: String,
+    password: String,
+    http: reqwest::Client,
+}
+
+impl ClickHouseQuery {
+    pub fn new(host: &str, port: u16, username: &str, password: &str) -> Self {
+        Self {
+            base_url: format!("https://{host}:{port}"),
+            username: username.to_string(),
+            password: password.to_string(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("reqwest client"),
+        }
+    }
+
+    pub async fn run_query(&self, query: &str) -> TestResult<String> {
+        let resp = self
+            .http
+            .post(&self.base_url)
+            .basic_auth(&self.username, Some(&self.password))
+            .body(query.to_string())
+            .send()
+            .await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            return Err(format!("ClickHouse query failed ({status}): {body}").into());
+        }
+        Ok(body)
+    }
+
+    pub async fn count_rows(&self, table: &str) -> TestResult<i64> {
+        let body = self
+            .run_query(&format!(
+                "SELECT count() FROM default.{table} FORMAT TabSeparated"
+            ))
+            .await?;
+        Ok(body.trim().parse::<i64>()?)
+    }
+
+    pub async fn scalar_string(&self, query: &str) -> TestResult<Option<String>> {
+        let body = self
+            .run_query(&format!("{query} FORMAT TabSeparated"))
+            .await?;
+        let value = body.trim();
+        if value.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(value.to_string()))
+        }
+    }
 }

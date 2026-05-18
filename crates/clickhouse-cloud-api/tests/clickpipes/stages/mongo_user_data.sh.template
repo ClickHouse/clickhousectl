@@ -1,0 +1,174 @@
+#!/bin/bash
+# MongoDB 8.0 bootstrap for the ClickPipes MongoDB E2E stage.
+#
+# Mongo CDC requires a replica set because change streams only exist on
+# replica sets. We initialise a single-node replica set (`rs0`), enable TLS
+# against a self-signed cert whose SAN matches the EIP, seed a small
+# users-style collection, and create a dedicated `clickpipe` user with the
+# privileges ClickPipes needs (read on the target DB + read on `local` for
+# oplog tailing + clusterMonitor on admin).
+#
+# Bootstrap ordering matters:
+#   1. Install mongod, write TLS material + config WITHOUT auth.
+#   2. Start mongod, run `rs.initiate()`, wait for PRIMARY.
+#   3. Create the admin user (`root` role).
+#   4. Flip on `security.authorization`, restart mongod.
+#   5. Authenticate as admin, create the test DB + seed docs + clickpipe user.
+set -euxo pipefail
+sleep 5
+
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -y
+sudo apt-get install -y gnupg curl ca-certificates
+
+# MongoDB 8.0 apt repo for Ubuntu 24.04 (Noble).
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
+  | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
+  | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list > /dev/null
+sudo apt-get update -y
+sudo apt-get install -y mongodb-org
+
+# TLS material — cert SAN is the EIP, matching what ClickPipes connects to.
+# Mongo's `certificateKeyFile` wants a single concatenated PEM (cert + key).
+sudo mkdir -p /etc/mongod-tls
+echo "__SERVER_CERT_B64__" | base64 -d | sudo tee /etc/mongod-tls/server.crt > /dev/null
+echo "__SERVER_KEY_B64__"  | base64 -d | sudo tee /etc/mongod-tls/server.key > /dev/null
+echo "__CA_PEM_B64__"      | base64 -d | sudo tee /etc/mongod-tls/ca.crt     > /dev/null
+sudo bash -c 'cat /etc/mongod-tls/server.crt /etc/mongod-tls/server.key > /etc/mongod-tls/server.pem'
+
+# Replica-set internal auth keyFile. MongoDB refuses to start a replica set
+# with `authorization: enabled` unless internal auth is configured (keyFile
+# or x.509). Even a single-node rs needs this. Generate a random 756-byte
+# base64 keyfile per the docs.
+sudo openssl rand -base64 756 | sudo tee /etc/mongod-tls/mongo-keyfile > /dev/null
+
+sudo chown -R mongodb:mongodb /etc/mongod-tls
+sudo chmod 600 /etc/mongod-tls/server.key /etc/mongod-tls/server.pem /etc/mongod-tls/mongo-keyfile
+sudo chmod 400 /etc/mongod-tls/mongo-keyfile
+
+# Initial config: TLS on, replica-set name set, auth DISABLED so we can run
+# `rs.initiate()` and bootstrap the admin user via the local exception.
+sudo tee /etc/mongod.conf > /dev/null <<EOF
+storage:
+  dbPath: /var/lib/mongodb
+  # ClickPipes' permissions validation enforces oplog retention >= 24h.
+  # Default is 0 (no minimum). Key lives under storage: in mongod.conf,
+  # not replication:, contrary to where you might first expect it.
+  oplogMinRetentionHours: 24
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+net:
+  port: 27017
+  bindIp: 0.0.0.0
+  tls:
+    mode: requireTLS
+    certificateKeyFile: /etc/mongod-tls/server.pem
+    CAFile: /etc/mongod-tls/ca.crt
+    allowConnectionsWithoutCertificates: true
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+replication:
+  replSetName: rs0
+EOF
+
+sudo systemctl enable mongod
+sudo systemctl restart mongod
+echo "[bootstrap] mongod first start: $(date -u +%H:%M:%S)"
+
+# Wait for mongod to accept connections over TLS. `mongosh` ships with the
+# mongodb-org meta-package.
+EIP_HOST="__EIP_HOST__"
+TLS_FLAGS="--tls --tlsCAFile /etc/mongod-tls/ca.crt --host ${EIP_HOST}"
+for i in $(seq 1 60); do
+  if mongosh ${TLS_FLAGS} --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+    echo "[bootstrap] mongod ping ok after $((i*2))s: $(date -u +%H:%M:%S)"
+    break
+  fi
+  sleep 2
+done
+
+# Initiate the single-node replica set, then wait until this node is PRIMARY.
+# `rs.initiate()` is idempotent enough to no-op if already initialised.
+mongosh ${TLS_FLAGS} --quiet --eval "
+  try {
+    rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: '${EIP_HOST}:27017' }] });
+  } catch (e) {
+    if (!String(e).includes('already initialized')) { throw e; }
+  }
+"
+
+for i in $(seq 1 60); do
+  STATE=$(mongosh ${TLS_FLAGS} --quiet --eval 'rs.status().myState' 2>/dev/null || echo "")
+  if [ "${STATE}" = "1" ]; then
+    echo "[bootstrap] replica set PRIMARY after $((i*2))s: $(date -u +%H:%M:%S)"
+    break
+  fi
+  sleep 2
+done
+echo "[bootstrap] last rs.status myState=${STATE}"
+
+DB_NAME="__DB_NAME__"
+ADMIN_USER="__ADMIN_USER__"
+ADMIN_PASS="__ADMIN_PASS__"
+CP_USER="__CLICKPIPE_USER__"
+CP_PASS="__CLICKPIPE_PASS__"
+
+# Create the admin user via the localhost exception (allowed once before any
+# user exists, even with authorization enabled — but here auth is still off).
+mongosh ${TLS_FLAGS} --quiet --eval "
+  db = db.getSiblingDB('admin');
+  if (db.getUser('${ADMIN_USER}') === null) {
+    db.createUser({ user: '${ADMIN_USER}', pwd: '${ADMIN_PASS}', roles: [{ role: 'root', db: 'admin' }] });
+  }
+"
+
+# Turn on authorization, then restart mongod so the change takes effect.
+sudo tee -a /etc/mongod.conf > /dev/null <<EOF
+security:
+  authorization: enabled
+  keyFile: /etc/mongod-tls/mongo-keyfile
+EOF
+sudo systemctl restart mongod
+echo "[bootstrap] mongod restart (auth on): $(date -u +%H:%M:%S)"
+
+# Wait for mongod to come back, this time requiring auth.
+AUTH_FLAGS="${TLS_FLAGS} -u ${ADMIN_USER} -p ${ADMIN_PASS} --authenticationDatabase admin"
+for i in $(seq 1 60); do
+  if mongosh ${AUTH_FLAGS} --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1; then
+    echo "[bootstrap] auth-enabled mongod ping ok after $((i*2))s: $(date -u +%H:%M:%S)"
+    break
+  fi
+  sleep 2
+done
+
+# Seed the test DB + create the dedicated ClickPipes user. The pipe needs
+# `read` on the source DB AND `read` on `local` for oplog tailing; the
+# ClickPipes docs additionally recommend `clusterMonitor` on admin.
+mongosh ${AUTH_FLAGS} --quiet --eval "
+  db = db.getSiblingDB('${DB_NAME}');
+  db.users.insertMany([
+    { _id: 1, name: 'Ada Lovelace',      email: 'ada@example.com' },
+    { _id: 2, name: 'Grace Hopper',      email: 'grace@example.com' },
+    { _id: 3, name: 'Margaret Hamilton', email: 'margaret@example.com' }
+  ]);
+  db = db.getSiblingDB('admin');
+  if (db.getUser('${CP_USER}') === null) {
+    db.createUser({
+      user: '${CP_USER}',
+      pwd: '${CP_PASS}',
+      roles: [
+        // ClickPipes' permissions check requires the broad readAnyDatabase
+        // role on admin, not just per-DB read grants.
+        { role: 'readAnyDatabase', db: 'admin' },
+        { role: 'read',            db: 'local' },
+        { role: 'clusterMonitor',  db: 'admin' }
+      ]
+    });
+  }
+"
+
+sudo touch /var/lib/mongodb-bootstrap-complete
+echo "[bootstrap] complete: $(date -u +%H:%M:%S)"

@@ -316,6 +316,62 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ServicePostRequest", "releaseChannel"),
     ("ServicePostRequest", "tags"),
     ("ServicePostRequest", "tier"),
+    // ClickPipe{Post,Patch}Source.postgres is a $ref without the `oneOf: [ref,
+    // null]` wrapper every other source uses, so the description-heuristic
+    // infers "required" and the generator emits `T`. The API actually treats
+    // postgres as optional — non-postgres creates reject on `postgres.host: ''`
+    // when the empty default source is serialized. Modeled as `Option<T>` to
+    // match real API behavior; spec bug to be fixed upstream.
+    ("ClickPipePostSource", "postgres"),
+    ("ClickPipePatchSource", "postgres"),
+    // ClickPipeScaling sub-object: when default-serialized as {replicas: 0, …}
+    // the API rejects ("replicas: Not between 1 and 40"). Spec heuristic marks
+    // this as required, but in practice callers either set real values or
+    // want it omitted entirely. Modeled as `Option<T>`.
+    ("ClickPipePostRequest", "scaling"),
+    // settings similarly rejects `{}` — either send real values or omit.
+    ("ClickPipePostRequest", "settings"),
+    // Both publicationName and replicationSlotName must be ABSENT (not just
+    // empty) for `cdc` mode — the API rejects "" with "replicationSlotName: ''"
+    // and rejects any value with "only valid for cdc_only mode". Spec heuristic
+    // marks them as required because the schema has no `required` array, but
+    // the field descriptions explicitly call them optional. Modeled as
+    // `Option<String>` so callers can omit them.
+    ("ClickPipePostgresPipeSettings", "publicationName"),
+    ("ClickPipePostgresPipeSettings", "replicationSlotName"),
+    // Numeric settings all carry `minimum: 1` (or `minimum: 1000` for
+    // snapshotNumRowsPerPartition). The schema has no `required` array, so the
+    // heuristic infers required for everyone and the generator emits bare `i64`.
+    // `Default::default()` gives `0`, which the API rejects with
+    // "Value must be >= 1". Confirmed via cloud_clickpipe_postgres_ec2 that the
+    // API accepts the request when these keys are absent and picks server-side
+    // defaults — so they're modelled as `Option<i64>` with skip_serializing_if.
+    ("ClickPipePostgresPipeSettings", "syncIntervalSeconds"),
+    ("ClickPipePostgresPipeSettings", "pullBatchSize"),
+    ("ClickPipePostgresPipeSettings", "initialLoadParallelism"),
+    ("ClickPipePostgresPipeSettings", "snapshotNumRowsPerPartition"),
+    ("ClickPipePostgresPipeSettings", "snapshotNumberOfParallelTables"),
+    // Four destination fields are "Required field for all pipe types except
+    // database pipes (Postgres, MySQL, BigQuery)" per their descriptions, but
+    // the schema lacks a `required` array so the heuristic infers required
+    // for everyone. Live API rejects empty defaults for database pipes (e.g.
+    // "destination.table: ''", "columns array length < minLength"). Modeled
+    // as Optional so database pipes can omit the whole group.
+    ("ClickPipeMutateDestination", "table"),
+    ("ClickPipeMutateDestination", "managedTable"),
+    ("ClickPipeMutateDestination", "tableDefinition"),
+    // caCertificate is `undefinedOr(isValidPEMCertificate)` server-side, so
+    // sending "" fails PEM validation. Modeled as Option<String> so callers
+    // omit it when the user doesn't pass --ca-certificate.
+    ("ClickPipeMutatePostgresSource", "caCertificate"),
+    // iamRole only applies to RDS-style Postgres with IAM_ROLE auth — for
+    // Basic-auth Postgres the API rejects an empty string. Spec heuristic
+    // marks required because the schema lacks a `required` array; modeled
+    // as Option<String> so non-RDS callers omit it.
+    ("ClickPipeMutatePostgresSource", "iamRole"),
+    // tlsHost is only used when the broker cert SAN doesn't match `host`.
+    // Optional in practice; API rejects empty defaults.
+    ("ClickPipeMutatePostgresSource", "tlsHost"),
     // `roles` is deprecated in favour of `assignedRoleIds`. The spec marks it
     // required (description heuristic) with `minLength=1`, so the generated
     // `Vec<String>` would serialize as `"roles":[]` and the API would reject

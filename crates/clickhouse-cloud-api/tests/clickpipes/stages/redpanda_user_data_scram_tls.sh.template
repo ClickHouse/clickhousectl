@@ -1,0 +1,88 @@
+#!/bin/bash
+set -euxo pipefail
+sleep 5
+
+curl -1sLf 'https://dl.redpanda.com/nzc4ZYQK3WRGd9sy/redpanda/cfg/setup/bash.deb.sh' | sudo -E bash
+sudo apt-get install -y redpanda jq
+
+# TLS cert+key written from base64 to disk. SAN matches the EIP that
+# ClickPipes will connect to, which is the test's `BROKER_IP`.
+sudo mkdir -p /etc/redpanda/tls
+echo "__SERVER_CERT_B64__" | base64 -d | sudo tee /etc/redpanda/tls/server.crt > /dev/null
+echo "__SERVER_KEY_B64__"  | base64 -d | sudo tee /etc/redpanda/tls/server.key > /dev/null
+sudo chown -R redpanda:redpanda /etc/redpanda/tls
+sudo chmod 600 /etc/redpanda/tls/server.key
+
+sudo rpk redpanda config set redpanda.developer_mode true
+sudo rpk redpanda config set redpanda.enable_sasl true
+
+# Single SASL_SSL listener on 9092; advertised at the EIP.
+sudo rpk redpanda config set redpanda.kafka_api '[{name: external, address: 0.0.0.0, port: 9092, authentication_method: sasl}]'
+sudo rpk redpanda config set redpanda.advertised_kafka_api "[{name: external, address: __BROKER_IP__, port: 9092}]"
+sudo rpk redpanda config set redpanda.kafka_api_tls '[{name: external, enabled: true, cert_file: /etc/redpanda/tls/server.crt, key_file: /etc/redpanda/tls/server.key, require_client_auth: false}]'
+sudo rpk redpanda config set redpanda.admin '[{address: 0.0.0.0, port: 9644}]'
+sudo rpk redpanda config set redpanda.superusers '["__REDPANDA_SUPERUSER__"]'
+
+sudo systemctl enable redpanda
+sudo systemctl start redpanda
+
+for i in $(seq 1 60); do
+  RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:9644/v1/security/users \
+       -H 'content-type: application/json' \
+       -d "{\"username\":\"__REDPANDA_SUPERUSER__\",\"password\":\"__REDPANDA_SUPERUSER_PASS__\",\"algorithm\":\"SCRAM-SHA-512\"}" \
+       2>/dev/null || echo "curl-failed")
+  HTTP=$(echo "$RESP" | tail -1)
+  echo "[bootstrap] superuser create attempt $i: http=$HTTP"
+  if [ "$HTTP" = "200" ] || [ "$HTTP" = "409" ]; then
+    break
+  fi
+  sleep 2
+done
+
+# Create the ClickPipes SCRAM user. Fail loudly if this doesn't work — silent
+# failure here gives the test an "Incorrect credentials" error later.
+RESP=$(curl -s -w "\n%{http_code}" -X POST http://127.0.0.1:9644/v1/security/users \
+  -H 'content-type: application/json' \
+  -d "{\"username\":\"__CLICKPIPE_USER__\",\"password\":\"__CLICKPIPE_PASS__\",\"algorithm\":\"SCRAM-SHA-512\"}")
+HTTP=$(echo "$RESP" | tail -1)
+BODY=$(echo "$RESP" | head -n -1)
+echo "[bootstrap] clickpipe user create: http=$HTTP body=$BODY"
+if [ "$HTTP" != "200" ] && [ "$HTTP" != "409" ]; then
+  echo "[bootstrap] FATAL: failed to create clickpipe SCRAM user (http=$HTTP)"
+  exit 1
+fi
+
+# For rpk to speak SASL_SSL to itself, point at the EIP (which the cert was
+# issued for) and trust our self-signed CA.
+echo "__CA_PEM_B64__" | base64 -d | sudo tee /etc/redpanda/tls/ca.crt > /dev/null
+RPK_OPTS="--brokers __BROKER_IP__:9092 -X tls.enabled=true -X tls.ca=/etc/redpanda/tls/ca.crt -X user=__REDPANDA_SUPERUSER__ -X pass=__REDPANDA_SUPERUSER_PASS__ -X sasl.mechanism=SCRAM-SHA-512"
+
+# Wait for the SSL listener to settle.
+for i in $(seq 1 60); do
+  if rpk cluster info $RPK_OPTS >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+rpk topic create __TOPIC__ -p 1 $RPK_OPTS || true
+
+rpk security acl create \
+  --allow-principal "User:__CLICKPIPE_USER__" \
+  --operation read,describe \
+  --topic __TOPIC__ $RPK_OPTS || true
+rpk security acl create \
+  --allow-principal "User:__CLICKPIPE_USER__" \
+  --operation read,describe \
+  --group "*" $RPK_OPTS || true
+
+for i in 1 2 3; do
+  case $i in
+    1) NAME="Ada Lovelace";     EMAIL="ada@example.com" ;;
+    2) NAME="Grace Hopper";     EMAIL="grace@example.com" ;;
+    3) NAME="Margaret Hamilton";EMAIL="margaret@example.com" ;;
+  esac
+  echo "{\"id\": $i, \"name\": \"$NAME\", \"email\": \"$EMAIL\"}"
+done | rpk topic produce __TOPIC__ $RPK_OPTS
+
+sudo touch /var/lib/redpanda-bootstrap-complete
