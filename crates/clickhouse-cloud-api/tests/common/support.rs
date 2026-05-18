@@ -142,6 +142,10 @@ impl TestContext {
         format!("clickhousectl-it-pg-{}", self.run_id)
     }
 
+    pub fn postgres_replica_name(&self) -> String {
+        format!("clickhousectl-it-pgrr-{}", self.run_id)
+    }
+
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
         vec![
             ResourceTagsV1 {
@@ -409,18 +413,37 @@ impl FailureRecorder {
 
 // ── Cleanup Registry ─────────────────────────────────────────────────
 
+#[derive(Debug, Clone)]
+pub struct ClickhouseSettingRestore {
+    pub service_id: String,
+    pub setting_name: String,
+    pub original_value: String,
+}
+
 #[derive(Default)]
 pub struct CleanupRegistry {
     service_ids: Vec<String>,
     postgres_ids: Vec<String>,
+    // Read replicas are tracked separately from primary postgres services so
+    // we can guarantee they are torn down first. The ClickHouse Cloud API
+    // refuses to delete a primary that still has live replicas, so cleanup
+    // order matters when a test fails mid-way and the on-success teardown
+    // never runs.
+    postgres_replica_ids: Vec<String>,
     clickpipes: Vec<(String, String)>,
     /// `default.<table>` names to DROP during teardown. Only relevant when
     /// the service is NOT being deleted (attach mode); when the service is
     /// being deleted, table drops are redundant but harmless.
     tables: Vec<String>,
     api_key_ids: Vec<String>,
+    // Query endpoint bindings reference an API key; they must be deleted
+    // before the key they point to, otherwise we can't distinguish "binding
+    // cleanup works" from "API key was already gone."
+    query_endpoint_service_ids: Vec<String>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
+    clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
+    scaling_schedule_restores: Vec<ScalingScheduleRestore>,
     /// Pending member-role restores: `(user_id, original_assigned_role_ids)`
     /// pairs that teardown will PATCH back, even on failure. Registered by
     /// the org suite before mutating a member's role assignments so the
@@ -428,6 +451,11 @@ pub struct CleanupRegistry {
     /// has replaced the legacy `role` enum, so the restore stores the full
     /// list of role ids and teardown patches `assignedRoleIds` directly.
     member_role_restores: Vec<(String, Vec<String>)>,
+}
+
+pub struct ScalingScheduleRestore {
+    pub service_id: String,
+    pub pre_state: ScalingSchedule,
 }
 
 impl CleanupRegistry {
@@ -447,6 +475,23 @@ impl CleanupRegistry {
     pub fn unregister_postgres(&mut self, postgres_id: &str) {
         self.postgres_ids
             .retain(|registered| registered != postgres_id);
+    }
+
+    /// Register a Postgres read-replica id for cleanup.
+    ///
+    /// Replicas registered here are torn down before any primary Postgres
+    /// service registered via [`Self::register_postgres`], because the live
+    /// API rejects deleting a primary while replicas still reference it.
+    /// Always register the replica immediately after the create call
+    /// returns its id, before any further interaction, so a mid-test
+    /// failure cannot leak the replica and break the primary delete.
+    pub fn register_postgres_replica(&mut self, replica_id: impl Into<String>) {
+        self.postgres_replica_ids.push(replica_id.into());
+    }
+
+    pub fn unregister_postgres_replica(&mut self, replica_id: &str) {
+        self.postgres_replica_ids
+            .retain(|registered| registered != replica_id);
     }
 
     pub fn register_clickpipe(
@@ -470,9 +515,16 @@ impl CleanupRegistry {
     pub fn merge_from(&mut self, mut other: CleanupRegistry) {
         self.service_ids.append(&mut other.service_ids);
         self.postgres_ids.append(&mut other.postgres_ids);
+        self.postgres_replica_ids.append(&mut other.postgres_replica_ids);
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
         self.api_key_ids.append(&mut other.api_key_ids);
+        self.query_endpoint_service_ids
+            .append(&mut other.query_endpoint_service_ids);
+        self.role_ids.append(&mut other.role_ids);
+        self.invitation_ids.append(&mut other.invitation_ids);
+        self.clickhouse_setting_restores
+            .append(&mut other.clickhouse_setting_restores);
     }
 
     pub fn unregister_clickpipe(&mut self, service_id: &str, clickpipe_id: &str) {
@@ -487,6 +539,15 @@ impl CleanupRegistry {
     pub fn unregister_api_key(&mut self, key_id: &str) {
         self.api_key_ids
             .retain(|registered| registered != key_id);
+    }
+
+    pub fn register_query_endpoint(&mut self, service_id: impl Into<String>) {
+        self.query_endpoint_service_ids.push(service_id.into());
+    }
+
+    pub fn unregister_query_endpoint(&mut self, service_id: &str) {
+        self.query_endpoint_service_ids
+            .retain(|registered| registered != service_id);
     }
 
     pub fn register_role(&mut self, role_id: impl Into<String>) {
@@ -504,6 +565,49 @@ impl CleanupRegistry {
     pub fn unregister_invitation(&mut self, invitation_id: &str) {
         self.invitation_ids
             .retain(|registered| registered != invitation_id);
+    }
+
+    pub fn register_clickhouse_setting_restore(
+        &mut self,
+        service_id: impl Into<String>,
+        setting_name: impl Into<String>,
+        original_value: impl Into<String>,
+    ) {
+        self.clickhouse_setting_restores.push(ClickhouseSettingRestore {
+            service_id: service_id.into(),
+            setting_name: setting_name.into(),
+            original_value: original_value.into(),
+        });
+    }
+
+    pub fn unregister_clickhouse_setting_restore(&mut self, service_id: &str, setting_name: &str) {
+        self.clickhouse_setting_restores.retain(|restore| {
+            !(restore.service_id == service_id && restore.setting_name == setting_name)
+        });
+    }
+
+    /// Register a scaling schedule pre-state for restore during cleanup.
+    ///
+    /// Cleanup runs the restore via `scaling_schedule_upsert` before
+    /// service deletion so the POST has a valid target. If the service
+    /// was already deleted in-test, the restore tolerates a 404; on the
+    /// happy path the caller should call
+    /// [`unregister_scaling_schedule_restore`] before deleting the
+    /// service to keep the registry tidy.
+    pub fn register_scaling_schedule_restore(
+        &mut self,
+        service_id: impl Into<String>,
+        pre_state: ScalingSchedule,
+    ) {
+        self.scaling_schedule_restores.push(ScalingScheduleRestore {
+            service_id: service_id.into(),
+            pre_state,
+        });
+    }
+
+    pub fn unregister_scaling_schedule_restore(&mut self, service_id: &str) {
+        self.scaling_schedule_restores
+            .retain(|registered| registered.service_id != service_id);
     }
 
     /// Record the original assigned role ids of an org member so teardown
@@ -555,8 +659,66 @@ impl CleanupRegistry {
             }
         }
 
+        // Restore any ClickHouse settings before deleting the service that owns
+        // them. If the service is already gone (e.g. test deleted it as part of
+        // its body) the restore call will 404 and is skipped.
+        while let Some(restore) = self.clickhouse_setting_restores.pop() {
+            // The `settings` field on the API is a JSON-encoded string; build
+            // it with serde_json so quotes / backslashes in the original value
+            // round-trip correctly.
+            let inner = match serde_json::to_string(&serde_json::json!({
+                restore.setting_name.clone(): restore.original_value.clone(),
+            })) {
+                Ok(s) => s,
+                Err(e) => {
+                    failures.push(format!(
+                        "serialize clickhouse setting restore body for {} on {}: {}",
+                        restore.setting_name, restore.service_id, e
+                    ));
+                    continue;
+                }
+            };
+            let body = ServiceClickhouseSettingsPatchRequest {
+                settings: Some(inner),
+            };
+            match client
+                .service_clickhouse_settings_update(org_id, &restore.service_id, &body)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "restore clickhouse setting {} on service {}: {}",
+                    restore.setting_name, restore.service_id, e
+                )),
+            }
+        }
+
+        // Restore scaling schedules before service deletion so the
+        // restore POST can still find the service. If the service is
+        // already gone (in-test delete succeeded), 404 is tolerated.
+        while let Some(restore) = self.scaling_schedule_restores.pop() {
+            if let Err(error) = restore_scaling_schedule(client, org_id, &restore).await {
+                failures.push(format!(
+                    "scaling schedule restore {service_id}: {error}",
+                    service_id = restore.service_id
+                ));
+            }
+        }
+
+        // Query endpoint bindings reference an API key, so drop them first.
+        // The service itself may still be around; that's fine — we're just
+        // removing the binding so the API key can be deleted cleanly next.
+        while let Some(service_id) = self.query_endpoint_service_ids.pop() {
+            match client.instance_query_endpoint_delete(org_id, &service_id).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("query endpoint on {service_id}: {e}")),
+            }
+        }
+
         // Invitations and roles are org-scoped and cheap to delete; clear
-        // them first so a botched service teardown doesn't leak them.
+        // them before API keys so a botched service teardown doesn't leak them.
         while let Some(invitation_id) = self.invitation_ids.pop() {
             match client.invitation_delete(org_id, &invitation_id).await {
                 Ok(_) => {}
@@ -626,6 +788,18 @@ impl CleanupRegistry {
             }
         }
 
+        // Replicas MUST be deleted before primaries. The live API will
+        // refuse a primary delete that still has replicas attached, which
+        // would then leak the primary too.
+        while let Some(replica_id) = self.postgres_replica_ids.pop() {
+            if let Err(error) =
+                ensure_postgres_gone(client, org_id, &replica_id, delete_timeout, poll_interval)
+                    .await
+            {
+                failures.push(format!("postgres replica {replica_id}: {error}"));
+            }
+        }
+
         while let Some(postgres_id) = self.postgres_ids.pop() {
             if let Err(error) = ensure_postgres_gone(client, org_id, &postgres_id, delete_timeout, poll_interval).await {
                 failures.push(format!("postgres {postgres_id}: {error}"));
@@ -637,6 +811,48 @@ impl CleanupRegistry {
         } else {
             Err(failures.join("\n"))
         }
+    }
+}
+
+async fn restore_scaling_schedule(
+    client: &Client,
+    org_id: &str,
+    restore: &ScalingScheduleRestore,
+) -> TestResult<()> {
+    eprintln!("  cleanup: restoring scaling schedule pre-state");
+    let body = ScalingSchedulePostRequest {
+        entries: restore
+            .pre_state
+            .entries
+            .iter()
+            .map(scaling_schedule_entry_to_request)
+            .collect(),
+    };
+    match client
+        .scaling_schedule_upsert(org_id, &restore.service_id, &body)
+        .await
+    {
+        Ok(_) => Ok(()),
+        // Service deleted before cleanup ran — nothing to restore against.
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn scaling_schedule_entry_to_request(
+    entry: &ScalingScheduleEntry,
+) -> ScalingScheduleEntryRequest {
+    ScalingScheduleEntryRequest {
+        end_hour_utc: entry.end_hour_utc,
+        idle_scaling: entry.idle_scaling,
+        idle_timeout_minutes: entry.idle_timeout_minutes,
+        max_replica_memory_gb: entry.max_replica_memory_gb,
+        max_replicas: entry.max_replicas,
+        min_replica_memory_gb: entry.min_replica_memory_gb,
+        min_replicas: entry.min_replicas,
+        name: entry.name.clone(),
+        start_hour_utc: entry.start_hour_utc,
+        weekdays: entry.weekdays.clone(),
     }
 }
 
