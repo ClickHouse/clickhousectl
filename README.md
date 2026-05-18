@@ -34,6 +34,14 @@ If you already have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binst
 cargo binstall clickhousectl
 ```
 
+### npm
+
+```bash
+npm install -g clickhousectl
+```
+
+This installs an npm wrapper package that downloads the matching prebuilt binary from GitHub Releases at install time. Both `clickhousectl` and `chctl` are exposed as commands. If you use `npm install --ignore-scripts`, the download is skipped — fall back to one of the other install paths.
+
 ### From crates.io
 
 Builds from source:
