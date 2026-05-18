@@ -209,19 +209,16 @@ jobs:
         with:
           persist-credentials: false
 
-      # Deliberately omit `registry-url:` — setup-node would write
-      # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} into .npmrc and
-      # set NODE_AUTH_TOKEN to a placeholder, which makes npm authenticate
-      # with that placeholder instead of falling through to OIDC. The default
-      # registry is registry.npmjs.org anyway, so no .npmrc is needed.
+      # Node 24 LTS ships npm 11.x, which is required for trusted publishing
+      # (>= 11.5.1). Deliberately omit `registry-url:` — when given one,
+      # setup-node writes //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+      # into .npmrc and exports NODE_AUTH_TOKEN as a placeholder, making npm
+      # auth with the placeholder instead of falling through to OIDC. The
+      # default registry is registry.npmjs.org anyway, so no .npmrc is needed.
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22'
-
-      # npm trusted publishing requires npm >= 11.5.1; Node 22 ships npm 10.x.
-      - name: Upgrade npm
-        run: npm install -g npm@latest
+          node-version: '24'
 
       - name: Align package version with tag
         working-directory: npm
