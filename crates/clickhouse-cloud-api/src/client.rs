@@ -1067,6 +1067,52 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Get PostgreSQL service metrics
+    pub async fn postgres_instance_prometheus_get(
+        &self,
+        organization_id: &str,
+        postgres_id: &str,
+    ) -> Result<String, Error> {
+        let path =
+            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/prometheus");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await?;
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text),
+            });
+        }
+        Ok(resp.text().await?)
+    }
+
+    /// Get organization PostgreSQL metrics
+    pub async fn postgres_org_prometheus_get(
+        &self,
+        organization_id: &str,
+    ) -> Result<String, Error> {
+        let path = format!("/v1/organizations/{organization_id}/postgres/prometheus");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body_text = resp.text().await?;
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text),
+            });
+        }
+        Ok(resp.text().await?)
+    }
+
     /// Restore a Postgres service
     pub async fn postgres_instance_restore(
         &self,
@@ -2341,16 +2387,14 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Replace service autoscaling schedule
-    pub async fn scaling_schedule_replace(
+    /// Delete service scheduled scaling
+    pub async fn scaling_schedule_delete(
         &self,
         organization_id: &str,
         service_id: &str,
-        body: &ScalingSchedulePatchRequest,
-    ) -> Result<ApiResponse<ScalingSchedule>, Error> {
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
         let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
+        let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
