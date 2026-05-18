@@ -444,6 +444,13 @@ pub struct CleanupRegistry {
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
     scaling_schedule_restores: Vec<ScalingScheduleRestore>,
+    /// Pending member-role restores: `(user_id, original_assigned_role_ids)`
+    /// pairs that teardown will PATCH back, even on failure. Registered by
+    /// the org suite before mutating a member's role assignments so the
+    /// post-test org state always equals the pre-test state. Custom Roles
+    /// has replaced the legacy `role` enum, so the restore stores the full
+    /// list of role ids and teardown patches `assignedRoleIds` directly.
+    member_role_restores: Vec<(String, Vec<String>)>,
 }
 
 pub struct ScalingScheduleRestore {
@@ -603,6 +610,24 @@ impl CleanupRegistry {
             .retain(|registered| registered.service_id != service_id);
     }
 
+    /// Record the original assigned role ids of an org member so teardown
+    /// can restore them even if the test body panics. Call this immediately
+    /// after capturing the current assignments, before issuing any
+    /// mutating `member_update`.
+    pub fn register_member_role_restore(
+        &mut self,
+        user_id: impl Into<String>,
+        original_assigned_role_ids: Vec<String>,
+    ) {
+        self.member_role_restores
+            .push((user_id.into(), original_assigned_role_ids));
+    }
+
+    pub fn unregister_member_role_restore(&mut self, user_id: &str) {
+        self.member_role_restores
+            .retain(|(registered, _)| registered != user_id);
+    }
+
     pub async fn cleanup(
         &mut self,
         client: &Client,
@@ -612,6 +637,27 @@ impl CleanupRegistry {
         ch_query: Option<&ClickHouseQuery>,
     ) -> Result<(), String> {
         let mut failures = Vec::new();
+
+        // Restore mutated member roles first. The org suite captures the
+        // pre-test role here before flipping it; if we leave a member with
+        // the wrong role, every subsequent run starts with bad state. A
+        // 404 means the user is no longer in the org and we have nothing
+        // to do.
+        while let Some((user_id, original_assigned_role_ids)) =
+            self.member_role_restores.pop()
+        {
+            let body = MemberPatchRequest {
+                assigned_role_ids: Some(original_assigned_role_ids.clone()),
+                ..Default::default()
+            };
+            match client.member_update(org_id, &user_id, &body).await {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "member role restore {user_id} -> {original_assigned_role_ids:?}: {e}"
+                )),
+            }
+        }
 
         // Restore any ClickHouse settings before deleting the service that owns
         // them. If the service is already gone (e.g. test deleted it as part of

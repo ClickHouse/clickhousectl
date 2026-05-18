@@ -53,6 +53,442 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         assert_eq!(org.id.to_string(), ctx.org_id);
 
+        // ── Members ─────────────────────────────────────────────────
+        //
+        // Cover `member_get_list`, `member_get`, and `member_update`
+        // against the configured secondary user. The pre-test role is
+        // captured and registered with the cleanup registry *before*
+        // any mutating call, so teardown restores the original role
+        // even if the assertions below blow up.
+        //
+        // `member_delete` is deliberately out of scope (would kick the
+        // test fixture from the org) per #151.
+
+        log_phase("Members");
+        let secondary_user_id = ctx.secondary_user_id()?.to_string();
+
+        let members = failures
+            .run(&ctx, StepKind::NonBlocking, "list org members", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let resp = client.member_get_list(&org_id).await?;
+                    resp.result
+                        .ok_or_else(|| "member list returned no result".into())
+                }
+            })
+            .await?;
+
+        if let Some(members) = members.as_ref() {
+            let secondary_present = members
+                .iter()
+                .any(|m| m.user_id == secondary_user_id);
+            assert!(
+                secondary_present,
+                "member list did not include configured secondary user"
+            );
+            // The list must surface at least two distinct users — the API
+            // key's owner plus the secondary fixture. We don't pin the
+            // exact primary id (varies per fixture), just that the list
+            // is wider than the secondary user alone.
+            let distinct_users = members
+                .iter()
+                .map(|m| m.user_id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            assert!(
+                distinct_users.len() >= 2,
+                "member list contained fewer than two users; expected primary + secondary"
+            );
+        }
+
+        let secondary_member = failures
+            .run(&ctx, StepKind::NonBlocking, "get secondary member", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let user_id = secondary_user_id.clone();
+                async move {
+                    let resp = client.member_get(&org_id, &user_id).await?;
+                    resp.result
+                        .ok_or_else(|| "member get returned no result".into())
+                }
+            })
+            .await?;
+
+        if let Some(secondary_member) = secondary_member {
+            assert_eq!(secondary_member.user_id, secondary_user_id);
+            assert!(
+                !secondary_member.email.is_empty(),
+                "secondary member email was empty"
+            );
+
+            // Custom Roles round-trip. Orgs that have migrated to Custom
+            // Roles reject the legacy `role` enum on PATCH ("Organization
+            // has migrated to Custom Roles. Use 'assignedRoleIds' instead
+            // of 'role'."), so the round-trip swaps the secondary user's
+            // assignedRoleIds and restores the original set.
+            //
+            // The teardown task is registered before the mutating call so
+            // a panic between here and the next assertion can't leave the
+            // fixture with the wrong assignments.
+
+            let original_role_ids: Vec<String> = secondary_member
+                .assigned_roles
+                .iter()
+                .map(|ar| ar.role_id.to_string())
+                .collect();
+
+            let org_roles = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "list org roles for member round-trip",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        async move {
+                            let resp = client.organization_roles_get_list(&org_id).await?;
+                            resp.result.ok_or_else(|| "org roles list returned no result".into())
+                        }
+                    },
+                )
+                .await?;
+
+            if let Some(org_roles) = org_roles {
+                let originals: std::collections::HashSet<&str> =
+                    original_role_ids.iter().map(|s| s.as_str()).collect();
+                let candidate_extra = org_roles
+                    .iter()
+                    .map(|r| r.id.clone())
+                    .find(|id| !originals.contains(id.as_str()));
+
+                let target_role_ids: Option<Vec<String>> = match candidate_extra {
+                    Some(extra) => Some(vec![extra]),
+                    None if !original_role_ids.is_empty() => Some(Vec::new()),
+                    None => None,
+                };
+
+                if let Some(target_role_ids) = target_role_ids {
+                    cleanup.register_member_role_restore(
+                        secondary_user_id.clone(),
+                        original_role_ids.clone(),
+                    );
+
+                    eprintln!(
+                        "  member assignedRoleIds round-trip: {:?} -> {:?} -> {:?}",
+                        original_role_ids, target_role_ids, original_role_ids,
+                    );
+
+                    // The PATCH response body can echo the *pre-change*
+                    // state (the API treats the update as eventually
+                    // consistent), so we don't assert on its body — we
+                    // only require it to return a result. The subsequent
+                    // GET poll is the source of truth for whether the
+                    // update propagated.
+                    let target_for_patch = target_role_ids.clone();
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "flip secondary member assignedRoleIds",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let user_id = secondary_user_id.clone();
+                                let body = MemberPatchRequest {
+                                    assigned_role_ids: Some(target_for_patch.clone()),
+                                    ..Default::default()
+                                };
+                                async move {
+                                    let resp = client
+                                        .member_update(&org_id, &user_id, &body)
+                                        .await?;
+                                    if resp.result.is_none() {
+                                        return Err(
+                                            "member update returned no result".into(),
+                                        );
+                                    }
+                                    Ok(())
+                                }
+                            },
+                        )
+                        .await?;
+
+                    let target_for_get = target_role_ids.clone();
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "verify flipped assignedRoleIds via GET",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let user_id = secondary_user_id.clone();
+                                let want: std::collections::HashSet<String> =
+                                    target_for_get.into_iter().collect();
+                                let interval = ctx.poll_interval;
+                                async move {
+                                    // Poll for propagation. The PATCH is
+                                    // accepted immediately but the GET
+                                    // endpoint may lag by a few seconds.
+                                    poll_until(
+                                        "member assignedRoleIds reflects flip",
+                                        std::time::Duration::from_secs(30),
+                                        interval,
+                                        || {
+                                            let client = client.clone();
+                                            let org_id = org_id.clone();
+                                            let user_id = user_id.clone();
+                                            let want = want.clone();
+                                            async move {
+                                                let resp = client
+                                                    .member_get(&org_id, &user_id)
+                                                    .await?;
+                                                let member = resp.result.ok_or(
+                                                    "member get returned no result",
+                                                )?;
+                                                let got: std::collections::HashSet<String> =
+                                                    member
+                                                        .assigned_roles
+                                                        .iter()
+                                                        .map(|ar| ar.role_id.to_string())
+                                                        .collect();
+                                                if got == want {
+                                                    Ok(Some(()))
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                        },
+                                    )
+                                    .await
+                                }
+                            },
+                        )
+                        .await?;
+
+                    // Eager restore (best-effort). The cleanup registry
+                    // still owns the safety net; this just keeps the org
+                    // clean if the remaining test body needs to read the
+                    // original assignments. Same eventual-consistency
+                    // caveat applies — assert via poll, not the PATCH
+                    // response.
+                    let original_for_restore = original_role_ids.clone();
+                    failures
+                        .run(
+                            &ctx,
+                            StepKind::NonBlocking,
+                            "restore secondary member assignedRoleIds",
+                            || {
+                                let client = client.clone();
+                                let org_id = ctx.org_id.clone();
+                                let user_id = secondary_user_id.clone();
+                                let want_ids = original_for_restore.clone();
+                                let body = MemberPatchRequest {
+                                    assigned_role_ids: Some(want_ids.clone()),
+                                    ..Default::default()
+                                };
+                                let interval = ctx.poll_interval;
+                                async move {
+                                    let resp = client
+                                        .member_update(&org_id, &user_id, &body)
+                                        .await?;
+                                    if resp.result.is_none() {
+                                        return Err(
+                                            "member restore returned no result".into(),
+                                        );
+                                    }
+                                    let want: std::collections::HashSet<String> =
+                                        want_ids.into_iter().collect();
+                                    poll_until(
+                                        "member assignedRoleIds reflects restore",
+                                        std::time::Duration::from_secs(30),
+                                        interval,
+                                        || {
+                                            let client = client.clone();
+                                            let org_id = org_id.clone();
+                                            let user_id = user_id.clone();
+                                            let want = want.clone();
+                                            async move {
+                                                let resp = client
+                                                    .member_get(&org_id, &user_id)
+                                                    .await?;
+                                                let member = resp.result.ok_or(
+                                                    "member get returned no result",
+                                                )?;
+                                                let got: std::collections::HashSet<String> =
+                                                    member
+                                                        .assigned_roles
+                                                        .iter()
+                                                        .map(|ar| ar.role_id.to_string())
+                                                        .collect();
+                                                if got == want {
+                                                    Ok(Some(()))
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                        },
+                                    )
+                                    .await
+                                }
+                            },
+                        )
+                        .await?;
+                    // Eager restore succeeded — drop the registry entry so
+                    // cleanup doesn't issue a redundant PATCH at teardown.
+                    cleanup.unregister_member_role_restore(&secondary_user_id);
+                } else {
+                    eprintln!(
+                        "  SKIP assignedRoleIds round-trip: org has no role distinct \
+                         from the secondary user's current assignments and the user \
+                         has no roles to drop"
+                    );
+                }
+            }
+        }
+
+        // ── Invitations ─────────────────────────────────────────────
+        //
+        // Cover the full invitation CRUD against a synthetic recipient.
+        // We address invitations to
+        // `alasdair.brown+clickhousectl_{run_id}@clickhouse.com` — Gmail
+        // catch-all aliasing means the message lands in a real inbox
+        // but is never acted on, and the run-id keeps two CI runs from
+        // colliding. The invitation is cancelled (deleted) before the
+        // recipient could realistically accept; the cleanup registry
+        // is the safety net if the test body fails before cancellation.
+        //
+        // Invitation accept is UI-only and out of scope per #151.
+
+        log_phase("Invitations");
+        let invitation_email = format!(
+            "alasdair.brown+clickhousectl_{}@clickhouse.com",
+            ctx.run_id
+        );
+        let invitation_email_for_assert = invitation_email.clone();
+
+        let invitation = failures
+            .run(&ctx, StepKind::NonBlocking, "create invitation", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let body = InvitationPostRequest {
+                    email: invitation_email.clone(),
+                    role: InvitationPostRequestRole::Developer,
+                    assigned_role_ids: vec![],
+                };
+                async move {
+                    let resp = client.invitation_create(&org_id, &body).await?;
+                    resp.result
+                        .ok_or_else(|| "invitation create returned no result".into())
+                }
+            })
+            .await?;
+
+        if let Some(invitation) = invitation {
+            let invitation_id = invitation.id.to_string();
+            cleanup.register_invitation(invitation_id.clone());
+            assert_eq!(
+                invitation.email, invitation_email_for_assert,
+                "invitation create echoed unexpected email"
+            );
+            assert_eq!(
+                invitation.role.to_string(),
+                InvitationPostRequestRole::Developer.to_string(),
+                "invitation create echoed unexpected role"
+            );
+
+            let invitation_id_for_list = invitation_id.clone();
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "list invitations includes new one",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        async move {
+                            let resp = client.invitation_get_list(&org_id).await?;
+                            let list = resp
+                                .result
+                                .ok_or("invitation list returned no result")?;
+                            if !list
+                                .iter()
+                                .any(|inv| inv.id.to_string() == invitation_id_for_list)
+                            {
+                                return Err(format!(
+                                    "invitation list did not include new invitation {invitation_id_for_list}"
+                                )
+                                .into());
+                            }
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+
+            let invitation_id_for_get = invitation_id.clone();
+            let invitation_email_for_get = invitation_email_for_assert.clone();
+            failures
+                .run(&ctx, StepKind::NonBlocking, "get invitation", || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let id = invitation_id_for_get.clone();
+                    let want_email = invitation_email_for_get.clone();
+                    async move {
+                        let resp = client.invitation_get(&org_id, &id).await?;
+                        let fetched = resp
+                            .result
+                            .ok_or("invitation get returned no result")?;
+                        if fetched.id.to_string() != id {
+                            return Err(format!(
+                                "invitation get returned wrong id {}; wanted {id}",
+                                fetched.id
+                            )
+                            .into());
+                        }
+                        if fetched.email != want_email {
+                            return Err(format!(
+                                "invitation get returned wrong email {}; wanted {want_email}",
+                                fetched.email
+                            )
+                            .into());
+                        }
+                        if fetched.role.to_string() != "developer" {
+                            return Err(format!(
+                                "invitation get returned wrong role {}; wanted developer",
+                                fetched.role
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                })
+                .await?;
+
+            let invitation_id_for_delete = invitation_id.clone();
+            let delete_result = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "cancel invitation before accept",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let id = invitation_id_for_delete.clone();
+                        async move {
+                            client.invitation_delete(&org_id, &id).await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+            if delete_result.is_some() {
+                // Successful eager cancel — drop the registry entry so
+                // teardown doesn't issue a redundant 404.
+                cleanup.unregister_invitation(&invitation_id);
+            }
+        }
+
         // ── Org Observability ───────────────────────────────────────
         //
         // Read-only checks against org-scoped endpoints that don't
