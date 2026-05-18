@@ -1,0 +1,13 @@
+{
+  "name": "@clickhouse/clickhousectl-linux-arm64",
+  "version": "0.0.0",
+  "description": "clickhousectl binary for linux-arm64",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickHouse/clickhousectl.git"
+  },
+  "license": "Apache-2.0"
+}

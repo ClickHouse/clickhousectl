@@ -20,3 +20,7 @@
 /.command-code/
 /.kiro/
 __pycache__/
+
+# npm release artifacts
+/npm/platforms/*/bin/
+/dist/

@@ -1,0 +1,26 @@
+{
+  "name": "@clickhouse/clickhousectl",
+  "version": "0.0.0",
+  "description": "The CLI for ClickHouse: local and cloud.",
+  "bin": {
+    "clickhousectl": "bin.js",
+    "chctl": "bin.js"
+  },
+  "files": ["bin.js", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ClickHouse/clickhousectl.git"
+  },
+  "homepage": "https://github.com/ClickHouse/clickhousectl#readme",
+  "bugs": "https://github.com/ClickHouse/clickhousectl/issues",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=18" },
+  "os": ["darwin", "linux"],
+  "cpu": ["arm64", "x64"],
+  "optionalDependencies": {
+    "@clickhouse/clickhousectl-darwin-arm64": "0.0.0",
+    "@clickhouse/clickhousectl-darwin-x64": "0.0.0",
+    "@clickhouse/clickhousectl-linux-arm64": "0.0.0",
+    "@clickhouse/clickhousectl-linux-x64": "0.0.0"
+  }
+}
