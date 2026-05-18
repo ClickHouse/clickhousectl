@@ -35,6 +35,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify Cargo.toml version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_version="${TAG#v}"
+          cargo_version="$(grep -m1 '^version' crates/clickhousectl/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "tag=$tag_version  cargo=$cargo_version"
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error::Tag $TAG does not match crates/clickhousectl/Cargo.toml version $cargo_version"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
         with:
