@@ -3,7 +3,11 @@ name = "clickhouse-cloud-api"
 version = "0.2.0"
 edition = "2024"
 description = "Typed Rust client for the ClickHouse Cloud API"
-license = "MIT"
+license = "Apache-2.0"
+repository = "https://github.com/ClickHouse/clickhousectl"
+homepage = "https://github.com/ClickHouse/clickhousectl"
+keywords = ["clickhouse", "cloud", "api", "client"]
+categories = ["api-bindings", "database"]
 
 [dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
