@@ -16,6 +16,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let mut failures = FailureRecorder::default();
         let base_memory_gb = 8.0_f64;
         let scaled_memory_gb = 16.0_f64;
+        // The deprecated `instance_scaling_update` endpoint validates
+        // `minTotalMemoryGb`/`maxTotalMemoryGb` as multiples of 12, unlike
+        // the modern `instance_replica_scaling_update` endpoint which
+        // accepts multiples of 4. Use a dedicated pair of values for the
+        // deprecated round-trip to satisfy that constraint.
+        let deprecated_base_total_memory_gb = 12.0_f64;
+        let deprecated_scaled_total_memory_gb = 24.0_f64;
         let base_replicas = 1.0_f64;
         let scaled_replicas = 3.0_f64;
         let primary_ip = "203.0.113.10/32";
@@ -357,6 +364,65 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?
             .expect("blocking steps always return a value");
+        // Register the binding for cleanup BEFORE doing anything else with it.
+        // The registry deletes query endpoints before API keys, so a panic
+        // mid-phase still leaves the org tidy.
+        cleanup.register_query_endpoint(service_id.clone());
+
+        // GET the binding back and assert it matches the upsert. Catches
+        // regressions where the control plane stores something different from
+        // what we sent (roles silently demoted, openApiKeys dropped, etc).
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "get query endpoint matches upsert",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let api_key_uuid = api_key_uuid.clone();
+                    let initial_endpoint = initial_endpoint.clone();
+                    async move {
+                        let resp = client
+                            .instance_query_endpoint_get(&org_id, &service_id)
+                            .await?;
+                        let endpoint = resp
+                            .result
+                            .ok_or("query endpoint get returned no result")?;
+                        if endpoint.id != initial_endpoint.id {
+                            return Err(format!(
+                                "get returned different endpoint id: {} (upsert) vs {} (get)",
+                                initial_endpoint.id, endpoint.id
+                            )
+                            .into());
+                        }
+                        if !endpoint.roles.iter().any(|r| r == "sql_console_admin") {
+                            return Err(format!(
+                                "get missing sql_console_admin role: {:?}",
+                                endpoint.roles
+                            )
+                            .into());
+                        }
+                        if !endpoint.open_api_keys.contains(&api_key_uuid) {
+                            return Err(format!(
+                                "get missing our key from openApiKeys: {:?}",
+                                endpoint.open_api_keys
+                            )
+                            .into());
+                        }
+                        if endpoint.allowed_origins != "*" {
+                            return Err(format!(
+                                "get returned unexpected allowedOrigins: {:?}",
+                                endpoint.allowed_origins
+                            )
+                            .into());
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
 
         // Endpoint propagation can lag a few seconds behind the upsert; poll
         // for the first successful query rather than asserting on the first
@@ -602,6 +668,65 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "unexpected query response after re-upsert: {trimmed:?}"
                             )
                             .into())
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        // Delete the binding BEFORE the API key so we can distinguish
+        // "binding cleanup works" from "API key was already gone."
+        failures
+            .run(&ctx, StepKind::NonBlocking, "delete query endpoint", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let service_id = service_id.clone();
+                async move {
+                    client
+                        .instance_query_endpoint_delete(&org_id, &service_id)
+                        .await?;
+                    Ok(())
+                }
+            })
+            .await?;
+        cleanup.unregister_query_endpoint(&service_id);
+
+        // GET must now report the binding is gone. The control plane returns
+        // 404 once the binding is deleted; accept any 4xx in case the exact
+        // status drifts, but require an error rather than a stale 200.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "get query endpoint after delete returns 4xx",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        match client
+                            .instance_query_endpoint_get(&org_id, &service_id)
+                            .await
+                        {
+                            Ok(resp) => {
+                                Err(format!(
+                                    "expected 4xx after delete, got 200 with result: {:?}",
+                                    resp.result
+                                )
+                                .into())
+                            }
+                            Err(clickhouse_cloud_api::Error::Api { status, message })
+                                if (400..500).contains(&status) =>
+                            {
+                                eprintln!(
+                                    "  query endpoint correctly absent after delete: {status}: {message}"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => Err(format!(
+                                "expected 4xx after delete, got unexpected error: {e}"
+                            )
+                            .into()),
                         }
                     }
                 },
@@ -1182,7 +1307,219 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             }
         }
 
-        // ── 6. IP Access ─────────────────────────────────────────────
+        // ── 6. Private Endpoints ─────────────────────────────────────
+        //
+        // Cover `instance_private_endpoint_create` and
+        // `instance_private_endpoint_config_get` against the live service.
+        //
+        // `instance_private_endpoint_config_get` should always succeed: it
+        // returns the service-side endpoint service id + private DNS hostname
+        // and does not need a real provider-side endpoint to exist.
+        //
+        // `instance_private_endpoint_create` requires a `ServicPrivateEndpointePostRequest`
+        // whose `id` is a provider-specific identifier (AWS `vpce-…`, GCP
+        // numeric PSC id, Azure GUID). The control plane validates that id
+        // against the underlying provider, so a synthetic value with no real
+        // cloud resource behind it is expected to be rejected with a 4xx.
+        //
+        // The assertion is therefore: the call must either succeed (in which
+        // case we register inline cleanup, re-read config, and remove the
+        // binding) OR fail with an unambiguous 4xx structured error. Any
+        // other outcome — 5xx, network error, or a 200 with malformed payload
+        // — is treated as a real failure recorded via FailureRecorder. This
+        // is the "assertion-on-error" fallback called out in issue #160.
+
+        log_phase("Private Endpoints");
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "private endpoint config get",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client
+                            .instance_private_endpoint_config_get(&org_id, &service_id)
+                            .await?;
+                        let config = resp.result.ok_or(
+                            "instance_private_endpoint_config_get returned no result",
+                        )?;
+                        if config.endpoint_service_id.is_empty() {
+                            return Err(
+                                "private endpoint config returned empty endpointServiceId"
+                                    .into(),
+                            );
+                        }
+                        if config.private_dns_hostname.is_empty() {
+                            return Err(
+                                "private endpoint config returned empty privateDnsHostname"
+                                    .into(),
+                            );
+                        }
+                        eprintln!(
+                            "  private endpoint config: endpointServiceId len={} privateDnsHostname len={}",
+                            config.endpoint_service_id.len(),
+                            config.private_dns_hostname.len()
+                        );
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // Build a provider-shaped but synthetic endpoint id. `ctx.run_id`
+        // is embedded so concurrent test runs and post-mortems can trace
+        // which run wrote which (rejected) id.
+        let synthetic_endpoint_id = synthetic_private_endpoint_id(&ctx);
+        let create_body = ServicPrivateEndpointePostRequest {
+            id: synthetic_endpoint_id.clone(),
+            description: format!("clickhousectl-it private endpoint {}", ctx.run_id),
+        };
+
+        // The endpoint we just attempted to attach (only set if create
+        // succeeded). Hosts the inline cleanup that fires after the
+        // re-read of `private_endpoint_config_get`.
+        let mut created_endpoint_id: Option<String> = None;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "private endpoint create (synthetic id)",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let create_body = create_body.clone();
+                    let synthetic_endpoint_id = synthetic_endpoint_id.clone();
+                    let created_endpoint_id = &mut created_endpoint_id;
+                    async move {
+                        match client
+                            .instance_private_endpoint_create(
+                                &org_id,
+                                &service_id,
+                                &create_body,
+                            )
+                            .await
+                        {
+                            Ok(resp) => {
+                                let endpoint = resp.result.ok_or(
+                                    "instance_private_endpoint_create returned no result",
+                                )?;
+                                if endpoint.id != synthetic_endpoint_id {
+                                    return Err(format!(
+                                        "private endpoint create returned unexpected id: \
+                                         got {}, expected {}",
+                                        endpoint.id, synthetic_endpoint_id
+                                    )
+                                    .into());
+                                }
+                                eprintln!(
+                                    "  private endpoint create unexpectedly succeeded \
+                                     (provider={}, region={}); registering inline cleanup",
+                                    endpoint.cloud_provider, endpoint.region
+                                );
+                                *created_endpoint_id = Some(endpoint.id);
+                                Ok(())
+                            }
+                            Err(clickhouse_cloud_api::Error::Api { status, message })
+                                if (400..500).contains(&status) =>
+                            {
+                                // Expected path: the API rejected the
+                                // synthetic id because no real cloud resource
+                                // backs it. The structured error shape
+                                // (status + message) is what we assert on.
+                                eprintln!(
+                                    "  private endpoint create correctly rejected \
+                                     synthetic id with {status}: {message}"
+                                );
+                                if message.trim().is_empty() {
+                                    return Err(format!(
+                                        "private endpoint create returned {status} \
+                                         with empty error body"
+                                    )
+                                    .into());
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(format!(
+                                "private endpoint create returned unexpected error \
+                                 (expected 4xx or success): {e}"
+                            )
+                            .into()),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        // Re-read the config endpoint after the create attempt: even when
+        // the create is rejected we want a second `config_get` call in the
+        // mix so transient deserialization regressions on the GET path
+        // surface.
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "private endpoint config get after create attempt",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client
+                            .instance_private_endpoint_config_get(&org_id, &service_id)
+                            .await?;
+                        resp.result
+                            .ok_or("private endpoint config get returned no result")?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // If create succeeded, the synthetic endpoint is now associated with
+        // the service via `privateEndpointIds`. Detach it inline so the
+        // service can later be deleted cleanly — the service delete path
+        // does not implicitly free a private endpoint binding.
+        if let Some(endpoint_id) = created_endpoint_id.clone() {
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "detach synthetic private endpoint from service",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        let endpoint_id = endpoint_id.clone();
+                        async move {
+                            client
+                                .instance_update(
+                                    &org_id,
+                                    &service_id,
+                                    &ServicePatchRequest {
+                                        private_endpoint_ids: Some(
+                                            InstancePrivateEndpointsPatch {
+                                                add: vec![],
+                                                remove: vec![endpoint_id],
+                                            },
+                                        ),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+        }
+
+        // ── 7. IP Access ─────────────────────────────────────────────
 
         log_phase("IP Access");
         failures
@@ -1387,7 +1724,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
-        // ── 7. Scaling ───────────────────────────────────────────────
+        // ── 8. Scaling ───────────────────────────────────────────────
 
         log_phase("Scaling");
         failures
@@ -1486,7 +1823,172 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?;
 
-        // ── 8. Delete ────────────────────────────────────────────────
+        // Vertical scaling round-trip via the deprecated
+        // `instance_scaling_update` endpoint (PATCH /scaling). This is
+        // distinct from `instance_replica_scaling_update` (PATCH
+        // /replicaScaling) exercised above: the deprecated endpoint takes
+        // `minTotalMemoryGb` / `maxTotalMemoryGb` and only the vertical
+        // axis. The deprecated endpoint additionally requires the totals to
+        // be multiples of 12, so we first move via the modern endpoint to
+        // `deprecated_base_total_memory_gb` before the round-trip. We stay
+        // at 1 replica so the total-memory body maps directly to
+        // per-replica memory.
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "land on multiple-of-12 memory before deprecated phase",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        scale_service_and_wait(
+                            &client,
+                            &org_id,
+                            &service_id,
+                            Some(deprecated_base_total_memory_gb),
+                            Some(deprecated_base_total_memory_gb),
+                            Some(base_replicas),
+                            "modern scale to deprecated base",
+                            timeout,
+                            interval,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
+        let pre_vertical = failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "capture pre-state for deprecated vertical scaling",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client.instance_get(&org_id, &service_id).await?;
+                        resp.result
+                            .ok_or_else(|| "service get returned no result".into())
+                    }
+                },
+            )
+            .await?
+            .expect("blocking steps always return a value");
+        // Sanity: the deprecated body's totals only equal per-replica when
+        // num_replicas == 1. We rely on the previous step landing us there.
+        assert_eq!(pre_vertical.num_replicas, base_replicas);
+        let pre_min_total = pre_vertical.min_total_memory_gb;
+        let pre_max_total = pre_vertical.max_total_memory_gb;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "deprecated vertical scale up to 24 GB",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        scale_service_vertical_and_wait(
+                            &client,
+                            &org_id,
+                            &service_id,
+                            Some(deprecated_scaled_total_memory_gb),
+                            Some(deprecated_scaled_total_memory_gb),
+                            "deprecated vertical scale up",
+                            timeout,
+                            interval,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "deprecated vertical scale back to pre-state",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
+                    async move {
+                        scale_service_vertical_and_wait(
+                            &client,
+                            &org_id,
+                            &service_id,
+                            Some(pre_min_total),
+                            Some(pre_max_total),
+                            "deprecated vertical scale restore",
+                            timeout,
+                            interval,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await?;
+
+        // ── 9. Password ──────────────────────────────────────────────
+        //
+        // `instance_password_update` rotates the service password. The
+        // query path used by the rest of the suite is openapi-key-based,
+        // so the rotated password is not consumed anywhere — the pass
+        // condition is just a successful response that surfaces a fresh
+        // password. We pass an empty body so the server generates a new
+        // password and returns it; no re-rotation is needed because the
+        // service is about to be deleted.
+
+        log_phase("Password");
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "rotate service password",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    let run_id = ctx.run_id.clone();
+                    async move {
+                        let resp = client
+                            .instance_password_update(
+                                &org_id,
+                                &service_id,
+                                &ServicePasswordPatchRequest::default(),
+                            )
+                            .await?;
+                        let result = resp
+                            .result
+                            .ok_or("password update returned no result")?;
+                        if result.password.is_empty() {
+                            return Err("password update response had empty password".into());
+                        }
+                        eprintln!(
+                            "  password rotated (length={}, run_id={})",
+                            result.password.len(),
+                            run_id
+                        );
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
+        // ── 10. Delete ───────────────────────────────────────────────
 
         log_phase("Delete");
 
@@ -1639,6 +2141,7 @@ async fn poll_for_ip_presence(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scale_service_and_wait(
     client: &Client,
     org_id: &str,
@@ -1677,6 +2180,105 @@ async fn scale_service_and_wait(
                 if min_memory_gb.is_none_or(|v| svc.min_replica_memory_gb == v)
                     && max_memory_gb.is_none_or(|v| svc.max_replica_memory_gb == v)
                     && replicas.is_none_or(|v| svc.num_replicas == v)
+                {
+                    Ok(Some(()))
+                } else {
+                    Ok(None)
+                }
+            }
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Builds a provider-shaped but synthetic private endpoint id that embeds
+/// `ctx.run_id`. The format is plausible enough for the control plane to
+/// accept syntactically but the underlying cloud resource does not exist,
+/// so the create call is expected to be rejected with a 4xx. The run id is
+/// embedded so a leaked id in API logs can be traced back to a specific
+/// test run.
+fn synthetic_private_endpoint_id(ctx: &TestContext) -> String {
+    // Reduce the run id to a hex-safe slug capped at 16 chars to fit inside
+    // provider id formats.
+    let slug: String = ctx
+        .run_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .take(16)
+        .collect();
+    let padded = format!("{slug:0<16}");
+    match ctx.provider.as_str() {
+        // AWS VPC endpoint ids look like `vpce-0123456789abcdef0` (17 hex
+        // chars after the prefix).
+        "aws" => format!("vpce-{}0", &padded[..16]),
+        // GCP Private Service Connect endpoint ids are decimal strings. We
+        // pick a 19-digit value seeded by the run id hash so different runs
+        // collide neither with each other nor with real PSC endpoints.
+        "gcp" => {
+            let hash: u64 = ctx.run_id.bytes().fold(0u64, |acc, b| {
+                acc.wrapping_mul(31).wrapping_add(b as u64)
+            });
+            format!("{:019}", hash % 10u64.pow(19))
+        }
+        // Azure private endpoint resource ids are GUIDs. Synthesize one
+        // from the run id slug.
+        "azure" => {
+            let s = format!("{padded:0<32}");
+            format!(
+                "{}-{}-{}-{}-{}",
+                &s[..8],
+                &s[8..12],
+                &s[12..16],
+                &s[16..20],
+                &s[20..32]
+            )
+        }
+        // Unknown providers: pick something that contains the run id so it
+        // is traceable. The API will reject it; that is the assertion.
+        _ => format!("clickhousectl-it-{}", ctx.run_id),
+    }
+}
+
+#[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
+async fn scale_service_vertical_and_wait(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    min_total_memory_gb: Option<f64>,
+    max_total_memory_gb: Option<f64>,
+    description: &str,
+    timeout: std::time::Duration,
+    interval: std::time::Duration,
+) -> TestResult<()> {
+    client
+        .instance_scaling_update(
+            org_id,
+            service_id,
+            &ServiceScalingPatchRequest {
+                min_total_memory_gb,
+                max_total_memory_gb,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    poll_until(
+        &format!("{description} visibility"),
+        timeout,
+        interval,
+        || {
+            let client = client.clone();
+            let org_id = org_id.to_string();
+            let service_id = service_id.to_string();
+            async move {
+                let resp = client.instance_get(&org_id, &service_id).await?;
+                let svc = resp.result.ok_or("service get returned no result")?;
+                if min_total_memory_gb.is_none_or(|v| svc.min_total_memory_gb == v)
+                    && max_total_memory_gb.is_none_or(|v| svc.max_total_memory_gb == v)
                 {
                     Ok(Some(()))
                 } else {

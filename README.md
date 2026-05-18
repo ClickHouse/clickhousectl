@@ -728,7 +728,11 @@ The CLI also checks for updates in the background (at most once per 24 hours) an
 
 ## Cloud integration testing
 
-Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests are in [`crates/clickhouse-cloud-api/tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs).
+Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests live in three binaries, each a single `#[tokio::test]` lifecycle:
+
+- [`tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs) — ClickHouse service CRUD + service-scoped endpoints
+- [`tests/integration_postgres_test.rs`](crates/clickhouse-cloud-api/tests/integration_postgres_test.rs) — Postgres service CRUD
+- [`tests/integration_org_test.rs`](crates/clickhouse-cloud-api/tests/integration_org_test.rs) — org-scoped endpoints (members, invitations, roles, activity, prometheus, private endpoint config)
 
 Required environment variables:
 
@@ -738,12 +742,17 @@ export CLICKHOUSE_CLOUD_API_SECRET=...
 export CLICKHOUSE_CLOUD_TEST_ORG_ID=...
 export CLICKHOUSE_CLOUD_TEST_PROVIDER=aws
 export CLICKHOUSE_CLOUD_TEST_REGION=us-east-1
+# Required for the org integration suite (members + invitations need a
+# second user in the test org); optional otherwise.
+export CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID=...
 ```
 
-Run the integration test:
+Run a suite:
 
 ```bash
-cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
+cargo test -p clickhouse-cloud-api --test integration_test          -- --ignored --nocapture
+cargo test -p clickhouse-cloud-api --test integration_postgres_test -- --ignored --nocapture
+cargo test -p clickhouse-cloud-api --test integration_org_test      -- --ignored --nocapture
 ```
 
 By default, any failed check fails the run. To keep going after `non-blocking` capability failures and collect them in a summary at the end, set:
