@@ -9,13 +9,18 @@ on:
       - "crates/clickhousectl/Cargo.toml"
       - ".github/workflows/test-install.yml"
 
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
       - run: cargo test
 
   url-probing:
@@ -88,9 +93,11 @@ jobs:
       matrix:
         os: [ubuntu-22.04, ubuntu-24.04, macos-14, macos-15]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
 
       - name: Build CLI
         run: cargo build
