@@ -1,9 +1,12 @@
 use crate::error::{Error, Result};
 use crate::paths;
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use std::fs;
+use std::io::{self, Cursor};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tar::Archive;
 
 const GITHUB_REPO: &str = "ClickHouse/clickhousectl";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
@@ -78,6 +81,41 @@ async fn fetch_latest_release(timeout: std::time::Duration) -> Result<GitHubRele
     Ok(release)
 }
 
+/// Extract the `clickhousectl` binary from a `.tar.gz` release archive.
+///
+/// The release workflow packages the binary at
+/// `clickhousectl-<target>-v<version>/clickhousectl` inside the tarball, so we
+/// match on the entry's file name rather than the full path.
+fn extract_binary_from_archive(archive_bytes: &[u8]) -> Result<Vec<u8>> {
+    let decoder = GzDecoder::new(Cursor::new(archive_bytes));
+    let mut archive = Archive::new(decoder);
+
+    for entry in archive
+        .entries()
+        .map_err(|e| Error::Extract(format!("Failed to read release archive: {}", e)))?
+    {
+        let mut entry =
+            entry.map_err(|e| Error::Extract(format!("Failed to read archive entry: {}", e)))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry
+            .path()
+            .map_err(|e| Error::Extract(format!("Failed to read archive entry path: {}", e)))?;
+        if path.file_name().and_then(|n| n.to_str()) == Some("clickhousectl") {
+            let mut buf = Vec::new();
+            io::copy(&mut entry, &mut buf).map_err(|e| {
+                Error::Extract(format!("Failed to extract binary from archive: {}", e))
+            })?;
+            return Ok(buf);
+        }
+    }
+
+    Err(Error::Extract(
+        "Release archive did not contain a clickhousectl binary".into(),
+    ))
+}
+
 /// Timeout for explicit user-initiated commands (update, update --check).
 const EXPLICIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Timeout for the implicit background cache refresh.
@@ -110,7 +148,8 @@ pub async fn perform_update() -> Result<()> {
         return Ok(());
     }
 
-    let expected_asset = asset_name()?;
+    let asset_prefix = asset_name()?;
+    let expected_asset = format!("{}-{}.tar.gz", asset_prefix, latest);
     let asset = release
         .assets
         .iter()
@@ -137,7 +176,8 @@ pub async fn perform_update() -> Result<()> {
         .error_for_status()
         .map_err(|e| Error::Download(format!("Download failed: {}", e)))?;
 
-    let bytes = response.bytes().await?;
+    let archive_bytes = response.bytes().await?;
+    let binary_bytes = extract_binary_from_archive(&archive_bytes)?;
 
     // Get the path to the currently running binary
     let current_exe = std::env::current_exe().map_err(|e| {
@@ -152,7 +192,7 @@ pub async fn perform_update() -> Result<()> {
 
     // Write to a temporary file next to the binary, then atomic-rename
     let tmp_path = actual_path.with_extension("tmp-update");
-    fs::write(&tmp_path, &bytes).map_err(|e| {
+    fs::write(&tmp_path, &binary_bytes).map_err(|e| {
         Error::Download(format!(
             "Failed to write update to {}: {}. Check file permissions.",
             tmp_path.display(),
@@ -291,5 +331,49 @@ mod tests {
         // Should return something valid on macOS/Linux test hosts
         let name = asset_name().unwrap();
         assert!(name.starts_with("clickhousectl-"));
+    }
+
+    fn build_release_archive(inner_dir: &str, binary_bytes: &[u8]) -> Vec<u8> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use tar::Builder;
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = Builder::new(encoder);
+
+        let mut header = tar::Header::new_gnu();
+        header
+            .set_path(format!("{}/clickhousectl", inner_dir))
+            .unwrap();
+        header.set_size(binary_bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, binary_bytes).unwrap();
+
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn extracts_clickhousectl_binary_from_release_archive() {
+        let payload = b"\x7fELF fake binary contents".as_slice();
+        let archive =
+            build_release_archive("clickhousectl-aarch64-apple-darwin-v0.0.1", payload);
+
+        let extracted = extract_binary_from_archive(&archive).unwrap();
+        assert_eq!(extracted, payload);
+    }
+
+    #[test]
+    fn extract_fails_when_archive_has_no_clickhousectl_entry() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use tar::Builder;
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let builder = Builder::new(encoder);
+        let empty = builder.into_inner().unwrap().finish().unwrap();
+
+        let err = extract_binary_from_archive(&empty).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("did not contain"), "got: {}", msg);
     }
 }
