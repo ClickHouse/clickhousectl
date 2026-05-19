@@ -92,26 +92,26 @@ fn extract_binary_from_archive(archive_bytes: &[u8]) -> Result<Vec<u8>> {
 
     for entry in archive
         .entries()
-        .map_err(|e| Error::Download(format!("Failed to read release archive: {}", e)))?
+        .map_err(|e| Error::Extract(format!("Failed to read release archive: {}", e)))?
     {
         let mut entry =
-            entry.map_err(|e| Error::Download(format!("Failed to read archive entry: {}", e)))?;
+            entry.map_err(|e| Error::Extract(format!("Failed to read archive entry: {}", e)))?;
         if !entry.header().entry_type().is_file() {
             continue;
         }
         let path = entry
             .path()
-            .map_err(|e| Error::Download(format!("Failed to read archive entry path: {}", e)))?;
+            .map_err(|e| Error::Extract(format!("Failed to read archive entry path: {}", e)))?;
         if path.file_name().and_then(|n| n.to_str()) == Some("clickhousectl") {
             let mut buf = Vec::new();
             io::copy(&mut entry, &mut buf).map_err(|e| {
-                Error::Download(format!("Failed to extract binary from archive: {}", e))
+                Error::Extract(format!("Failed to extract binary from archive: {}", e))
             })?;
             return Ok(buf);
         }
     }
 
-    Err(Error::Download(
+    Err(Error::Extract(
         "Release archive did not contain a clickhousectl binary".into(),
     ))
 }
