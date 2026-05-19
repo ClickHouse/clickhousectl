@@ -1,6 +1,6 @@
 [package]
 name = "clickhouse-cloud-api"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Typed Rust client for the ClickHouse Cloud API"
 license = "Apache-2.0"
