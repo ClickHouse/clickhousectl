@@ -1,9 +1,12 @@
 use crate::error::{Error, Result};
 use crate::paths;
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tar::Archive;
 
 const GITHUB_REPO: &str = "ClickHouse/clickhousectl";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
@@ -20,20 +23,48 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
-/// The asset name suffix for this platform's binary in GitHub Releases.
-fn asset_name() -> Result<&'static str> {
+/// The target triple for this platform's release archive.
+fn asset_target() -> Result<&'static str> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     match (os, arch) {
-        ("macos", "x86_64") => Ok("clickhousectl-x86_64-apple-darwin"),
-        ("macos", "aarch64") => Ok("clickhousectl-aarch64-apple-darwin"),
-        ("linux", "x86_64") => Ok("clickhousectl-x86_64-unknown-linux-musl"),
-        ("linux", "aarch64") => Ok("clickhousectl-aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
         _ => Err(Error::UnsupportedPlatform {
             os: os.to_string(),
             arch: arch.to_string(),
         }),
     }
+}
+
+/// The release archive name for a given target and tag (e.g. `v0.2.1`).
+/// Mirrors the layout produced by `.github/workflows/release.yml`.
+fn archive_name(target: &str, tag: &str) -> String {
+    format!("clickhousectl-{}-{}.tar.gz", target, tag)
+}
+
+/// Extract the `clickhousectl` binary from an in-memory tar.gz archive.
+/// The release archive contains a single directory with the binary inside.
+fn extract_binary(archive_bytes: &[u8]) -> Result<Vec<u8>> {
+    let decoder = GzDecoder::new(archive_bytes);
+    let mut archive = Archive::new(decoder);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path()?.into_owned();
+        if path.file_name().and_then(|s| s.to_str()) == Some("clickhousectl") {
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf)?;
+            return Ok(buf);
+        }
+    }
+    Err(Error::Extract(
+        "archive did not contain a clickhousectl binary".to_string(),
+    ))
 }
 
 /// Parse a version tag like "v0.1.17" into a comparable tuple.
@@ -110,7 +141,8 @@ pub async fn perform_update() -> Result<()> {
         return Ok(());
     }
 
-    let expected_asset = asset_name()?;
+    let target = asset_target()?;
+    let expected_asset = archive_name(target, latest);
     let asset = release
         .assets
         .iter()
@@ -137,7 +169,8 @@ pub async fn perform_update() -> Result<()> {
         .error_for_status()
         .map_err(|e| Error::Download(format!("Download failed: {}", e)))?;
 
-    let bytes = response.bytes().await?;
+    let archive_bytes = response.bytes().await?;
+    let bytes = extract_binary(&archive_bytes)?;
 
     // Get the path to the currently running binary
     let current_exe = std::env::current_exe().map_err(|e| {
@@ -287,9 +320,55 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_name() {
-        // Should return something valid on macOS/Linux test hosts
-        let name = asset_name().unwrap();
-        assert!(name.starts_with("clickhousectl-"));
+    fn test_asset_target() {
+        let target = asset_target().unwrap();
+        assert!(
+            target.contains("apple-darwin") || target.contains("linux-musl"),
+            "unexpected target: {target}"
+        );
+    }
+
+    #[test]
+    fn test_archive_name() {
+        assert_eq!(
+            archive_name("x86_64-apple-darwin", "v0.2.1"),
+            "clickhousectl-x86_64-apple-darwin-v0.2.1.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_extract_binary_finds_clickhousectl() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+
+        // Build a tarball that mirrors the release layout:
+        // `clickhousectl-{target}-v{ver}/clickhousectl`.
+        let payload = b"fake-binary-bytes";
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "clickhousectl-x86_64-apple-darwin-v0.2.1/clickhousectl",
+                    &payload[..],
+                )
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let mut gz_buf = Vec::new();
+        {
+            let mut enc = GzEncoder::new(&mut gz_buf, Compression::default());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap();
+        }
+
+        let extracted = extract_binary(&gz_buf).unwrap();
+        assert_eq!(extracted, payload);
     }
 }

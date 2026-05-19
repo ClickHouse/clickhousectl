@@ -137,7 +137,7 @@ cargo add -p clickhouse-cloud-api url
 - If the user references a GitHub issue (e.g. "work on issue 3"), use `gh issue view 3` to get the details, then create a branch like `issue-3-short-description`.
 - Update `README.md` and any relevant documentation as part of the change — PRs should include doc updates for new or changed functionality.
 - Commit to the branch, push, and create a PR with `gh pr create`.
-- Releases are done by tagging `main` (e.g. `git tag v0.1.4 && git push origin v0.1.4`), which triggers the GitHub Actions release workflow. Bump `version` in `crates/clickhousectl/Cargo.toml` (always) and `crates/clickhouse-cloud-api/Cargo.toml` (only when the API client changed; publish step skips if unchanged). `npm/package.json` is bumped automatically by the workflow. Release-time secrets: `CARGO_REGISTRY_TOKEN` for crates.io; npm uses OIDC trusted publishing (configured one-time on npmjs.com against this repo, `release.yml`, and the `publish-npm` job).
+- Releases are done by tagging `main` (e.g. `git tag v0.1.4 && git push origin v0.1.4`), which triggers the GitHub Actions release workflow. Bump all of these to the same version in lockstep: `crates/clickhousectl/Cargo.toml` (`version` and the `clickhouse-cloud-api` dep version), `crates/clickhouse-cloud-api/Cargo.toml`, and `npm/package.json`. The workflow also re-aligns `npm/package.json` to the tag at publish time, but bump it in the repo too so the source-of-truth matches. Release-time secrets: `CARGO_REGISTRY_TOKEN` for crates.io; npm uses OIDC trusted publishing (configured one-time on npmjs.com against this repo, `release.yml`, and the `publish-npm` job).
 
 ## Testing locally
 
