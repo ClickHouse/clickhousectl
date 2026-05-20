@@ -14,7 +14,7 @@ if (!fs.existsSync(binaryPath)) {
     `clickhousectl: binary not found at ${binaryPath}.\n` +
     `The postinstall step may have been skipped (e.g. npm --ignore-scripts) ` +
     `or failed. Reinstall with scripts enabled, or download manually from ` +
-    `https://github.com/ClickHouse/clickhousectl/releases`
+    `https://builds.clickhouse.com/clickhousectl/`
   );
   process.exit(1);
 }
