@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Downloads the platform-appropriate clickhousectl binary from the matching
-// GitHub release and places it next to bin/clickhousectl. Invoked as the
-// package's postinstall script.
+// Downloads the platform-appropriate clickhousectl binary from
+// builds.clickhouse.com and places it next to bin/clickhousectl. Invoked as
+// the package's postinstall script.
 
 const fs = require('fs');
 const path = require('path');
@@ -9,7 +9,7 @@ const https = require('https');
 const { URL } = require('url');
 const { spawnSync } = require('child_process');
 
-const REPO = 'ClickHouse/clickhousectl';
+const BUILDS_BASE_URL = 'https://builds.clickhouse.com/clickhousectl';
 const PLATFORM_MAP = {
   'linux-x64': 'x86_64-unknown-linux-musl',
   'linux-arm64': 'aarch64-unknown-linux-musl',
@@ -67,7 +67,7 @@ async function main() {
   const version = pkg.version;
   const target = resolveTarget();
   const archiveName = `clickhousectl-${target}-v${version}.tar.gz`;
-  const url = `https://github.com/${REPO}/releases/download/v${version}/${archiveName}`;
+  const url = `${BUILDS_BASE_URL}/${archiveName}`;
 
   const vendorDir = path.join(__dirname, 'vendor');
   fs.mkdirSync(vendorDir, { recursive: true });

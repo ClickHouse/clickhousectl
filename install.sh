@@ -42,7 +42,7 @@ echo "Latest release: $LATEST"
 
 # Download archive
 ARCHIVE_NAME="clickhousectl-${TARGET}-${LATEST}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST}/${ARCHIVE_NAME}"
+DOWNLOAD_URL="https://builds.clickhouse.com/clickhousectl/${ARCHIVE_NAME}"
 echo "Downloading ${DOWNLOAD_URL}..."
 
 mkdir -p "$INSTALL_DIR"

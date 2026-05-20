@@ -9,29 +9,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
 
 const GITHUB_REPO: &str = "ClickHouse/clickhousectl";
+const BUILDS_BASE_URL: &str = "https://builds.clickhouse.com/clickhousectl";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
 
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
-    assets: Vec<GitHubAsset>,
 }
 
-#[derive(Deserialize)]
-struct GitHubAsset {
-    name: String,
-    browser_download_url: String,
-}
-
-/// The asset name suffix for this platform's binary in GitHub Releases.
-fn asset_name() -> Result<&'static str> {
+/// The platform target triple used in release artifact names.
+fn target_triple() -> Result<&'static str> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     match (os, arch) {
-        ("macos", "x86_64") => Ok("clickhousectl-x86_64-apple-darwin"),
-        ("macos", "aarch64") => Ok("clickhousectl-aarch64-apple-darwin"),
-        ("linux", "x86_64") => Ok("clickhousectl-x86_64-unknown-linux-musl"),
-        ("linux", "aarch64") => Ok("clickhousectl-aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
         _ => Err(Error::UnsupportedPlatform {
             os: os.to_string(),
             arch: arch.to_string(),
@@ -148,18 +142,9 @@ pub async fn perform_update() -> Result<()> {
         return Ok(());
     }
 
-    let asset_prefix = asset_name()?;
-    let expected_asset = format!("{}-{}.tar.gz", asset_prefix, latest);
-    let asset = release
-        .assets
-        .iter()
-        .find(|a| a.name == expected_asset)
-        .ok_or_else(|| {
-            Error::Download(format!(
-                "No compatible binary found for this platform (expected {})",
-                expected_asset
-            ))
-        })?;
+    let target = target_triple()?;
+    let archive_name = format!("clickhousectl-{}-{}.tar.gz", target, latest);
+    let download_url = format!("{}/{}", BUILDS_BASE_URL, archive_name);
 
     let display = latest.strip_prefix('v').unwrap_or(latest);
     println!("Downloading clickhousectl v{}...", display);
@@ -170,7 +155,7 @@ pub async fn perform_update() -> Result<()> {
         .build()?;
 
     let response = client
-        .get(&asset.browser_download_url)
+        .get(&download_url)
         .send()
         .await?
         .error_for_status()
@@ -327,10 +312,10 @@ mod tests {
     }
 
     #[test]
-    fn test_asset_name() {
+    fn test_target_triple() {
         // Should return something valid on macOS/Linux test hosts
-        let name = asset_name().unwrap();
-        assert!(name.starts_with("clickhousectl-"));
+        let target = target_triple().unwrap();
+        assert!(target.contains('-'));
     }
 
     fn build_release_archive(inner_dir: &str, binary_bytes: &[u8]) -> Vec<u8> {
