@@ -38,3 +38,19 @@ pub fn ensure_dirs() -> Result<()> {
     std::fs::create_dir_all(&versions).map_err(|_| Error::CreateDir(versions))?;
     Ok(())
 }
+
+/// Returns the user-local PATH-style bin directory (~/.local/bin/)
+pub fn global_bin_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not determine home directory",
+        ))
+    })?;
+    Ok(home.join(".local").join("bin"))
+}
+
+/// Returns the path to the global `clickhouse` symlink (~/.local/bin/clickhouse)
+pub fn global_clickhouse_symlink() -> Result<PathBuf> {
+    Ok(global_bin_dir()?.join("clickhouse"))
+}

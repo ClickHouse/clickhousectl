@@ -44,10 +44,15 @@ CONTEXT FOR AGENTS:
   Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
   Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
+  Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
   Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
     Use {
         /// Version to use as default
         version: String,
+
+        /// Do not create or update the ~/.local/bin/clickhouse symlink
+        #[arg(long)]
+        no_global: bool,
     },
 
     /// Remove an installed version

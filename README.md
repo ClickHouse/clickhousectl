@@ -82,11 +82,14 @@ clickhousectl local use stable              # Latest stable (installs if needed)
 clickhousectl local use lts                 # Latest LTS (installs if needed)
 clickhousectl local use 25.12               # Latest 25.12.x.x (installs if needed)
 clickhousectl local use 25.12.5.44          # Exact version
+clickhousectl local use stable --no-global  # Set default but don't touch ~/.local/bin/clickhouse
 clickhousectl local which                   # Show current default
 
 # Remove a version
 clickhousectl local remove 25.12.5.44
 ```
+
+`local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning. `local remove` of the active default version also clears the symlink.
 
 #### ClickHouse binary storage
 
