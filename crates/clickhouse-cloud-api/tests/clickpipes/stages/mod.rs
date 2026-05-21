@@ -150,6 +150,18 @@ pub async fn create_pipe_and_wait_running(
     )
     .await?;
 
+    // Round-trip the list endpoint so server-shape regressions (e.g. a Vec<T>
+    // field returned as `null` instead of `[]`) surface here instead of only
+    // affecting `chctl cloud clickpipe list` in production.
+    let pipes = client
+        .click_pipe_get_list(&ctx.org_id, &ch.service_id)
+        .await?
+        .result
+        .ok_or("clickpipe list returned no result")?;
+    if !pipes.iter().any(|p| p.id.to_string() == clickpipe_id) {
+        return Err(format!("clickpipe {clickpipe_id} missing from list response").into());
+    }
+
     Ok(clickpipe_id)
 }
 

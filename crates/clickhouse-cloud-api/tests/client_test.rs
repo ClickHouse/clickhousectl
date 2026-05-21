@@ -1295,6 +1295,65 @@ async fn list_click_pipes() {
     assert_eq!(pipes[0].name, "kafka-pipe");
 }
 
+/// Mirror the shape the live API actually returns for a Kafka pipe — including
+/// `reversePrivateEndpointIds: null`, which the spec declares as a required
+/// array but the server happily emits as null when unset. Before the fix,
+/// this fails with `invalid type: null, expected a sequence`.
+#[tokio::test]
+async fn list_click_pipes_with_null_array_fields() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "serviceId": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+                "name": "kafka-pipe",
+                "state": "Running",
+                "scaling": {
+                    "replicas": 1,
+                    "replicaCpuMillicores": 125,
+                    "replicaMemoryGb": 0.5
+                },
+                "source": {
+                    "kafka": {
+                        "type": "confluent",
+                        "format": "JSONEachRow",
+                        "brokers": "broker.example:9092",
+                        "topics": "events",
+                        "consumerGroup": "clickpipes-aaaaaaaa",
+                        "authentication": "PLAIN",
+                        "reversePrivateEndpointIds": null
+                    }
+                },
+                "destination": {
+                    "database": "default",
+                    "table": "events",
+                    "managedTable": true,
+                    "tableDefinition": {
+                        "engine": {"type": "MergeTree"},
+                        "sortingKey": ["id"]
+                    },
+                    "columns": []
+                },
+                "fieldMappings": [],
+                "settings": {},
+                "createdAt": "2026-05-13T17:47:28.132987Z",
+                "updatedAt": "2026-05-13T17:47:28.132987Z"
+            }
+        ])))
+        .mount(&s)
+        .await;
+
+    let resp = c.click_pipe_get_list("org-1", "svc-1").await.unwrap();
+    let pipes = resp.result.unwrap();
+    assert_eq!(pipes.len(), 1);
+    assert_eq!(pipes[0].name, "kafka-pipe");
+    let kafka = pipes[0].source.kafka.as_ref().expect("kafka source present");
+    assert!(kafka.reverse_private_endpoint_ids.is_empty());
+}
+
 #[tokio::test]
 async fn create_click_pipe() {
     let (s, c) = setup().await;

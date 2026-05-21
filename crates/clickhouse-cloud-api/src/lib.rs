@@ -21,6 +21,7 @@ pub mod error;
 pub mod meta;
 #[allow(non_camel_case_types)]
 pub mod models;
+pub mod serde_helpers;
 
 pub use client::Client;
 pub use error::Error;
