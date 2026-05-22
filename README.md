@@ -167,8 +167,6 @@ clickhousectl local server dotenv --user default --password secret --database my
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 
-**Query log:** `system.query_log` is enabled with a 1-second flush interval so you can inspect queries shortly after running them. ClickHouse's embedded config (used when no `config.xml` is supplied) is minimal and does not configure `system.query_log`; chctl adds it to mirror what package installs ship.
-
 **Orphaned server recovery:** If server metadata files are lost while the ClickHouse process is still running, the CLI automatically recovers them via process discovery. Running `server list`, `server start`, or any server command will detect orphaned processes belonging to the current project and bring them back under management.
 
 **Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.

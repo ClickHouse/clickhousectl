@@ -157,8 +157,6 @@ CONTEXT FOR AGENTS:
   Accepts same specs as install/use: stable, lts, latest, 25.12, etc. Installs if needed.
   Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
   Use --http-port and --tcp-port to set explicit ports.
-  system.query_log is always enabled (flush every 1s) since the embedded
-  ClickHouse config doesn't configure it.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
   If --name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
