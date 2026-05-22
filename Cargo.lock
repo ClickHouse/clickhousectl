@@ -960,7 +960,7 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "clickhouse-cloud-api"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "clickhousectl"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "base64",
  "bollard",
