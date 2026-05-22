@@ -7657,7 +7657,7 @@ pub struct ClickPipeKafkaSource {
     pub iam_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub offset: Option<ClickPipeKafkaOffset>,
-    #[serde(rename = "reversePrivateEndpointIds", default)]
+    #[serde(rename = "reversePrivateEndpointIds", default, deserialize_with = "crate::serde_helpers::null_to_empty")]
     pub reverse_private_endpoint_ids: Vec<String>,
     #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none", default)]
     pub schema_registry: Option<ClickPipeKafkaSchemaRegistry>,
@@ -7983,7 +7983,7 @@ pub struct ClickPipePatchKafkaSource {
     pub credentials: serde_json::Value,
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
     pub iam_role: Option<String>,
-    #[serde(rename = "reversePrivateEndpointIds", default)]
+    #[serde(rename = "reversePrivateEndpointIds", default, deserialize_with = "crate::serde_helpers::null_to_empty")]
     pub reverse_private_endpoint_ids: Vec<String>,
 }
 
@@ -8214,7 +8214,7 @@ pub struct ClickPipePostKafkaSource {
     pub iam_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub offset: Option<ClickPipeKafkaOffset>,
-    #[serde(rename = "reversePrivateEndpointIds", default)]
+    #[serde(rename = "reversePrivateEndpointIds", default, deserialize_with = "crate::serde_helpers::null_to_empty")]
     pub reverse_private_endpoint_ids: Vec<String>,
     #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none", default)]
     pub schema_registry: Option<ClickPipeMutateKafkaSchemaRegistry>,
