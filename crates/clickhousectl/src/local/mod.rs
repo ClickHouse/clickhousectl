@@ -4,6 +4,7 @@ pub mod docker;
 pub mod output;
 pub mod postgres;
 pub mod server;
+pub mod symlink;
 
 use cli::{LocalCommands, ServerCommands};
 
@@ -22,7 +23,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
                 list_installed(json)
             }
         }
-        LocalCommands::Use { version } => use_version(&version, json).await,
+        LocalCommands::Use { version, no_global } => use_version(&version, no_global, json).await,
         LocalCommands::Remove { version } => remove(&version, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
@@ -156,7 +157,7 @@ async fn list_available(json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn use_version(version_spec: &str, json: bool) -> Result<()> {
+async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<()> {
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
@@ -178,6 +179,13 @@ async fn use_version(version_spec: &str, json: bool) -> Result<()> {
     };
 
     version_manager::set_default_version(&version)?;
+
+    if !no_global {
+        // Best-effort: any failures are warned to stderr inside the helper
+        // and never affect the command's exit status.
+        let _ = symlink::ensure_global_symlink(&version);
+    }
+
     let out = output::UseOutput { version };
     output::print_output(&out, json);
     Ok(())
@@ -196,6 +204,8 @@ fn remove(version: &str, json: bool) -> Result<()> {
     {
         let default_file = paths::default_file()?;
         let _ = std::fs::remove_file(default_file);
+        // Only removes the symlink if it still points into this version's dir.
+        let _ = symlink::remove_global_symlink_for(version);
     }
 
     std::fs::remove_dir_all(&version_dir)?;
