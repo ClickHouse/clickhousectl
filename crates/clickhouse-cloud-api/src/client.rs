@@ -2410,6 +2410,77 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Get service upgrade window
+    pub async fn upgrade_window_get(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<UpgradeWindow>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Set service upgrade window
+    pub async fn upgrade_window_update(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &UpgradeWindowPutRequest,
+    ) -> Result<ApiResponse<UpgradeWindow>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
+        let mut req = self.request(reqwest::Method::PUT, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Delete service upgrade window
+    pub async fn upgrade_window_delete(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
+        let req = self.request(reqwest::Method::DELETE, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get the service query endpoint for a given instance
     pub async fn instance_query_endpoint_get(
         &self,

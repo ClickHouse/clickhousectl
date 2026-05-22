@@ -712,10 +712,8 @@ def build_issue_body(
         "   - Use `#[serde(skip_serializing_if = \"Option::is_none\")]` for optional fields",
         "   - Enums should derive `Default` and include an `#[serde(other)]` `Unknown` variant",
         "3. Add missing methods to `crates/clickhouse-cloud-api/src/client.rs`",
-        "4. Fix field optionality:",
-        "   ```bash",
-        "   python scripts/update-models-optionality.py",
-        "   ```",
+        "4. Fix any field optionality mismatches by hand-editing `models.rs`",
+        "   (flip `T` ↔ `Option<T>` and the matching `skip_serializing_if` attribute).",
         "5. Verify: `cargo test -p clickhouse-cloud-api`",
         "",
     ]

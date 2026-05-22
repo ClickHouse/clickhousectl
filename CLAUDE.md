@@ -65,28 +65,17 @@ The OpenAPI spec uses two different conventions for required vs optional fields:
 
 In `models.rs`, required non-nullable fields use bare types (`T`), optional/nullable fields use `Option<T>`. All fields keep `#[serde(default)]` for robust deserialization.
 
-**Scripts:**
+**Tooling:**
 
 - `scripts/resolve-field-requirements.py` — resolves required/optional for every schema field, outputs a JSON manifest. Handles both conventions + PATCH + nullable.
-- `scripts/update-models-optionality.py` — reads the spec and rewrites `models.rs` field types to match. Only converts `Option<T>` → `T`; does not convert in the reverse direction.
+- `scripts/check-openapi-drift.py` — daily CI drift check; reports missing/extra methods, missing schemas/fields, and field-level optionality mismatches against the live spec.
+- `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the snapshot.
 
-**Validation:**
-
-- `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the spec.
-- `scripts/check-openapi-drift.py` — daily CI drift check now also reports field-level optionality mismatches.
+Field optionality is maintained by hand. When the drift check or test flags a mismatch, edit `models.rs` directly to flip the field (`T` ↔ `Option<T>`) and adjust the `#[serde(skip_serializing_if = "Option::is_none")]` attribute to match.
 
 **Optionality exemptions:**
 
-Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are overridden to `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
-
-**When the spec adds proper `required` arrays to all schemas:**
-
-1. Download the updated spec: `curl -s https://api.clickhouse.cloud/v1 -o crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`
-2. Re-run: `python3 scripts/update-models-optionality.py`
-3. Fix any test assertions for fields that changed optionality.
-4. Verify: `cargo test -p clickhouse-cloud-api`
-
-The resolution logic automatically prefers `required` arrays over description parsing, so the description heuristic becomes dead code — no structural changes needed.
+Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
 
 ## Adding commands
 

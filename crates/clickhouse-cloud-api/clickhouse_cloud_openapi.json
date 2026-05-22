@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-799307",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-837009",
       "email": "support@clickhouse.com"
     }
   },
@@ -3024,6 +3024,341 @@
             "name": "Beta",
             "position": "after"
           }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow": {
+      "get": {
+        "summary": "Get service upgrade window",
+        "description": "Returns the configured upgrade window for a service.\n\nErrors:\n- 401: missing, invalid, or disabled API key.\n- 403: caller lacks `control-plane:service:view` on the service.\n- 404: service does not exist, is not visible to the caller, or no upgrade window has been configured.",
+        "operationId": "upgradeWindowGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/UpgradeWindow"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ]
+      },
+      "put": {
+        "summary": "Set service upgrade window",
+        "description": "Creates or fully replaces the upgrade window for a service. The upgrade window currently lasts 6 hours from `startHourUtc`. The upgrade window can only be set on primary services; secondary services inherit the primary service window.\n\nErrors:\n- 400: invalid field values (`weekday` not in 0–6, `startHourUtc` not in {0, 6, 12, 18}), or the service is a secondary service.\n- 401: missing, invalid, or disabled API key.\n- 403: caller lacks `control-plane:service:manage` on the service, or the organization does not have the scheduled upgrades feature enabled.\n- 404: service does not exist or is not visible to the caller.",
+        "operationId": "upgradeWindowUpdate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpgradeWindowPutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/UpgradeWindow"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ]
+      },
+      "delete": {
+        "summary": "Delete service upgrade window",
+        "description": "Deletes the upgrade window for a service, restoring the default scheduling behaviour. The upgrade window can only be deleted on primary services. Deletion succeeds even if the organization has lost the scheduled upgrades entitlement, so a window can be cleared after entitlement loss.\n\nErrors:\n- 400: the service is a secondary service.\n- 401: missing, invalid, or disabled API key.\n- 403: caller lacks `control-plane:service:manage` on the service.\n- 404: service does not exist, is not visible to the caller, or no upgrade window is configured.",
+        "operationId": "upgradeWindowDelete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
         ]
       }
     },
@@ -7942,7 +8277,7 @@
       },
       "put": {
         "summary": "ClickStack: Update Dashboard",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Updates an existing dashboard",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> ClickStack: Updates an existing dashboard.  **Concurrency:** This endpoint does not support optimistic concurrency control. Concurrent PUT requests for the same dashboard may silently overwrite each other, which can leave orphan tile-to-container references on layout-shape edits. Clients should serialize edits to a given dashboard.",
         "operationId": "clickStackUpdateDashboard",
         "parameters": [
           {
@@ -13976,6 +14311,228 @@
           "readPreference"
         ]
       },
+      "ClickPipePubSubSource": {
+        "properties": {
+          "format": {
+            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in limited preview — contact support to enable this feature for your organization.",
+            "type": "string",
+            "enum": [
+              "JSONEachRow",
+              "Avro",
+              "Protobuf"
+            ],
+            "example": "JSONEachRow"
+          },
+          "projectId": {
+            "description": "GCP project ID that owns the Pub/Sub topic.",
+            "type": "string",
+            "example": "my-gcp-project"
+          },
+          "topic": {
+            "description": "Pub/Sub topic name (not the fully-qualified path).",
+            "type": "string",
+            "example": "my-topic"
+          },
+          "authentication": {
+            "description": "Authentication method to use with GCP Pub/Sub. Currently only SERVICE_ACCOUNT is supported.",
+            "type": "string",
+            "enum": [
+              "SERVICE_ACCOUNT"
+            ],
+            "example": "SERVICE_ACCOUNT"
+          },
+          "seekType": {
+            "description": "Starting position strategy for consuming the subscription. Companion fields (seekTimestamp, seekSnapshot) are required only when matching the seek type; setting a companion for a mismatched seek type is rejected.",
+            "type": "string",
+            "enum": [
+              "latest",
+              "earliest",
+              "timestamp",
+              "snapshot"
+            ],
+            "example": "earliest"
+          },
+          "seekTimestamp": {
+            "description": "RFC 3339 / ISO 8601 timestamp to seek to. Required when seekType is \"timestamp\"; must be omitted otherwise.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "example": "2026-04-10T12:00:00Z"
+          },
+          "seekSnapshot": {
+            "description": "Pub/Sub snapshot identifier to seek to. Required when seekType is \"snapshot\"; must be omitted otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "description": "Optional Pub/Sub subscription filter expression (CEL). Maximum 256 characters.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 256
+          },
+          "enableOrdering": {
+            "description": "Whether to enable ordered delivery of messages (requires messages to be published with ordering keys).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ackDeadline": {
+            "description": "Acknowledgement deadline for messages, in seconds. Must be between 10 and 600.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 10,
+            "maximum": 600
+          }
+        },
+        "required": [
+          "format",
+          "projectId",
+          "topic",
+          "authentication",
+          "seekType"
+        ]
+      },
+      "ClickPipePostPubSubSource": {
+        "properties": {
+          "format": {
+            "description": "Format of messages in the Pub/Sub topic. GCP Pub/Sub ClickPipes are in limited preview — contact support to enable this feature for your organization.",
+            "type": "string",
+            "enum": [
+              "JSONEachRow",
+              "Avro",
+              "Protobuf"
+            ],
+            "example": "JSONEachRow"
+          },
+          "projectId": {
+            "description": "GCP project ID that owns the Pub/Sub topic.",
+            "type": "string",
+            "example": "my-gcp-project"
+          },
+          "topic": {
+            "description": "Pub/Sub topic name (not the fully-qualified path).",
+            "type": "string",
+            "example": "my-topic"
+          },
+          "authentication": {
+            "description": "Authentication method to use with GCP Pub/Sub. Currently only SERVICE_ACCOUNT is supported.",
+            "type": "string",
+            "enum": [
+              "SERVICE_ACCOUNT"
+            ],
+            "example": "SERVICE_ACCOUNT"
+          },
+          "seekType": {
+            "description": "Starting position strategy for consuming the subscription. Companion fields (seekTimestamp, seekSnapshot) are required only when matching the seek type; setting a companion for a mismatched seek type is rejected.",
+            "type": "string",
+            "enum": [
+              "latest",
+              "earliest",
+              "timestamp",
+              "snapshot"
+            ],
+            "example": "earliest"
+          },
+          "seekTimestamp": {
+            "description": "RFC 3339 / ISO 8601 timestamp to seek to. Required when seekType is \"timestamp\"; must be omitted otherwise.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "example": "2026-04-10T12:00:00Z"
+          },
+          "seekSnapshot": {
+            "description": "Pub/Sub snapshot identifier to seek to. Required when seekType is \"snapshot\"; must be omitted otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "filter": {
+            "description": "Optional Pub/Sub subscription filter expression (CEL). Maximum 256 characters.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 256
+          },
+          "enableOrdering": {
+            "description": "Whether to enable ordered delivery of messages (requires messages to be published with ordering keys).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "ackDeadline": {
+            "description": "Acknowledgement deadline for messages, in seconds. Must be between 10 and 600.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 10,
+            "maximum": 600
+          },
+          "serviceAccountKey": {
+            "$ref": "#/components/schemas/ServiceAccount"
+          }
+        },
+        "required": [
+          "format",
+          "projectId",
+          "topic",
+          "authentication",
+          "seekType",
+          "serviceAccountKey"
+        ]
+      },
+      "ClickPipePatchPubSubSource": {
+        "properties": {
+          "authentication": {
+            "description": "Authentication method to use with GCP Pub/Sub. Currently only SERVICE_ACCOUNT is supported.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "SERVICE_ACCOUNT"
+            ],
+            "example": "SERVICE_ACCOUNT"
+          },
+          "ackDeadline": {
+            "description": "Acknowledgement deadline for messages, in seconds. Must be between 10 and 600.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 10,
+            "maximum": 600
+          },
+          "serviceAccountKey": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ServiceAccount"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "authentication",
+          "serviceAccountKey"
+        ]
+      },
       "ClickPipeScaling": {
         "properties": {
           "replicas": {
@@ -14029,6 +14586,16 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ClickPipeKinesisSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pubsub": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickPipePubSubSource"
               },
               {
                 "type": "null"
@@ -14400,6 +14967,16 @@
               }
             ]
           },
+          "pubsub": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickPipePostPubSubSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "postgres": {
             "$ref": "#/components/schemas/ClickPipeMutatePostgresSource"
           },
@@ -14465,6 +15042,16 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ClickPipePatchKinesisSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pubsub": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickPipePatchPubSubSource"
               },
               {
                 "type": "null"
@@ -16932,6 +17519,14 @@
             ],
             "example": "Test Alert Message"
           },
+          "note": {
+            "description": "Freeform note for the alert. Supports markdown formatting.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Threshold raised from 50 to 100 on 2026-01-15. See [runbook](https://wiki.example.com/runbook)."
+          },
           "id": {
             "description": "Unique alert identifier.",
             "type": "string",
@@ -17111,6 +17706,14 @@
               "null"
             ],
             "example": "Test Alert Message"
+          },
+          "note": {
+            "description": "Freeform note for the alert. Supports markdown formatting.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Threshold raised from 50 to 100 on 2026-01-15. See [runbook](https://wiki.example.com/runbook)."
           }
         }
       },
@@ -17235,6 +17838,14 @@
               "null"
             ],
             "example": "Test Alert Message"
+          },
+          "note": {
+            "description": "Freeform note for the alert. Supports markdown formatting.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "Threshold raised from 50 to 100 on 2026-01-15. See [runbook](https://wiki.example.com/runbook)."
           }
         }
       },
@@ -17270,7 +17881,8 @@
               "time",
               "number",
               "data_rate",
-              "throughput"
+              "throughput",
+              "duration"
             ],
             "example": "number"
           },
@@ -17831,6 +18443,9 @@
               "delta"
             ],
             "example": "delta"
+          },
+          "numberFormat": {
+            "$ref": "#/components/schemas/ClickStackNumberFormat"
           }
         },
         "required": [
@@ -17939,6 +18554,173 @@
           "select"
         ]
       },
+      "ClickStackOnClickTargetIdVariant": {
+        "properties": {
+          "mode": {
+            "description": "Target is a single dashboard or log/trace source",
+            "type": "string",
+            "enum": [
+              "id"
+            ],
+            "example": "id"
+          },
+          "id": {
+            "description": "ID of the target source (for search) or dashboard (for dashboard).",
+            "type": "string",
+            "example": "65f5e4a3b9e77c001a567890"
+          }
+        },
+        "required": [
+          "mode",
+          "id"
+        ]
+      },
+      "ClickStackOnClickTargetTemplateVariant": {
+        "properties": {
+          "mode": {
+            "description": "Target is matched by name against the template.",
+            "type": "string",
+            "enum": [
+              "template"
+            ],
+            "example": "template"
+          },
+          "template": {
+            "description": "Name template rendered against the clicked row; supports `{{column}}` variables.",
+            "type": "string",
+            "example": "{{ServiceName}}"
+          }
+        },
+        "required": [
+          "mode",
+          "template"
+        ]
+      },
+      "ClickStackOnClickTarget": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ClickStackOnClickTargetIdVariant"
+          },
+          {
+            "$ref": "#/components/schemas/ClickStackOnClickTargetTemplateVariant"
+          }
+        ]
+      },
+      "ClickStackOnClickFilterTemplate": {
+        "properties": {
+          "kind": {
+            "description": "Filter template kind. Currently only \"expressionTemplate\" is supported.",
+            "type": "string",
+            "enum": [
+              "expressionTemplate"
+            ],
+            "example": "expressionTemplate"
+          },
+          "expression": {
+            "description": "The column/expression to filter the destination by (e.g. \"ServiceName\").",
+            "type": "string",
+            "example": "ServiceName"
+          },
+          "template": {
+            "description": "Value template rendered against the clicked row; supports row column variables in `{{column}}` form (e.g. `{{ServiceName}}`).",
+            "type": "string",
+            "example": "{{ServiceName}}"
+          }
+        },
+        "required": [
+          "kind",
+          "expression",
+          "template"
+        ]
+      },
+      "ClickStackOnClickSearch": {
+        "properties": {
+          "type": {
+            "description": "OnClick variant discriminator. Must be \"search\" for search link-outs.",
+            "type": "string",
+            "enum": [
+              "search"
+            ],
+            "example": "search"
+          },
+          "target": {
+            "$ref": "#/components/schemas/ClickStackOnClickTarget"
+          },
+          "whereTemplate": {
+            "description": "Optional WHERE clause template applied to the destination search.",
+            "type": "string",
+            "example": "ServiceName = '{{ServiceName}}'"
+          },
+          "whereLanguage": {
+            "description": "Language of the rendered whereTemplate.",
+            "type": "string",
+            "enum": [
+              "sql",
+              "lucene"
+            ]
+          },
+          "filters": {
+            "type": "array",
+            "description": "Optional dashboard filter templates rendered against the clicked row.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackOnClickFilterTemplate"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "target"
+        ]
+      },
+      "ClickStackOnClickDashboard": {
+        "properties": {
+          "type": {
+            "description": "OnClick variant discriminator. Must be \"dashboard\" for dashboard link-outs.",
+            "type": "string",
+            "enum": [
+              "dashboard"
+            ],
+            "example": "dashboard"
+          },
+          "target": {
+            "$ref": "#/components/schemas/ClickStackOnClickTarget"
+          },
+          "whereTemplate": {
+            "description": "Optional WHERE clause template applied to the destination dashboard.",
+            "type": "string",
+            "example": "ServiceName = '{{ServiceName}}'"
+          },
+          "whereLanguage": {
+            "description": "Language of the rendered whereTemplate.",
+            "type": "string",
+            "enum": [
+              "sql",
+              "lucene"
+            ]
+          },
+          "filters": {
+            "type": "array",
+            "description": "Optional dashboard filter templates rendered against the clicked row.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackOnClickFilterTemplate"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "target"
+        ]
+      },
+      "ClickStackOnClick": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ClickStackOnClickSearch"
+          },
+          {
+            "$ref": "#/components/schemas/ClickStackOnClickDashboard"
+          }
+        ]
+      },
       "ClickStackTableBuilderChartConfig": {
         "properties": {
           "displayType": {
@@ -17983,6 +18765,14 @@
           },
           "numberFormat": {
             "$ref": "#/components/schemas/ClickStackNumberFormat"
+          },
+          "groupByColumnsOnLeft": {
+            "description": "When true, render Group By columns to the left of series columns in the table. Defaults to false (Group By columns on the right).",
+            "type": "boolean",
+            "example": false
+          },
+          "onClick": {
+            "$ref": "#/components/schemas/ClickStackOnClick"
           }
         },
         "required": [
@@ -18049,6 +18839,77 @@
             "description": "Field expression to group results by (one slice per group value).",
             "type": "string",
             "example": "service"
+          },
+          "numberFormat": {
+            "$ref": "#/components/schemas/ClickStackNumberFormat"
+          }
+        },
+        "required": [
+          "displayType",
+          "sourceId",
+          "select"
+        ]
+      },
+      "ClickStackHeatmapSelectItem": {
+        "properties": {
+          "valueExpression": {
+            "description": "SQL expression for the value being bucketed on the y-axis. Must be non-empty.",
+            "type": "string",
+            "example": "Duration"
+          },
+          "countExpression": {
+            "description": "SQL expression for the count contributing to each bucket. Defaults to \"count()\" in the editor when omitted.",
+            "type": "string",
+            "example": "count()"
+          },
+          "heatmapScaleType": {
+            "description": "Scale type used to bucket values on the y-axis.",
+            "type": "string",
+            "enum": [
+              "log",
+              "linear"
+            ],
+            "example": "log"
+          }
+        },
+        "required": [
+          "valueExpression"
+        ]
+      },
+      "ClickStackHeatmapChartConfig": {
+        "properties": {
+          "displayType": {
+            "description": "Display type discriminator. Must be \"heatmap\" for heatmap tiles.",
+            "type": "string",
+            "enum": [
+              "heatmap"
+            ],
+            "example": "heatmap"
+          },
+          "sourceId": {
+            "description": "ID of the data source to query.",
+            "type": "string",
+            "example": "65f5e4a3b9e77c001a111111"
+          },
+          "select": {
+            "type": "array",
+            "description": "Exactly one heatmap select item.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackHeatmapSelectItem"
+            }
+          },
+          "where": {
+            "description": "Row-level filter (syntax depends on whereLanguage).",
+            "type": "string",
+            "example": "ServiceName = 'api'"
+          },
+          "whereLanguage": {
+            "description": "Query language for the where clause.",
+            "type": "string",
+            "enum": [
+              "sql",
+              "lucene"
+            ]
           },
           "numberFormat": {
             "$ref": "#/components/schemas/ClickStackNumberFormat"
@@ -18264,6 +19125,9 @@
               "table"
             ],
             "example": "table"
+          },
+          "onClick": {
+            "$ref": "#/components/schemas/ClickStackOnClick"
           }
         },
         "required": [
@@ -18429,11 +19293,73 @@
             "$ref": "#/components/schemas/ClickStackPieChartConfig"
           },
           {
+            "$ref": "#/components/schemas/ClickStackHeatmapChartConfig"
+          },
+          {
             "$ref": "#/components/schemas/ClickStackSearchChartConfig"
           },
           {
             "$ref": "#/components/schemas/ClickStackMarkdownChartConfig"
           }
+        ]
+      },
+      "ClickStackDashboardContainerTab": {
+        "properties": {
+          "id": {
+            "description": "Unique identifier for the tab within its container.",
+            "type": "string",
+            "example": "errors"
+          },
+          "title": {
+            "description": "Display title for the tab.",
+            "type": "string",
+            "example": "Errors"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ]
+      },
+      "ClickStackDashboardContainer": {
+        "properties": {
+          "id": {
+            "description": "Unique identifier for the container within the dashboard.",
+            "type": "string",
+            "example": "service-health"
+          },
+          "title": {
+            "description": "Display title for the container.",
+            "type": "string",
+            "example": "Service Health"
+          },
+          "collapsed": {
+            "description": "Persisted default collapse state. Per-viewer state lives in the URL.",
+            "type": "boolean",
+            "example": false
+          },
+          "collapsible": {
+            "description": "Whether the user can collapse the group.",
+            "type": "boolean",
+            "example": true
+          },
+          "bordered": {
+            "description": "Whether to show a visual border around the group.",
+            "type": "boolean",
+            "example": true
+          },
+          "tabs": {
+            "type": "array",
+            "description": "Optional tabs. 2+ entries renders a tab bar; 0-1 entries renders a plain group header. Tiles join a tab via tabId.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackDashboardContainerTab"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "collapsed"
         ]
       },
       "ClickStackTileOutput": {
@@ -18465,6 +19391,16 @@
           },
           "config": {
             "$ref": "#/components/schemas/ClickStackTileConfig"
+          },
+          "containerId": {
+            "description": "References a DashboardContainer by id. Tiles without containerId render in the default ungrouped area.",
+            "type": "string",
+            "example": "service-health"
+          },
+          "tabId": {
+            "description": "References a tab inside the tile's container by id. Requires containerId to be set, and the container to declare a matching tab.",
+            "type": "string",
+            "example": "errors"
           },
           "id": {
             "description": "Unique tile ID assigned by the server.",
@@ -18510,6 +19446,16 @@
           },
           "config": {
             "$ref": "#/components/schemas/ClickStackTileConfig"
+          },
+          "containerId": {
+            "description": "References a DashboardContainer by id. Tiles without containerId render in the default ungrouped area.",
+            "type": "string",
+            "example": "service-health"
+          },
+          "tabId": {
+            "description": "References a tab inside the tile's container by id. Requires containerId to be set, and the container to declare a matching tab.",
+            "type": "string",
+            "example": "errors"
           },
           "id": {
             "description": "Optional tile ID. Omit to generate a new ID.",
@@ -18716,6 +19662,13 @@
             "items": {
               "$ref": "#/components/schemas/ClickStackSavedFilterValue"
             }
+          },
+          "containers": {
+            "type": "array",
+            "description": "Optional grouping containers. Each tile may join a container via tile.containerId, and a tab inside it via tile.tabId.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackDashboardContainer"
+            }
           }
         },
         "required": [
@@ -18776,6 +19729,13 @@
             "description": "Optional default dashboard filter values to persist on the dashboard.",
             "items": {
               "$ref": "#/components/schemas/ClickStackSavedFilterValue"
+            }
+          },
+          "containers": {
+            "type": "array",
+            "description": "Optional grouping containers. Each tile may join a container via tile.containerId, and a tab inside it via tile.tabId.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackDashboardContainer"
             }
           }
         },
@@ -18842,6 +19802,13 @@
             "description": "Optional default dashboard filter values restored when loading the dashboard.",
             "items": {
               "$ref": "#/components/schemas/ClickStackSavedFilterValue"
+            }
+          },
+          "containers": {
+            "type": "array",
+            "description": "Optional grouping containers. Each tile may join a container via tile.containerId, and a tab inside it via tile.tabId.",
+            "items": {
+              "$ref": "#/components/schemas/ClickStackDashboardContainer"
             }
           }
         }
@@ -19099,6 +20066,25 @@
           "aggregatedColumns"
         ]
       },
+      "ClickStackLogSourceMetadataMaterializedViews": {
+        "properties": {
+          "keyRollupTable": {
+            "description": "ClickHouse table name for the key rollup (field discovery).",
+            "type": "string",
+            "example": "otel_logs_key_rollup_15m"
+          },
+          "kvRollupTable": {
+            "description": "ClickHouse table name for the key-value rollup (value autocomplete).",
+            "type": "string",
+            "example": "otel_logs_kv_rollup_15m"
+          },
+          "granularity": {
+            "description": "The time granularity of the rollup tables.",
+            "type": "string",
+            "example": "15m"
+          }
+        }
+      },
       "ClickStackLogSource": {
         "properties": {
           "id": {
@@ -19262,6 +20248,16 @@
             "items": {
               "$ref": "#/components/schemas/ClickStackMaterializedView"
             }
+          },
+          "metadataMaterializedViews": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickStackLogSourceMetadataMaterializedViews"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -19273,6 +20269,25 @@
           "defaultTableSelectExpression",
           "timestampValueExpression"
         ]
+      },
+      "ClickStackTraceSourceMetadataMaterializedViews": {
+        "properties": {
+          "keyRollupTable": {
+            "description": "ClickHouse table name for the key rollup (field discovery).",
+            "type": "string",
+            "example": "otel_traces_key_rollup_15m"
+          },
+          "kvRollupTable": {
+            "description": "ClickHouse table name for the key-value rollup (value autocomplete).",
+            "type": "string",
+            "example": "otel_traces_kv_rollup_15m"
+          },
+          "granularity": {
+            "description": "The time granularity of the rollup tables.",
+            "type": "string",
+            "example": "15m"
+          }
+        }
       },
       "ClickStackTraceSource": {
         "properties": {
@@ -19466,6 +20481,16 @@
             "items": {
               "$ref": "#/components/schemas/ClickStackMaterializedView"
             }
+          },
+          "metadataMaterializedViews": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickStackTraceSourceMetadataMaterializedViews"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -22344,6 +23369,67 @@
         "required": [
           "pgConfig",
           "pgBouncerConfig"
+        ]
+      },
+      "UpgradeWindow": {
+        "properties": {
+          "weekday": {
+            "description": "Day of the week the upgrade window starts. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6,
+            "example": 3
+          },
+          "startHourUtc": {
+            "description": "UTC hour when the upgrade window starts. Must be one of 0, 6, 12, or 18.",
+            "type": "integer",
+            "enum": [
+              0,
+              6,
+              12,
+              18
+            ],
+            "example": 12
+          },
+          "duration": {
+            "description": "Length of the upgrade window in hours. Currently only a 6-hour window is supported.",
+            "type": "integer",
+            "enum": [
+              6
+            ],
+            "example": 6
+          }
+        },
+        "required": [
+          "weekday",
+          "startHourUtc",
+          "duration"
+        ]
+      },
+      "UpgradeWindowPutRequest": {
+        "properties": {
+          "weekday": {
+            "description": "Day of the week the upgrade window starts. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 6,
+            "example": 3
+          },
+          "startHourUtc": {
+            "description": "UTC hour when the upgrade window starts. Must be one of 0, 6, 12, or 18. The upgrade window currently lasts 6 hours from this start time.",
+            "type": "integer",
+            "enum": [
+              0,
+              6,
+              12,
+              18
+            ],
+            "example": 12
+          }
+        },
+        "required": [
+          "weekday",
+          "startHourUtc"
         ]
       },
       "OrganizationPatchRequest": {

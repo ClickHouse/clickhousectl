@@ -2372,6 +2372,26 @@ impl std::fmt::Display for ClickPipePatchPostgresPipeRemoveTableMappingTableengi
     }
 }
 
+/// Inline enum for `ClickPipePatchPubSubSource.authentication`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePatchPubSubSourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT")]
+    #[default]
+    ServiceAccount,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePatchPubSubSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickPipePostKafkaSource.authentication`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickPipePostKafkaSourceAuthentication {
@@ -2672,6 +2692,78 @@ impl std::fmt::Display for ClickPipePostObjectStorageSourceType {
     }
 }
 
+/// Inline enum for `ClickPipePostPubSubSource.authentication`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostPubSubSourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT")]
+    #[default]
+    ServiceAccount,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostPubSubSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickPipePostPubSubSource.format`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostPubSubSourceFormat {
+    #[default]
+    JSONEachRow,
+    Avro,
+    Protobuf,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostPubSubSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::Avro => write!(f, "Avro"),
+            Self::Protobuf => write!(f, "Protobuf"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickPipePostPubSubSource.seekType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostPubSubSourceSeektype {
+    #[serde(rename = "latest")]
+    #[default]
+    Latest,
+    #[serde(rename = "earliest")]
+    Earliest,
+    #[serde(rename = "timestamp")]
+    Timestamp,
+    #[serde(rename = "snapshot")]
+    Snapshot,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostPubSubSourceSeektype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Latest => write!(f, "latest"),
+            Self::Earliest => write!(f, "earliest"),
+            Self::Timestamp => write!(f, "timestamp"),
+            Self::Snapshot => write!(f, "snapshot"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickPipePostgresPipeSettings.replicationMode`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickPipePostgresPipeSettingsReplicationmode {
@@ -2788,6 +2880,78 @@ impl std::fmt::Display for ClickPipePostgresSourceType {
             Self::Azurepostgres => write!(f, "azurepostgres"),
             Self::Crunchybridge => write!(f, "crunchybridge"),
             Self::Tigerdata => write!(f, "tigerdata"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickPipePubSubSource.authentication`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePubSubSourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT")]
+    #[default]
+    ServiceAccount,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePubSubSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickPipePubSubSource.format`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePubSubSourceFormat {
+    #[default]
+    JSONEachRow,
+    Avro,
+    Protobuf,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePubSubSourceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JSONEachRow => write!(f, "JSONEachRow"),
+            Self::Avro => write!(f, "Avro"),
+            Self::Protobuf => write!(f, "Protobuf"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickPipePubSubSource.seekType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePubSubSourceSeektype {
+    #[serde(rename = "latest")]
+    #[default]
+    Latest,
+    #[serde(rename = "earliest")]
+    Earliest,
+    #[serde(rename = "timestamp")]
+    Timestamp,
+    #[serde(rename = "snapshot")]
+    Snapshot,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePubSubSourceSeektype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Latest => write!(f, "latest"),
+            Self::Earliest => write!(f, "earliest"),
+            Self::Timestamp => write!(f, "timestamp"),
+            Self::Snapshot => write!(f, "snapshot"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3387,6 +3551,72 @@ impl std::fmt::Display for ClickStackGenericWebhookService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Generic => write!(f, "generic"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapChartConfigDisplaytype {
+    #[serde(rename = "heatmap")]
+    #[default]
+    Heatmap,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Heatmap => write!(f, "heatmap"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapChartConfig.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapChartConfigWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapChartConfigWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackHeatmapSelectItem.heatmapScaleType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackHeatmapSelectItemHeatmapscaletype {
+    #[serde(rename = "log")]
+    #[default]
+    Log,
+    #[serde(rename = "linear")]
+    Linear,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackHeatmapSelectItemHeatmapscaletype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Log => write!(f, "log"),
+            Self::Linear => write!(f, "linear"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3993,6 +4223,152 @@ impl std::fmt::Display for ClickStackNumberRawSqlChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Number => write!(f, "number"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickDashboard.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickDashboardType {
+    #[serde(rename = "dashboard")]
+    #[default]
+    Dashboard,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickDashboardType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dashboard => write!(f, "dashboard"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickDashboard.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickDashboardWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickDashboardWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickFilterTemplate.kind`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickFilterTemplateKind {
+    #[serde(rename = "expressionTemplate")]
+    #[default]
+    ExpressionTemplate,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickFilterTemplateKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExpressionTemplate => write!(f, "expressionTemplate"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickSearch.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickSearchType {
+    #[serde(rename = "search")]
+    #[default]
+    Search,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickSearchType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Search => write!(f, "search"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickSearch.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickSearchWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickSearchWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickTargetIdVariant.mode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickTargetIdVariantMode {
+    #[serde(rename = "id")]
+    #[default]
+    Id,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickTargetIdVariantMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id => write!(f, "id"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickTargetTemplateVariant.mode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickTargetTemplateVariantMode {
+    #[serde(rename = "template")]
+    #[default]
+    Template,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickTargetTemplateVariantMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Template => write!(f, "template"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -6995,6 +7371,58 @@ impl std::fmt::Display for ClickStackNumberChartConfig {
     }
 }
 
+/// `ClickStackOnClick` - one of multiple variants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClickStackOnClick {
+    ClickStackOnClickSearch(ClickStackOnClickSearch),
+    ClickStackOnClickDashboard(ClickStackOnClickDashboard),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl Default for ClickStackOnClick {
+    fn default() -> Self {
+        Self::Unknown(String::new())
+    }
+}
+
+impl std::fmt::Display for ClickStackOnClick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackOnClickSearch(_) => write!(f, "ClickStackOnClickSearch"),
+            Self::ClickStackOnClickDashboard(_) => write!(f, "ClickStackOnClickDashboard"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackOnClickTarget` - one of multiple variants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClickStackOnClickTarget {
+    ClickStackOnClickTargetIdVariant(ClickStackOnClickTargetIdVariant),
+    ClickStackOnClickTargetTemplateVariant(ClickStackOnClickTargetTemplateVariant),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl Default for ClickStackOnClickTarget {
+    fn default() -> Self {
+        Self::Unknown(String::new())
+    }
+}
+
+impl std::fmt::Display for ClickStackOnClickTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackOnClickTargetIdVariant(_) => write!(f, "ClickStackOnClickTargetIdVariant"),
+            Self::ClickStackOnClickTargetTemplateVariant(_) => write!(f, "ClickStackOnClickTargetTemplateVariant"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackPieChartConfig` - one of multiple variants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -7068,6 +7496,7 @@ pub enum ClickStackTileConfig {
     ClickStackTableChartConfig(ClickStackTableChartConfig),
     ClickStackNumberChartConfig(ClickStackNumberChartConfig),
     ClickStackPieChartConfig(ClickStackPieChartConfig),
+    ClickStackHeatmapChartConfig(ClickStackHeatmapChartConfig),
     ClickStackSearchChartConfig(ClickStackSearchChartConfig),
     ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfig),
     /// Catch-all for unknown or newly-added values.
@@ -7082,6 +7511,7 @@ impl std::fmt::Display for ClickStackTileConfig {
             Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
             Self::ClickStackNumberChartConfig(_) => write!(f, "ClickStackNumberChartConfig"),
             Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
+            Self::ClickStackHeatmapChartConfig(_) => write!(f, "ClickStackHeatmapChartConfig"),
             Self::ClickStackSearchChartConfig(_) => write!(f, "ClickStackSearchChartConfig"),
             Self::ClickStackMarkdownChartConfig(_) => write!(f, "ClickStackMarkdownChartConfig"),
             Self::Unknown(s) => write!(f, "{s}"),
@@ -8161,6 +8591,16 @@ pub struct ClickPipePatchPostgresSource {
     pub tls_host: Option<String>,
 }
 
+/// `ClickPipePatchPubSubSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePatchPubSubSource {
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none", default)]
+    pub ack_deadline: Option<i64>,
+    pub authentication: Option<ClickPipePatchPubSubSourceAuthentication>,
+    #[serde(rename = "serviceAccountKey")]
+    pub service_account_key: Option<ServiceAccount>,
+}
+
 /// `ClickPipePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchRequest {
@@ -8191,6 +8631,8 @@ pub struct ClickPipePatchSource {
     pub object_storage: Option<ClickPipePatchObjectStorageSource>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub postgres: Option<ClickPipePatchPostgresSource>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pubsub: Option<ClickPipePatchPubSubSource>,
     #[serde(rename = "validateSamples", default)]
     pub validate_samples: bool,
 }
@@ -8280,6 +8722,30 @@ pub struct ClickPipePostObjectStorageSource {
     pub url: String,
 }
 
+/// `ClickPipePostPubSubSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostPubSubSource {
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none", default)]
+    pub ack_deadline: Option<i64>,
+    pub authentication: ClickPipePostPubSubSourceAuthentication,
+    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none", default)]
+    pub enable_ordering: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filter: Option<String>,
+    pub format: ClickPipePostPubSubSourceFormat,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "seekSnapshot", skip_serializing_if = "Option::is_none", default)]
+    pub seek_snapshot: Option<String>,
+    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none", default)]
+    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "seekType")]
+    pub seek_type: ClickPipePostPubSubSourceSeektype,
+    #[serde(rename = "serviceAccountKey")]
+    pub service_account_key: ServiceAccount,
+    pub topic: String,
+}
+
 /// `ClickPipePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostRequest {
@@ -8320,6 +8786,8 @@ pub struct ClickPipePostSource {
     pub object_storage: Option<ClickPipePostObjectStorageSource>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub postgres: Option<ClickPipeMutatePostgresSource>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pubsub: Option<ClickPipePostPubSubSource>,
     #[serde(rename = "validateSamples", default)]
     pub validate_samples: bool,
 }
@@ -8395,6 +8863,28 @@ pub struct ClickPipePostgresSource {
     pub tls_host: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub r#type: Option<ClickPipePostgresSourceType>,
+}
+
+/// `ClickPipePubSubSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePubSubSource {
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none", default)]
+    pub ack_deadline: Option<i64>,
+    pub authentication: ClickPipePubSubSourceAuthentication,
+    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none", default)]
+    pub enable_ordering: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filter: Option<String>,
+    pub format: ClickPipePubSubSourceFormat,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "seekSnapshot", skip_serializing_if = "Option::is_none", default)]
+    pub seek_snapshot: Option<String>,
+    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none", default)]
+    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "seekType")]
+    pub seek_type: ClickPipePubSubSourceSeektype,
+    pub topic: String,
 }
 
 /// `ClickPipeScaling` from the ClickHouse Cloud API.
@@ -8498,6 +8988,8 @@ pub struct ClickPipeSource {
     pub object_storage: Option<ClickPipeObjectStorageSource>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub postgres: Option<ClickPipePostgresSource>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub pubsub: Option<ClickPipePubSubSource>,
 }
 
 /// `ClickPipeStatePatchRequest` from the ClickHouse Cloud API.
@@ -8590,6 +9082,8 @@ pub struct ClickStackAlertResponse {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub note: Option<String>,
     #[serde(rename = "savedSearchId", skip_serializing_if = "Option::is_none", default)]
     pub saved_search_id: Option<String>,
     #[serde(rename = "scheduleOffsetMinutes", skip_serializing_if = "Option::is_none", default)]
@@ -8683,6 +9177,8 @@ pub struct ClickStackCreateAlertRequest {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub note: Option<String>,
     #[serde(rename = "savedSearchId", skip_serializing_if = "Option::is_none", default)]
     pub saved_search_id: Option<String>,
     #[serde(rename = "scheduleOffsetMinutes", skip_serializing_if = "Option::is_none", default)]
@@ -8705,6 +9201,8 @@ pub struct ClickStackCreateAlertRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub containers: Option<Vec<ClickStackDashboardContainer>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub filters: Option<Vec<ClickStackFilterInput>>,
     pub name: String,
     #[serde(rename = "savedFilterValues", skip_serializing_if = "Option::is_none", default)]
@@ -8718,9 +9216,32 @@ pub struct ClickStackCreateDashboardRequest {
     pub tiles: Vec<ClickStackTileInput>,
 }
 
+/// `ClickStackDashboardContainer` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackDashboardContainer {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bordered: Option<bool>,
+    pub collapsed: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub collapsible: Option<bool>,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tabs: Option<Vec<ClickStackDashboardContainerTab>>,
+    pub title: String,
+}
+
+/// `ClickStackDashboardContainerTab` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackDashboardContainerTab {
+    pub id: String,
+    pub title: String,
+}
+
 /// `ClickStackDashboardResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackDashboardResponse {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub containers: Option<Vec<ClickStackDashboardContainer>>,
     #[serde(default)]
     pub filters: Vec<ClickStackFilter>,
     #[serde(default)]
@@ -8795,6 +9316,33 @@ pub struct ClickStackGenericWebhook {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub url: Option<String>,
+}
+
+/// `ClickStackHeatmapChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackHeatmapChartConfigDisplaytype,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none", default)]
+    pub number_format: Option<ClickStackNumberFormat>,
+    pub select: Vec<ClickStackHeatmapSelectItem>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none", default)]
+    pub where_language: Option<ClickStackHeatmapChartConfigWherelanguage>,
+}
+
+/// `ClickStackHeatmapSelectItem` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapSelectItem {
+    #[serde(rename = "countExpression", skip_serializing_if = "Option::is_none", default)]
+    pub count_expression: Option<String>,
+    #[serde(rename = "heatmapScaleType", skip_serializing_if = "Option::is_none", default)]
+    pub heatmap_scale_type: Option<ClickStackHeatmapSelectItemHeatmapscaletype>,
+    #[serde(rename = "valueExpression")]
+    pub value_expression: String,
 }
 
 /// `ClickStackHighlightedAttributeExpression` from the ClickHouse Cloud API.
@@ -8894,6 +9442,8 @@ pub struct ClickStackLogSource {
     pub kind: ClickStackLogSourceKind,
     #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none", default)]
     pub materialized_views: Option<Vec<ClickStackMaterializedView>>,
+    #[serde(rename = "metadataMaterializedViews", skip_serializing_if = "Option::is_none", default)]
+    pub metadata_materialized_views: Option<ClickStackLogSourceMetadataMaterializedViews>,
     #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none", default)]
     pub metric_source_id: Option<String>,
     pub name: String,
@@ -8913,6 +9463,17 @@ pub struct ClickStackLogSource {
     pub trace_id_expression: Option<String>,
     #[serde(rename = "traceSourceId", skip_serializing_if = "Option::is_none", default)]
     pub trace_source_id: Option<String>,
+}
+
+/// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackLogSourceMetadataMaterializedViews {
+    #[serde(default)]
+    pub granularity: String,
+    #[serde(rename = "keyRollupTable", default)]
+    pub key_rollup_table: String,
+    #[serde(rename = "kvRollupTable", default)]
+    pub kv_rollup_table: String,
 }
 
 /// `ClickStackMarkdownChartConfig` from the ClickHouse Cloud API.
@@ -9071,6 +9632,54 @@ pub struct ClickStackNumberRawSqlChartConfig {
     pub sql_template: String,
 }
 
+/// `ClickStackOnClickDashboard` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickDashboard {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filters: Option<Vec<ClickStackOnClickFilterTemplate>>,
+    pub target: ClickStackOnClickTarget,
+    pub r#type: ClickStackOnClickDashboardType,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none", default)]
+    pub where_language: Option<ClickStackOnClickDashboardWherelanguage>,
+    #[serde(rename = "whereTemplate", skip_serializing_if = "Option::is_none", default)]
+    pub where_template: Option<String>,
+}
+
+/// `ClickStackOnClickFilterTemplate` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickFilterTemplate {
+    pub expression: String,
+    pub kind: ClickStackOnClickFilterTemplateKind,
+    pub template: String,
+}
+
+/// `ClickStackOnClickSearch` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickSearch {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filters: Option<Vec<ClickStackOnClickFilterTemplate>>,
+    pub target: ClickStackOnClickTarget,
+    pub r#type: ClickStackOnClickSearchType,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none", default)]
+    pub where_language: Option<ClickStackOnClickSearchWherelanguage>,
+    #[serde(rename = "whereTemplate", skip_serializing_if = "Option::is_none", default)]
+    pub where_template: Option<String>,
+}
+
+/// `ClickStackOnClickTargetIdVariant` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickTargetIdVariant {
+    pub id: String,
+    pub mode: ClickStackOnClickTargetIdVariantMode,
+}
+
+/// `ClickStackOnClickTargetTemplateVariant` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickTargetTemplateVariant {
+    pub mode: ClickStackOnClickTargetTemplateVariantMode,
+    pub template: String,
+}
+
 /// `ClickStackPagerDutyAPIWebhook` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackPagerDutyAPIWebhook {
@@ -9172,6 +9781,8 @@ pub struct ClickStackSelectItem {
     pub metric_name: Option<String>,
     #[serde(rename = "metricType", skip_serializing_if = "Option::is_none", default)]
     pub metric_type: Option<ClickStackSelectItemMetrictype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none", default)]
+    pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "periodAggFn", skip_serializing_if = "Option::is_none", default)]
     pub period_agg_fn: Option<ClickStackSelectItemPeriodaggfn>,
     #[serde(rename = "valueExpression", skip_serializing_if = "Option::is_none", default)]
@@ -9258,10 +9869,14 @@ pub struct ClickStackTableBuilderChartConfig {
     pub display_type: ClickStackTableBuilderChartConfigDisplaytype,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
+    #[serde(rename = "groupByColumnsOnLeft", skip_serializing_if = "Option::is_none", default)]
+    pub group_by_columns_on_left: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub having: Option<String>,
     #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none", default)]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none", default)]
+    pub on_click: Option<ClickStackOnClick>,
     #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
     pub order_by: Option<String>,
     pub select: Vec<ClickStackSelectItem>,
@@ -9309,6 +9924,8 @@ pub struct ClickStackTableRawSqlChartConfig {
     pub display_type: ClickStackTableRawSqlChartConfigDisplaytype,
     #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none", default)]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none", default)]
+    pub on_click: Option<ClickStackOnClick>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
@@ -9322,12 +9939,16 @@ pub struct ClickStackTileInput {
     pub as_ratio: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub config: Option<ClickStackTileConfig>,
+    #[serde(rename = "containerId", skip_serializing_if = "Option::is_none", default)]
+    pub container_id: Option<String>,
     pub h: i64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub id: Option<String>,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub series: Option<Vec<ClickStackDashboardChartSeries>>,
+    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none", default)]
+    pub tab_id: Option<String>,
     pub w: i64,
     pub x: i64,
     pub y: i64,
@@ -9338,9 +9959,13 @@ pub struct ClickStackTileInput {
 pub struct ClickStackTileOutput {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub config: Option<ClickStackTileConfig>,
+    #[serde(rename = "containerId", skip_serializing_if = "Option::is_none", default)]
+    pub container_id: Option<String>,
     pub h: i64,
     pub id: String,
     pub name: String,
+    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none", default)]
+    pub tab_id: Option<String>,
     pub w: i64,
     pub x: i64,
     pub y: i64,
@@ -9402,6 +10027,8 @@ pub struct ClickStackTraceSource {
     pub log_source_id: Option<String>,
     #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none", default)]
     pub materialized_views: Option<Vec<ClickStackMaterializedView>>,
+    #[serde(rename = "metadataMaterializedViews", skip_serializing_if = "Option::is_none", default)]
+    pub metadata_materialized_views: Option<ClickStackTraceSourceMetadataMaterializedViews>,
     #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none", default)]
     pub metric_source_id: Option<String>,
     pub name: String,
@@ -9433,6 +10060,17 @@ pub struct ClickStackTraceSource {
     pub trace_id_expression: String,
 }
 
+/// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackTraceSourceMetadataMaterializedViews {
+    #[serde(default)]
+    pub granularity: String,
+    #[serde(rename = "keyRollupTable", default)]
+    pub key_rollup_table: String,
+    #[serde(rename = "kvRollupTable", default)]
+    pub kv_rollup_table: String,
+}
+
 /// `ClickStackUpdateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateAlertRequest {
@@ -9448,6 +10086,8 @@ pub struct ClickStackUpdateAlertRequest {
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub note: Option<String>,
     #[serde(rename = "savedSearchId", skip_serializing_if = "Option::is_none", default)]
     pub saved_search_id: Option<String>,
     #[serde(rename = "scheduleOffsetMinutes", skip_serializing_if = "Option::is_none", default)]
@@ -9469,6 +10109,8 @@ pub struct ClickStackUpdateAlertRequest {
 /// `ClickStackUpdateDashboardRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateDashboardRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub containers: Option<Vec<ClickStackDashboardContainer>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub filters: Option<Vec<ClickStackFilter>>,
     pub name: String,
@@ -11188,6 +11830,26 @@ pub struct ServiceScalingPatchResponse {
 pub struct ServiceStatePatchRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub command: Option<ServiceStatePatchRequestCommand>,
+}
+
+/// `UpgradeWindow` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UpgradeWindow {
+    #[serde(default)]
+    pub duration: i64,
+    #[serde(rename = "startHourUtc", default)]
+    pub start_hour_utc: i64,
+    #[serde(default)]
+    pub weekday: i64,
+}
+
+/// `UpgradeWindowPutRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UpgradeWindowPutRequest {
+    #[serde(rename = "startHourUtc", default)]
+    pub start_hour_utc: i64,
+    #[serde(default)]
+    pub weekday: i64,
 }
 
 /// `UsageCost` from the ClickHouse Cloud API.
