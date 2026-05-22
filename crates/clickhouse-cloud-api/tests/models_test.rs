@@ -1102,3 +1102,267 @@ fn deserialize_clickpipe_scaling() {
     assert_eq!(s.replicas, 3);
     assert_eq!(s.concurrency, 2);
 }
+
+// ===========================================================================
+// Upgrade window (issue #203 drift)
+// ===========================================================================
+
+#[test]
+fn deserialize_upgrade_window() {
+    let json = r#"{
+        "weekday": 2,
+        "startHourUtc": 6,
+        "duration": 21600
+    }"#;
+    let w: UpgradeWindow = serde_json::from_str(json).unwrap();
+    assert_eq!(w.weekday, 2);
+    assert_eq!(w.start_hour_utc, 6);
+    assert_eq!(w.duration, 21600);
+
+    let round_tripped = serde_json::to_value(&w).unwrap();
+    assert_eq!(round_tripped["startHourUtc"], 6);
+    assert_eq!(round_tripped["weekday"], 2);
+    assert_eq!(round_tripped["duration"], 21600);
+}
+
+#[test]
+fn serialize_upgrade_window_put_request() {
+    let req = UpgradeWindowPutRequest {
+        weekday: 5,
+        start_hour_utc: 18,
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["weekday"], 5);
+    assert_eq!(v["startHourUtc"], 18);
+    assert!(v.get("start_hour_utc").is_none());
+}
+
+// ===========================================================================
+// ClickPipe Pub/Sub source (issue #203 drift)
+// ===========================================================================
+
+#[test]
+fn deserialize_clickpipe_pubsub_source() {
+    let json = r#"{
+        "topic": "projects/p/topics/t",
+        "projectId": "my-project",
+        "authentication": "SERVICE_ACCOUNT",
+        "format": "JSONEachRow",
+        "seekType": "latest",
+        "ackDeadline": 60,
+        "enableOrdering": true,
+        "filter": "attribute.foo = \"bar\""
+    }"#;
+    let src: ClickPipePubSubSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.topic, "projects/p/topics/t");
+    assert_eq!(src.project_id, "my-project");
+    assert_eq!(src.authentication, ClickPipePubSubSourceAuthentication::ServiceAccount);
+    assert_eq!(src.format, ClickPipePubSubSourceFormat::JSONEachRow);
+    assert_eq!(src.seek_type, ClickPipePubSubSourceSeektype::Latest);
+    assert_eq!(src.ack_deadline, Some(60));
+    assert_eq!(src.enable_ordering, Some(true));
+}
+
+#[test]
+fn deserialize_clickpipe_post_pubsub_source_required_fields() {
+    let json = r#"{
+        "topic": "projects/p/topics/t",
+        "projectId": "my-project",
+        "authentication": "SERVICE_ACCOUNT",
+        "format": "JSONEachRow",
+        "seekType": "earliest",
+        "serviceAccountKey": {
+            "serviceAccountFile": "/path/to/key.json"
+        }
+    }"#;
+    let src: ClickPipePostPubSubSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.topic, "projects/p/topics/t");
+    assert_eq!(src.seek_type, ClickPipePostPubSubSourceSeektype::Earliest);
+    assert_eq!(src.service_account_key.service_account_file, "/path/to/key.json");
+}
+
+#[test]
+fn deserialize_clickpipe_source_with_pubsub() {
+    let json = r#"{
+        "pubsub": {
+            "topic": "projects/p/topics/t",
+            "projectId": "p",
+            "authentication": "SERVICE_ACCOUNT",
+            "format": "JSONEachRow",
+            "seekType": "latest"
+        }
+    }"#;
+    let src: ClickPipeSource = serde_json::from_str(json).unwrap();
+    let pubsub = src.pubsub.expect("pubsub field should populate");
+    assert_eq!(pubsub.topic, "projects/p/topics/t");
+    assert_eq!(pubsub.format, ClickPipePubSubSourceFormat::JSONEachRow);
+}
+
+// ===========================================================================
+// ClickStack dashboard containers, heatmap, on-click (issue #203 drift)
+// ===========================================================================
+
+#[test]
+fn deserialize_clickstack_dashboard_with_containers() {
+    let json = r#"{
+        "id": "dash-1",
+        "name": "Overview",
+        "tiles": [
+            {
+                "id": "tile-1",
+                "name": "T1",
+                "x": 0, "y": 0, "w": 4, "h": 4,
+                "containerId": "c-1",
+                "tabId": "t-1"
+            }
+        ],
+        "filters": [],
+        "createdAt": "2024-01-01T00:00:00Z",
+        "updatedAt": "2024-01-02T00:00:00Z",
+        "containers": [
+            {
+                "id": "c-1",
+                "title": "Container A",
+                "collapsed": false,
+                "tabs": [{"id": "t-1", "title": "Tab 1"}]
+            }
+        ]
+    }"#;
+    let dash: ClickStackDashboardResponse = serde_json::from_str(json).unwrap();
+    let containers = dash.containers.expect("containers should populate");
+    assert_eq!(containers.len(), 1);
+    assert_eq!(containers[0].id, "c-1");
+    assert!(!containers[0].collapsed);
+    let tabs = containers[0].tabs.as_ref().expect("tabs populated");
+    assert_eq!(tabs[0].title, "Tab 1");
+    assert_eq!(dash.tiles[0].container_id.as_deref(), Some("c-1"));
+    assert_eq!(dash.tiles[0].tab_id.as_deref(), Some("t-1"));
+}
+
+#[test]
+fn deserialize_clickstack_tile_config_heatmap_variant() {
+    // Untagged-enum dispatch must reach the new ClickStackHeatmapChartConfig
+    // arm. The discriminator is `displayType: "heatmap"` plus the heatmap-
+    // specific `select` shape with `valueExpression`.
+    let json = r#"{
+        "displayType": "heatmap",
+        "sourceId": "src-1",
+        "select": [{"valueExpression": "latency_ms"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
+            assert_eq!(h.source_id, "src-1");
+            assert_eq!(h.display_type, ClickStackHeatmapChartConfigDisplaytype::Heatmap);
+            assert_eq!(h.select.len(), 1);
+            assert_eq!(h.select[0].value_expression, "latency_ms");
+        }
+        other => panic!("expected heatmap variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_search_variant() {
+    // ClickStackOnClick is an untagged enum; the Search variant comes first
+    // so a "search"-typed payload deserializes through it cleanly.
+    let json = r#"{
+        "type": "search",
+        "target": {"mode": "id", "id": "search-1"}
+    }"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickSearch(s) => {
+            assert_eq!(s.r#type, ClickStackOnClickSearchType::Search);
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dashboard_struct() {
+    // We deserialize directly into ClickStackOnClickDashboard rather than the
+    // untagged parent because the parent's first variant catches anything
+    // with the search/dashboard shape (both inline `type` enums have an
+    // Unknown(String) catch-all).
+    let json = r#"{
+        "type": "dashboard",
+        "target": {"mode": "template", "template": "{{x}}"},
+        "whereLanguage": "sql",
+        "whereTemplate": "x = {{y}}"
+    }"#;
+    let dash: ClickStackOnClickDashboard = serde_json::from_str(json).unwrap();
+    assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
+    assert_eq!(dash.where_template.as_deref(), Some("x = {{y}}"));
+    match dash.target {
+        ClickStackOnClickTarget::ClickStackOnClickTargetTemplateVariant(t) => {
+            assert_eq!(t.template, "{{x}}");
+        }
+        other => panic!("expected template target, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_target_id_variant() {
+    let json = r#"{"mode": "id", "id": "abc"}"#;
+    let target: ClickStackOnClickTarget = serde_json::from_str(json).unwrap();
+    match target {
+        ClickStackOnClickTarget::ClickStackOnClickTargetIdVariant(v) => {
+            assert_eq!(v.id, "abc");
+            assert_eq!(v.mode, ClickStackOnClickTargetIdVariantMode::Id);
+        }
+        other => panic!("expected id variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_target_template_variant() {
+    let json = r#"{"mode": "template", "template": "{{q}}"}"#;
+    let target: ClickStackOnClickTarget = serde_json::from_str(json).unwrap();
+    match target {
+        ClickStackOnClickTarget::ClickStackOnClickTargetTemplateVariant(v) => {
+            assert_eq!(v.template, "{{q}}");
+            assert_eq!(v.mode, ClickStackOnClickTargetTemplateVariantMode::Template);
+        }
+        other => panic!("expected template variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "metadataMaterializedViews": {
+            "granularity": "1 hour",
+            "keyRollupTable": "logs_keys_1h",
+            "kvRollupTable": "logs_kv_1h"
+        }
+    }"#;
+    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    let mv = src
+        .metadata_materialized_views
+        .expect("metadataMaterializedViews should populate");
+    assert_eq!(mv.granularity, "1 hour");
+    assert_eq!(mv.key_rollup_table, "logs_keys_1h");
+    assert_eq!(mv.kv_rollup_table, "logs_kv_1h");
+}
+
+#[test]
+fn deserialize_clickstack_alert_with_note() {
+    let json = r#"{
+        "id": "alert-1",
+        "name": "High CPU",
+        "note": "investigate runaway queries"
+    }"#;
+    let alert: ClickStackAlertResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(alert.note.as_deref(), Some("investigate runaway queries"));
+    // Round-trip the optional `note` to confirm it serializes (no rename, but
+    // its skip_serializing_if=None gate must let Some(_) through).
+    let v = serde_json::to_value(&alert).unwrap();
+    assert_eq!(v["note"], "investigate runaway queries");
+}

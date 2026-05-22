@@ -2821,6 +2821,82 @@ async fn scaling_schedule_delete_succeeds() {
 }
 
 // ===========================================================================
+// Service: Upgrade Window
+// ===========================================================================
+
+#[tokio::test]
+async fn upgrade_window_get_returns_window() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/upgradeWindow"))
+        .respond_with(ok_json(serde_json::json!({
+            "weekday": 2,
+            "startHourUtc": 6,
+            "duration": 21600
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .upgrade_window_get("org-1", "svc-1")
+        .await
+        .unwrap();
+    let window = resp.result.unwrap();
+    assert_eq!(window.weekday, 2);
+    assert_eq!(window.start_hour_utc, 6);
+    assert_eq!(window.duration, 21600);
+}
+
+#[tokio::test]
+async fn upgrade_window_update_sends_body() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path("/v1/organizations/org-1/services/svc-1/upgradeWindow"))
+        .and(body_partial_json(serde_json::json!({
+            "weekday": 2,
+            "startHourUtc": 6
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "weekday": 2,
+            "startHourUtc": 6,
+            "duration": 21600
+        })))
+        .mount(&s)
+        .await;
+
+    let body = UpgradeWindowPutRequest {
+        weekday: 2,
+        start_hour_utc: 6,
+    };
+    let resp = c
+        .upgrade_window_update("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let window = resp.result.unwrap();
+    assert_eq!(window.weekday, 2);
+    assert_eq!(window.start_hour_utc, 6);
+}
+
+#[tokio::test]
+async fn upgrade_window_delete_succeeds() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/svc-1/upgradeWindow"))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .upgrade_window_delete("org-1", "svc-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
 // Base URL handling
 // ===========================================================================
 

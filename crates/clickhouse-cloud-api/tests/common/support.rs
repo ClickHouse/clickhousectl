@@ -444,6 +444,7 @@ pub struct CleanupRegistry {
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
     scaling_schedule_restores: Vec<ScalingScheduleRestore>,
+    upgrade_window_restores: Vec<UpgradeWindowRestore>,
     /// Pending member-role restores: `(user_id, original_assigned_role_ids)`
     /// pairs that teardown will PATCH back, even on failure. Registered by
     /// the org suite before mutating a member's role assignments so the
@@ -456,6 +457,11 @@ pub struct CleanupRegistry {
 pub struct ScalingScheduleRestore {
     pub service_id: String,
     pub pre_state: ScalingSchedule,
+}
+
+pub struct UpgradeWindowRestore {
+    pub service_id: String,
+    pub pre_state: UpgradeWindow,
 }
 
 impl CleanupRegistry {
@@ -610,6 +616,29 @@ impl CleanupRegistry {
             .retain(|registered| registered.service_id != service_id);
     }
 
+    /// Register an upgrade window pre-state for restore during cleanup.
+    ///
+    /// Cleanup runs the restore via `upgrade_window_update` before service
+    /// deletion. If the service was already deleted in-test, the restore
+    /// tolerates a 404; on the happy path the caller should call
+    /// [`unregister_upgrade_window_restore`] before deleting the service to
+    /// keep the registry tidy.
+    pub fn register_upgrade_window_restore(
+        &mut self,
+        service_id: impl Into<String>,
+        pre_state: UpgradeWindow,
+    ) {
+        self.upgrade_window_restores.push(UpgradeWindowRestore {
+            service_id: service_id.into(),
+            pre_state,
+        });
+    }
+
+    pub fn unregister_upgrade_window_restore(&mut self, service_id: &str) {
+        self.upgrade_window_restores
+            .retain(|registered| registered.service_id != service_id);
+    }
+
     /// Record the original assigned role ids of an org member so teardown
     /// can restore them even if the test body panics. Call this immediately
     /// after capturing the current assignments, before issuing any
@@ -701,6 +730,18 @@ impl CleanupRegistry {
             if let Err(error) = restore_scaling_schedule(client, org_id, &restore).await {
                 failures.push(format!(
                     "scaling schedule restore {service_id}: {error}",
+                    service_id = restore.service_id
+                ));
+            }
+        }
+
+        // Restore upgrade windows before service deletion so the restore
+        // PUT can still find the service. If the service is already gone
+        // (in-test delete succeeded), 404 is tolerated.
+        while let Some(restore) = self.upgrade_window_restores.pop() {
+            if let Err(error) = restore_upgrade_window(client, org_id, &restore).await {
+                failures.push(format!(
+                    "upgrade window restore {service_id}: {error}",
                     service_id = restore.service_id
                 ));
             }
@@ -830,6 +871,27 @@ async fn restore_scaling_schedule(
     };
     match client
         .scaling_schedule_upsert(org_id, &restore.service_id, &body)
+        .await
+    {
+        Ok(_) => Ok(()),
+        // Service deleted before cleanup ran — nothing to restore against.
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn restore_upgrade_window(
+    client: &Client,
+    org_id: &str,
+    restore: &UpgradeWindowRestore,
+) -> TestResult<()> {
+    eprintln!("  cleanup: restoring upgrade window pre-state");
+    let body = UpgradeWindowPutRequest {
+        start_hour_utc: restore.pre_state.start_hour_utc,
+        weekday: restore.pre_state.weekday,
+    };
+    match client
+        .upgrade_window_update(org_id, &restore.service_id, &body)
         .await
     {
         Ok(_) => Ok(()),

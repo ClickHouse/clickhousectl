@@ -2146,7 +2146,177 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             }
         }
 
-        // ── 10. Password ─────────────────────────────────────────────
+        // ── 10. Upgrade Window ───────────────────────────────────────
+        //
+        // The upgrade window controls when ClickHouse Cloud is allowed to
+        // upgrade the service. A freshly-created service typically has no
+        // window configured (GET returns 404). We exercise the full
+        // GET/PUT/GET/DELETE/GET round-trip, with `weekday: 0`,
+        // `startHourUtc: 0` (Sunday 00:00 UTC — the spec restricts
+        // `startHourUtc` to {0, 6, 12, 18} and `weekday` to 0..=6).
+        //
+        // If the service did already have a window, we snapshot it for
+        // restore on cleanup so the post-test state equals the pre-test
+        // state on the off chance that the service survives teardown.
+
+        log_phase("Upgrade Window");
+
+        let pre_window = failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "upgrade_window get pre-state",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        match client.upgrade_window_get(&org_id, &service_id).await {
+                            Ok(resp) => resp
+                                .result
+                                .map(Some)
+                                .ok_or_else(|| "upgrade_window get returned no result".into()),
+                            // Freshly-provisioned services usually 404; treat
+                            // that as the canonical empty pre-state.
+                            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+                                Ok(None)
+                            }
+                            Err(e) => Err(e.into()),
+                        }
+                    }
+                },
+            )
+            .await?;
+
+        if let Some(pre_state) = pre_window {
+            // Only register a restore if the service had a real pre-existing
+            // window. If the pre-state was 404, the DELETE step in this phase
+            // returns the service to its original empty state on its own.
+            if let Some(window) = pre_state {
+                eprintln!(
+                    "  captured upgrade_window pre-state: weekday={}, startHourUtc={}",
+                    window.weekday, window.start_hour_utc,
+                );
+                cleanup.register_upgrade_window_restore(service_id.clone(), window);
+            } else {
+                eprintln!("  captured upgrade_window pre-state: (none)");
+            }
+
+            // 10a. PUT a known-valid window.
+            let put_body = UpgradeWindowPutRequest {
+                weekday: 0,
+                start_hour_utc: 0,
+            };
+            let put_window = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "upgrade_window put",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        let body = put_body.clone();
+                        async move {
+                            let resp = client
+                                .upgrade_window_update(&org_id, &service_id, &body)
+                                .await?;
+                            resp.result
+                                .ok_or_else(|| "upgrade_window put returned no result".into())
+                        }
+                    },
+                )
+                .await?;
+
+            // 10b. GET reflects upsert.
+            if put_window.is_some() {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "upgrade_window get reflects upsert",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let service_id = service_id.clone();
+                            let expected_weekday = put_body.weekday;
+                            let expected_start = put_body.start_hour_utc;
+                            async move {
+                                let resp = client
+                                    .upgrade_window_get(&org_id, &service_id)
+                                    .await?;
+                                let window = resp
+                                    .result
+                                    .ok_or("upgrade_window get returned no result")?;
+                                if window.weekday != expected_weekday
+                                    || window.start_hour_utc != expected_start
+                                {
+                                    return Err(format!(
+                                        "upgrade_window get mismatch: expected weekday={expected_weekday} startHourUtc={expected_start}, got weekday={got_w} startHourUtc={got_h}",
+                                        got_w = window.weekday,
+                                        got_h = window.start_hour_utc,
+                                    )
+                                    .into());
+                                }
+                                Ok(())
+                            }
+                        },
+                    )
+                    .await?;
+            }
+
+            // 10c. DELETE.
+            let deleted = failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "upgrade_window delete",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        async move {
+                            client.upgrade_window_delete(&org_id, &service_id).await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+
+            // 10d. GET should now return 404 (no window configured).
+            if deleted.is_some() {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "upgrade_window get returns 404 after delete",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let service_id = service_id.clone();
+                            async move {
+                                match client
+                                    .upgrade_window_get(&org_id, &service_id)
+                                    .await
+                                {
+                                    Err(clickhouse_cloud_api::Error::Api {
+                                        status: 404,
+                                        ..
+                                    }) => Ok(()),
+                                    Ok(_) => Err(
+                                        "upgrade_window get returned a window after delete"
+                                            .into(),
+                                    ),
+                                    Err(e) => Err(e.into()),
+                                }
+                            }
+                        },
+                    )
+                    .await?;
+            }
+        }
+
+        // ── 11. Password ─────────────────────────────────────────────
         //
         // `instance_password_update` rotates the service password. The
         // query path used by the rest of the suite is openapi-key-based,
@@ -2192,7 +2362,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
-        // ── 11. Delete ───────────────────────────────────────────────
+        // ── 12. Delete ───────────────────────────────────────────────
 
         log_phase("Delete");
 
