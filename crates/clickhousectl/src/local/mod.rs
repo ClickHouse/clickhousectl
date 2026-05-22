@@ -354,6 +354,7 @@ async fn start_server(
     cmd.args(init::server_flags());
 
     cmd.args(server::port_flags(http_port, tcp_port));
+    cmd.args(init::query_log_flags());
     cmd.args(&args);
 
     let cwd = std::env::current_dir()
