@@ -385,6 +385,40 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // `Option<ApiKeyHashData>` lets callers omit it and have the API
     // generate the key as the spec's response description implies.
     ("ApiKeyPostRequest", "hashData"),
+    // `pgConfig` has no `required` array and no field descriptions begin
+    // with "Optional", so the resolver marks every property required. But
+    // the endpoint is partial-update: sending the default value for any
+    // field yields `Validation failed for following fields: pg_config.*`.
+    // Every property is effectively optional. The wrapping
+    // `postgresInstanceConfig` also lists both nested objects as required,
+    // but PATCH must accept either alone. Exempt all until the upstream
+    // spec adds proper required semantics. See #163 for the behaviour
+    // matrix evidence and the upstream report draft.
+    ("PgConfig", "default_transaction_isolation"),
+    ("PgConfig", "effective_cache_size"),
+    ("PgConfig", "effective_io_concurrency"),
+    ("PgConfig", "idle_in_transaction_session_timeout"),
+    ("PgConfig", "idle_session_timeout"),
+    ("PgConfig", "lock_timeout"),
+    ("PgConfig", "maintenance_work_mem"),
+    ("PgConfig", "max_connections"),
+    ("PgConfig", "max_parallel_maintenance_workers"),
+    ("PgConfig", "max_parallel_workers"),
+    ("PgConfig", "max_parallel_workers_per_gather"),
+    ("PgConfig", "max_slot_wal_keep_size"),
+    ("PgConfig", "max_wal_size"),
+    ("PgConfig", "max_worker_processes"),
+    ("PgConfig", "min_wal_size"),
+    ("PgConfig", "random_page_cost"),
+    ("PgConfig", "ssl_min_protocol_version"),
+    ("PgConfig", "statement_timeout"),
+    ("PgConfig", "transaction_timeout"),
+    ("PgConfig", "wal_compression"),
+    ("PgConfig", "wal_keep_size"),
+    ("PgConfig", "wal_sender_timeout"),
+    ("PgConfig", "work_mem"),
+    ("PostgresInstanceConfig", "pgConfig"),
+    ("PostgresInstanceConfig", "pgBouncerConfig"),
 ];
 
 fn assert_field_optionality(spec: &Value) {
