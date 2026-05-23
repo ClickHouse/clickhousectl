@@ -2168,10 +2168,7 @@ async fn get_postgres_config() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(
-        config.pg_config.and_then(|c| c.max_connections),
-        Some(100)
-    );
+    assert_eq!(config.pg_config.max_connections, Some(100));
 }
 
 #[tokio::test]
@@ -2192,11 +2189,11 @@ async fn replace_postgres_config() {
         .await;
 
     let body = PostgresInstanceConfig {
-        pg_config: Some(PgConfig {
+        pg_config: PgConfig {
             max_connections: Some(200),
             ..Default::default()
-        }),
-        pg_bouncer_config: None,
+        },
+        pg_bouncer_config: PgBouncerConfig::default(),
     };
     let resp = c
         .postgres_instance_config_post("org-1", "pg-1", &body)
@@ -2225,11 +2222,11 @@ async fn patch_postgres_config() {
         .await;
 
     let body = PostgresInstanceConfig {
-        pg_config: Some(PgConfig {
+        pg_config: PgConfig {
             max_connections: Some(150),
             ..Default::default()
-        }),
-        pg_bouncer_config: None,
+        },
+        pg_bouncer_config: PgBouncerConfig::default(),
     };
     let resp = c
         .postgres_instance_config_patch("org-1", "pg-1", &body)

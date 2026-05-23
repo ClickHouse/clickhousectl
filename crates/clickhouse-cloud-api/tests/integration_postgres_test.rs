@@ -236,11 +236,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         // Round-trip a single pgConfig field: PATCH max_connections to a
         // new value, poll-until GET reflects it, then PATCH back.
         if let Some(baseline) = baseline {
-            let baseline_max = baseline
-                .pg_config
-                .as_ref()
-                .and_then(|c| c.max_connections)
-                .unwrap_or(100);
+            let baseline_max = baseline.pg_config.max_connections.unwrap_or(100);
             let target = baseline_max + 7;
 
             failures
@@ -254,11 +250,11 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         let postgres_id = postgres_id.clone();
                         async move {
                             let body = PostgresInstanceConfig {
-                                pg_config: Some(PgConfig {
+                                pg_config: PgConfig {
                                     max_connections: Some(target),
                                     ..Default::default()
-                                }),
-                                pg_bouncer_config: None,
+                                },
+                                pg_bouncer_config: PgBouncerConfig::default(),
                             };
                             client
                                 .postgres_instance_config_patch(&org_id, &postgres_id, &body)
@@ -295,8 +291,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                                             .await?;
                                         let observed = resp
                                             .result
-                                            .and_then(|r| r.pg_config)
-                                            .and_then(|c| c.max_connections);
+                                            .and_then(|r| r.pg_config.max_connections);
                                         if observed == Some(target) {
                                             Ok(Some(()))
                                         } else {
@@ -322,11 +317,11 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         let postgres_id = postgres_id.clone();
                         async move {
                             let body = PostgresInstanceConfig {
-                                pg_config: Some(PgConfig {
+                                pg_config: PgConfig {
                                     max_connections: Some(baseline_max),
                                     ..Default::default()
-                                }),
-                                pg_bouncer_config: None,
+                                },
+                                pg_bouncer_config: PgBouncerConfig::default(),
                             };
                             client
                                 .postgres_instance_config_patch(&org_id, &postgres_id, &body)
