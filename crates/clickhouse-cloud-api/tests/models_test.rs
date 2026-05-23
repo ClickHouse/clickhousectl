@@ -811,15 +811,40 @@ fn serialize_servic_private_endpointe_post_request() {
 #[test]
 fn serialize_postgres_instance_config() {
     let config = PostgresInstanceConfig {
-        pg_config: PgConfig {
-            max_connections: 200,
+        pg_config: Some(PgConfig {
+            max_connections: Some(200),
             ..Default::default()
-        },
-        pg_bouncer_config: PgBouncerConfig {},
+        }),
+        pg_bouncer_config: Some(PgBouncerConfig {}),
     };
     let json = serde_json::to_value(&config).unwrap();
     assert_eq!(json["pgConfig"]["max_connections"], 200);
     assert!(json.get("pgBouncerConfig").is_some());
+}
+
+#[test]
+fn serialize_postgres_instance_config_omits_none_nested() {
+    // The fix for #163: partial PATCH must omit pgBouncerConfig when None,
+    // and pgConfig must omit fields the caller didn't set.
+    let config = PostgresInstanceConfig {
+        pg_config: Some(PgConfig {
+            max_connections: Some(200),
+            ..Default::default()
+        }),
+        pg_bouncer_config: None,
+    };
+    let json = serde_json::to_value(&config).unwrap();
+    assert!(
+        json.get("pgBouncerConfig").is_none(),
+        "pgBouncerConfig must be omitted when None"
+    );
+    assert_eq!(json["pgConfig"]["max_connections"], 200);
+    let pg = json["pgConfig"].as_object().unwrap();
+    assert_eq!(
+        pg.len(),
+        1,
+        "PgConfig should only serialize the one set field, got {pg:?}"
+    );
 }
 
 // ===========================================================================
@@ -1158,7 +1183,10 @@ fn deserialize_postgres_instance_config() {
         "pgBouncerConfig": {}
     }"#;
     let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.pg_config.max_connections, 200);
+    assert_eq!(
+        config.pg_config.and_then(|c| c.max_connections),
+        Some(200)
+    );
 }
 
 #[test]
