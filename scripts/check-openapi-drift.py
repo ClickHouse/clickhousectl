@@ -446,14 +446,41 @@ def check_missing_fields(
 # ---------------------------------------------------------------------------
 
 
+def _repo_slug() -> str:
+    """Return `owner/repo` for the current repo.
+
+    Prefers `GITHUB_REPOSITORY` (set by GitHub Actions); falls back to
+    `gh repo view` for local runs.
+    """
+    slug = os.environ.get("GITHUB_REPOSITORY")
+    if slug:
+        return slug
+    result = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+# All GitHub mutations below go through `gh api` against the REST API rather
+# than `gh issue create` / `gh issue list` / `gh label create`. Those commands
+# use GraphQL and do a `viewer { id }` lookup as part of the request, which the
+# Actions `GITHUB_TOKEN` (an installation token, not a user token) can't
+# satisfy — it returns `HTTP 401: Bad credentials`. The REST endpoints accept
+# the installation token directly given the workflow's `issues: write`
+# permission.
+
+
 def ensure_label_exists():
-    """Create the issue label if it doesn't exist yet."""
+    """Create the issue label if it doesn't exist yet. Idempotent."""
+    repo = _repo_slug()
     subprocess.run(
         [
-            "gh", "label", "create", ISSUE_LABEL,
-            "--description", "Automated: live OpenAPI spec has operations/schemas not covered by the Rust library",
-            "--color", "D93F0B",
-            "--force",
+            "gh", "api", f"repos/{repo}/labels",
+            "--method", "POST",
+            "-f", f"name={ISSUE_LABEL}",
+            "-f", "color=D93F0B",
+            "-f", "description=Automated: live OpenAPI spec has operations/schemas not covered by the Rust library",
         ],
         capture_output=True,
     )
@@ -461,12 +488,13 @@ def ensure_label_exists():
 
 def open_drift_issues() -> list[dict]:
     """Return open issues with the drift label."""
+    repo = _repo_slug()
     result = subprocess.run(
         [
-            "gh", "issue", "list",
-            "--label", ISSUE_LABEL,
-            "--state", "open",
-            "--json", "number,title",
+            "gh", "api", f"repos/{repo}/issues",
+            "--method", "GET",
+            "-f", f"labels={ISSUE_LABEL}",
+            "-f", "state=open",
         ],
         capture_output=True,
         text=True,
@@ -477,9 +505,17 @@ def open_drift_issues() -> list[dict]:
 
 
 def create_issue(title: str, body: str):
-    """Create a GitHub issue."""
+    """Create a GitHub issue via the REST API."""
+    repo = _repo_slug()
+    payload = json.dumps({
+        "title": title,
+        "body": body,
+        "labels": [ISSUE_LABEL],
+    })
     subprocess.run(
-        ["gh", "issue", "create", "--title", title, "--body", body, "--label", ISSUE_LABEL],
+        ["gh", "api", f"repos/{repo}/issues", "--method", "POST", "--input", "-"],
+        input=payload,
+        text=True,
         check=True,
     )
 
