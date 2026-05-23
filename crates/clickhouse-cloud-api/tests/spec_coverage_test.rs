@@ -415,10 +415,11 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // the endpoint is partial-update: sending the default value for any
     // field yields `Validation failed for following fields: pg_config.*`.
     // Every property is effectively optional. The wrapping
-    // `postgresInstanceConfig` also lists both nested objects as required,
-    // but PATCH must accept either alone. Exempt all until the upstream
-    // spec adds proper required semantics. See #163 for the behaviour
-    // matrix evidence and the upstream report draft.
+    // `postgresInstanceConfig` is *not* exempted — the live API requires
+    // both `pgConfig` and `pgBouncerConfig` to be present in PATCH and
+    // POST bodies (omitting either yields `BAD_REQUEST: ... 'undefined'`),
+    // matching the spec's `required` listing. See #163 for the behaviour
+    // matrix evidence.
     ("PgConfig", "default_transaction_isolation"),
     ("PgConfig", "effective_cache_size"),
     ("PgConfig", "effective_io_concurrency"),
@@ -442,8 +443,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("PgConfig", "wal_keep_size"),
     ("PgConfig", "wal_sender_timeout"),
     ("PgConfig", "work_mem"),
-    ("PostgresInstanceConfig", "pgConfig"),
-    ("PostgresInstanceConfig", "pgBouncerConfig"),
 ];
 
 fn assert_field_optionality(spec: &Value) {

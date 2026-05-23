@@ -12201,10 +12201,10 @@ pub struct PgConfig {
 /// `postgresInstanceConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresInstanceConfig {
-    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none", default)]
-    pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
-    pub pg_config: Option<PgConfig>,
+    #[serde(rename = "pgBouncerConfig", default)]
+    pub pg_bouncer_config: PgBouncerConfig,
+    #[serde(rename = "pgConfig", default)]
+    pub pg_config: PgConfig,
 }
 
 /// `postgresInstanceUpdateConfigResponse` from the ClickHouse Cloud API.
