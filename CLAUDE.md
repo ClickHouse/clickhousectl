@@ -1,65 +1,77 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Repo structure
-
-This is a Cargo workspace with two crates:
-
-- **`crates/clickhousectl/`** — the CLI binary (version manager + cloud CLI)
-- **`crates/clickhouse-cloud-api/`** — typed Rust client library for the ClickHouse Cloud API (used by the CLI for all cloud commands)
-
-## Build & Test
-
-```bash
-cargo build                          # dev build (whole workspace)
-cargo build --release                # release build
-cargo test                           # run all tests (both crates)
-cargo test -p clickhousectl          # test CLI only
-cargo test -p clickhouse-cloud-api   # test library only
-cargo test test_detect_platform      # run a single test
-cargo clippy                         # lint
-```
-
-No separate lint CI — just `cargo build` and `cargo test` must pass.
-
-Integration tests for `clickhouse-cloud-api`:
-
-- `tests/common/support.rs` — generic test infra (`TestContext`, `FailureRecorder`, `CleanupRegistry`, `poll_until`, logging, env helpers, ClickHouse provisioning, HTTP query helper). Used by every integration binary.
-- `tests/integration_test.rs`, `tests/integration_postgres_test.rs` — cloud-service / Postgres-service CRUD lifecycle suites (auto-discovered). Use `mod common; use common::support::*;`.
-- `tests/clickpipes/` — ClickPipes E2E suite. `support.rs` here holds AWS/EC2/Kinesis/Redpanda helpers and `pub use`-re-exports `crate::common::support::*`, so callers get both surfaces from `use crate::support::*;`. Contains `driver.rs`, `stages/`, one binary per source (`s3_test.rs`, `kafka_test.rs`, `kinesis_test.rs`, `mongo_test.rs`, `mysql_test.rs`, `postgres_ec2_test.rs`, `postgres_cdc_test.rs`, `smoke_test.rs`) and an all-sources `e2e_test.rs`. Each binary is declared as an explicit `[[test]]` entry in `Cargo.toml` (`clickpipe_<name>_test`) because cargo doesn't auto-discover `.rs` files in `tests/` subdirectories; add a matching entry when introducing a new one. Each binary also does `#[path = "../common/mod.rs"] mod common;` so the re-export resolves.
-
-Cross-compilation for aarch64-linux uses `cross` (see `.github/workflows/release.yml`). The CLI crate uses `rustls-tls` instead of OpenSSL to support this.
+clickhousectl (or chctl) is the official CLI for ClickHouse, by ClickHouse Inc. clickhousectl supports both ClickHouse and Postgres, on your local machine or in ClickHouse Cloud.
 
 ## Architecture
 
+This is a Cargo workspace with two crates:
+
 ### CLI (`crates/clickhousectl/`)
 
-`clickhousectl` is the official ClickHouse CLI — a version manager + cloud CLI. Two top-level subcommands: `local` and `cloud`.
+The user-facing CLI surface. Contains all logic for local commands, wraps `clickhouse-cloud-api` for cloud.
 
-1. **Local** (`local install|list|use|remove|which|init|client|server`) — version management in `src/version_manager/`, server management in `src/server.rs`, client/init in `main.rs`. Binaries live in `~/.clickhouse/versions/{version}/clickhouse`, default tracked in `~/.clickhouse/default`. Project data lives in `.clickhouse/`.
+- Cloud handlers go through the `CloudClient` wrapper (`src/cloud/client.rs`), not `clickhouse_cloud_api::Client` directly. The wrapper handles credential precedence, error conversion, and response unwrapping.
+- Cloud handlers always support `--json` output unless there is good reason not to.
 
-2. **Cloud** (`cloud org|service|backup`) — handled by `src/cloud/`. `CloudClient` wraps reqwest with Basic or Bearer auth. Commands go through `cloud/commands.rs`, types in `cloud/types.rs`. All cloud commands support `--json` output.
+Use `--help` to learn the current command surface.
 
-3. **Auth** (`cloud auth login|logout|status`) — authentication subcommand under cloud. `login` defaults to OAuth device flow (`src/cloud/auth.rs`), supports `--interactive` for API key prompt, or `--api-key`/`--api-secret` for non-interactive. `logout` clears all credentials. Tokens stored in `.clickhouse/tokens.json`, API keys in `.clickhouse/credentials.json` (both project-local).
+Project-local data lives in `.clickhouse/`. Globally installed ClickHouse binaries live in `~/.clickhouse/`.
+
+The CLI does not need to have 100% coverage of endpoints exposed by the API library: be intentional about what is exposed to users.
+
+#### Adding a command
+
+For both local and cloud commands, define the clap variant in the appropriate `cli.rs`, then wire dispatch in `src/main.rs`.
+
+**Local subcommand:**
+
+1. Add a variant to the relevant enum in `src/local/cli.rs` using clap derive macros.
+2. Add the match arm in `run_local()` in `src/main.rs`.
+3. Implement the handler in a dedicated module under `src/local/` (e.g. `src/local/server.rs`, `src/local/postgres.rs`). Don't pile new logic into `main.rs`.
+
+**Cloud subcommand:**
+
+1. Make sure `clickhouse-cloud-api` has already been updated to support necessary endpoints & models.
+2. Add the variant to the relevant sub-enum in `src/cloud/cli.rs` (or `src/cloud/postgres.rs` for Postgres). Create a new sub-enum if the surface warrants its own grouping.
+3. Classify the new variant in `CloudCommands::is_write_command()` in `src/cloud/cli.rs` (Postgres variants go in the equivalent `is_write()` on the Postgres enum). OAuth (Bearer) auth is read-only; write commands require API key auth and we fail fast on OAuth + write. The match has no wildcards, so the compiler will reject a missing arm — but you still need to make the read/write call deliberately, and add a case to both the `is_write_command_read_only_commands` and `is_write_command_destructive_commands` tests.
+4. Add the match arm in `run_cloud()` in `src/main.rs`.
+5. Add a thin wrapper method on `CloudClient` in `src/cloud/client.rs`. It should delegate to `self.api().<lib_method>()`, map errors via `self.convert_error(e)`, and unwrap with `Self::unwrap_response`. Use the library's request/response types here.
+6. If the command sends a request body, extract a `build_<name>_request(...)` helper in `src/cloud/commands.rs` that returns the library's request struct. Cover the helper with minimal + maximal unit tests in the `mod tests` block at the bottom of `commands.rs`, asserting directly on library struct fields.
+7. Implement the handler in `src/cloud/commands.rs`. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern:
+   ```rust
+   if json {
+       println!("{}", serde_json::to_string_pretty(&data)?);
+   } else {
+       println!("Human readable: {}", data.field);
+   }
+   ```
+8. Add `Cli::try_parse_from` coverage in `src/cloud/cli.rs` for the new command's body-related flags, asserting parsed values.
 
 ### API library (`crates/clickhouse-cloud-api/`)
 
-Typed Rust client generated from the ClickHouse Cloud OpenAPI spec. Contains:
+Typed Rust client library for the ClickHouse Cloud API. The library owns all OpenAPI interaction and all cloud integration testing.
 
-- `src/client.rs` — `Client` struct with async methods for every API endpoint
-- `src/models.rs` — request/response types generated from the OpenAPI spec
-- `src/error.rs` — error types (Http, Json, Api)
-- `tests/spec_coverage_test.rs` — validates the client and models cover the OpenAPI spec
+- `src/client.rs` — `Client` struct with one async method per OpenAPI operation.
+- `src/models.rs` — request/response types matching the spec (see Field optionality below).
 
-The CLI depends on this library for all cloud API calls.
+The API library can be updated independently of the CLI. When OpenAPI drifts, prefer updating API library on its own, add to CLI separately.
 
-#### Field optionality and the OpenAPI spec
+#### OpenAPI drift
+
+ClickHouse Cloud OpenAPI spec: https://api.clickhouse.cloud/v1
+
+- `.github/workflows/openapi-drift.yml` runs `scripts/check-openapi-drift.py` daily at 08:00 UTC (also triggerable via `workflow_dispatch`). The script opens a GitHub issue with the `openapi-drift` label whenever the live spec has operations, schemas, or field optionality the library doesn't cover.
+- The script fetches the live spec and compares it against both the library code (`client.rs`, `models.rs`) and the vendored snapshot at `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`. `spec_coverage_test.rs` runs against the snapshot in CI; the snapshot is refreshed as part of resolving drift.
+- `--dry-run` prints the report without opening an issue.
+- When resolving drift: work from the auto-opened issue. Fix `clickhouse-cloud-api` first in its own PR: update `client.rs`, `models.rs`, and refresh the vendored snapshot. Then decide separately whether to expose the new surface in the CLI.
+
+##### Field optionality and the OpenAPI spec
 
 The OpenAPI spec uses two different conventions for required vs optional fields:
 
 - **Schemas with a `required` array** (newer/beta endpoints) — standard OpenAPI semantics.
-- **Schemas without `required`** (GA/legacy endpoints) — optional fields start their description with `"Optional"`. All other fields are implicitly required.
+- **Schemas without `required`** (GA/legacy endpoints) — optional fields start their description with `"Optional"`. All other fields are implicitly required. The `"Optional"` marker may be preceded by status prefixes like `"Private preview."` (e.g. `"Private preview. Optional ..."`), so the heuristic should strip known prefixes before checking, not anchor strictly to the first character.
+- **Mixed schemas (legacy endpoints that have started adding a `required` array)** — the array only covers newly-added fields, so the presence of `required` does not mean it is exhaustive. Treat fields listed in `required` as required, then run the `"Optional"`-description heuristic over the remaining fields (pre-existing required fields will not be in the array, but still aren't marked `"Optional"`).
 - **PATCH request schemas** — always all-optional (partial update semantics), identified by name containing "Patch" and ending with "Request".
 - **Nullable fields** (`type: ["string", "null"]` or `oneOf` with null) — always `Option<T>` in Rust, even if "required".
 
@@ -77,67 +89,52 @@ Field optionality is maintained by hand. When the drift check or test flags a mi
 
 Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
 
-## Adding commands
+## Tests
 
-### New local subcommand
+Test coverage is non-negotiable.
 
-1. Add variant to `LocalCommands` in `crates/clickhousectl/src/cli.rs` using clap derive macros
-2. Add match arm in `run_local()` in `crates/clickhousectl/src/main.rs`
-3. Implement handler (in `main.rs` for simple commands, or a dedicated module)
+CI enforces clippy, ensure you fix all warnings.
 
-### New cloud subcommand
+Use cargo build, cargo test, cargo clippy, locally.
 
-1. Add variant to the relevant enum in `crates/clickhousectl/src/cli.rs` (e.g. `ServiceCommands`)
-2. Add match arm in `run_cloud()` in `crates/clickhousectl/src/main.rs`
-3. Add method to `CloudClient` in `crates/clickhousectl/src/cloud/client.rs`
-4. Add request/response types to `crates/clickhousectl/src/cloud/types.rs` — use `#[serde(rename_all = "camelCase")]` (API uses camelCase) and `#[serde(skip_serializing_if = "Option::is_none")]` for optional fields
-5. Implement handler in `crates/clickhousectl/src/cloud/commands.rs` with the `--json` output pattern:
-   ```rust
-   if json {
-       println!("{}", serde_json::to_string_pretty(&data)?);
-   } else {
-       println!("Human readable: {}", data.field);
-   }
-   ```
+### clickhouse-cloud-api library
 
-ClickHouse Cloud OpenAPI spec: https://api.clickhouse.cloud/v1
+Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason to skip a test.
+
+- `tests/common/support.rs` — generic test infra (polling, logging, env helpers, ClickHouse provisioning & cleanup, HTTP query helper). Used by every integration binary. Call `Client` directly from Rust.
+- `tests/integration_test.rs`, `tests/integration_postgres_test.rs` — cloud-service / Postgres-service CRUD lifecycle tests.
+- `tests/clickpipes/` — ClickPipes E2E suite, including external cloud services. Only Postgres CDC (uses ClickHouse & Postgres inside ClickHouse Cloud) is run in CI. Tests for third party services must be executed manually. CI also optionally runs `clickpipe_smoke_test` against a long-lived service when the `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID` repo variable is set (see `.github/workflows/cloud-integration.yml`); the step is skipped when the variable is unset.
+- `spec_coverage_test.rs`: compares to OpenAPI, every spec operation/field has a matching client method/model field.
+
+### clickhousectl CLI
+
+- **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, `src/cloud/cli.rs`, `src/cloud/postgres.rs`, `src/local/cli.rs`). Assert flag names, types, defaults, and repeatability.
+- **Request builders** — unit tests for `build_*_request` helpers in `src/cloud/commands.rs`, asserting on library request-struct fields with minimal + maximal inputs.
+- **Subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock server and assert on the recorded request JSON. Used when the handler has runtime behavior beyond struct construction (file reads, base64 encoding, etc.) — currently ClickPipes.
+- **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output formatting, platform detection, and other module-local helpers.
 
 ## Dependencies
 
-Use `cargo add` to add new dependencies (not manual `Cargo.toml` edits). Always use the latest version of packages. Specify the crate with `-p`:
+Use `cargo add` to add new dependencies. Use the latest version of packages. Specify the crate with `-p`, e.g. `cargo add -p clickhouse-cloud-api url`.
 
-```bash
-cargo add -p clickhousectl serde --features derive
-cargo add -p clickhouse-cloud-api url
-```
+## Releases
 
-## Key details
-
-- CLI is defined with clap derive macros in `crates/clickhousectl/src/cli.rs`, dispatched in `crates/clickhousectl/src/main.rs`
-- `src/paths.rs` handles `~/.clickhouse/` paths (global install dir); `src/init.rs` handles `.clickhouse/` paths (project-local data dir)
-- `local client` uses `exec()` (process replacement), so code after `cmd.exec()` only runs on failure
-- Error types use `thiserror` in `src/error.rs`; cloud module has its own error type wrapped as `Error::Cloud(String)`
-- Version resolution (`version_manager/resolve.rs`) handles specs like `stable`, `lts`, `25.12`, or exact `25.12.5.44` — all resolve to an exact version + channel via GitHub API
-- Releases are triggered by pushing a version tag (`v0.1.3`), which runs the GitHub Actions workflow
+- Releases are triggered by pushing a version tag (e.g. `git tag v0.2.3 && git push origin v0.2.3`), which runs the GitHub Actions workflow
+- Bump all of these to the same version in lockstep: `crates/clickhousectl/Cargo.toml` (`version` and the `clickhouse-cloud-api` dep version), `crates/clickhouse-cloud-api/Cargo.toml`, and `npm/package.json`. The workflow also re-aligns `npm/package.json` to the tag at publish time, but bump it in the repo too so the source-of-truth matches.
+- For `clickhouse-cloud-api`, the crate is published to crates.io.
+- For `clickhousectl`, releases are published to GitHub releases, crates.io, npm, and PyPI. The npm and PyPI packages are thin wrappers to make it easier for LLMs to find and install. crates.io uses a token, while npm & PyPI use OIDC. All of these releases are triggered by the same release workflow, in separate jobs.
 
 ## Git workflow
 
-- **Branch per feature/issue.** When working on a new feature or issue, create a branch and use a PR workflow. Do not commit directly to `main`.
-- If the user references a GitHub issue (e.g. "work on issue 3"), use `gh issue view 3` to get the details, then create a branch like `issue-3-short-description`.
-- Update `README.md` and any relevant documentation as part of the change — PRs should include doc updates for new or changed functionality.
-- Commit to the branch, push, and create a PR with `gh pr create`.
-- Releases are done by tagging `main` (e.g. `git tag v0.1.4 && git push origin v0.1.4`), which triggers the GitHub Actions release workflow. Bump all of these to the same version in lockstep: `crates/clickhousectl/Cargo.toml` (`version` and the `clickhouse-cloud-api` dep version), `crates/clickhouse-cloud-api/Cargo.toml`, and `npm/package.json`. The workflow also re-aligns `npm/package.json` to the tag at publish time, but bump it in the repo too so the source-of-truth matches. Release-time secrets: `CARGO_REGISTRY_TOKEN` for crates.io; npm uses OIDC trusted publishing (configured one-time on npmjs.com against this repo, `release.yml`, and the `publish-npm` job).
+- Branch per feature/issue & use PR workflow.
+- PRs should have an associated issue.
 
-## Testing locally
+## GitHub Actions
 
-```bash
-cargo run -p clickhousectl -- local install stable
-cargo run -p clickhousectl -- local server start      # starts server in .clickhouse/servers/default/
-cargo run -p clickhousectl -- local client --query "SELECT 1"
-```
+Must pin deps in GH Actions to SHA hashes, not tags.
+Secrets used by GH Actions must be protected from exfiltration, e.g., do not populate secrets in Actions triggered by external PRs.
 
-## Testing model
+## Documentation
 
-- **`clickhouse-cloud-api`**: real cloud integration tests, target 100% OpenAPI spec coverage. Call `Client` directly from Rust — never via the CLI. Cost is not a reason to skip a test. Top-level binaries `tests/integration_*.rs` (`integration_test` = ClickHouse service CRUD, `integration_postgres_test` = Postgres CRUD, `integration_org_test` = org-scoped endpoints — the org suite needs `CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID`), shared handlers in `tests/common/`, ClickPipes-specific modules in `tests/clickpipes/`.
-- **`clickhousectl`**: request-shape tests via `wiremock` (`tests/cli_request_shape_test.rs`). Assert the JSON the CLI sends matches the library's request models — this is the CLI↔lib contract. Every new subcommand that builds a request body needs one.
-- **`spec_coverage_test.rs`**: structural floor — every spec operation/field has a matching client method/model field.
+- PRs should include doc updates to `README.md` for functionality/behaviour that needs to be understood by users/developers.
+- CLAUDE.md should be kept up to date if there is material change to development practices.
