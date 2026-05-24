@@ -4,6 +4,8 @@
 /npm/package-lock.json
 /npm/*.tgz
 /npm/README.md
+/pypi/target/
+/pypi/dist/
 .env
 /.env
 /.env.local
