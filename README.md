@@ -91,6 +91,8 @@ clickhousectl local remove 25.12.5.44
 
 `local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning. `local remove` of the active default version also clears the symlink.
 
+Concrete version specs (`25`, `25.12`, `25.12.5.44`) are resolved from your local installs first, so they work offline and don't pay a network round-trip when the bits are already on disk. Floating channels (`stable`, `lts`, `latest`) always consult the remote, since "what's stable today" can change.
+
 #### ClickHouse binary storage
 
 ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhouse/`:

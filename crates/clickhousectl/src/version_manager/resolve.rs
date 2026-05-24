@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use crate::version_manager::list::{Channel, VersionEntry, list_available_versions};
+use crate::version_manager::list::{Channel, VersionEntry, list_available_versions, list_installed_versions};
 use crate::version_manager::platform::{DownloadSource, Platform, builds_probe_url};
 use crate::version_manager::spec::VersionSpec;
 use serde::Deserialize;
@@ -18,6 +18,40 @@ pub struct ResolvedVersion {
     pub exact_version: Option<String>,
     /// Channel, if known
     pub channel: Option<Channel>,
+}
+
+/// Try to satisfy a spec from already-installed versions, without any network call.
+/// Returns `None` for floating specs (`Latest`, `Channel(_)`) — those always need the
+/// remote — or when no installed version matches.
+pub fn try_resolve_local(spec: &VersionSpec) -> Option<String> {
+    match spec {
+        VersionSpec::Latest | VersionSpec::Channel(_) => None,
+        _ => {
+            let installed = list_installed_versions().ok()?;
+            find_local_match(spec, &installed)
+        }
+    }
+}
+
+/// Pure matcher for `try_resolve_local`. `installed` is expected to be ordered
+/// newest-first (as `list_installed_versions` returns), so `.find(...)` returns
+/// the highest version that matches.
+fn find_local_match(spec: &VersionSpec, installed: &[String]) -> Option<String> {
+    match spec {
+        VersionSpec::Latest | VersionSpec::Channel(_) => None,
+        VersionSpec::Major(major) => {
+            let prefix = format!("{}.", major);
+            installed.iter().find(|v| v.starts_with(&prefix)).cloned()
+        }
+        VersionSpec::Minor(major, minor) => {
+            let prefix = format!("{}.{}.", major, minor);
+            installed.iter().find(|v| v.starts_with(&prefix)).cloned()
+        }
+        VersionSpec::Exact(version) => installed
+            .iter()
+            .find(|v| v.as_str() == version.as_str())
+            .cloned(),
+    }
 }
 
 /// Resolve a VersionSpec into a concrete download source
@@ -486,5 +520,120 @@ mod tests {
     fn test_parse_exact_channel_empty_refs() {
         let refs: Vec<GitRef> = vec![];
         assert!(parse_exact_channel(&refs, "25.12.9.61").is_err());
+    }
+
+    // -- find_local_match tests --
+
+    fn installed(versions: &[&str]) -> Vec<String> {
+        versions.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_find_local_match_latest_returns_none() {
+        assert_eq!(
+            find_local_match(&VersionSpec::Latest, &installed(&["25.12.9.61"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_channel_returns_none() {
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Channel(Channel::Stable),
+                &installed(&["25.12.9.61"])
+            ),
+            None
+        );
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Channel(Channel::Lts),
+                &installed(&["25.12.9.61"])
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_major_picks_first() {
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Major(25),
+                &installed(&["25.12.9.61", "24.8.6.70"])
+            ),
+            Some("25.12.9.61".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_major_rejects_numeric_prefix() {
+        // "250.1.2.3" must not match Major(25) — the trailing "." is the boundary guard
+        assert_eq!(
+            find_local_match(&VersionSpec::Major(25), &installed(&["250.1.2.3"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_major_no_match() {
+        assert_eq!(
+            find_local_match(&VersionSpec::Major(25), &installed(&["24.12.9.61"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_minor_component_boundary() {
+        // Minor(25, 12) must match 25.12.9.61 but not 25.120.1.1
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Minor(25, 12),
+                &installed(&["25.120.1.1", "25.12.9.61"])
+            ),
+            Some("25.12.9.61".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_minor_no_match() {
+        assert_eq!(
+            find_local_match(&VersionSpec::Minor(25, 12), &installed(&["25.11.9.61"])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_exact_matches() {
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Exact("25.12.9.61".to_string()),
+                &installed(&["25.12.9.61"])
+            ),
+            Some("25.12.9.61".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_exact_rejects_partial() {
+        // Exact match must not accept shorter or longer strings
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Exact("25.12.9.61".to_string()),
+                &installed(&["25.12.9.6", "25.12.9.611"])
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn test_find_local_match_newest_wins() {
+        // list_installed_versions returns descending order — first match wins
+        assert_eq!(
+            find_local_match(
+                &VersionSpec::Major(25),
+                &installed(&["25.12.9.61", "25.5.2.1"])
+            ),
+            Some("25.12.9.61".to_string())
+        );
     }
 }
