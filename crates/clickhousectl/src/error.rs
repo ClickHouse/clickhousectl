@@ -55,13 +55,9 @@ pub enum Error {
     #[error("{0}")]
     Cloud(String),
 
-    /// Authentication required or invalid (missing creds, 401/403, etc).
-    /// Mapped to exit code 4 (`gh` convention).
     #[error("{0}")]
     AuthRequired(String),
 
-    /// User cancelled the operation (Ctrl-C, declined a prompt, etc).
-    /// Mapped to exit code 2 (`gh` convention).
     #[error("Cancelled")]
     Cancelled,
 

@@ -65,8 +65,9 @@ async fn main() {
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Local(args) => {
+            let json_explicit = args.json;
             let json = output_mode::should_output_json(args.json);
-            local::run(args.command, json).await
+            local::run(args.command, json, json_explicit).await
         }
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
@@ -302,10 +303,12 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         };
     }
 
-    // Refresh OAuth tokens if needed before creating the client
+    // Refresh OAuth tokens if needed. Errors here are filesystem failures
+    // (refresh-rpc failures are swallowed and tokens cleared), so this stays
+    // a generic error rather than `AuthRequired`.
     cloud::auth::ensure_fresh_tokens()
         .await
-        .map_err(|e| Error::AuthRequired(e.to_string()))?;
+        .map_err(|e| Error::Cloud(e.to_string()))?;
 
     let client = CloudClient::new(
         args.api_key.as_deref(),
@@ -976,9 +979,9 @@ fn cloud_error_to_top_level(e: cloud::CloudError) -> Error {
     }
 }
 
-/// Cloud command fns return `Box<dyn std::error::Error>`, which erases the
-/// `CloudError.kind` info. Downcast so auth-flagged errors still map to
-/// `Error::AuthRequired` (exit code 4) instead of `Error::Cloud` (exit code 1).
+// Cloud command fns return `Box<dyn std::error::Error>`, so the `CloudError.kind`
+// only survives via downcast — without it, auth-flagged errors silently fall back
+// to `Error::Cloud` (exit 1) instead of `Error::AuthRequired` (exit 4).
 fn boxed_cloud_error_to_top_level(e: Box<dyn std::error::Error>) -> Error {
     match e.downcast::<cloud::CloudError>() {
         Ok(ce) => cloud_error_to_top_level(*ce),

@@ -7,7 +7,6 @@ const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 pub enum CloudErrorKind {
     #[default]
     Generic,
-    /// Authentication is required or invalid (401/403, missing creds, etc).
     Auth,
 }
 

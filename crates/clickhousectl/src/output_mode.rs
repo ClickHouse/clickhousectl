@@ -1,12 +1,8 @@
 //! Resolves whether to emit machine-readable JSON output.
 //!
-//! Returns true if any of these hold:
-//! - the explicit `--json` flag was passed
-//! - a known coding-agent env var is set (CLAUDECODE / CURSOR_AGENT / CODEX_SANDBOX)
-//! - stdout is not a terminal (piped/redirected)
-//!
-//! This mirrors the workos CLI's behavior so agents and pipelines get
-//! structured output without needing to pass `--json` explicitly.
+//! Returns true when `--json` was passed, stdout is not a terminal, or a known
+//! coding-agent env var is set — so agents and pipelines get structured output
+//! without callers having to opt in.
 
 use std::io::IsTerminal;
 
@@ -16,7 +12,7 @@ pub fn should_output_json(flag: bool) -> bool {
     resolve(flag, agent_context_detected(), std::io::stdout().is_terminal())
 }
 
-pub fn agent_context_detected() -> bool {
+fn agent_context_detected() -> bool {
     AGENT_ENV_VARS
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
