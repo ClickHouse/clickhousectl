@@ -56,7 +56,9 @@ CONTEXT FOR AGENTS:
   For write operations, authenticate with API keys:
     clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
   If the user doesn't have an account, suggest `clickhousectl cloud auth signup` first.
-  Add --json to any cloud command for machine-readable output.
+  Add --json to any cloud command for machine-readable output. JSON is also emitted automatically
+  when stdout is not a terminal or any of CLAUDECODE/CURSOR_AGENT/CODEX_SANDBOX is set.
+  Exit codes follow gh conventions: 0 success, 1 error, 2 cancelled, 4 auth required.
   Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(Box<CloudArgs>),
 

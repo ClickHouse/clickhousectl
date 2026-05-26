@@ -3,6 +3,7 @@ mod cloud;
 mod error;
 mod init;
 mod local;
+mod output_mode;
 mod paths;
 mod skills;
 mod update;
@@ -57,13 +58,16 @@ async fn main() {
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
 }
 
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
-        Commands::Local(args) => local::run(args.command, args.json).await,
+        Commands::Local(args) => {
+            let json = output_mode::should_output_json(args.json);
+            local::run(args.command, json).await
+        }
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
         Commands::Update(args) => run_update(args).await,
@@ -288,7 +292,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     }
                 }
 
-                if args.json {
+                if output_mode::should_output_json(args.json) {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
                     println!("{}", Table::new(rows).with(Style::markdown()));
@@ -301,14 +305,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
     // Refresh OAuth tokens if needed before creating the client
     cloud::auth::ensure_fresh_tokens()
         .await
-        .map_err(|e| Error::Cloud(e.to_string()))?;
+        .map_err(|e| Error::AuthRequired(e.to_string()))?;
 
     let client = CloudClient::new(
         args.api_key.as_deref(),
         args.api_secret.as_deref(),
         args.url.as_deref(),
     )
-    .map_err(|e| Error::Cloud(e.to_string()))?;
+    .map_err(cloud_error_to_top_level)?;
 
     if args.debug {
         eprintln!("[debug] auth source: {}", client.auth_source().describe());
@@ -318,7 +322,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
     if client.is_bearer_auth() && args.command.is_write_command() {
-        return Err(Error::Cloud(
+        return Err(Error::AuthRequired(
             "This command requires API key authentication. \
              OAuth (browser login) provides read-only access.\n\n\
              To authenticate with an API key:\n  \
@@ -332,7 +336,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         ));
     }
 
-    let json = args.json;
+    let json = output_mode::should_output_json(args.json);
 
     let result = match args.command {
         CloudCommands::Auth { .. } => unreachable!("handled above"),
@@ -962,7 +966,24 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         },
     };
 
-    result.map_err(|e| Error::Cloud(e.to_string()))
+    result.map_err(boxed_cloud_error_to_top_level)
+}
+
+fn cloud_error_to_top_level(e: cloud::CloudError) -> Error {
+    match e.kind {
+        cloud::CloudErrorKind::Auth => Error::AuthRequired(e.message),
+        cloud::CloudErrorKind::Generic => Error::Cloud(e.message),
+    }
+}
+
+/// Cloud command fns return `Box<dyn std::error::Error>`, which erases the
+/// `CloudError.kind` info. Downcast so auth-flagged errors still map to
+/// `Error::AuthRequired` (exit code 4) instead of `Error::Cloud` (exit code 1).
+fn boxed_cloud_error_to_top_level(e: Box<dyn std::error::Error>) -> Error {
+    match e.downcast::<cloud::CloudError>() {
+        Ok(ce) => cloud_error_to_top_level(*ce),
+        Err(other) => Error::Cloud(other.to_string()),
+    }
 }
 
 async fn run_postgres(

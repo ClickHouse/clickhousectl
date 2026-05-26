@@ -685,6 +685,19 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
+`clickhousectl` also auto-detects non-TTY and coding-agent contexts (`CLAUDECODE`, `CURSOR_AGENT`, `CODEX_SANDBOX`) and emits JSON to stdout automatically — you don't need to pass `--json` from inside an agent or when piping output.
+
+### Exit codes
+
+Follow `gh` conventions:
+
+| Code | Meaning                                                  |
+| ---- | -------------------------------------------------------- |
+| `0`  | Success                                                  |
+| `1`  | Error (anything not classified below)                    |
+| `2`  | Cancelled (user aborted)                                 |
+| `4`  | Auth required (no credentials, 401/403, OAuth-only writes) |
+
 ## Skills
 
 Install the official ClickHouse Agent Skills from [ClickHouse/agent-skills](https://github.com/ClickHouse/agent-skills).

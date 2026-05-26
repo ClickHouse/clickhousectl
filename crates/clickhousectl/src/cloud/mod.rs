@@ -10,4 +10,6 @@ pub mod types;
 #[cfg(test)]
 mod types_test;
 
-pub use client::{AuthSource, CloudClient, resolve_active_auth_source};
+pub use client::{
+    AuthSource, CloudClient, CloudError, CloudErrorKind, resolve_active_auth_source,
+};
