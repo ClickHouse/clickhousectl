@@ -286,6 +286,7 @@ fn run_client(
     Err(Error::Exec(err.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_server(
     name: Option<String>,
     version_spec: Option<String>,
