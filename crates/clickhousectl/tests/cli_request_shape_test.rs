@@ -1194,10 +1194,11 @@ async fn dotenv_creds_produce_basic_auth_request() {
         .mount(&mock)
         .await;
 
-    // Project dir contains the `.env`. Run the binary cd'd into it so the
-    // walk-up loader finds the file. The parent process's env vars are
-    // cleared in the child so the .env is the only source of credentials —
-    // otherwise the test could silently pass for the wrong reason.
+    // Put `.env` in the working directory and run the binary cd'd into it,
+    // because the loader reads `cwd/.env` rather than walking ancestor
+    // directories. The parent process's env vars are cleared in the child so
+    // the .env is the only source of credentials — otherwise the test could
+    // silently pass for the wrong reason.
     let dir = tempfile::tempdir().unwrap();
     let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
     env_file
