@@ -1,5 +1,6 @@
 mod cli;
 mod cloud;
+mod dotenv;
 mod error;
 mod init;
 mod local;
@@ -24,6 +25,12 @@ use error::{Error, Result};
 
 #[tokio::main]
 async fn main() {
+    // Snapshot any project-local `.env` before anything else so credential
+    // resolution can use it. Safe to call here even though tokio has worker
+    // threads — we populate an in-process `OnceLock` rather than touching
+    // libc's environ.
+    dotenv::init();
+
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
@@ -242,13 +249,30 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     });
                 }
 
-                let env_key = std::env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-                let env_secret = std::env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
-                match (env_key.is_some(), env_secret.is_some()) {
+                let shell_key = std::env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
+                let shell_secret = std::env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+                let dotenv_snapshot = dotenv::get();
+                let dotenv_key = dotenv_snapshot.get("CLICKHOUSE_CLOUD_API_KEY");
+                let dotenv_secret = dotenv_snapshot.get("CLICKHOUSE_CLOUD_API_SECRET");
+                let has_key = shell_key.is_some() || dotenv_key.is_some();
+                let has_secret = shell_secret.is_some() || dotenv_secret.is_some();
+                let from_dotenv =
+                    (shell_key.is_none() && dotenv_key.is_some())
+                        || (shell_secret.is_none() && dotenv_secret.is_some());
+
+                match (has_key, has_secret) {
                     (true, true) => {
+                        let status = if from_dotenv {
+                            match dotenv_snapshot.source_path() {
+                                Some(p) => format!("Active (from {})", p.display()),
+                                None => "Active (from .env)".into(),
+                            }
+                        } else {
+                            "Active".into()
+                        };
                         rows.push(AuthRow {
                             auth_type: "Env vars".into(),
-                            status: "Active".into(),
+                            status,
                             scope: "read/write".into(),
                             active: mark(cloud::AuthSource::EnvVars),
                         });

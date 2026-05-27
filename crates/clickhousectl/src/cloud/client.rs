@@ -1,4 +1,5 @@
 use crate::cloud::types::DeleteResponse;
+use crate::dotenv::DotenvVars;
 use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
@@ -54,13 +55,33 @@ struct ResolvedAuth {
     base_url: String,
 }
 
-/// Walk the precedence ladder once. Order: CLI flags, credentials file, env
-/// vars, OAuth tokens. Errors only when CLI flags are half-set (key without
-/// secret or vice versa) or when nothing usable is configured.
+/// Read an env var, falling back to the in-memory `.env` snapshot.
+///
+/// Real exported env vars always win. The `.env` snapshot is consulted only
+/// when the var is unset in the process environment.
+fn env_or_dotenv(key: &str, dotenv: &DotenvVars) -> Option<String> {
+    env::var(key)
+        .ok()
+        .or_else(|| dotenv.get(key).map(String::from))
+}
+
 fn resolve_auth(
     api_key: Option<&str>,
     api_secret: Option<&str>,
     url_override: Option<&str>,
+) -> Result<ResolvedAuth> {
+    resolve_auth_with_dotenv(api_key, api_secret, url_override, crate::dotenv::get())
+}
+
+/// Walk the precedence ladder once. Order: CLI flags, credentials file, env
+/// vars (with `.env` fallback), OAuth tokens. Errors only when CLI flags
+/// are half-set (key without secret or vice versa) or when nothing usable
+/// is configured.
+fn resolve_auth_with_dotenv(
+    api_key: Option<&str>,
+    api_secret: Option<&str>,
+    url_override: Option<&str>,
+    dotenv: &DotenvVars,
 ) -> Result<ResolvedAuth> {
     let normalized_default = || {
         url_override
@@ -92,8 +113,8 @@ fn resolve_auth(
         });
     }
 
-    let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-    let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+    let env_key = env_or_dotenv("CLICKHOUSE_CLOUD_API_KEY", dotenv);
+    let env_secret = env_or_dotenv("CLICKHOUSE_CLOUD_API_SECRET", dotenv);
     if let (Some(key), Some(secret)) = (env_key, env_secret) {
         return Ok(ResolvedAuth {
             creds: ResolvedCreds::Basic { key, secret },
@@ -118,7 +139,7 @@ fn resolve_auth(
     }
 
     Err(CloudError {
-        message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
+        message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET (also picked up from a `.env` file walking up from the current directory), or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
     })
 }
 
@@ -130,6 +151,28 @@ fn resolve_auth(
 /// Returns `None` if nothing usable is configured.
 pub fn resolve_active_auth_source() -> Option<AuthSource> {
     resolve_auth(None, None, None).ok().map(|r| r.source)
+}
+
+/// The path of the `.env` file that supplied env-tier credentials, if any.
+///
+/// Returns `Some(path)` only when **both** `CLICKHOUSE_CLOUD_API_KEY` and
+/// `CLICKHOUSE_CLOUD_API_SECRET` are absent from the real environment and
+/// present in `.env`. If one is exported and the other comes from `.env`,
+/// provenance is mixed and we return `None` so labels don't imply the file
+/// was the sole source.
+pub fn dotenv_env_provenance() -> Option<std::path::PathBuf> {
+    let dotenv = crate::dotenv::get();
+    let real_key = env::var("CLICKHOUSE_CLOUD_API_KEY").is_ok();
+    let real_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").is_ok();
+    if !real_key
+        && !real_secret
+        && dotenv.get("CLICKHOUSE_CLOUD_API_KEY").is_some()
+        && dotenv.get("CLICKHOUSE_CLOUD_API_SECRET").is_some()
+    {
+        dotenv.source_path().map(|p| p.to_path_buf())
+    } else {
+        None
+    }
 }
 
 impl AuthSource {
@@ -153,8 +196,11 @@ impl AuthSource {
                 crate::cloud::credentials::credentials_path().display()
             ),
             AuthSource::EnvVars => {
-                "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)"
-                    .to_string()
+                let base = "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
+                match dotenv_env_provenance() {
+                    Some(path) => format!("{base} (loaded from {})", path.display()),
+                    None => base.to_string(),
+                }
             }
             AuthSource::OAuthTokens => format!(
                 "OAuth tokens ({})",
@@ -1096,5 +1142,146 @@ mod tests {
         });
         assert!(!err.message.contains("Hint:"));
         assert_eq!(err.message, "Forbidden");
+    }
+
+    // ── Dotenv resolver tests ──────────────────────────────────────────────
+    //
+    // These mutate `CLICKHOUSE_CLOUD_API_KEY`/`_SECRET` in the process env to
+    // exercise precedence. `std::env::set_var`/`remove_var` are `unsafe` in
+    // edition 2024 because they race with `getenv` across threads, so we
+    // serialize the env-mutating tests with a single mutex and snapshot/
+    // restore the prior values around each test body. The unsafe is bounded
+    // to test code under a guard — no production path mutates env.
+
+    use std::sync::Mutex;
+
+    fn env_test_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
+
+    /// RAII guard: snapshot the two cloud-credential env vars on construct,
+    /// restore them on drop. Combine with `env_test_lock()`.
+    struct EnvSnapshot {
+        key: Option<String>,
+        secret: Option<String>,
+    }
+
+    impl EnvSnapshot {
+        fn capture() -> Self {
+            Self {
+                key: env::var("CLICKHOUSE_CLOUD_API_KEY").ok(),
+                secret: env::var("CLICKHOUSE_CLOUD_API_SECRET").ok(),
+            }
+        }
+
+        fn clear(&self) {
+            // SAFETY: serialized via `env_test_lock()`; restored on drop.
+            unsafe {
+                env::remove_var("CLICKHOUSE_CLOUD_API_KEY");
+                env::remove_var("CLICKHOUSE_CLOUD_API_SECRET");
+            }
+        }
+
+        fn set(&self, key: Option<&str>, secret: Option<&str>) {
+            // SAFETY: serialized via `env_test_lock()`; restored on drop.
+            unsafe {
+                match key {
+                    Some(v) => env::set_var("CLICKHOUSE_CLOUD_API_KEY", v),
+                    None => env::remove_var("CLICKHOUSE_CLOUD_API_KEY"),
+                }
+                match secret {
+                    Some(v) => env::set_var("CLICKHOUSE_CLOUD_API_SECRET", v),
+                    None => env::remove_var("CLICKHOUSE_CLOUD_API_SECRET"),
+                }
+            }
+        }
+    }
+
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            // SAFETY: serialized via `env_test_lock()`.
+            unsafe {
+                match &self.key {
+                    Some(v) => env::set_var("CLICKHOUSE_CLOUD_API_KEY", v),
+                    None => env::remove_var("CLICKHOUSE_CLOUD_API_KEY"),
+                }
+                match &self.secret {
+                    Some(v) => env::set_var("CLICKHOUSE_CLOUD_API_SECRET", v),
+                    None => env::remove_var("CLICKHOUSE_CLOUD_API_SECRET"),
+                }
+            }
+        }
+    }
+
+    fn dotenv_with(pairs: &[(&str, &str)]) -> DotenvVars {
+        let mut map = std::collections::HashMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), v.to_string());
+        }
+        // SAFETY: in-process, no env mutation — DotenvVars is data-only.
+        DotenvVars::from_map_for_tests(map, None)
+    }
+
+    #[test]
+    fn dotenv_only_resolves_to_env_source() {
+        let _g = env_test_lock().lock().unwrap();
+        let snap = EnvSnapshot::capture();
+        snap.clear();
+
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let resolved = resolve_auth_with_dotenv(None, None, None, &dotenv).unwrap();
+        assert_eq!(resolved.source, AuthSource::EnvVars);
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "dot_k");
+                assert_eq!(secret, "dot_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+    }
+
+    #[test]
+    fn real_env_overrides_dotenv() {
+        let _g = env_test_lock().lock().unwrap();
+        let snap = EnvSnapshot::capture();
+        snap.set(Some("shell_k"), Some("shell_s"));
+
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let resolved = resolve_auth_with_dotenv(None, None, None, &dotenv).unwrap();
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "shell_k");
+                assert_eq!(secret, "shell_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+    }
+
+    #[test]
+    fn mixed_real_and_dotenv() {
+        let _g = env_test_lock().lock().unwrap();
+        let snap = EnvSnapshot::capture();
+        // Key from shell, secret comes from dotenv.
+        snap.set(Some("shell_k"), None);
+
+        let dotenv = dotenv_with(&[("CLICKHOUSE_CLOUD_API_SECRET", "dot_s")]);
+        let resolved = resolve_auth_with_dotenv(None, None, None, &dotenv).unwrap();
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "shell_k");
+                assert_eq!(secret, "dot_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+        // Mixed provenance: helper must return None (we don't want the
+        // status line to imply the .env was the sole source).
+        assert!(dotenv_env_provenance().is_none());
     }
 }

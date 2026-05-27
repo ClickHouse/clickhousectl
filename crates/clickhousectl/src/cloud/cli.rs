@@ -107,6 +107,8 @@ CONTEXT FOR AGENTS:
   Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY — they can list and
   inspect resources but cannot create, modify, or delete.
   For write operations (create, update, delete services, etc.), use --api-key and --api-secret.
+  You can also set CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET (also picked up from a
+  `.env` file walking up from the current directory) — functionally identical to the flags.
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   Related: use `clickhousectl cloud auth status` to verify.")]
     Login {
@@ -179,6 +181,9 @@ pub enum CloudCommands {
 CONTEXT FOR AGENTS:
   Use `login --api-key X --api-secret Y` for full read/write access.
   Default `login` opens a browser for OAuth (read-only access only — cannot create, modify, or delete resources).
+  API key + secret can also come from CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET — these
+  are also picked up from a `.env` file walking up from the current directory (closest file wins;
+  real exported env vars override the file per key).
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
   `logout` clears all saved credentials (OAuth tokens and API keys).
   Related: `clickhousectl cloud org list` to verify credentials work.")]
