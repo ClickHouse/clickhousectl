@@ -289,6 +289,10 @@ jobs:
     needs: build-wheels
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    # PyPI trusted publishing recommends binding the publish job to an
+    # environment so the OIDC subject includes `environment:pypi`, which is
+    # pinned on PyPI's trusted-publisher config for the project.
+    environment: pypi
     # `id-token: write` is required for PyPI OIDC trusted publishing. The
     # publisher action picks up OIDC automatically when no token input is
     # provided.
