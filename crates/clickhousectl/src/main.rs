@@ -256,19 +256,18 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 let dotenv_secret = dotenv_snapshot.get("CLICKHOUSE_CLOUD_API_SECRET");
                 let has_key = shell_key.is_some() || dotenv_key.is_some();
                 let has_secret = shell_secret.is_some() || dotenv_secret.is_some();
-                let from_dotenv =
-                    (shell_key.is_none() && dotenv_key.is_some())
-                        || (shell_secret.is_none() && dotenv_secret.is_some());
 
                 match (has_key, has_secret) {
                     (true, true) => {
-                        let status = if from_dotenv {
-                            match dotenv_snapshot.source_path() {
-                                Some(p) => format!("Active (from {})", p.display()),
-                                None => "Active (from .env)".into(),
-                            }
-                        } else {
-                            "Active".into()
+                        // Only label the `.env` path when BOTH credentials
+                        // come exclusively from it — otherwise the status
+                        // would imply the file was the source even though
+                        // one value is actually exported in the shell. Use
+                        // the same rule as `dotenv_env_provenance()` so the
+                        // table and `--debug describe()` stay consistent.
+                        let status = match cloud::dotenv_env_provenance() {
+                            Some(path) => format!("Active (from {})", path.display()),
+                            None => "Active".into(),
                         };
                         rows.push(AuthRow {
                             auth_type: "Env vars".into(),
