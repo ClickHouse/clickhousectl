@@ -40,16 +40,20 @@ impl DotenvVars {
     }
 }
 
-/// Parse the nearest `.env` file walking up from `start_dir` to the
-/// filesystem root. Only keys starting with `CLICKHOUSE_` are retained.
+/// Parse `dir/.env` if it exists. Only keys starting with `CLICKHOUSE_`
+/// are retained.
 ///
 /// Errors are swallowed — missing files, unreadable files, and malformed
 /// lines all yield an empty result rather than failing the command. `.env`
-/// is strictly opportunistic.
-pub fn load_from(start_dir: &Path) -> DotenvVars {
-    let Some(path) = find_env_file(start_dir) else {
+/// is strictly opportunistic. We deliberately do NOT walk up to parent
+/// directories: an ancestor `.env` could be in a directory the user can't
+/// read (or in someone else's home), and surprise credential pickup is
+/// worse than the marginal convenience of cross-directory discovery.
+pub fn load_from(dir: &Path) -> DotenvVars {
+    let path = dir.join(".env");
+    if !path.is_file() {
         return DotenvVars::empty();
-    };
+    }
 
     let iter = match dotenvy::from_path_iter(&path) {
         Ok(iter) => iter,
@@ -70,24 +74,12 @@ pub fn load_from(start_dir: &Path) -> DotenvVars {
     }
 }
 
-/// Convenience wrapper that starts the walk from `std::env::current_dir()`.
+/// Convenience wrapper that reads `.env` from `std::env::current_dir()`.
 pub fn load() -> DotenvVars {
     match std::env::current_dir() {
         Ok(cwd) => load_from(&cwd),
         Err(_) => DotenvVars::empty(),
     }
-}
-
-fn find_env_file(start_dir: &Path) -> Option<PathBuf> {
-    let mut current: Option<&Path> = Some(start_dir);
-    while let Some(dir) = current {
-        let candidate = dir.join(".env");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        current = dir.parent();
-    }
-    None
 }
 
 static DOTENV: OnceLock<DotenvVars> = OnceLock::new();
@@ -126,39 +118,25 @@ mod tests {
     }
 
     #[test]
-    fn walks_up_to_parent() {
+    fn does_not_read_parent_env() {
+        // A `.env` in an ancestor directory must NOT be picked up — we look
+        // only in the directory passed to `load_from`.
         let parent = tempfile::tempdir().unwrap();
         write_env(parent.path(), "CLICKHOUSE_CLOUD_API_KEY=from_parent\n");
         let child = parent.path().join("child");
         fs::create_dir(&child).unwrap();
         let loaded = load_from(&child);
-        assert_eq!(
-            loaded.get("CLICKHOUSE_CLOUD_API_KEY"),
-            Some("from_parent")
-        );
-        assert_eq!(
-            loaded.source_path(),
-            Some(parent.path().join(".env").as_path())
-        );
-    }
-
-    #[test]
-    fn closest_wins() {
-        let parent = tempfile::tempdir().unwrap();
-        write_env(parent.path(), "CLICKHOUSE_CLOUD_API_KEY=parent\n");
-        let child = parent.path().join("child");
-        fs::create_dir(&child).unwrap();
-        write_env(&child, "CLICKHOUSE_CLOUD_API_KEY=child\n");
-        let loaded = load_from(&child);
-        assert_eq!(loaded.get("CLICKHOUSE_CLOUD_API_KEY"), Some("child"));
-        assert_eq!(loaded.source_path(), Some(child.join(".env").as_path()));
-    }
-
-    #[test]
-    fn stops_at_filesystem_root_without_panic() {
-        // Walking up from `/` should produce a finite (empty) result.
-        let loaded = load_from(Path::new("/"));
         assert!(loaded.get("CLICKHOUSE_CLOUD_API_KEY").is_none());
+        assert!(loaded.source_path().is_none());
+    }
+
+    #[test]
+    fn missing_env_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        // No `.env` written.
+        let loaded = load_from(dir.path());
+        assert!(loaded.get("CLICKHOUSE_CLOUD_API_KEY").is_none());
+        assert!(loaded.source_path().is_none());
     }
 
     #[test]

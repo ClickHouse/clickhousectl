@@ -257,14 +257,14 @@ export CLICKHOUSE_CLOUD_API_KEY=your-key
 export CLICKHOUSE_CLOUD_API_SECRET=your-secret
 ```
 
-Or place them in a `.env` file in your project (or any ancestor directory) — `clickhousectl` walks up from the current directory and picks up the closest `.env`:
+Or place them in a `.env` file in your project's current working directory:
 
 ```env
 CLICKHOUSE_CLOUD_API_KEY=your-key
 CLICKHOUSE_CLOUD_API_SECRET=your-secret
 ```
 
-A `.env` value is treated identically to an exported environment variable. Real exported variables always override the file, key by key. Only entries that start with `CLICKHOUSE_` are read — everything else is ignored. Add `.env` to your `.gitignore`.
+A `.env` value is treated identically to an exported environment variable. Real exported variables always override the file, key by key. Only `CLICKHOUSE_`-prefixed entries are read; everything else is ignored. The file is read only from the current directory. Add `.env` to your `.gitignore`.
 
 Or pass credentials directly via flags on any command:
 ```bash
