@@ -266,9 +266,13 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           # Force the wheel version to match the release tag in case the in-repo
           # Cargo.toml was not bumped before tagging. Mirrors the npm step above.
-          sed -i.bak -E "0,/^version = \"[^\"]*\"$/s//version = \"${VERSION}\"/" \
-            crates/clickhousectl/Cargo.toml
-          rm crates/clickhousectl/Cargo.toml.bak
+          # awk (not `sed -i`) so this is portable to the BSD sed on macOS
+          # runners, where the GNU-only `0,/re/` range silently no-ops.
+          f=crates/clickhousectl/Cargo.toml
+          awk -v ver="$VERSION" \
+            'done!=1 && /^version = "[^"]*"$/ { print "version = \"" ver "\""; done=1; next } { print }' \
+            "$f" > "$f.tmp"
+          mv "$f.tmp" "$f"
 
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
