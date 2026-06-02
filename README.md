@@ -263,20 +263,18 @@ clickhousectl cloud auth login --interactive
 
 Credentials are saved to `.clickhouse/credentials.json` (project-local).
 
-You can also use environment variables:
+You can also use environment variables, either exported in your session:
 ```bash
 export CLICKHOUSE_CLOUD_API_KEY=your-key
 export CLICKHOUSE_CLOUD_API_SECRET=your-secret
 ```
 
-Or place them in a `.env` file in your project's current working directory:
+Or place them in a `.env` file (only read from your current working directory):
 
 ```env
 CLICKHOUSE_CLOUD_API_KEY=your-key
 CLICKHOUSE_CLOUD_API_SECRET=your-secret
 ```
-
-A `.env` value is treated identically to an exported environment variable. Real exported variables always override the file, key by key. Only `CLICKHOUSE_`-prefixed entries are read; everything else is ignored. The file is read only from the current directory. Add `.env` to your `.gitignore`.
 
 Or pass credentials directly via flags on any command:
 ```bash
@@ -292,7 +290,12 @@ clickhousectl cloud auth status    # Show current auth state (including read-onl
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: CLI flags > `.clickhouse/credentials.json` > environment variables (incl. `.env`) > OAuth tokens.
+Credential resolution order: 
+1. CLI flags
+2. `.clickhouse/credentials.json`
+3. Environment variables exported in your session
+4. Environment variables from `.env`
+5. OAuth tokens.
 
 ### Debugging which credential source was used
 
