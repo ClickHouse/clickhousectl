@@ -2351,8 +2351,8 @@ pub async fn member_list(
             email: String,
             #[tabled(rename = "User ID")]
             user_id: String,
-            #[tabled(rename = "Role")]
-            role: String,
+            #[tabled(rename = "Roles")]
+            roles: String,
             #[tabled(rename = "Name")]
             name: String,
         }
@@ -2361,7 +2361,12 @@ pub async fn member_list(
             .map(|m| Row {
                 email: m.email.clone(),
                 user_id: m.user_id.clone(),
-                role: m.role.to_string(),
+                roles: m
+                    .assigned_roles
+                    .iter()
+                    .map(|r| r.role_name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 name: m.name.clone(),
             })
             .collect();
@@ -2459,8 +2464,8 @@ pub async fn invitation_list(
             email: String,
             #[tabled(rename = "ID")]
             id: String,
-            #[tabled(rename = "Role")]
-            role: String,
+            #[tabled(rename = "Roles")]
+            roles: String,
             #[tabled(rename = "Expires")]
             expires: String,
         }
@@ -2469,7 +2474,12 @@ pub async fn invitation_list(
             .map(|inv| Row {
                 email: inv.email.clone(),
                 id: inv.id.to_string(),
-                role: inv.role.to_string(),
+                roles: inv
+                    .assigned_roles
+                    .iter()
+                    .map(|r| r.role_name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 expires: inv.expire_at.to_rfc3339(),
             })
             .collect();

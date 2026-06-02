@@ -391,6 +391,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 invitation.email, invitation_email_for_assert,
                 "invitation create echoed unexpected email"
             );
+            #[cfg(feature = "deprecated-fields")]
             assert_eq!(
                 invitation.role.to_string(),
                 InvitationPostRequestRole::Developer.to_string(),
@@ -453,6 +454,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             )
                             .into());
                         }
+                        #[cfg(feature = "deprecated-fields")]
                         if fetched.role.to_string() != "developer" {
                             return Err(format!(
                                 "invitation get returned wrong role {}; wanted developer",

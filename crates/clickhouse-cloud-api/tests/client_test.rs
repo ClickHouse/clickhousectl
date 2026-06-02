@@ -393,6 +393,7 @@ async fn get_invitation() {
     let resp = c.invitation_get("org-1", "inv-1").await.unwrap();
     let inv = resp.result.unwrap();
     assert_eq!(inv.email, "bob@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(inv.role, InvitationRole::Admin);
 }
 
@@ -564,8 +565,11 @@ async fn list_members() {
     let resp = client.member_get_list("org-1").await.unwrap();
     let members = resp.result.unwrap();
     assert_eq!(members.len(), 2);
-    assert_eq!(members[0].role, MemberRole::Admin);
-    assert_eq!(members[1].role, MemberRole::Developer);
+    #[cfg(feature = "deprecated-fields")]
+    {
+        assert_eq!(members[0].role, MemberRole::Admin);
+        assert_eq!(members[1].role, MemberRole::Developer);
+    }
 }
 
 #[tokio::test]
@@ -586,6 +590,7 @@ async fn get_member() {
     let resp = c.member_get("org-1", "user-1").await.unwrap();
     let member = resp.result.unwrap();
     assert_eq!(member.name, "Alice");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
 
@@ -611,6 +616,8 @@ async fn update_member() {
     };
     let resp = c.member_update("org-1", "user-1", &body).await.unwrap();
     let member = resp.result.unwrap();
+    assert_eq!(member.email, "alice@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
 

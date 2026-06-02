@@ -112,6 +112,7 @@ fn deserialize_service() {
     assert_eq!(svc.provider, ServiceProvider::Aws);
     assert_eq!(svc.region, ServiceRegion::Us_east_1);
     assert_eq!(svc.state, ServiceState::Running);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(svc.tier, ServiceTier::Production);
     assert_eq!(svc.num_replicas, 3.0);
     assert!(svc.idle_scaling);
@@ -207,6 +208,7 @@ fn deserialize_member() {
     let member: Member = serde_json::from_str(json).unwrap();
     assert_eq!(member.name, "John Doe");
     assert_eq!(member.email, "john@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
 
@@ -220,6 +222,7 @@ fn deserialize_invitation() {
     }"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
     assert_eq!(inv.email, "new@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(inv.role, InvitationRole::Developer);
 }
 
@@ -821,6 +824,7 @@ fn member_ignores_extra_fields() {
     let json = r#"{"name":"Alice","role":"admin","department":"eng","mfa":true}"#;
     let m: Member = serde_json::from_str(json).unwrap();
     assert_eq!(m.name, "Alice");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(m.role, MemberRole::Admin);
 }
 
@@ -873,13 +877,36 @@ fn service_minimal_response() {
     assert!(svc.endpoints.is_empty());
 }
 
+#[cfg(feature = "deprecated-fields")]
 #[test]
 fn service_deserializes_deprecated_fields() {
-    // Deprecated fields are always deserialized — only serialization is gated.
+    // With the `deprecated-fields` feature on, deprecated fields exist on the
+    // struct and deserialize normally. Without the feature they are absent from
+    // the struct entirely (see `deprecated_fields_absent_by_default`).
     let json = r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(svc.min_total_memory_gb, 24.0);
     assert_eq!(svc.max_total_memory_gb, 48.0);
+}
+
+/// In the default build (no `deprecated-fields` feature) deprecated response
+/// fields don't exist on the struct, so they can't be read and never appear in
+/// serialized output. Deserializing a payload that contains them simply ignores
+/// the extra keys.
+#[cfg(not(feature = "deprecated-fields"))]
+#[test]
+fn deprecated_fields_absent_by_default() {
+    let svc: Service = serde_json::from_str(
+        r#"{"name":"svc","tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#,
+    )
+    .unwrap();
+    let v = serde_json::to_value(&svc).unwrap();
+    assert!(v.get("tier").is_none());
+    assert!(v.get("minTotalMemoryGb").is_none());
+    assert!(v.get("maxTotalMemoryGb").is_none());
+
+    let m: Member = serde_json::from_str(r#"{"name":"Alice","role":"admin"}"#).unwrap();
+    assert!(serde_json::to_value(&m).unwrap().get("role").is_none());
 }
 
 #[test]
@@ -1140,6 +1167,7 @@ fn deserialize_clickpipe_scaling() {
     }"#;
     let s: ClickPipeScaling = serde_json::from_str(json).unwrap();
     assert_eq!(s.replicas, 3);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(s.concurrency, 2);
 }
 

@@ -70,12 +70,12 @@ pub fn is_beta_operation(name: &str) -> bool {
 /// Response/display schema fields the OpenAPI spec marks `deprecated: true`,
 /// as `(RustStructName, specFieldName)` pairs.
 ///
-/// These fields are hidden during serialization unless the `deprecated-fields`
-/// Cargo feature is enabled — each one carries a
-/// `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`
-/// marker in [`crate::models`]. Deserialization is unaffected, so the values
-/// are still parsed into the structs; only serialized output (e.g. this crate's
-/// CLI rendering responses) omits them.
+/// These fields are removed from the struct entirely unless the
+/// `deprecated-fields` Cargo feature is enabled — each one carries a
+/// `#[cfg(feature = "deprecated-fields")]` marker in [`crate::models`]. By
+/// default the field does not exist (referencing it is a compile error and it
+/// never appears in serialized output); deserializing a payload that still
+/// contains it just ignores the extra key.
 ///
 /// Request-side schemas (`*Request`, `*Patch`, `*Input`) are intentionally
 /// excluded — callers may still need to send a deprecated field. The list is
@@ -91,7 +91,7 @@ pub fn is_beta_operation(name: &str) -> bool {
 /// The `deprecated_output_fields_match_spec` test in
 /// `tests/spec_coverage_test.rs` fails if this list drifts from the spec, and
 /// `deprecated_output_fields_hidden` fails if a field here lacks the
-/// `skip_serializing` marker in `models.rs` (or vice versa).
+/// `#[cfg(feature = "deprecated-fields")]` marker in `models.rs` (or vice versa).
 pub const DEPRECATED_OUTPUT_FIELDS: &[(&str, &str)] = &[
     ("ApiKey", "roles"),
     ("ClickPipeScaling", "concurrency"),

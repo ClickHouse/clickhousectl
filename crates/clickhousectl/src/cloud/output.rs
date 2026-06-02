@@ -4,9 +4,9 @@
 //! and renders it as an indented `key: value` tree. Driving human output
 //! through serde (rather than hand-written `println!` blocks) means it shares
 //! the library's serialization behaviour — most importantly, deprecated fields
-//! marked with `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`
-//! are absent from both `--json` and human output, so the CLI never surfaces a
-//! field the API has deprecated.
+//! marked with `#[cfg(feature = "deprecated-fields")]` are absent from the
+//! struct (and so from both `--json` and human output) by default, so the CLI
+//! never surfaces a field the API has deprecated.
 //!
 //! `serde_json`'s `preserve_order` feature keeps `to_value` output in struct
 //! declaration order, so fields render in a stable, source-defined order.
@@ -223,6 +223,11 @@ mod tests {
         );
     }
 
+    // In the default build the deprecated fields don't exist on `Service`, so
+    // `to_value` can't emit them. With the `deprecated-fields` feature they are
+    // present and serialized, so this default-behaviour assertion only holds
+    // without the feature.
+    #[cfg(not(feature = "deprecated-fields"))]
     #[test]
     fn service_get_render_omits_deprecated_tier() {
         // End-to-end: a real library `Service` rendered through the same

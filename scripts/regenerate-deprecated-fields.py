@@ -12,8 +12,7 @@ response schema even though it contains "Patch".
 Run this whenever the snapshot is refreshed. Paste the output into meta.rs.
 The `deprecated_output_fields_match_spec` test fails until the constant matches,
 and `deprecated_output_fields_hidden` fails until each field also carries the
-`#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`
-marker in models.rs.
+`#[cfg(feature = "deprecated-fields")]` marker in models.rs.
 
 Usage:
     python3 scripts/regenerate-deprecated-fields.py

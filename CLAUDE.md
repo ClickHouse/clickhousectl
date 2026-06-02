@@ -79,7 +79,9 @@ Sometimes the spec marks a field as required but the API rejects empty/default v
 
 #### Deprecated field hiding
 
-Response fields the spec marks `deprecated: true` (e.g. `Service.tier`, `ApiKey.roles`) are hidden from serialized output so consumers — including the CLI — don't surface a field the API has deprecated. Each carries `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]` in `models.rs`: deserialized normally, omitted from serialization unless the `deprecated-fields` Cargo feature is on. Only response schemas are marked; request-side schemas (`*Request`/`*Patch`/`*Input`) keep deprecated fields serializable so callers can still send them.
+Response fields the spec marks `deprecated: true` (e.g. `Service.tier`, `ApiKey.roles`) are removed from the struct entirely so consumers — including the CLI — can't even reference a field the API has deprecated. Each carries `#[cfg(feature = "deprecated-fields")]` in `models.rs`: absent from the struct by default (so reading it is a compile error and it never appears in output), present and serialized only when the `deprecated-fields` Cargo feature is on. Deserializing a payload that still contains the field just ignores the extra key (no schema uses `deny_unknown_fields`). Only response schemas are gated; request-side schemas (`*Request`/`*Patch`/`*Input`) keep deprecated fields so callers can still send them.
+
+Because the field is gone by default, table/list output built by direct field access (e.g. `member list`, `invitation list`) can no longer leak a deprecated field — the compiler rejects it. Where a deprecated field had a non-deprecated replacement (e.g. `Member.role` → `assignedRoles`), the list column was switched to the replacement.
 
 The list is the `DEPRECATED_OUTPUT_FIELDS` constant in `src/meta.rs`. `scripts/regenerate-deprecated-fields.py` regenerates it from the snapshot; `deprecated_output_fields_match_spec` (drift vs spec) and `deprecated_output_fields_hidden` (constant vs the `models.rs` markers) in `spec_coverage_test.rs` keep all three in lockstep. The daily `check-openapi-drift.py` reports deprecation changes too.
 

@@ -613,9 +613,9 @@ fn is_field_nullable(prop: &Value) -> bool {
 
 struct FieldInfo {
     is_option: bool,
-    /// True if the field carries the
-    /// `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`
-    /// marker that hides it from serialized output by default.
+    /// True if the field carries the `#[cfg(feature = "deprecated-fields")]`
+    /// marker that removes it from the struct (and thus from output) unless the
+    /// `deprecated-fields` feature is enabled.
     deprecated_marker: bool,
 }
 
@@ -648,7 +648,7 @@ fn parse_model_fields(source: &str) -> HashMap<String, HashMap<String, FieldInfo
                 }
 
                 // Detect the deprecated-field hiding marker
-                if line.contains("not(feature = \"deprecated-fields\")") {
+                if line.contains("#[cfg(feature = \"deprecated-fields\")]") {
                     pending_deprecated_marker = true;
                 }
 
@@ -793,9 +793,9 @@ async fn deprecated_output_fields_match_live_spec() {
 }
 
 /// Every field declared in `DEPRECATED_OUTPUT_FIELDS` must carry the
-/// `skip_serializing` marker in `models.rs`, and no other field may carry it.
-/// This keeps the consumer-facing constant in lockstep with the actual serde
-/// behaviour that hides the fields.
+/// `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`, and no other
+/// field may carry it. This keeps the consumer-facing constant in lockstep with
+/// the fields that are actually removed from the struct by default.
 #[test]
 fn deprecated_output_fields_hidden() {
     let marked = model_deprecated_marked_fields(MODELS_RS);
@@ -815,8 +815,8 @@ fn deprecated_output_fields_hidden() {
 
     assert!(
         missing_markers.is_empty() && stray_markers.is_empty(),
-        "DEPRECATED_OUTPUT_FIELDS is out of sync with the skip_serializing markers in models.rs.\n\
-         Declared but not marked (add the cfg_attr marker): {:?}\n\
+        "DEPRECATED_OUTPUT_FIELDS is out of sync with the #[cfg(feature = \"deprecated-fields\")] markers in models.rs.\n\
+         Declared but not marked (add the #[cfg(feature = \"deprecated-fields\")] marker): {:?}\n\
          Marked but not declared (add to DEPRECATED_OUTPUT_FIELDS or remove the marker): {:?}",
         missing_markers,
         stray_markers,

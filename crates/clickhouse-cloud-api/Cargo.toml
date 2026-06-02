@@ -10,11 +10,12 @@ keywords = ["clickhouse", "cloud", "api", "client"]
 categories = ["api-bindings", "database"]
 
 [features]
-# When enabled, deprecated fields are serialized like any other field. By
-# default they are skipped during serialization (but always deserialized), so
-# consumers that render API responses — including this crate's own CLI — don't
-# surface fields the API has deprecated. See `DEPRECATED_OUTPUT_FIELDS` in
-# `src/meta.rs` for the affected fields.
+# When enabled, deprecated fields are present on the response structs and
+# serialized like any other field. By default they are removed from the structs
+# entirely (referencing one is a compile error and it never appears in output),
+# so consumers that render API responses — including this crate's own CLI —
+# can't surface a field the API has deprecated. See `DEPRECATED_OUTPUT_FIELDS`
+# in `src/meta.rs` for the affected fields.
 deprecated-fields = []
 
 [dependencies]

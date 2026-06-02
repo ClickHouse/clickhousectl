@@ -170,8 +170,9 @@ def parse_deprecated_output_fields() -> set[tuple[str, str]]:
     """Parse `DEPRECATED_OUTPUT_FIELDS` from meta.rs.
 
     The list mirrors `deprecated: true` properties on response-side schemas in
-    the spec. Each field carries a `skip_serializing` marker in models.rs so it
-    is hidden from serialized output by default.
+    the spec. Each field carries a `#[cfg(feature = "deprecated-fields")]` marker
+    in models.rs so it is removed from the struct (and thus from output) by
+    default.
     """
     if not META_RS.exists():
         return set()
@@ -745,7 +746,7 @@ def build_issue_body(
             "python3 scripts/regenerate-deprecated-fields.py",
             "```",
             "Then add/remove the matching",
-            '`#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`',
+            '`#[cfg(feature = "deprecated-fields")]`',
             "marker in `models.rs`.",
             "",
         ]
