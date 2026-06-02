@@ -7618,6 +7618,7 @@ pub struct ApiKey {
     pub key_suffix: String,
     #[serde(default)]
     pub name: String,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(default)]
     pub roles: Vec<String>,
     #[serde(default)]
@@ -8890,6 +8891,7 @@ pub struct ClickPipePubSubSource {
 /// `ClickPipeScaling` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeScaling {
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(default)]
     pub concurrency: i64,
     #[serde(rename = "replicaCpuMillicores", default)]
@@ -10272,6 +10274,7 @@ pub struct Invitation {
     pub expire_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub id: uuid::Uuid,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(default)]
     pub role: InvitationRole,
 }
@@ -10316,6 +10319,7 @@ pub struct Member {
     pub joined_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub name: String,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(default)]
     pub role: MemberRole,
     #[serde(rename = "userId", default)]
@@ -11456,12 +11460,14 @@ pub struct Service {
     pub max_replica_memory_gb: f64,
     #[serde(rename = "maxReplicas", default)]
     pub max_replicas: f64,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(rename = "maxTotalMemoryGb", default)]
     pub max_total_memory_gb: f64,
     #[serde(rename = "minReplicaMemoryGb", default)]
     pub min_replica_memory_gb: f64,
     #[serde(rename = "minReplicas", default)]
     pub min_replicas: f64,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(rename = "minTotalMemoryGb", default)]
     pub min_total_memory_gb: f64,
     #[serde(default)]
@@ -11486,6 +11492,7 @@ pub struct Service {
     pub state: ServiceState,
     #[serde(default)]
     pub tags: Vec<ResourceTagsV1>,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(default)]
     pub tier: ServiceTier,
     #[serde(rename = "transparentDataEncryptionKeyId", default)]
@@ -11789,12 +11796,14 @@ pub struct ServiceScalingPatchResponse {
     pub max_replica_memory_gb: f64,
     #[serde(rename = "maxReplicas", default)]
     pub max_replicas: f64,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(rename = "maxTotalMemoryGb", default)]
     pub max_total_memory_gb: f64,
     #[serde(rename = "minReplicaMemoryGb", default)]
     pub min_replica_memory_gb: f64,
     #[serde(rename = "minReplicas", default)]
     pub min_replicas: f64,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(rename = "minTotalMemoryGb", default)]
     pub min_total_memory_gb: f64,
     #[serde(default)]
@@ -11819,6 +11828,7 @@ pub struct ServiceScalingPatchResponse {
     pub state: ServiceScalingPatchResponseState,
     #[serde(default)]
     pub tags: Vec<ResourceTagsV1>,
+    #[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]
     #[serde(default)]
     pub tier: ServiceScalingPatchResponseTier,
     #[serde(rename = "transparentDataEncryptionKeyId", default)]

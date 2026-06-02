@@ -157,6 +157,50 @@ def spec_beta_operations(spec: dict) -> set[str]:
     return beta
 
 
+def is_request_side_schema(name: str) -> bool:
+    """Request-side schemas keep their deprecated fields serializable.
+
+    Note `*PatchResponse` ends in "Response", so it counts as a response schema
+    even though it contains "Patch".
+    """
+    return name.endswith("Request") or name.endswith("Patch") or name.endswith("Input")
+
+
+def parse_deprecated_output_fields() -> set[tuple[str, str]]:
+    """Parse `DEPRECATED_OUTPUT_FIELDS` from meta.rs.
+
+    The list mirrors `deprecated: true` properties on response-side schemas in
+    the spec. Each field carries a `skip_serializing` marker in models.rs so it
+    is hidden from serialized output by default.
+    """
+    if not META_RS.exists():
+        return set()
+    source = META_RS.read_text()
+    match = re.search(
+        r"pub\s+const\s+DEPRECATED_OUTPUT_FIELDS\s*:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return set()
+    return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
+
+
+def spec_deprecated_output_fields(spec: dict) -> set[tuple[str, str]]:
+    """Extract (PascalStructName, specFieldName) for `deprecated: true` props on
+    response-side schemas (request-side schemas are excluded)."""
+    fields = set()
+    schemas = spec.get("components", {}).get("schemas", {})
+    for spec_name, schema in schemas.items():
+        if is_request_side_schema(spec_name):
+            continue
+        props = schema.get("properties") or {}
+        for prop_name, prop in props.items():
+            if isinstance(prop, dict) and prop.get("deprecated") is True:
+                fields.add((pascalize(spec_name), prop_name))
+    return fields
+
+
 def parse_optionality_exemptions() -> set[tuple[str, str]]:
     """Parse `OPTIONALITY_EXEMPTIONS` from spec_coverage_test.rs.
 
@@ -498,12 +542,16 @@ def build_issue_body(
     missing_fields: list[dict] | None = None,
     snapshot_staleness: dict | None = None,
     beta_status_changes: dict | None = None,
+    deprecation_changes: dict | None = None,
 ) -> str:
     snap = snapshot_staleness or {}
     snap_total = sum(len(snap.get(k, set())) for k in ("added_ops", "removed_ops", "added_schemas", "removed_schemas"))
 
     beta = beta_status_changes or {}
     beta_total = len(beta.get("newly_beta", set())) + len(beta.get("graduated", set()))
+
+    dep = deprecation_changes or {}
+    dep_total = len(dep.get("newly_deprecated", set())) + len(dep.get("undeprecated", set()))
 
     lines = [
         "The live ClickHouse Cloud OpenAPI spec has operations or schemas that the",
@@ -524,6 +572,7 @@ def build_issue_body(
         f"| Missing struct fields | {len(missing_fields or [])} |",
         f"| Field optionality mismatches | {len(field_mismatches or [])} |",
         f"| Beta status changes | {beta_total} |",
+        f"| Deprecated output field changes | {dep_total} |",
         f"| Stale snapshot changes | {snap_total} |",
         "",
     ]
@@ -668,6 +717,39 @@ def build_issue_body(
             "",
         ]
 
+    # ---- Deprecated output field changes ----
+    if dep_total > 0:
+        lines += [
+            "## Deprecated Output Field Changes",
+            "",
+            "The live spec's `deprecated: true` markers on response-side schemas",
+            "have drifted from `DEPRECATED_OUTPUT_FIELDS` in",
+            "`crates/clickhouse-cloud-api/src/meta.rs`. Those fields are hidden from",
+            "serialized output (including this CLI's rendering) unless the",
+            "`deprecated-fields` Cargo feature is enabled.",
+            "",
+        ]
+        if dep.get("newly_deprecated"):
+            lines.append("**Newly deprecated response fields (add to `DEPRECATED_OUTPUT_FIELDS` + mark in `models.rs`):**")
+            for struct_name, field in sorted(dep["newly_deprecated"]):
+                lines.append(f"- `{struct_name}.{field}`")
+            lines.append("")
+        if dep.get("undeprecated"):
+            lines.append("**No longer deprecated (remove from `DEPRECATED_OUTPUT_FIELDS` + drop the marker in `models.rs`):**")
+            for struct_name, field in sorted(dep["undeprecated"]):
+                lines.append(f"- `{struct_name}.{field}`")
+            lines.append("")
+        lines += [
+            "Regenerate the list with:",
+            "```bash",
+            "python3 scripts/regenerate-deprecated-fields.py",
+            "```",
+            "Then add/remove the matching",
+            '`#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`',
+            "marker in `models.rs`.",
+            "",
+        ]
+
     # ---- Stale snapshot ----
     if snap_total > 0:
         lines += [
@@ -787,6 +869,16 @@ def main():
     }
     beta_total = sum(len(v) for v in beta_status_changes.values())
 
+    # Compare deprecated output fields: spec deprecated:true (response-side) vs
+    # meta.rs DEPRECATED_OUTPUT_FIELDS
+    declared_deprecated = parse_deprecated_output_fields()
+    live_deprecated = spec_deprecated_output_fields(live_spec)
+    deprecation_changes = {
+        "newly_deprecated": live_deprecated - declared_deprecated,
+        "undeprecated": declared_deprecated - live_deprecated,
+    }
+    dep_total = sum(len(v) for v in deprecation_changes.values())
+
     # Report
     total = (
         len(missing_ops)
@@ -795,6 +887,7 @@ def main():
         + len(field_mismatches)
         + len(missing_fields)
         + beta_total
+        + dep_total
         + snap_total
     )
 
@@ -808,6 +901,7 @@ def main():
     print(f"Missing fields:  {len(missing_fields)}", file=sys.stderr)
     print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
     print(f"Beta changes:    {beta_total}", file=sys.stderr)
+    print(f"Deprecation chg: {dep_total}", file=sys.stderr)
     print(f"Stale snapshot:  {snap_total}", file=sys.stderr)
 
     if total == 0:
@@ -823,6 +917,7 @@ def main():
         missing_fields,
         snapshot_staleness,
         beta_status_changes,
+        deprecation_changes,
     )
 
     if args.dry_run:

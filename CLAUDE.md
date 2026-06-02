@@ -77,6 +77,12 @@ Field optionality is maintained by hand. When the drift check or test flags a mi
 
 Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
 
+#### Deprecated field hiding
+
+Response fields the spec marks `deprecated: true` (e.g. `Service.tier`, `ApiKey.roles`) are hidden from serialized output so consumers — including the CLI — don't surface a field the API has deprecated. Each carries `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]` in `models.rs`: deserialized normally, omitted from serialization unless the `deprecated-fields` Cargo feature is on. Only response schemas are marked; request-side schemas (`*Request`/`*Patch`/`*Input`) keep deprecated fields serializable so callers can still send them.
+
+The list is the `DEPRECATED_OUTPUT_FIELDS` constant in `src/meta.rs`. `scripts/regenerate-deprecated-fields.py` regenerates it from the snapshot; `deprecated_output_fields_match_spec` (drift vs spec) and `deprecated_output_fields_hidden` (constant vs the `models.rs` markers) in `spec_coverage_test.rs` keep all three in lockstep. The daily `check-openapi-drift.py` reports deprecation changes too.
+
 ## Adding commands
 
 ### New local subcommand
@@ -91,14 +97,15 @@ Sometimes the spec marks a field as required but the API rejects empty/default v
 2. Add match arm in `run_cloud()` in `crates/clickhousectl/src/main.rs`
 3. Add method to `CloudClient` in `crates/clickhousectl/src/cloud/client.rs`
 4. Add request/response types to `crates/clickhousectl/src/cloud/types.rs` — use `#[serde(rename_all = "camelCase")]` (API uses camelCase) and `#[serde(skip_serializing_if = "Option::is_none")]` for optional fields
-5. Implement handler in `crates/clickhousectl/src/cloud/commands.rs` with the `--json` output pattern:
+5. Implement handler in `crates/clickhousectl/src/cloud/commands.rs` with the `--json` output pattern. For detail/get views (rendering a single resource), drive human output through `print_human` so it shares serde's behaviour — including deprecated-field hiding — instead of hand-writing `println!` lines:
    ```rust
    if json {
        println!("{}", serde_json::to_string_pretty(&data)?);
    } else {
-       println!("Human readable: {}", data.field);
+       print_human(&data)?;
    }
    ```
+   List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`.
 
 ClickHouse Cloud OpenAPI spec: https://api.clickhouse.cloud/v1
 

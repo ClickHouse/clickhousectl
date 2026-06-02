@@ -28,11 +28,26 @@ Additional rules:
 
 In `models.rs`, required non-nullable fields use bare types (`T`) and optional/nullable fields use `Option<T>`. All fields keep `#[serde(default)]` so deserialization is tolerant of partial data.
 
+### Deprecated field hiding
+
+The OpenAPI spec marks some response fields `deprecated: true` (e.g. `Service.tier`, `ApiKey.roles`, `Member.role`). Consumers that render API responses — including this crate's own CLI — generally shouldn't surface a field the API has deprecated, and for an agent reading CLI output a deprecated field is actively misleading.
+
+These fields carry a `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]` marker in `models.rs`. By default they are **deserialized normally** (the value is still available on the struct) but **omitted from serialization**, so `serde_json::to_value`/`to_string` output drops them. Enabling the `deprecated-fields` Cargo feature serializes them like any other field:
+
+```toml
+clickhouse-cloud-api = { version = "...", features = ["deprecated-fields"] }
+```
+
+Only response/display schemas are marked — request-side schemas (`*Request`, `*Patch`, `*Input`) keep their deprecated fields serializable, since callers may still need to send them. The full list is the `DEPRECATED_OUTPUT_FIELDS` constant in `src/meta.rs` (queryable via `is_deprecated_output_field`).
+
 ### Scripts
 
 ```bash
 # Show a JSON manifest of required/optional fields per schema
 python3 scripts/resolve-field-requirements.py
+
+# Regenerate the DEPRECATED_OUTPUT_FIELDS constant from the snapshot
+python3 scripts/regenerate-deprecated-fields.py
 
 # Check for drift between the live spec and the library (dry run)
 python3 scripts/check-openapi-drift.py --dry-run
@@ -77,6 +92,7 @@ The `spec_coverage_test` suite checks three things against the checked-in spec:
 1. Every OpenAPI operation has a matching `pub async fn` in `client.rs`
 2. Every OpenAPI schema has a matching `pub struct`/`pub enum` in `models.rs`
 3. Every field's `Option<T>` vs `T` matches the spec's required/optional semantics
+4. `DEPRECATED_OUTPUT_FIELDS` matches the spec's `deprecated: true` response fields, and each one carries the `skip_serializing` marker in `models.rs`
 
 There are also `#[ignore]`d variants that run the same checks against the live spec.
 

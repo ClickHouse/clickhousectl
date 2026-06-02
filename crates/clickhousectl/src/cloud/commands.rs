@@ -1,5 +1,6 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials;
+use crate::cloud::output::print_human;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
     BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
@@ -444,9 +445,7 @@ pub async fn org_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!("Organization: {}", org.name);
-        println!("  ID: {}", org.id);
-        println!("  Created: {}", org.created_at.to_rfc3339());
+        print_human(&org)?;
     }
     Ok(())
 }
@@ -523,26 +522,7 @@ pub async fn service_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service: {}", svc.name);
-        println!("  ID: {}", svc.id);
-        println!("  State: {}", svc.state);
-        println!("  Provider: {}", svc.provider);
-        println!("  Region: {}", svc.region);
-        println!("  Tier: {}", svc.tier);
-        println!("  Idle Scaling: {}", svc.idle_scaling);
-        if !svc.endpoints.is_empty() {
-            println!("  Endpoints:");
-            for ep in &svc.endpoints {
-                println!("    {} - {}:{}", ep.protocol, ep.host, ep.port);
-            }
-        }
-        if !svc.ip_access_list.is_empty() {
-            println!("  IP Access List:");
-            for ip in &svc.ip_access_list {
-                let desc = ip.description.as_deref().unwrap_or("");
-                println!("    {} {}", ip.source, desc);
-            }
-        }
+        print_human(&svc)?;
     }
     Ok(())
 }
@@ -864,27 +844,13 @@ pub async fn service_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
-        let svc = &response.service;
-        let password = &response.password;
-
         println!("Service created successfully!");
         println!();
-        println!("Service: {}", svc.name);
-        println!("  ID: {}", svc.id);
-        println!("  State: {}", svc.state);
-        println!("  Provider: {}", svc.provider);
-        println!("  Region: {}", svc.region);
-        println!("  Replicas: {}", svc.num_replicas);
-        println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
-        println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
-        if let Some(ep) = svc.endpoints.first() {
-            println!("  Host: {}", ep.host);
-            println!("  Port: {}", ep.port);
-        }
+        print_human(&response.service)?;
         println!();
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
-        println!("  Password: {}", password);
+        println!("  Password: {}", response.password);
     }
 
     if !no_enable_query && !json {
@@ -1318,54 +1284,9 @@ pub async fn clickpipe_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&clickpipe)?);
     } else {
-        println!("ClickPipe: {}", clickpipe.name);
-        println!("  ID: {}", clickpipe.id);
-        println!("  State: {}", clickpipe.state);
-        println!("  Service ID: {}", clickpipe.service_id);
-        println!("  Scaling:");
-        println!("    Replicas: {}", clickpipe.scaling.replicas);
-        println!("    CPU: {}m", clickpipe.scaling.replica_cpu_millicores);
-        println!("    Memory: {} GB", clickpipe.scaling.replica_memory_gb);
-        if let Some(source_type) = source_label(&clickpipe.source) {
-            println!("  Source: {}", source_type);
-        }
-        if !clickpipe.destination.database.is_empty() || !clickpipe.destination.table.is_empty() {
-            println!(
-                "  Destination: {}.{}",
-                clickpipe.destination.database, clickpipe.destination.table
-            );
-        }
-        if !clickpipe.destination.columns.is_empty() {
-            println!("  Columns:");
-            for col in &clickpipe.destination.columns {
-                println!("    {} ({})", col.name, col.r#type);
-            }
-        }
-        println!("  Created: {}", clickpipe.created_at.to_rfc3339());
-        println!("  Updated: {}", clickpipe.updated_at.to_rfc3339());
+        print_human(&clickpipe)?;
     }
     Ok(())
-}
-
-/// Identify which source variant is populated on a ClickPipeSource response.
-fn source_label(source: &clickhouse_cloud_api::models::ClickPipeSource) -> Option<&'static str> {
-    if source.object_storage.is_some() {
-        Some("objectStorage")
-    } else if source.kafka.is_some() {
-        Some("kafka")
-    } else if source.kinesis.is_some() {
-        Some("kinesis")
-    } else if source.postgres.is_some() {
-        Some("postgres")
-    } else if source.mysql.is_some() {
-        Some("mysql")
-    } else if source.mongodb.is_some() {
-        Some("mongodb")
-    } else if source.bigquery.is_some() {
-        Some("bigquery")
-    } else {
-        None
-    }
 }
 
 pub async fn clickpipe_delete(
@@ -1467,15 +1388,7 @@ pub async fn clickpipe_settings_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&settings)?);
     } else {
-        println!("ClickPipe Settings:");
-        let value = serde_json::to_value(&settings)?;
-        if let Some(obj) = value.as_object() {
-            for (key, val) in obj {
-                if !val.is_null() {
-                    println!("  {}: {}", key, val);
-                }
-            }
-        }
+        print_human(&settings)?;
     }
     Ok(())
 }
@@ -1967,11 +1880,7 @@ pub async fn backup_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&backup)?);
     } else {
-        println!("Backup: {}", backup.id);
-        println!("  Status: {}", backup.status);
-        println!("  Created: {}", backup.started_at.to_rfc3339());
-        println!("  Finished: {}", backup.finished_at.to_rfc3339());
-        println!("  Size: {}", format_bytes(backup.size_in_bytes));
+        print_human(&backup)?;
     }
     Ok(())
 }
@@ -2109,11 +2018,7 @@ pub async fn query_endpoint_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
-        println!("Query endpoint for service {}", service_id);
-        println!("  ID: {}", ep.id);
-        println!("  Roles: {}", ep.roles.join(", "));
-        println!("  OpenAPI Keys: {}", ep.open_api_keys.join(", "));
-        println!("  Allowed Origins: {}", ep.allowed_origins);
+        print_human(&ep)?;
     }
     Ok(())
 }
@@ -2324,9 +2229,7 @@ pub async fn private_endpoint_get_config(
     if json {
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
-        println!("Private endpoint configuration for service {}", service_id);
-        println!("  Endpoint Service ID: {}", config.endpoint_service_id);
-        println!("  Private DNS Hostname: {}", config.private_dns_hostname);
+        print_human(&config)?;
     }
     Ok(())
 }
@@ -2480,11 +2383,7 @@ pub async fn member_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&member)?);
     } else {
-        println!("Member: {}", member.email);
-        println!("  User ID: {}", member.user_id);
-        println!("  Role: {}", member.role);
-        println!("  Name: {}", member.name);
-        println!("  Joined: {}", member.joined_at.to_rfc3339());
+        print_human(&member)?;
     }
     Ok(())
 }
@@ -2617,11 +2516,7 @@ pub async fn invitation_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation: {}", inv.id);
-        println!("  Email: {}", inv.email);
-        println!("  Role: {}", inv.role);
-        println!("  Created: {}", inv.created_at.to_rfc3339());
-        println!("  Expires: {}", inv.expire_at.to_rfc3339());
+        print_human(&inv)?;
     }
     Ok(())
 }
@@ -2737,14 +2632,7 @@ pub async fn key_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&key)?);
     } else {
-        println!("API Key: {}", key.name);
-        println!("  ID: {}", key.id);
-        println!("  State: {}", key.state);
-        println!("  Roles: {}", key.roles.join(", "));
-        println!("  Created: {}", key.created_at.to_rfc3339());
-        if let Some(expires) = &key.expire_at {
-            println!("  Expires: {}", expires.to_rfc3339());
-        }
+        print_human(&key)?;
     }
     Ok(())
 }
@@ -2846,11 +2734,7 @@ pub async fn activity_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&activity)?);
     } else {
-        println!("Activity: {}", activity.id);
-        println!("  Type: {}", activity.r#type);
-        println!("  Actor Type: {}", activity.actor_type);
-        println!("  Actor ID: {}", activity.actor_id);
-        println!("  Created: {}", activity.created_at.to_rfc3339());
+        print_human(&activity)?;
     }
     Ok(())
 }
@@ -2872,13 +2756,7 @@ pub async fn backup_config_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
-        println!("Backup configuration for service {}", service_id);
-        println!("  Backup period: {} hours", config.backup_period_in_hours);
-        println!(
-            "  Retention: {} hours",
-            config.backup_retention_period_in_hours
-        );
-        println!("  Start time: {}", config.backup_start_time);
+        print_human(&config)?;
     }
     Ok(())
 }

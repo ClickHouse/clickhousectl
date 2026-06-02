@@ -9,6 +9,14 @@ homepage = "https://github.com/ClickHouse/clickhousectl"
 keywords = ["clickhouse", "cloud", "api", "client"]
 categories = ["api-bindings", "database"]
 
+[features]
+# When enabled, deprecated fields are serialized like any other field. By
+# default they are skipped during serialization (but always deserialized), so
+# consumers that render API responses — including this crate's own CLI — don't
+# surface fields the API has deprecated. See `DEPRECATED_OUTPUT_FIELDS` in
+# `src/meta.rs` for the affected fields.
+deprecated-fields = []
+
 [dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 serde = { version = "1", features = ["derive"] }

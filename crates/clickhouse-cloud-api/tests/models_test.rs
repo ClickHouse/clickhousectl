@@ -874,6 +874,46 @@ fn service_minimal_response() {
 }
 
 #[test]
+fn service_deserializes_deprecated_fields() {
+    // Deprecated fields are always deserialized — only serialization is gated.
+    let json = r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#;
+    let svc: Service = serde_json::from_str(json).unwrap();
+    assert_eq!(svc.min_total_memory_gb, 24.0);
+    assert_eq!(svc.max_total_memory_gb, 48.0);
+}
+
+#[test]
+#[cfg(not(feature = "deprecated-fields"))]
+fn service_hides_deprecated_fields_when_serializing() {
+    let svc: Service = serde_json::from_str(
+        r#"{"name":"svc","tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&svc).unwrap();
+    let obj = value.as_object().unwrap();
+    // Deprecated fields are omitted from serialized output by default.
+    assert!(!obj.contains_key("tier"), "tier should be hidden");
+    assert!(!obj.contains_key("minTotalMemoryGb"));
+    assert!(!obj.contains_key("maxTotalMemoryGb"));
+    // Non-deprecated fields are still present.
+    assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("svc"));
+}
+
+#[test]
+#[cfg(feature = "deprecated-fields")]
+fn service_shows_deprecated_fields_with_feature() {
+    let svc: Service = serde_json::from_str(
+        r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&svc).unwrap();
+    let obj = value.as_object().unwrap();
+    assert!(obj.contains_key("tier"));
+    assert!(obj.contains_key("minTotalMemoryGb"));
+    assert!(obj.contains_key("maxTotalMemoryGb"));
+}
+
+#[test]
 fn service_empty_object() {
     let svc: Service = serde_json::from_str("{}").unwrap();
     assert_eq!(svc.id, uuid::Uuid::default());

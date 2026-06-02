@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use clickhouse_cloud_api::BETA_OPERATIONS;
+use clickhouse_cloud_api::{BETA_OPERATIONS, DEPRECATED_OUTPUT_FIELDS};
 use serde_json::Value;
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -613,6 +613,10 @@ fn is_field_nullable(prop: &Value) -> bool {
 
 struct FieldInfo {
     is_option: bool,
+    /// True if the field carries the
+    /// `#[cfg_attr(not(feature = "deprecated-fields"), serde(skip_serializing))]`
+    /// marker that hides it from serialized output by default.
+    deprecated_marker: bool,
 }
 
 /// Parse models.rs to extract struct fields with their spec names and optionality.
@@ -634,12 +638,18 @@ fn parse_model_fields(source: &str) -> HashMap<String, HashMap<String, FieldInfo
             i += 1;
             let mut fields: HashMap<String, FieldInfo> = HashMap::new();
             let mut pending_rename: Option<String> = None;
+            let mut pending_deprecated_marker = false;
 
             while i < lines.len() {
                 let line = lines[i].trim();
 
                 if line == "}" {
                     break;
+                }
+
+                // Detect the deprecated-field hiding marker
+                if line.contains("not(feature = \"deprecated-fields\")") {
+                    pending_deprecated_marker = true;
                 }
 
                 // Extract rename from serde attribute
@@ -666,7 +676,14 @@ fn parse_model_fields(source: &str) -> HashMap<String, HashMap<String, FieldInfo
                             .to_string()
                     });
 
-                    fields.insert(spec_name, FieldInfo { is_option });
+                    fields.insert(
+                        spec_name,
+                        FieldInfo {
+                            is_option,
+                            deprecated_marker: pending_deprecated_marker,
+                        },
+                    );
+                    pending_deprecated_marker = false;
                 }
 
                 i += 1;
@@ -747,4 +764,155 @@ fn spec_beta_operation_ids(spec: &Value) -> BTreeSet<String> {
         }
     }
     ids
+}
+
+// ---------------------------------------------------------------------------
+// Deprecated output field hiding
+// ---------------------------------------------------------------------------
+
+/// Response-side deprecated fields that we deliberately keep visible in output,
+/// even though the spec marks them `deprecated: true`. Each entry is
+/// `("RustStructName", "specFieldName")`. Empty today — every deprecated
+/// response field is hidden. The `deprecated_output_fields_match_spec` test
+/// fails on a stale entry (one that no longer corresponds to a spec-deprecated
+/// response field) so this list can't rot.
+const DEPRECATED_OUTPUT_EXEMPTIONS: &[(&str, &str)] = &[];
+
+/// `DEPRECATED_OUTPUT_FIELDS` must mirror the `deprecated: true` properties on
+/// response-side schemas in the spec (minus `DEPRECATED_OUTPUT_EXEMPTIONS`).
+#[test]
+fn deprecated_output_fields_match_spec() {
+    assert_deprecated_output_fields_match(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn deprecated_output_fields_match_live_spec() {
+    let spec = load_live_spec().await;
+    assert_deprecated_output_fields_match(&spec);
+}
+
+/// Every field declared in `DEPRECATED_OUTPUT_FIELDS` must carry the
+/// `skip_serializing` marker in `models.rs`, and no other field may carry it.
+/// This keeps the consumer-facing constant in lockstep with the actual serde
+/// behaviour that hides the fields.
+#[test]
+fn deprecated_output_fields_hidden() {
+    let marked = model_deprecated_marked_fields(MODELS_RS);
+    let declared: BTreeSet<(String, String)> = DEPRECATED_OUTPUT_FIELDS
+        .iter()
+        .map(|(s, f)| (s.to_string(), f.to_string()))
+        .collect();
+
+    let missing_markers: Vec<_> = declared
+        .difference(&marked)
+        .map(|(s, f)| format!("{}.{}", s, f))
+        .collect();
+    let stray_markers: Vec<_> = marked
+        .difference(&declared)
+        .map(|(s, f)| format!("{}.{}", s, f))
+        .collect();
+
+    assert!(
+        missing_markers.is_empty() && stray_markers.is_empty(),
+        "DEPRECATED_OUTPUT_FIELDS is out of sync with the skip_serializing markers in models.rs.\n\
+         Declared but not marked (add the cfg_attr marker): {:?}\n\
+         Marked but not declared (add to DEPRECATED_OUTPUT_FIELDS or remove the marker): {:?}",
+        missing_markers,
+        stray_markers,
+    );
+}
+
+fn assert_deprecated_output_fields_match(spec: &Value) {
+    let exemptions: BTreeSet<(&str, &str)> =
+        DEPRECATED_OUTPUT_EXEMPTIONS.iter().copied().collect();
+    let spec_fields = spec_deprecated_output_fields(spec);
+
+    // Stale-exemption detection: an exemption must correspond to a field the
+    // spec actually marks deprecated on a response-side schema.
+    let stale: Vec<_> = exemptions
+        .iter()
+        .filter(|(s, f)| !spec_fields.contains(&((*s).to_string(), (*f).to_string())))
+        .map(|(s, f)| format!("({}, {})", s, f))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "Stale DEPRECATED_OUTPUT_EXEMPTIONS (no longer a deprecated response field):\n{}",
+        stale.join("\n")
+    );
+
+    let expected: BTreeSet<(String, String)> = spec_fields
+        .into_iter()
+        .filter(|(s, f)| !exemptions.contains(&(s.as_str(), f.as_str())))
+        .collect();
+    let declared: BTreeSet<(String, String)> = DEPRECATED_OUTPUT_FIELDS
+        .iter()
+        .map(|(s, f)| (s.to_string(), f.to_string()))
+        .collect();
+
+    let missing: Vec<_> = expected
+        .difference(&declared)
+        .map(|(s, f)| format!("{}.{}", s, f))
+        .collect();
+    let extra: Vec<_> = declared
+        .difference(&expected)
+        .map(|(s, f)| format!("{}.{}", s, f))
+        .collect();
+
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "DEPRECATED_OUTPUT_FIELDS drifted from the OpenAPI spec.\n\
+         New deprecated response fields in spec, missing from meta.rs: {:?}\n\
+         No longer deprecated (or not a response field), still in meta.rs: {:?}\n\
+         Regenerate with: python3 scripts/regenerate-deprecated-fields.py",
+        missing,
+        extra,
+    );
+}
+
+/// `(RustStructName, specFieldName)` for every `deprecated: true` property on a
+/// response-side schema. Request-side schemas (`*Request`, `*Patch`, `*Input`)
+/// are excluded — callers may still need to send a deprecated field.
+fn spec_deprecated_output_fields(spec: &Value) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let schemas = spec["components"]["schemas"].as_object().unwrap();
+
+    for (spec_name, schema) in schemas {
+        if is_request_side_schema(spec_name) {
+            continue;
+        }
+        let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+            continue;
+        };
+        for (prop_name, prop) in props {
+            if prop.get("deprecated").and_then(Value::as_bool) == Some(true) {
+                out.insert((pascalize_identifier(spec_name), prop_name.clone()));
+            }
+        }
+    }
+
+    out
+}
+
+/// Request-side schemas keep their deprecated fields serializable so callers can
+/// still send them. Note `*PatchResponse` ends in "Response", so it is treated
+/// as a response schema even though it contains "Patch".
+fn is_request_side_schema(schema_name: &str) -> bool {
+    schema_name.ends_with("Request")
+        || schema_name.ends_with("Patch")
+        || schema_name.ends_with("Input")
+}
+
+/// `(RustStructName, specFieldName)` for every field in `models.rs` carrying the
+/// deprecated-field hiding marker.
+fn model_deprecated_marked_fields(source: &str) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    for (struct_name, fields) in parse_model_fields(source) {
+        for (spec_field, info) in fields {
+            if info.deprecated_marker {
+                out.insert((struct_name.clone(), spec_field));
+            }
+        }
+    }
+    out
 }
