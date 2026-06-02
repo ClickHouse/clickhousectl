@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-837009",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-838082",
       "email": "support@clickhouse.com"
     }
   },
@@ -17069,6 +17069,15 @@
           }
         }
       },
+      "CustomPrivateDnsMapping": {
+        "properties": {
+          "privateDnsName": {
+            "description": "Custom private DNS name managed by the DNS controller. No Route53 hosted zone is required.",
+            "type": "string",
+            "example": "my-service.example.com"
+          }
+        }
+      },
       "CreateReversePrivateEndpoint": {
         "properties": {
           "description": {
@@ -17138,6 +17147,13 @@
               "null"
             ],
             "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
+          },
+          "customPrivateDnsMappings": {
+            "type": "array",
+            "description": "Private Preview. Optional list of custom private DNS mappings. Each mapping points a private DNS name at this endpoint without creating a Route53 hosted zone.",
+            "items": {
+              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
+            }
           }
         }
       },
@@ -17210,6 +17226,13 @@
               "null"
             ],
             "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
+          },
+          "customPrivateDnsMappings": {
+            "type": "array",
+            "description": "Private Preview. Optional list of custom private DNS mappings. Each mapping points a private DNS name at this endpoint without creating a Route53 hosted zone.",
+            "items": {
+              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
+            }
           },
           "id": {
             "description": "Reverse private endpoint ID.",
