@@ -66,6 +66,18 @@ fn real_env_lookup(key: &str) -> Option<String> {
     env::var(key).ok()
 }
 
+/// Loader for the `.clickhouse/credentials.json` tier. Production passes
+/// `credentials::load_credentials`; tests pass a closure over a synthetic
+/// value (or `None`). Injected for the same reason as `EnvLookup`: the file
+/// lives under the process cwd, which `cargo test` does not isolate, so a
+/// developer's saved project credentials would otherwise win precedence over
+/// the env tier these tests are exercising.
+type CredentialsLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::credentials::Credentials>;
+
+/// Loader for the OAuth token tier (`.clickhouse/tokens.json`). Injected for
+/// the same reason as `CredentialsLookup`.
+type TokensLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::auth::TokenStore>;
+
 /// Treat empty as absent. An exported-but-empty variable (`CLICKHOUSE_..=`)
 /// or a bare `KEY=` line in `.env` yields `Some("")`; collapsing it to `None`
 /// here is the single chokepoint that keeps the resolver, the provenance
@@ -91,6 +103,8 @@ fn resolve_auth(
         url_override,
         crate::dotenv::get(),
         &real_env_lookup,
+        &crate::cloud::credentials::load_credentials,
+        &crate::cloud::auth::load_tokens,
     )
 }
 
@@ -99,14 +113,18 @@ fn resolve_auth(
 /// are half-set (key without secret or vice versa) or when nothing usable
 /// is configured.
 ///
-/// `env_lookup` is the injection point that lets tests feed a controlled
-/// snapshot of the process environment without mutating it.
+/// `env_lookup`, `load_credentials`, and `load_tokens` are the injection
+/// points that let tests feed a controlled snapshot of every source without
+/// mutating the process environment or reading the real `.clickhouse/` files
+/// under the (un-isolated) test cwd.
 fn resolve_auth_with_sources(
     api_key: Option<&str>,
     api_secret: Option<&str>,
     url_override: Option<&str>,
     dotenv: &DotenvVars,
     env_lookup: EnvLookup<'_>,
+    load_credentials: CredentialsLookup<'_>,
+    load_tokens: TokensLookup<'_>,
 ) -> Result<ResolvedAuth> {
     let normalized_default = || {
         url_override
@@ -128,7 +146,7 @@ fn resolve_auth_with_sources(
         });
     }
 
-    if let Some(creds) = crate::cloud::credentials::load_credentials()
+    if let Some(creds) = load_credentials()
         && let (Some(key), Some(secret)) = (creds.api_key, creds.api_secret)
     {
         return Ok(ResolvedAuth {
@@ -148,7 +166,7 @@ fn resolve_auth_with_sources(
         });
     }
 
-    if let Some(tokens) = crate::cloud::auth::load_tokens()
+    if let Some(tokens) = load_tokens()
         && crate::cloud::auth::is_token_valid(&tokens)
     {
         let base_url = url_override
@@ -1205,6 +1223,13 @@ mod tests {
     // 2024 because it races with `getenv` across threads, and a mutex
     // around the test body cannot prevent concurrently-running tests from
     // calling `env::var` and tripping that race.
+    //
+    // The credentials-file and OAuth-token tiers are injected as no-op
+    // loaders here. Both sit *above* the env tier in the ladder and read
+    // files under the process cwd, which `cargo test` does not isolate —
+    // without stubbing them, a developer's saved `.clickhouse/credentials.json`
+    // would short-circuit the resolver before it ever reaches the env/dotenv
+    // logic these tests assert on.
 
     fn dotenv_with(pairs: &[(&str, &str)]) -> DotenvVars {
         let mut map = std::collections::HashMap::new();
@@ -1222,6 +1247,52 @@ mod tests {
         move |k: &str| map.get(k).cloned()
     }
 
+    // No-op loaders for the file-backed tiers, so the env/dotenv precedence
+    // tests don't depend on whatever `.clickhouse/` files happen to live under
+    // the test cwd.
+    fn no_credentials() -> Option<crate::cloud::credentials::Credentials> {
+        None
+    }
+
+    fn no_tokens() -> Option<crate::cloud::auth::TokenStore> {
+        None
+    }
+
+    // A populated credentials file, for asserting the file tier wins over env.
+    fn some_credentials() -> Option<crate::cloud::credentials::Credentials> {
+        Some(crate::cloud::credentials::Credentials {
+            api_key: Some("file_k".to_string()),
+            api_secret: Some("file_s".to_string()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn credentials_file_overrides_env() {
+        // Both the credentials file and the env tier are fully populated.
+        // The file sits above env in the ladder, so it must win.
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "shell_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
+        ]);
+        let lookup = lookup_from(&env);
+        let resolved =
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &some_credentials, &no_tokens)
+                .unwrap();
+        assert_eq!(resolved.source, AuthSource::CredentialsFile);
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "file_k");
+                assert_eq!(secret, "file_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+    }
+
     #[test]
     fn dotenv_only_resolves_to_env_source() {
         let dotenv = dotenv_with(&[
@@ -1231,7 +1302,7 @@ mod tests {
         let env = env_map(&[]);
         let lookup = lookup_from(&env);
         let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup).unwrap();
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
         assert_eq!(resolved.source, AuthSource::EnvVars);
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
@@ -1262,7 +1333,7 @@ mod tests {
         ]);
         let lookup = lookup_from(&env);
         let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup).unwrap();
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "shell_k");
@@ -1281,7 +1352,7 @@ mod tests {
         let env = env_map(&[("CLICKHOUSE_CLOUD_API_KEY", "shell_k")]);
         let lookup = lookup_from(&env);
         let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup).unwrap();
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "shell_k");
@@ -1314,7 +1385,7 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", ""),
         ]);
         let lookup = lookup_from(&env);
-        let resolved = resolve_auth_with_sources(None, None, None, &dotenv, &lookup).unwrap();
+        let resolved = resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "dot_k");
