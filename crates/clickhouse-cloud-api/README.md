@@ -38,7 +38,7 @@ The OpenAPI spec marks some response fields as deprecated (e.g. `Service.tier`, 
 # Show a JSON manifest of required/optional fields per schema
 python3 scripts/resolve-field-requirements.py
 
-# Regenerate the DEPRECATED_OUTPUT_FIELDS constant from the snapshot
+# Regenerate the DEPRECATED_FIELDS constant from the snapshot
 python3 scripts/regenerate-deprecated-fields.py
 
 # Check for drift between the live spec and the library (dry run)
@@ -84,7 +84,7 @@ The `spec_coverage_test` suite checks three things against the checked-in spec:
 1. Every OpenAPI operation has a matching `pub async fn` in `client.rs`
 2. Every OpenAPI schema has a matching `pub struct`/`pub enum` in `models.rs`
 3. Every field's `Option<T>` vs `T` matches the spec's required/optional semantics
-4. `DEPRECATED_OUTPUT_FIELDS` matches the spec's `deprecated: true` response fields, and each one carries the `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`
+4. `DEPRECATED_FIELDS` matches the spec's `deprecated: true` fields (request- and response-side), and each one carries the `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`
 
 There are also `#[ignore]`d variants that run the same checks against the live spec.
 
