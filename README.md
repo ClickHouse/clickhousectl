@@ -42,6 +42,18 @@ npm install -g clickhousectl
 
 This installs an npm wrapper package that downloads the matching prebuilt binary from `builds.clickhouse.com` at install time. Both `clickhousectl` and `chctl` are exposed as commands. If you use `npm install --ignore-scripts`, the download is skipped — fall back to one of the other install paths.
 
+### pip
+
+```bash
+pip install clickhousectl
+# or
+pipx install clickhousectl
+# or
+uv tool install clickhousectl
+```
+
+This installs a prebuilt wheel containing the matching `clickhousectl` binary. Linux (glibc and musl, x86_64 and aarch64) and macOS (Intel and Apple Silicon) wheels are published to PyPI.
+
 ### From crates.io
 
 Builds from source:
