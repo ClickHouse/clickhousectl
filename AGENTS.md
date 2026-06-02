@@ -120,7 +120,7 @@ Use `cargo add` to add new dependencies. Use the latest version of packages. Spe
 ## Releases
 
 - Releases are triggered by pushing a version tag (e.g. `git tag v0.2.3 && git push origin v0.2.3`), which runs the GitHub Actions workflow
-- Bump all of these to the same version in lockstep: `crates/clickhousectl/Cargo.toml` (`version` and the `clickhouse-cloud-api` dep version), `crates/clickhouse-cloud-api/Cargo.toml`, and `npm/package.json`. The workflow also re-aligns `npm/package.json` to the tag at publish time, but bump it in the repo too so the source-of-truth matches.
+- Bump all of these to the same version in lockstep: `crates/clickhousectl/Cargo.toml` (`version` and the `clickhouse-cloud-api` dep version), `crates/clickhouse-cloud-api/Cargo.toml`, and `npm/package.json`. The workflow also re-aligns `npm/package.json` to the tag at publish time, but bump it in the repo too so the source-of-truth matches. `pypi/pyproject.toml` does *not* need a manual bump — maturin pulls the wheel version from `crates/clickhousectl/Cargo.toml` (via `dynamic = ["version"]`), and the `build-wheels` job also re-aligns the Cargo version to the tag at publish time.
 - For `clickhouse-cloud-api`, the crate is published to crates.io.
 - For `clickhousectl`, releases are published to GitHub releases, crates.io, npm, and PyPI. The npm and PyPI packages are thin wrappers to make it easier for LLMs to find and install. crates.io uses a token, while npm & PyPI use OIDC. All of these releases are triggered by the same release workflow, in separate jobs.
 
