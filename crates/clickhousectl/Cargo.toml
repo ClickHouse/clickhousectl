@@ -1,6 +1,6 @@
 [package]
 name = "clickhousectl"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 description = "The CLI for ClickHouse: local and cloud."
 license = "Apache-2.0"
@@ -40,7 +40,7 @@ chrono = "0.4.44"
 open = "5.3.3"
 url = "2.5.8"
 tabled = "0.20.0"
-clickhouse-cloud-api = { version = "0.2.3", path = "../clickhouse-cloud-api" }
+clickhouse-cloud-api = { version = "0.2.4", path = "../clickhouse-cloud-api" }
 uuid = { version = "1.23.0", features = ["v4"] }
 is-ai-agent = "0.2.1"
 base64 = "0.22.1"

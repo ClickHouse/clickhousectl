@@ -397,6 +397,18 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // the "DEPRECATED" description; modelled as `Option<_>` so it can be gated
     // out behind the `deprecated-fields` feature. See DEPRECATED_FIELDS.
     ("OrganizationPrivateEndpointsPatch", "add"),
+    // `customPrivateDnsMappings` is documented as optional ("Private Preview.
+    // Optional list of custom private DNS mappings.") but the description
+    // heuristic keys on the literal "Optional" prefix, so the "Private
+    // Preview." lead-in causes it to be inferred as required. The field has
+    // no `required` array and the API treats it as opt-in.
+    ("CreateReversePrivateEndpoint", "customPrivateDnsMappings"),
+    ("ReversePrivateEndpoint", "customPrivateDnsMappings"),
+    // `CustomPrivateDnsMapping` is a single-field schema with no `required`
+    // array. The mapping object itself is only meaningful when supplied
+    // inside the (optional) `customPrivateDnsMappings` list, and the API
+    // treats the name as optional within that context.
+    ("CustomPrivateDnsMapping", "privateDnsName"),
 ];
 
 fn assert_field_optionality(spec: &Value) {

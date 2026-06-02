@@ -10135,6 +10135,8 @@ pub struct ClickStackUpdateDashboardRequest {
 /// `CreateReversePrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CreateReversePrivateEndpoint {
+    #[serde(rename = "customPrivateDnsMappings", skip_serializing_if = "Option::is_none", default)]
+    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
     #[serde(default)]
     pub description: String,
     #[serde(rename = "gcpServiceAttachment", skip_serializing_if = "Option::is_none", default)]
@@ -10172,6 +10174,13 @@ pub struct CurrentScaling {
     pub effective_min_replica_memory_gb: f64,
     #[serde(rename = "effectiveMinReplicas", default)]
     pub effective_min_replicas: i64,
+}
+
+/// `CustomPrivateDnsMapping` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CustomPrivateDnsMapping {
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none", default)]
+    pub private_dns_name: Option<String>,
 }
 
 /// `GcpBackupBucket` from the ClickHouse Cloud API.
@@ -10677,6 +10686,8 @@ pub struct ResourceTagsV1 {
 /// `ReversePrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ReversePrivateEndpoint {
+    #[serde(rename = "customPrivateDnsMappings", skip_serializing_if = "Option::is_none", default)]
+    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
     #[serde(default)]
     pub description: String,
     #[serde(rename = "dnsNames", default)]

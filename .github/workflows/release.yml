@@ -227,3 +227,91 @@ jobs:
       - name: Publish
         working-directory: npm
         run: npm publish --provenance --access public
+
+  build-wheels:
+    name: Build wheel (${{ matrix.target }})
+    needs: release
+    runs-on: ${{ matrix.os }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            manylinux: '2_28'
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            manylinux: '2_28'
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            manylinux: musllinux_1_2
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            manylinux: musllinux_1_2
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            manylinux: 'off'
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            manylinux: 'off'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Align Cargo version with tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Force the wheel version to match the release tag in case the in-repo
+          # Cargo.toml was not bumped before tagging. Mirrors the npm step above.
+          # awk (not `sed -i`) so this is portable to the BSD sed on macOS
+          # runners, where the GNU-only `0,/re/` range silently no-ops.
+          f=crates/clickhousectl/Cargo.toml
+          awk -v ver="$VERSION" \
+            'done!=1 && /^version = "[^"]*"$/ { print "version = \"" ver "\""; done=1; next } { print }' \
+            "$f" > "$f.tmp"
+          mv "$f.tmp" "$f"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          working-directory: pypi
+          args: --release --out dist
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.target }}
+          path: pypi/dist/*.whl
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    # PyPI trusted publishing recommends binding the publish job to an
+    # environment so the OIDC subject includes `environment:pypi`, which is
+    # pinned on PyPI's trusted-publisher config for the project.
+    environment: pypi
+    # `id-token: write` is required for PyPI OIDC trusted publishing. The
+    # publisher action picks up OIDC automatically when no token input is
+    # provided.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: wheels

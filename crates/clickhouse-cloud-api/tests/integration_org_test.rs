@@ -196,7 +196,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 let user_id = secondary_user_id.clone();
                                 let body = MemberPatchRequest {
                                     assigned_role_ids: Some(target_for_patch.clone()),
-                                    ..Default::default()
+                                    #[cfg(feature = "deprecated-fields")]
+                                    role: None,
                                 };
                                 async move {
                                     let resp = client
@@ -285,7 +286,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 let want_ids = original_for_restore.clone();
                                 let body = MemberPatchRequest {
                                     assigned_role_ids: Some(want_ids.clone()),
-                                    ..Default::default()
+                                    #[cfg(feature = "deprecated-fields")]
+                                    role: None,
                                 };
                                 let interval = ctx.poll_interval;
                                 async move {
