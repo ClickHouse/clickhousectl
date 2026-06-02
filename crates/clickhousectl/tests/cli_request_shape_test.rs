@@ -1171,7 +1171,7 @@ postgres_type_test!(postgres_type_tigerdata_serializes, "tigerdata", "tigerdata"
 
 // ── Dotenv ─────────────────────────────────────────────────────────────────
 //
-// A `.env` file in the project (or any ancestor directory) supplying
+// A `.env` file in the current working directory supplying
 // `CLICKHOUSE_CLOUD_API_KEY` + `CLICKHOUSE_CLOUD_API_SECRET` should produce
 // the exact same `Authorization: Basic <base64>` header as exporting those
 // vars in the shell. End-to-end proof that the resolver picks up `.env` and

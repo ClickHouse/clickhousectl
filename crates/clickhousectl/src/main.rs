@@ -249,13 +249,13 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     });
                 }
 
-                let shell_key = std::env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-                let shell_secret = std::env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
-                let dotenv_snapshot = dotenv::get();
-                let dotenv_key = dotenv_snapshot.get("CLICKHOUSE_CLOUD_API_KEY");
-                let dotenv_secret = dotenv_snapshot.get("CLICKHOUSE_CLOUD_API_SECRET");
-                let has_key = shell_key.is_some() || dotenv_key.is_some();
-                let has_secret = shell_secret.is_some() || dotenv_secret.is_some();
+                // Presence is computed through the same `env_or_dotenv` merge
+                // the resolver uses (shell env with `.env` fallback, empties
+                // treated as absent) so this table can't disagree with which
+                // source actually wins.
+                let env_creds = cloud::env_cred_presence();
+                let has_key = env_creds.key;
+                let has_secret = env_creds.secret;
 
                 match (has_key, has_secret) {
                     (true, true) => {

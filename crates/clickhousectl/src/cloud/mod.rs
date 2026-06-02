@@ -10,4 +10,6 @@ pub mod types;
 #[cfg(test)]
 mod types_test;
 
-pub use client::{AuthSource, CloudClient, dotenv_env_provenance, resolve_active_auth_source};
+pub use client::{
+    AuthSource, CloudClient, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
+};
