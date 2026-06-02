@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use clickhouse_cloud_api::{BETA_OPERATIONS, DEPRECATED_OUTPUT_FIELDS};
+use clickhouse_cloud_api::{BETA_OPERATIONS, DEPRECATED_FIELDS};
 use serde_json::Value;
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -385,6 +385,18 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // `Option<ApiKeyHashData>` lets callers omit it and have the API
     // generate the key as the spec's response description implies.
     ("ApiKeyPostRequest", "hashData"),
+    // `role` is deprecated in favour of `assignedRoleIds`. The schema has no
+    // `required` array and the description starts with "DEPRECATED" (not
+    // "Optional"), so the heuristic infers required and would emit a bare
+    // `InvitationPostRequestRole`. We model it as `Option<_>` so it can be
+    // gated out behind the `deprecated-fields` feature and omitted from the
+    // wire — callers send only `assignedRoleIds`. See DEPRECATED_FIELDS.
+    ("InvitationPostRequest", "role"),
+    // `add` is the deprecated half of this patch (callers associate private
+    // endpoints elsewhere now). Same heuristic as above infers required from
+    // the "DEPRECATED" description; modelled as `Option<_>` so it can be gated
+    // out behind the `deprecated-fields` feature. See DEPRECATED_FIELDS.
+    ("OrganizationPrivateEndpointsPatch", "add"),
 ];
 
 fn assert_field_optionality(spec: &Value) {
@@ -770,36 +782,36 @@ fn spec_beta_operation_ids(spec: &Value) -> BTreeSet<String> {
 // Deprecated output field hiding
 // ---------------------------------------------------------------------------
 
-/// Response-side deprecated fields that we deliberately keep visible in output,
-/// even though the spec marks them `deprecated: true`. Each entry is
-/// `("RustStructName", "specFieldName")`. Empty today — every deprecated
-/// response field is hidden. The `deprecated_output_fields_match_spec` test
-/// fails on a stale entry (one that no longer corresponds to a spec-deprecated
-/// response field) so this list can't rot.
-const DEPRECATED_OUTPUT_EXEMPTIONS: &[(&str, &str)] = &[];
+/// Deprecated fields that we deliberately keep in the generated struct, even
+/// though the spec marks them `deprecated: true`. Each entry is
+/// `("RustStructName", "specFieldName")`. Empty today — every deprecated field
+/// is gated out. The `deprecated_fields_match_spec` test fails on a stale entry
+/// (one that no longer corresponds to a spec-deprecated field) so this list
+/// can't rot.
+const DEPRECATED_FIELD_EXEMPTIONS: &[(&str, &str)] = &[];
 
-/// `DEPRECATED_OUTPUT_FIELDS` must mirror the `deprecated: true` properties on
-/// response-side schemas in the spec (minus `DEPRECATED_OUTPUT_EXEMPTIONS`).
+/// `DEPRECATED_FIELDS` must mirror the `deprecated: true` properties on every
+/// schema in the spec (minus `DEPRECATED_FIELD_EXEMPTIONS`).
 #[test]
-fn deprecated_output_fields_match_spec() {
-    assert_deprecated_output_fields_match(&serde_json::from_str(SPEC_JSON).unwrap());
+fn deprecated_fields_match_spec() {
+    assert_deprecated_fields_match(&serde_json::from_str(SPEC_JSON).unwrap());
 }
 
 #[tokio::test]
 #[ignore = "hits the live published ClickHouse OpenAPI spec"]
-async fn deprecated_output_fields_match_live_spec() {
+async fn deprecated_fields_match_live_spec() {
     let spec = load_live_spec().await;
-    assert_deprecated_output_fields_match(&spec);
+    assert_deprecated_fields_match(&spec);
 }
 
-/// Every field declared in `DEPRECATED_OUTPUT_FIELDS` must carry the
+/// Every field declared in `DEPRECATED_FIELDS` must carry the
 /// `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`, and no other
 /// field may carry it. This keeps the consumer-facing constant in lockstep with
 /// the fields that are actually removed from the struct by default.
 #[test]
-fn deprecated_output_fields_hidden() {
+fn deprecated_fields_hidden() {
     let marked = model_deprecated_marked_fields(MODELS_RS);
-    let declared: BTreeSet<(String, String)> = DEPRECATED_OUTPUT_FIELDS
+    let declared: BTreeSet<(String, String)> = DEPRECATED_FIELDS
         .iter()
         .map(|(s, f)| (s.to_string(), f.to_string()))
         .collect();
@@ -815,21 +827,20 @@ fn deprecated_output_fields_hidden() {
 
     assert!(
         missing_markers.is_empty() && stray_markers.is_empty(),
-        "DEPRECATED_OUTPUT_FIELDS is out of sync with the #[cfg(feature = \"deprecated-fields\")] markers in models.rs.\n\
+        "DEPRECATED_FIELDS is out of sync with the #[cfg(feature = \"deprecated-fields\")] markers in models.rs.\n\
          Declared but not marked (add the #[cfg(feature = \"deprecated-fields\")] marker): {:?}\n\
-         Marked but not declared (add to DEPRECATED_OUTPUT_FIELDS or remove the marker): {:?}",
+         Marked but not declared (add to DEPRECATED_FIELDS or remove the marker): {:?}",
         missing_markers,
         stray_markers,
     );
 }
 
-fn assert_deprecated_output_fields_match(spec: &Value) {
-    let exemptions: BTreeSet<(&str, &str)> =
-        DEPRECATED_OUTPUT_EXEMPTIONS.iter().copied().collect();
-    let spec_fields = spec_deprecated_output_fields(spec);
+fn assert_deprecated_fields_match(spec: &Value) {
+    let exemptions: BTreeSet<(&str, &str)> = DEPRECATED_FIELD_EXEMPTIONS.iter().copied().collect();
+    let spec_fields = spec_deprecated_fields(spec);
 
     // Stale-exemption detection: an exemption must correspond to a field the
-    // spec actually marks deprecated on a response-side schema.
+    // spec actually marks deprecated.
     let stale: Vec<_> = exemptions
         .iter()
         .filter(|(s, f)| !spec_fields.contains(&((*s).to_string(), (*f).to_string())))
@@ -837,7 +848,7 @@ fn assert_deprecated_output_fields_match(spec: &Value) {
         .collect();
     assert!(
         stale.is_empty(),
-        "Stale DEPRECATED_OUTPUT_EXEMPTIONS (no longer a deprecated response field):\n{}",
+        "Stale DEPRECATED_FIELD_EXEMPTIONS (no longer a deprecated field):\n{}",
         stale.join("\n")
     );
 
@@ -845,7 +856,7 @@ fn assert_deprecated_output_fields_match(spec: &Value) {
         .into_iter()
         .filter(|(s, f)| !exemptions.contains(&(s.as_str(), f.as_str())))
         .collect();
-    let declared: BTreeSet<(String, String)> = DEPRECATED_OUTPUT_FIELDS
+    let declared: BTreeSet<(String, String)> = DEPRECATED_FIELDS
         .iter()
         .map(|(s, f)| (s.to_string(), f.to_string()))
         .collect();
@@ -861,26 +872,22 @@ fn assert_deprecated_output_fields_match(spec: &Value) {
 
     assert!(
         missing.is_empty() && extra.is_empty(),
-        "DEPRECATED_OUTPUT_FIELDS drifted from the OpenAPI spec.\n\
-         New deprecated response fields in spec, missing from meta.rs: {:?}\n\
-         No longer deprecated (or not a response field), still in meta.rs: {:?}\n\
+        "DEPRECATED_FIELDS drifted from the OpenAPI spec.\n\
+         New deprecated fields in spec, missing from meta.rs: {:?}\n\
+         No longer deprecated, still in meta.rs: {:?}\n\
          Regenerate with: python3 scripts/regenerate-deprecated-fields.py",
         missing,
         extra,
     );
 }
 
-/// `(RustStructName, specFieldName)` for every `deprecated: true` property on a
-/// response-side schema. Request-side schemas (`*Request`, `*Patch`, `*Input`)
-/// are excluded — callers may still need to send a deprecated field.
-fn spec_deprecated_output_fields(spec: &Value) -> BTreeSet<(String, String)> {
+/// `(RustStructName, specFieldName)` for every `deprecated: true` property on
+/// any schema — both request-side and response-side.
+fn spec_deprecated_fields(spec: &Value) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     let schemas = spec["components"]["schemas"].as_object().unwrap();
 
     for (spec_name, schema) in schemas {
-        if is_request_side_schema(spec_name) {
-            continue;
-        }
         let Some(props) = schema.get("properties").and_then(Value::as_object) else {
             continue;
         };
@@ -892,15 +899,6 @@ fn spec_deprecated_output_fields(spec: &Value) -> BTreeSet<(String, String)> {
     }
 
     out
-}
-
-/// Request-side schemas keep their deprecated fields serializable so callers can
-/// still send them. Note `*PatchResponse` ends in "Response", so it is treated
-/// as a response schema even though it contains "Patch".
-fn is_request_side_schema(schema_name: &str) -> bool {
-    schema_name.ends_with("Request")
-        || schema_name.ends_with("Patch")
-        || schema_name.ends_with("Input")
 }
 
 /// `(RustStructName, specFieldName)` for every field in `models.rs` carrying the

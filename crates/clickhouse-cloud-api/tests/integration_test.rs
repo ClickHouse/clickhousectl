@@ -269,6 +269,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "clickhousectl integration test query key".to_string(),
                             ),
                         }],
+                        #[cfg(feature = "deprecated-fields")]
                         roles: None,
                         state: ApiKeyPostRequestState::Enabled,
                     };

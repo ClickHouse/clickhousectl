@@ -373,7 +373,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 let org_id = ctx.org_id.clone();
                 let body = InvitationPostRequest {
                     email: invitation_email.clone(),
-                    role: InvitationPostRequestRole::Developer,
+                    #[cfg(feature = "deprecated-fields")]
+                    role: Some(InvitationPostRequestRole::Developer),
                     assigned_role_ids: vec![],
                 };
                 async move {
@@ -1048,6 +1049,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 "clickhousectl org integration test key".to_string(),
                             ),
                         }],
+                        #[cfg(feature = "deprecated-fields")]
                         roles: Some(vec!["admin".to_string()]),
                         state: ApiKeyPostRequestState::Enabled,
                     };

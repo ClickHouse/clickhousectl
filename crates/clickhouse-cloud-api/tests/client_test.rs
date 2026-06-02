@@ -353,7 +353,7 @@ async fn create_invitation() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/invitations"))
-        .and(body_partial_json(serde_json::json!({"email": "newuser@example.com", "role": "developer"})))
+        .and(body_partial_json(serde_json::json!({"email": "newuser@example.com"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": 200,
             "result": {
@@ -368,7 +368,8 @@ async fn create_invitation() {
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let body = InvitationPostRequest {
         email: "newuser@example.com".to_string(),
-        role: InvitationPostRequestRole::Developer,
+        #[cfg(feature = "deprecated-fields")]
+        role: Some(InvitationPostRequestRole::Developer),
         ..Default::default()
     };
     let resp = client.invitation_create("org-1", &body).await.unwrap();
@@ -600,7 +601,6 @@ async fn update_member() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/members/user-1"))
-        .and(body_partial_json(serde_json::json!({"role": "admin"})))
         .respond_with(ok_json(serde_json::json!({
             "userId": "user-1",
             "name": "Alice",
@@ -611,6 +611,7 @@ async fn update_member() {
         .await;
 
     let body = MemberPatchRequest {
+        #[cfg(feature = "deprecated-fields")]
         role: Some(MemberPatchRequestRole::Admin),
         ..Default::default()
     };
@@ -676,7 +677,7 @@ async fn create_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-123/services"))
-        .and(body_partial_json(serde_json::json!({"name": "new-service", "provider": "aws", "region": "us-east-1", "tier": "production"})))
+        .and(body_partial_json(serde_json::json!({"name": "new-service", "provider": "aws", "region": "us-east-1"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": 200,
             "result": {
@@ -699,6 +700,7 @@ async fn create_service() {
         name: "new-service".to_string(),
         provider: ServicePostRequestProvider::Aws,
         region: ServicePostRequestRegion::Us_east_1,
+        #[cfg(feature = "deprecated-fields")]
         tier: Some(ServicePostRequestTier::Production),
         ..Default::default()
     };

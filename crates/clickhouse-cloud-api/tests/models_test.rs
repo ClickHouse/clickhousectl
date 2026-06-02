@@ -125,8 +125,11 @@ fn serialize_service_post_request() {
         name: "new-service".to_string(),
         provider: ServicePostRequestProvider::Aws,
         region: ServicePostRequestRegion::Us_east_1,
+        #[cfg(feature = "deprecated-fields")]
         tier: Some(ServicePostRequestTier::Production),
+        #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: Some(24.0),
+        #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: Some(48.0),
         num_replicas: Some(3.0),
         idle_scaling: Some(true),
@@ -141,7 +144,9 @@ fn serialize_service_post_request() {
     assert_eq!(json["name"], "new-service");
     assert_eq!(json["provider"], "aws");
     assert_eq!(json["region"], "us-east-1");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["tier"], "production");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["minTotalMemoryGb"], 24.0);
     assert_eq!(json["ipAccessList"][0]["source"], "0.0.0.0/0");
 }
@@ -565,13 +570,17 @@ fn serialize_service_replica_scaling_patch_request() {
 fn serialize_service_scaling_patch_request() {
     let req = ServiceScalingPatchRequest {
         num_replicas: Some(3.0),
+        #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: Some(24.0),
+        #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: Some(48.0),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["numReplicas"], 3.0);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["minTotalMemoryGb"], 24.0);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["maxTotalMemoryGb"], 48.0);
     assert!(json.get("idleScaling").is_none());
 }
@@ -700,14 +709,20 @@ fn serialize_byoc_infrastructure_patch_request() {
 fn serialize_invitation_post_request() {
     let req = InvitationPostRequest {
         email: "alice@example.com".to_string(),
-        role: InvitationPostRequestRole::Developer,
+        #[cfg(feature = "deprecated-fields")]
+        role: Some(InvitationPostRequestRole::Developer),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["email"], "alice@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["role"], "developer");
+    // By default the deprecated `role` field is gated out and never serialized.
+    #[cfg(not(feature = "deprecated-fields"))]
+    assert!(json.get("role").is_none());
 }
 
+#[cfg(feature = "deprecated-fields")]
 #[test]
 fn serialize_member_patch_request() {
     let req = MemberPatchRequest {
@@ -716,6 +731,37 @@ fn serialize_member_patch_request() {
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["role"], "admin");
+}
+
+/// In the default build the deprecated request fields don't exist on the
+/// struct, so callers can't set them and they never reach the wire.
+#[cfg(not(feature = "deprecated-fields"))]
+#[test]
+fn deprecated_request_fields_absent_by_default() {
+    let member = MemberPatchRequest {
+        assigned_role_ids: Some(vec!["admin".to_string()]),
+    };
+    assert!(serde_json::to_value(&member)
+        .unwrap()
+        .get("role")
+        .is_none());
+
+    let invitation = InvitationPostRequest {
+        email: "alice@example.com".to_string(),
+        assigned_role_ids: vec!["admin".to_string()],
+    };
+    assert!(serde_json::to_value(&invitation)
+        .unwrap()
+        .get("role")
+        .is_none());
+
+    let scaling = ServiceScalingPatchRequest {
+        num_replicas: Some(3.0),
+        ..Default::default()
+    };
+    let scaling = serde_json::to_value(&scaling).unwrap();
+    assert!(scaling.get("minTotalMemoryGb").is_none());
+    assert!(scaling.get("maxTotalMemoryGb").is_none());
 }
 
 #[test]

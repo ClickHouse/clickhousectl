@@ -157,28 +157,20 @@ def spec_beta_operations(spec: dict) -> set[str]:
     return beta
 
 
-def is_request_side_schema(name: str) -> bool:
-    """Request-side schemas keep their deprecated fields serializable.
+def parse_deprecated_fields() -> set[tuple[str, str]]:
+    """Parse `DEPRECATED_FIELDS` from meta.rs.
 
-    Note `*PatchResponse` ends in "Response", so it counts as a response schema
-    even though it contains "Patch".
-    """
-    return name.endswith("Request") or name.endswith("Patch") or name.endswith("Input")
-
-
-def parse_deprecated_output_fields() -> set[tuple[str, str]]:
-    """Parse `DEPRECATED_OUTPUT_FIELDS` from meta.rs.
-
-    The list mirrors `deprecated: true` properties on response-side schemas in
-    the spec. Each field carries a `#[cfg(feature = "deprecated-fields")]` marker
-    in models.rs so it is removed from the struct (and thus from output) by
-    default.
+    The list mirrors `deprecated: true` properties on every schema in the spec
+    (both request- and response-side). Each field carries a
+    `#[cfg(feature = "deprecated-fields")]` marker in models.rs so it is removed
+    from the struct by default — consumers can neither read a deprecated
+    response field nor send a deprecated request field.
     """
     if not META_RS.exists():
         return set()
     source = META_RS.read_text()
     match = re.search(
-        r"pub\s+const\s+DEPRECATED_OUTPUT_FIELDS\s*:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
+        r"pub\s+const\s+DEPRECATED_FIELDS\s*:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
         source,
         re.DOTALL,
     )
@@ -187,14 +179,12 @@ def parse_deprecated_output_fields() -> set[tuple[str, str]]:
     return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
 
 
-def spec_deprecated_output_fields(spec: dict) -> set[tuple[str, str]]:
+def spec_deprecated_fields(spec: dict) -> set[tuple[str, str]]:
     """Extract (PascalStructName, specFieldName) for `deprecated: true` props on
-    response-side schemas (request-side schemas are excluded)."""
+    every schema — both request-side and response-side."""
     fields = set()
     schemas = spec.get("components", {}).get("schemas", {})
     for spec_name, schema in schemas.items():
-        if is_request_side_schema(spec_name):
-            continue
         props = schema.get("properties") or {}
         for prop_name, prop in props.items():
             if isinstance(prop, dict) and prop.get("deprecated") is True:
@@ -718,25 +708,25 @@ def build_issue_body(
             "",
         ]
 
-    # ---- Deprecated output field changes ----
+    # ---- Deprecated field changes ----
     if dep_total > 0:
         lines += [
-            "## Deprecated Output Field Changes",
+            "## Deprecated Field Changes",
             "",
-            "The live spec's `deprecated: true` markers on response-side schemas",
-            "have drifted from `DEPRECATED_OUTPUT_FIELDS` in",
-            "`crates/clickhouse-cloud-api/src/meta.rs`. Those fields are hidden from",
-            "serialized output (including this CLI's rendering) unless the",
-            "`deprecated-fields` Cargo feature is enabled.",
+            "The live spec's `deprecated: true` markers have drifted from",
+            "`DEPRECATED_FIELDS` in `crates/clickhouse-cloud-api/src/meta.rs`. Those",
+            "fields are removed from the generated structs unless the",
+            "`deprecated-fields` Cargo feature is enabled — consumers can neither",
+            "read a deprecated response field nor send a deprecated request field.",
             "",
         ]
         if dep.get("newly_deprecated"):
-            lines.append("**Newly deprecated response fields (add to `DEPRECATED_OUTPUT_FIELDS` + mark in `models.rs`):**")
+            lines.append("**Newly deprecated fields (add to `DEPRECATED_FIELDS` + mark in `models.rs`):**")
             for struct_name, field in sorted(dep["newly_deprecated"]):
                 lines.append(f"- `{struct_name}.{field}`")
             lines.append("")
         if dep.get("undeprecated"):
-            lines.append("**No longer deprecated (remove from `DEPRECATED_OUTPUT_FIELDS` + drop the marker in `models.rs`):**")
+            lines.append("**No longer deprecated (remove from `DEPRECATED_FIELDS` + drop the marker in `models.rs`):**")
             for struct_name, field in sorted(dep["undeprecated"]):
                 lines.append(f"- `{struct_name}.{field}`")
             lines.append("")
@@ -870,10 +860,10 @@ def main():
     }
     beta_total = sum(len(v) for v in beta_status_changes.values())
 
-    # Compare deprecated output fields: spec deprecated:true (response-side) vs
-    # meta.rs DEPRECATED_OUTPUT_FIELDS
-    declared_deprecated = parse_deprecated_output_fields()
-    live_deprecated = spec_deprecated_output_fields(live_spec)
+    # Compare deprecated fields: spec deprecated:true (any schema) vs
+    # meta.rs DEPRECATED_FIELDS
+    declared_deprecated = parse_deprecated_fields()
+    live_deprecated = spec_deprecated_fields(live_spec)
     deprecation_changes = {
         "newly_deprecated": live_deprecated - declared_deprecated,
         "undeprecated": declared_deprecated - live_deprecated,

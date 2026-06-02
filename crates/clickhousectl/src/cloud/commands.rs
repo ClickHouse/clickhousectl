@@ -313,7 +313,8 @@ fn parse_org_private_endpoints_patch(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Some(OrganizationPrivateEndpointsPatch {
-        add: vec![],
+        #[cfg(feature = "deprecated-fields")]
+        add: None,
         remove: endpoints,
     }))
 }
@@ -702,9 +703,15 @@ fn build_create_service_request(
         enable_core_dumps: opts.enable_core_dumps,
         // Fields not exposed in CLI
         byoc_id: None,
+        // Deprecated fields — only exist (and stay None) under the
+        // `deprecated-fields` feature; gated out of the struct otherwise.
+        #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: None,
+        #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: None,
+        #[cfg(feature = "deprecated-fields")]
         private_endpoint_ids: None,
+        #[cfg(feature = "deprecated-fields")]
         tier: None,
     })
 }
@@ -787,6 +794,7 @@ fn build_api_key_create_request(
             opts.hash_key_id_suffix.as_deref(),
             opts.hash_key_secret.as_deref(),
         )?,
+        #[cfg(feature = "deprecated-fields")]
         roles: None,
     })
 }
@@ -812,6 +820,7 @@ fn build_api_key_update_request(
             .map(parse_api_key_state_patch)
             .transpose()?,
         ip_access_list: parse_ip_access_entries_lib(&opts.ip_allow),
+        #[cfg(feature = "deprecated-fields")]
         roles: None,
     })
 }
@@ -1356,6 +1365,7 @@ pub async fn clickpipe_scale(
         replicas: replicas.map(i64::from),
         replica_cpu_millicores: cpu_millicores.map(i64::from),
         replica_memory_gb: memory_gb,
+        #[cfg(feature = "deprecated-fields")]
         concurrency: None,
     };
     let clickpipe = client
@@ -2408,6 +2418,7 @@ pub async fn member_update(
         } else {
             Some(role_ids.to_vec())
         },
+        #[cfg(feature = "deprecated-fields")]
         role: None,
     };
 
@@ -2500,7 +2511,8 @@ pub async fn invitation_create(
     let request = clickhouse_cloud_api::models::InvitationPostRequest {
         email: email.to_string(),
         assigned_role_ids: role_ids.iter().map(|s| s.to_string()).collect(),
-        role: clickhouse_cloud_api::models::InvitationPostRequestRole::default(),
+        #[cfg(feature = "deprecated-fields")]
+        role: None,
     };
 
     let inv = client.create_invitation(&org_id, &request).await?;
