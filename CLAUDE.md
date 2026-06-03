@@ -117,7 +117,7 @@ cargo add -p clickhouse-cloud-api url
 - `src/paths.rs` handles `~/.clickhouse/` paths (global install dir); `src/init.rs` handles `.clickhouse/` paths (project-local data dir)
 - `local client` uses `exec()` (process replacement), so code after `cmd.exec()` only runs on failure
 - Error types use `thiserror` in `src/error.rs`; cloud module has its own `CloudError` (with `kind: CloudErrorKind`) that gets converted to `Error::Cloud` / `Error::AuthRequired` in `main.rs`. Exit codes follow `gh` conventions via `Error::exit_code()`: `0` success, `1` error, `2` cancelled, `4` auth required
-- Output-mode resolution: `src/output_mode.rs` returns `true` for JSON when `--json` is passed, stdout is not a TTY, or any of `CLAUDECODE` / `CURSOR_AGENT` / `CODEX_SANDBOX` is set. Resolved once in `main` / `run_cloud`, so downstream `json: bool` plumbing stays unchanged
+- Output-mode resolution: `src/output_mode.rs` returns `true` for JSON when `--json` is passed or a coding agent is detected via `is_ai_agent::detect()` (same detection as the `user_agent.rs` User-Agent string). Non-TTY pipes/redirects stay human-readable unless `--json` is passed. Resolved in `main` / `run_cloud`, so downstream `json: bool` plumbing stays unchanged
 - Version resolution (`version_manager/resolve.rs`) handles specs like `stable`, `lts`, `25.12`, or exact `25.12.5.44` — all resolve to an exact version + channel via GitHub API
 - Releases are triggered by pushing a version tag (`v0.1.3`), which runs the GitHub Actions workflow
 
