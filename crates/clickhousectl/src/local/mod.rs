@@ -87,10 +87,7 @@ async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
-    eprintln!("Resolving {}...", spec);
-    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
-
-    let version = version_manager::install::install_resolved(&resolved, &platform, force).await?;
+    let version = version_manager::install::install_local_first(&spec, &platform, force).await?;
 
     // If this is the first installed version, set it as default
     let set_as_default = version_manager::get_default_version().is_err();
@@ -161,22 +158,8 @@ async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
-    eprintln!("Resolving {}...", spec);
-    let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
-
-    // If exact version is known, check if already installed
-    let version = if let Some(ref v) = resolved.exact_version {
-        let installed = version_manager::list_installed_versions()?;
-        if installed.contains(v) {
-            v.clone()
-        } else {
-            eprintln!("Version {} not installed, installing...", v);
-            version_manager::install::install_resolved(&resolved, &platform, false).await?
-        }
-    } else {
-        // Version not known upfront (builds source) — install will detect it
-        version_manager::install::install_resolved(&resolved, &platform, false).await?
-    };
+    let version =
+        version_manager::install::ensure_installed_local_first(&spec, &platform).await?;
 
     version_manager::set_default_version(&version)?;
 
@@ -308,9 +291,7 @@ async fn start_server(
     let version = if let Some(spec_str) = &version_spec {
         let spec = version_manager::parse_version_spec(spec_str)?;
         let platform = version_manager::platform::Platform::detect()?;
-        eprintln!("Resolving {}...", spec);
-        let resolved = version_manager::resolve::resolve(&spec, &platform).await?;
-        version_manager::install::ensure_installed(&resolved, &platform).await?
+        version_manager::install::ensure_installed_local_first(&spec, &platform).await?
     } else {
         version_manager::get_default_version()?
     };

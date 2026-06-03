@@ -3,8 +3,48 @@ use crate::paths;
 use crate::version_manager::download::download_from_source;
 use crate::version_manager::list::list_installed_versions;
 use crate::version_manager::platform::{DownloadSource, Platform};
-use crate::version_manager::resolve::ResolvedVersion;
+use crate::version_manager::resolve::{ResolvedVersion, resolve, try_resolve_local};
+use crate::version_manager::spec::VersionSpec;
 use std::os::unix::fs::PermissionsExt;
+
+/// Install a version spec, trying installed versions first before any remote call.
+/// Matches the UX of `install_resolved`'s post-resolve local check, but avoids the
+/// network round-trip when a local match exists.
+pub async fn install_local_first(
+    spec: &VersionSpec,
+    platform: &Platform,
+    force: bool,
+) -> Result<String> {
+    if !force
+        && let Some(local) = try_resolve_local(spec)
+    {
+        if matches!(spec, VersionSpec::Exact(_)) {
+            return Err(Error::VersionAlreadyInstalled(local));
+        }
+        eprintln!("ClickHouse {} is already installed as {}", spec, local);
+        eprintln!("Use --force to re-download the latest build");
+        return Ok(local);
+    }
+
+    eprintln!("Resolving {}...", spec);
+    let resolved = resolve(spec, platform).await?;
+    install_resolved(&resolved, platform, force).await
+}
+
+/// Like `install_local_first`, but returns an existing local version silently
+/// (matching `ensure_installed`'s semantics). For `server start -v <spec>`.
+pub async fn ensure_installed_local_first(
+    spec: &VersionSpec,
+    platform: &Platform,
+) -> Result<String> {
+    if let Some(local) = try_resolve_local(spec) {
+        return Ok(local);
+    }
+
+    eprintln!("Resolving {}...", spec);
+    let resolved = resolve(spec, platform).await?;
+    ensure_installed(&resolved, platform).await
+}
 
 /// Installs a ClickHouse version using the multi-source resolution system.
 /// Returns the exact version string of the installed binary.

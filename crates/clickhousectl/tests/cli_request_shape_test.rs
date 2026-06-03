@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
-use wiremock::matchers::{method, path_regex};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
@@ -1168,3 +1168,138 @@ postgres_type_test!(
     "crunchybridge"
 );
 postgres_type_test!(postgres_type_tigerdata_serializes, "tigerdata", "tigerdata");
+
+// ── Dotenv ─────────────────────────────────────────────────────────────────
+//
+// A `.env` file in the current working directory supplying
+// `CLICKHOUSE_CLOUD_API_KEY` + `CLICKHOUSE_CLOUD_API_SECRET` should produce
+// the exact same `Authorization: Basic <base64>` header as exporting those
+// vars in the shell. End-to-end proof that the resolver picks up `.env` and
+// hands them to the lib client's basic-auth path.
+
+#[tokio::test]
+async fn dotenv_creds_produce_basic_auth_request() {
+    use std::io::Write;
+
+    let mock = MockServer::start().await;
+
+    let stub_orgs = serde_json::json!({
+        "result": [],
+        "status": 200,
+        "requestId": "stub-org-list",
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_orgs))
+        .mount(&mock)
+        .await;
+
+    // Put `.env` in the working directory and run the binary cd'd into it,
+    // because the loader reads `cwd/.env` rather than walking ancestor
+    // directories. The parent process's env vars are cleared in the child so
+    // the .env is the only source of credentials — otherwise the test could
+    // silently pass for the wrong reason.
+    let dir = tempfile::tempdir().unwrap();
+    let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
+    env_file
+        .write_all(b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n")
+        .unwrap();
+    drop(env_file);
+
+    let url = mock.uri();
+    let output = Command::new(clickhousectl_binary())
+        .args(["cloud", "--url", &url, "--json", "org", "list"])
+        .current_dir(dir.path())
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert!(
+        output.status.success(),
+        "clickhousectl exited {}\nstderr:\n{}\nstdout:\n{}",
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let requests = mock
+        .received_requests()
+        .await
+        .expect("mock requests log unavailable");
+    let auth = requests
+        .iter()
+        .find(|r| r.method == wiremock::http::Method::GET)
+        .and_then(|r| r.headers.get("Authorization"))
+        .expect("no Authorization header recorded");
+    let auth_str = auth.to_str().expect("non-utf8 auth header");
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "dotenv-key:dotenv-secret",
+        )
+    );
+    assert_eq!(
+        auth_str, expected,
+        "Authorization header should match the .env credentials exactly"
+    );
+}
+
+// Shell env vars must win over `.env` — if both are set, the request is
+// signed with the shell values, never the file values.
+
+#[tokio::test]
+async fn shell_env_overrides_dotenv_creds_in_request() {
+    use std::io::Write;
+
+    let mock = MockServer::start().await;
+
+    let stub_orgs = serde_json::json!({
+        "result": [],
+        "status": 200,
+        "requestId": "stub-org-list",
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_orgs))
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
+    env_file
+        .write_all(b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n")
+        .unwrap();
+    drop(env_file);
+
+    let url = mock.uri();
+    let output = Command::new(clickhousectl_binary())
+        .args(["cloud", "--url", &url, "--json", "org", "list"])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "shell-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "shell-secret")
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert!(output.status.success(), "binary failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let requests = mock.received_requests().await.unwrap();
+    let auth = requests
+        .iter()
+        .find(|r| r.method == wiremock::http::Method::GET)
+        .and_then(|r| r.headers.get("Authorization"))
+        .expect("no Authorization header recorded");
+    let auth_str = auth.to_str().expect("non-utf8 auth header");
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "shell-key:shell-secret",
+        )
+    );
+    assert_eq!(
+        auth_str, expected,
+        "shell env vars must override .env values on the wire"
+    );
+}
