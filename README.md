@@ -685,7 +685,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` also auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically — you don't need to pass `--json` from inside an agent. In every other context (including pipes and redirects) output stays human-readable unless you pass `--json`.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`.
 
 ### Exit codes
 
