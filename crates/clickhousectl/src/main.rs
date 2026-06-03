@@ -114,10 +114,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 } else if api_key.is_some() || api_secret.is_some() {
                     // Non-interactive API key login
                     let key = api_key.ok_or_else(|| {
-                        Error::Cloud("--api-key is required when --api-secret is provided".into())
+                        Error::AuthRequired(
+                            "--api-key is required when --api-secret is provided".into(),
+                        )
                     })?;
                     let secret = api_secret.ok_or_else(|| {
-                        Error::Cloud("--api-secret is required when --api-key is provided".into())
+                        Error::AuthRequired(
+                            "--api-secret is required when --api-key is provided".into(),
+                        )
                     })?;
                     let mut creds = cloud::credentials::load_credentials().unwrap_or_default();
                     creds.api_key = Some(key);
