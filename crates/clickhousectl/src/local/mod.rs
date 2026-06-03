@@ -870,8 +870,8 @@ mod tests {
 
     #[test]
     fn parse_postgres_install_spec_recognizes_at_and_colon() {
-        assert_eq!(parse_postgres_install_spec("postgres@16"), Some("16"));
-        assert_eq!(parse_postgres_install_spec("postgres:16-alpine"), Some("16-alpine"));
+        assert_eq!(parse_postgres_install_spec("postgres@17"), Some("17"));
+        assert_eq!(parse_postgres_install_spec("postgres:17-alpine"), Some("17-alpine"));
         assert_eq!(parse_postgres_install_spec("25.12"), None);
         assert_eq!(parse_postgres_install_spec("stable"), None);
     }

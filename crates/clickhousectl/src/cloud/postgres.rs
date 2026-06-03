@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use tabled::{Table, Tabled, settings::Style};
 
 const KNOWN_PG_PROVIDERS: &[&str] = &["aws"];
-const KNOWN_PG_VERSIONS: &[&str] = &["18", "17", "16"];
+const KNOWN_PG_VERSIONS: &[&str] = &["18", "17"];
 const KNOWN_PG_HA_TYPES: &[&str] = &["none", "async", "sync"];
 
 #[derive(Subcommand)]
@@ -1126,6 +1126,19 @@ mod tests {
             "--size", "m7i.2xlarge",
             "--storage-gb", "100",
             "--pg-version", "15",
+        ])
+        .err().expect("expected parse error");
+        assert!(err.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn rejects_postgres_create_pg_version_16() {
+        let err = Cli::try_parse_from([
+            "clickhousectl", "cloud", "postgres", "create",
+            "--name", "pg1",
+            "--region", "us-east-1",
+            "--size", "m7i.2xlarge",
+            "--pg-version", "16",
         ])
         .err().expect("expected parse error");
         assert!(err.to_string().contains("invalid value"));

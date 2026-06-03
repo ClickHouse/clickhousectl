@@ -16,25 +16,25 @@ const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
 const DEFAULT_DATABASE: &str = "postgres";
 /// Default image tag when `--version` is not given. Within the supported
-/// range; users can override with any 16/17/18 tag (`16`, `16-alpine`, etc).
+/// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
 
-/// Extract the major-version digits from a Postgres image tag. `16-alpine` →
-/// `"16"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
+/// Extract the major-version digits from a Postgres image tag. `17-alpine` →
+/// `"17"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
 /// responsibility (`validate_pg_tag`) — this only parses.
 pub(crate) fn pg_major_from_tag(tag: &str) -> String {
     tag.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
-/// Accept Postgres image tags whose major version is 16, 17, or 18 — anything
-/// else is unsupported for now. Examples that pass: `16`, `16-alpine`, `17.0`,
-/// `18-bookworm`, `16.4-alpine3.20`. Examples that fail: `latest`, `15`, `19`.
+/// Accept Postgres image tags whose major version is 17 or 18 — anything
+/// else is unsupported for now. Examples that pass: `17`, `17.0`, `17-alpine`,
+/// `18-bookworm`, `18.1-alpine3.20`. Examples that fail: `latest`, `16`, `19`.
 pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
     let major: String = tag.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !matches!(major.as_str(), "16" | "17" | "18") {
+    if !matches!(major.as_str(), "17" | "18") {
         return Err(Error::Exec(format!(
-            "postgres version '{}' is not supported. Use a 16, 17, or 18 image tag \
-             (for example: 16, 16-alpine, 17.0, 18-bookworm).",
+            "postgres version '{}' is not supported. Use a 17 or 18 image tag \
+             (for example: 17, 17-alpine, 18.1, 18-bookworm).",
             tag
         )));
     }
@@ -703,14 +703,14 @@ mod tests {
 
     #[test]
     fn validate_pg_tag_accepts_supported_majors() {
-        for tag in ["16", "17", "18", "16-alpine", "17.0", "18-bookworm", "16.4-alpine3.20"] {
+        for tag in ["17", "18", "17-alpine", "17.0", "18-bookworm", "18.1-alpine3.20"] {
             assert!(validate_pg_tag(tag).is_ok(), "expected `{}` to be accepted", tag);
         }
     }
 
     #[test]
     fn validate_pg_tag_rejects_unsupported() {
-        for tag in ["latest", "15", "19", "14-alpine", "alpine", ""] {
+        for tag in ["latest", "15", "16", "16-alpine", "19", "14-alpine", "alpine", ""] {
             assert!(validate_pg_tag(tag).is_err(), "expected `{}` to be rejected", tag);
         }
     }
