@@ -1963,7 +1963,7 @@ async fn create_postgres_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.medium", "storageSize": 100})))
+        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.medium"})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "pg-svc",
@@ -1980,7 +1980,6 @@ async fn create_postgres_service() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_medium,
-        storage_size: 100,
         ..Default::default()
     };
     let resp = c
