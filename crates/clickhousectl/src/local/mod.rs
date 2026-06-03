@@ -13,9 +13,7 @@ use crate::{init, paths, version_manager};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-// `json` is the effective JSON decision (may be auto-detected); `json_explicit`
-// is the literal `--json` flag, used only for flag-conflict checks.
-pub async fn run(cmd: LocalCommands, json: bool, json_explicit: bool) -> Result<()> {
+pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
     match cmd {
         LocalCommands::Install { version, force } => install(&version, force, json).await,
         LocalCommands::List { remote } => {
@@ -44,9 +42,7 @@ pub async fn run(cmd: LocalCommands, json: bool, json_explicit: bool) -> Result<
             queries_file,
             args,
         } => run_client(name, host, port, query, queries_file, args),
-        LocalCommands::Server { command } => {
-            run_server_commands(command, json, json_explicit).await
-        }
+        LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
 }
@@ -286,7 +282,6 @@ fn run_client(
     Err(Error::Exec(err.to_string()))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn start_server(
     name: Option<String>,
     version_spec: Option<String>,
@@ -295,13 +290,9 @@ async fn start_server(
     foreground: bool,
     args: Vec<String>,
     json: bool,
-    json_explicit: bool,
 ) -> Result<()> {
-    // Conflict only on the explicit flag — auto-detected JSON shouldn't trip
-    // here, since the foreground path streams stdout/stderr and never emits JSON.
-    if json_explicit && foreground {
-        return Err(Error::JsonForegroundConflict);
-    }
+    // `--foreground` streams the server's stdout/stderr and never emits a JSON
+    // summary, so it simply ignores `json` rather than erroring on `--json`.
 
     // Recover any orphaned servers so name resolution and collision checks
     // see processes that lost their metadata files.
@@ -585,11 +576,7 @@ pub(crate) fn update_dotenv(existing: &str, prefix: &str, vars: &[(&str, String)
     result
 }
 
-async fn run_server_commands(
-    command: ServerCommands,
-    json: bool,
-    json_explicit: bool,
-) -> Result<()> {
+async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> {
     match command {
         ServerCommands::Start {
             name,
@@ -598,19 +585,7 @@ async fn run_server_commands(
             tcp_port,
             foreground,
             args,
-        } => {
-            start_server(
-                name,
-                version,
-                http_port,
-                tcp_port,
-                foreground,
-                args,
-                json,
-                json_explicit,
-            )
-            .await
-        }
+        } => start_server(name, version, http_port, tcp_port, foreground, args, json).await,
         ServerCommands::List { global } => {
             if global {
                 list_servers_global(json)
@@ -900,19 +875,6 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn test_server_start_rejects_explicit_json_with_foreground() {
-        // Conflict fires only on the explicit --json flag; auto-detected JSON
-        // (json=true, json_explicit=false) is fine with --foreground because
-        // foreground streams stdout/stderr and never emits the JSON summary.
-        let result = start_server(None, None, None, None, true, vec![], true, true).await;
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, Error::JsonForegroundConflict),
-            "expected JsonForegroundConflict, got: {err}"
-        );
-    }
 
     #[test]
     fn parse_postgres_install_spec_recognizes_at_and_colon() {

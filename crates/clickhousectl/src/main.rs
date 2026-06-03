@@ -3,7 +3,6 @@ mod cloud;
 mod error;
 mod init;
 mod local;
-mod output_mode;
 mod paths;
 mod skills;
 mod update;
@@ -62,13 +61,17 @@ async fn main() {
     }
 }
 
+/// Resolve whether to emit machine-readable JSON. True when `--json` was passed
+/// or we're running under a known coding agent (same detection as the outbound
+/// User-Agent in `user_agent.rs`). Pipes/redirects stay human-readable unless
+/// `--json` is passed, matching `gh`/`kubectl` norms.
+fn json_output(flag: bool) -> bool {
+    flag || is_ai_agent::detect().is_some()
+}
+
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
-        Commands::Local(args) => {
-            let json_explicit = args.json;
-            let json = output_mode::should_output_json(args.json);
-            local::run(args.command, json, json_explicit).await
-        }
+        Commands::Local(args) => local::run(args.command, json_output(args.json)).await,
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
         Commands::Update(args) => run_update(args).await,
@@ -293,7 +296,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     }
                 }
 
-                if output_mode::should_output_json(args.json) {
+                if json_output(args.json) {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
                     println!("{}", Table::new(rows).with(Style::markdown()));
@@ -339,7 +342,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         ));
     }
 
-    let json = output_mode::should_output_json(args.json);
+    let json = json_output(args.json);
 
     let result = match args.command {
         CloudCommands::Auth { .. } => unreachable!("handled above"),
