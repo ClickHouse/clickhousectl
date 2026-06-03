@@ -1,21 +1,21 @@
 //! Resolves whether to emit machine-readable JSON output.
 //!
-//! Returns true when `--json` was passed, stdout is not a terminal, or a known
-//! coding-agent env var is set — so agents and pipelines get structured output
-//! without callers having to opt in.
+//! Returns true when `--json` was passed, stdout is not a terminal, or we're
+//! running under a known coding agent — so agents and pipelines get structured
+//! output without callers having to opt in.
 
 use std::io::IsTerminal;
-
-const AGENT_ENV_VARS: &[&str] = &["CLAUDECODE", "CURSOR_AGENT", "CODEX_SANDBOX"];
 
 pub fn should_output_json(flag: bool) -> bool {
     resolve(flag, agent_context_detected(), std::io::stdout().is_terminal())
 }
 
+/// Shares the same detection used for the outbound User-Agent (`user_agent.rs`),
+/// so the two stay consistent and cover every agent the `is-ai-agent` crate
+/// knows about (the standard `AGENT` var, Claude Code, Cursor, Codex, Gemini
+/// CLI, Goose, Devin, …) rather than a hand-maintained subset.
 fn agent_context_detected() -> bool {
-    AGENT_ENV_VARS
-        .iter()
-        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+    is_ai_agent::detect().is_some()
 }
 
 fn resolve(flag: bool, agent_detected: bool, stdout_is_tty: bool) -> bool {
