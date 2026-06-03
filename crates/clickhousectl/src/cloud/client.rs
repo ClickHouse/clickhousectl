@@ -1119,4 +1119,38 @@ mod tests {
         assert!(!err.message.contains("Hint:"));
         assert_eq!(err.message, "Forbidden");
     }
+
+    #[test]
+    fn convert_error_flags_401_as_auth() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 401,
+            message: "Unauthorized".into(),
+        });
+        assert_eq!(err.kind, CloudErrorKind::Auth);
+    }
+
+    #[test]
+    fn convert_error_flags_403_as_auth() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 403,
+            message: "Forbidden".into(),
+        });
+        assert_eq!(err.kind, CloudErrorKind::Auth);
+    }
+
+    #[test]
+    fn convert_error_treats_other_status_as_generic() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 500,
+            message: "Internal Server Error".into(),
+        });
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_treats_non_api_error_as_generic() {
+        let err =
+            test_client().convert_error(clickhouse_cloud_api::Error::AuthMismatch("nope".into()));
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
 }

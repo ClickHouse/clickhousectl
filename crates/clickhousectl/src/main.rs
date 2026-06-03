@@ -1204,3 +1204,49 @@ async fn run_postgres(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cloud::{CloudError, CloudErrorKind};
+
+    #[test]
+    fn json_output_true_when_flag_set() {
+        assert!(json_output(true));
+    }
+
+    #[test]
+    fn cloud_error_kind_routes_to_top_level() {
+        assert!(matches!(
+            cloud_error_to_top_level(CloudError::auth("nope")),
+            Error::AuthRequired(_)
+        ));
+        assert!(matches!(
+            cloud_error_to_top_level(CloudError::new("boom")),
+            Error::Cloud(_)
+        ));
+        // Default kind is Generic.
+        assert_eq!(CloudError::new("x").kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn boxed_cloud_error_preserves_auth_kind_through_downcast() {
+        let boxed: Box<dyn std::error::Error> = Box::new(CloudError::auth("nope"));
+        assert!(matches!(
+            boxed_cloud_error_to_top_level(boxed),
+            Error::AuthRequired(_)
+        ));
+    }
+
+    #[test]
+    fn boxed_non_cloud_error_falls_back_to_generic() {
+        // Anything that isn't a CloudError must not downcast to AuthRequired —
+        // it falls back to Error::Cloud (exit 1). This pins the contract that a
+        // handler stringifying a CloudError before boxing silently loses exit 4.
+        let boxed: Box<dyn std::error::Error> = "plain string error".into();
+        assert!(matches!(
+            boxed_cloud_error_to_top_level(boxed),
+            Error::Cloud(_)
+        ));
+    }
+}
