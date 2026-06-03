@@ -1,4 +1,5 @@
 use crate::cloud::types::DeleteResponse;
+use crate::dotenv::DotenvVars;
 use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
@@ -54,13 +55,76 @@ struct ResolvedAuth {
     base_url: String,
 }
 
-/// Walk the precedence ladder once. Order: CLI flags, credentials file, env
-/// vars, OAuth tokens. Errors only when CLI flags are half-set (key without
-/// secret or vice versa) or when nothing usable is configured.
+/// Lookup function for reading process environment variables. Production
+/// callers pass a wrapper around `std::env::var`; tests pass a closure over
+/// a synthetic map so precedence can be exercised without touching the real
+/// environment (which would race with concurrently-running tests calling
+/// `env::var`, the very reason `set_var` is `unsafe` in edition 2024).
+type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+fn real_env_lookup(key: &str) -> Option<String> {
+    env::var(key).ok()
+}
+
+/// Loader for the `.clickhouse/credentials.json` tier. Production passes
+/// `credentials::load_credentials`; tests pass a closure over a synthetic
+/// value (or `None`). Injected for the same reason as `EnvLookup`: the file
+/// lives under the process cwd, which `cargo test` does not isolate, so a
+/// developer's saved project credentials would otherwise win precedence over
+/// the env tier these tests are exercising.
+type CredentialsLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::credentials::Credentials>;
+
+/// Loader for the OAuth token tier (`.clickhouse/tokens.json`). Injected for
+/// the same reason as `CredentialsLookup`.
+type TokensLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::auth::TokenStore>;
+
+/// Treat empty as absent. An exported-but-empty variable (`CLICKHOUSE_..=`)
+/// or a bare `KEY=` line in `.env` yields `Some("")`; collapsing it to `None`
+/// here is the single chokepoint that keeps the resolver, the provenance
+/// helper, and the status table from disagreeing: an empty value never
+/// shadows a populated lower-precedence source, never resolves to empty
+/// Basic-auth creds, and never counts as "present" in any of the three.
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.filter(|v| !v.is_empty())
+}
+
+fn env_or_dotenv(key: &str, dotenv: &DotenvVars, env_lookup: EnvLookup<'_>) -> Option<String> {
+    non_empty(env_lookup(key)).or_else(|| non_empty(dotenv.get(key).map(String::from)))
+}
+
 fn resolve_auth(
     api_key: Option<&str>,
     api_secret: Option<&str>,
     url_override: Option<&str>,
+) -> Result<ResolvedAuth> {
+    resolve_auth_with_sources(
+        api_key,
+        api_secret,
+        url_override,
+        crate::dotenv::get(),
+        &real_env_lookup,
+        &crate::cloud::credentials::load_credentials,
+        &crate::cloud::auth::load_tokens,
+    )
+}
+
+/// Walk the precedence ladder once. Order: CLI flags, credentials file, env
+/// vars (with `.env` fallback), OAuth tokens. Errors only when CLI flags
+/// are half-set (key without secret or vice versa) or when nothing usable
+/// is configured.
+///
+/// `env_lookup`, `load_credentials`, and `load_tokens` are the injection
+/// points that let tests feed a controlled snapshot of every source without
+/// mutating the process environment or reading the real `.clickhouse/` files
+/// under the (un-isolated) test cwd.
+fn resolve_auth_with_sources(
+    api_key: Option<&str>,
+    api_secret: Option<&str>,
+    url_override: Option<&str>,
+    dotenv: &DotenvVars,
+    env_lookup: EnvLookup<'_>,
+    load_credentials: CredentialsLookup<'_>,
+    load_tokens: TokensLookup<'_>,
 ) -> Result<ResolvedAuth> {
     let normalized_default = || {
         url_override
@@ -82,7 +146,7 @@ fn resolve_auth(
         });
     }
 
-    if let Some(creds) = crate::cloud::credentials::load_credentials()
+    if let Some(creds) = load_credentials()
         && let (Some(key), Some(secret)) = (creds.api_key, creds.api_secret)
     {
         return Ok(ResolvedAuth {
@@ -92,8 +156,8 @@ fn resolve_auth(
         });
     }
 
-    let env_key = env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-    let env_secret = env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
+    let env_key = env_or_dotenv("CLICKHOUSE_CLOUD_API_KEY", dotenv, env_lookup);
+    let env_secret = env_or_dotenv("CLICKHOUSE_CLOUD_API_SECRET", dotenv, env_lookup);
     if let (Some(key), Some(secret)) = (env_key, env_secret) {
         return Ok(ResolvedAuth {
             creds: ResolvedCreds::Basic { key, secret },
@@ -102,7 +166,7 @@ fn resolve_auth(
         });
     }
 
-    if let Some(tokens) = crate::cloud::auth::load_tokens()
+    if let Some(tokens) = load_tokens()
         && crate::cloud::auth::is_token_valid(&tokens)
     {
         let base_url = url_override
@@ -118,7 +182,7 @@ fn resolve_auth(
     }
 
     Err(CloudError {
-        message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET, or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
+        message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET (also picked up from a `.env` file in the current directory), or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
     })
 }
 
@@ -130,6 +194,56 @@ fn resolve_auth(
 /// Returns `None` if nothing usable is configured.
 pub fn resolve_active_auth_source() -> Option<AuthSource> {
     resolve_auth(None, None, None).ok().map(|r| r.source)
+}
+
+/// The path of the `.env` file that supplied env-tier credentials, if any.
+///
+/// Returns `Some(path)` only when **both** `CLICKHOUSE_CLOUD_API_KEY` and
+/// `CLICKHOUSE_CLOUD_API_SECRET` are absent from the real environment and
+/// present in `.env`. If one is exported and the other comes from `.env`,
+/// provenance is mixed and we return `None` so labels don't imply the file
+/// was the sole source.
+pub fn dotenv_env_provenance() -> Option<std::path::PathBuf> {
+    dotenv_env_provenance_with_sources(crate::dotenv::get(), &real_env_lookup)
+}
+
+fn dotenv_env_provenance_with_sources(
+    dotenv: &DotenvVars,
+    env_lookup: EnvLookup<'_>,
+) -> Option<std::path::PathBuf> {
+    let real_key = non_empty(env_lookup("CLICKHOUSE_CLOUD_API_KEY")).is_some();
+    let real_secret = non_empty(env_lookup("CLICKHOUSE_CLOUD_API_SECRET")).is_some();
+    let dotenv_key = non_empty(dotenv.get("CLICKHOUSE_CLOUD_API_KEY").map(String::from)).is_some();
+    let dotenv_secret =
+        non_empty(dotenv.get("CLICKHOUSE_CLOUD_API_SECRET").map(String::from)).is_some();
+    if !real_key && !real_secret && dotenv_key && dotenv_secret {
+        dotenv.source_path().map(|p| p.to_path_buf())
+    } else {
+        None
+    }
+}
+
+/// Per-key presence of env-tier credentials (shell env with `.env` fallback),
+/// computed through the same `env_or_dotenv` merge the resolver uses so the
+/// `cloud auth status` table can never disagree with which source actually
+/// wins precedence. Empty values count as absent.
+pub struct EnvCredPresence {
+    pub key: bool,
+    pub secret: bool,
+}
+
+pub fn env_cred_presence() -> EnvCredPresence {
+    env_cred_presence_with_sources(crate::dotenv::get(), &real_env_lookup)
+}
+
+fn env_cred_presence_with_sources(
+    dotenv: &DotenvVars,
+    env_lookup: EnvLookup<'_>,
+) -> EnvCredPresence {
+    EnvCredPresence {
+        key: env_or_dotenv("CLICKHOUSE_CLOUD_API_KEY", dotenv, env_lookup).is_some(),
+        secret: env_or_dotenv("CLICKHOUSE_CLOUD_API_SECRET", dotenv, env_lookup).is_some(),
+    }
 }
 
 impl AuthSource {
@@ -153,8 +267,11 @@ impl AuthSource {
                 crate::cloud::credentials::credentials_path().display()
             ),
             AuthSource::EnvVars => {
-                "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)"
-                    .to_string()
+                let base = "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
+                match dotenv_env_provenance() {
+                    Some(path) => format!("{base} (loaded from {})", path.display()),
+                    None => base.to_string(),
+                }
             }
             AuthSource::OAuthTokens => format!(
                 "OAuth tokens ({})",
@@ -1096,5 +1213,224 @@ mod tests {
         });
         assert!(!err.message.contains("Hint:"));
         assert_eq!(err.message, "Forbidden");
+    }
+
+    // ── Dotenv resolver tests ──────────────────────────────────────────────
+    //
+    // Precedence is exercised by feeding `resolve_auth_with_sources` a
+    // synthetic `(env_map, dotenv)` pair. We deliberately do NOT mutate the
+    // real process environment: `std::env::set_var` is `unsafe` in edition
+    // 2024 because it races with `getenv` across threads, and a mutex
+    // around the test body cannot prevent concurrently-running tests from
+    // calling `env::var` and tripping that race.
+    //
+    // The credentials-file and OAuth-token tiers are injected as no-op
+    // loaders here. Both sit *above* the env tier in the ladder and read
+    // files under the process cwd, which `cargo test` does not isolate —
+    // without stubbing them, a developer's saved `.clickhouse/credentials.json`
+    // would short-circuit the resolver before it ever reaches the env/dotenv
+    // logic these tests assert on.
+
+    fn dotenv_with(pairs: &[(&str, &str)]) -> DotenvVars {
+        let mut map = std::collections::HashMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), v.to_string());
+        }
+        DotenvVars::from_map_for_tests(map, Some(std::path::PathBuf::from("/synthetic/.env")))
+    }
+
+    fn env_map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn lookup_from(map: &std::collections::HashMap<String, String>) -> impl Fn(&str) -> Option<String> + '_ {
+        move |k: &str| map.get(k).cloned()
+    }
+
+    // No-op loaders for the file-backed tiers, so the env/dotenv precedence
+    // tests don't depend on whatever `.clickhouse/` files happen to live under
+    // the test cwd.
+    fn no_credentials() -> Option<crate::cloud::credentials::Credentials> {
+        None
+    }
+
+    fn no_tokens() -> Option<crate::cloud::auth::TokenStore> {
+        None
+    }
+
+    // A populated credentials file, for asserting the file tier wins over env.
+    fn some_credentials() -> Option<crate::cloud::credentials::Credentials> {
+        Some(crate::cloud::credentials::Credentials {
+            api_key: Some("file_k".to_string()),
+            api_secret: Some("file_s".to_string()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn credentials_file_overrides_env() {
+        // Both the credentials file and the env tier are fully populated.
+        // The file sits above env in the ladder, so it must win.
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "shell_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
+        ]);
+        let lookup = lookup_from(&env);
+        let resolved =
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &some_credentials, &no_tokens)
+                .unwrap();
+        assert_eq!(resolved.source, AuthSource::CredentialsFile);
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "file_k");
+                assert_eq!(secret, "file_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+    }
+
+    #[test]
+    fn dotenv_only_resolves_to_env_source() {
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let env = env_map(&[]);
+        let lookup = lookup_from(&env);
+        let resolved =
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        assert_eq!(resolved.source, AuthSource::EnvVars);
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "dot_k");
+                assert_eq!(secret, "dot_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+        // Both creds came from .env → provenance helper should surface the path.
+        assert_eq!(
+            dotenv_env_provenance_with_sources(&dotenv, &lookup)
+                .unwrap()
+                .display()
+                .to_string(),
+            "/synthetic/.env"
+        );
+    }
+
+    #[test]
+    fn real_env_overrides_dotenv() {
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "shell_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
+        ]);
+        let lookup = lookup_from(&env);
+        let resolved =
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "shell_k");
+                assert_eq!(secret, "shell_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+        // Real env supplied both: provenance is shell, not .env.
+        assert!(dotenv_env_provenance_with_sources(&dotenv, &lookup).is_none());
+    }
+
+    #[test]
+    fn mixed_real_and_dotenv() {
+        // Key from shell, secret comes from .env.
+        let dotenv = dotenv_with(&[("CLICKHOUSE_CLOUD_API_SECRET", "dot_s")]);
+        let env = env_map(&[("CLICKHOUSE_CLOUD_API_KEY", "shell_k")]);
+        let lookup = lookup_from(&env);
+        let resolved =
+            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "shell_k");
+                assert_eq!(secret, "dot_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+        // Mixed provenance: helper must return None so the status line
+        // doesn't imply .env was the sole source.
+        assert!(dotenv_env_provenance_with_sources(&dotenv, &lookup).is_none());
+    }
+
+    // ── Empty-is-absent ────────────────────────────────────────────────────
+    //
+    // An exported-but-empty shell var (or a bare `KEY=` line) must not count
+    // as a credential: it can't shadow a populated `.env` value, can't resolve
+    // to empty Basic-auth creds, and can't register as "present". All three
+    // sites route through `non_empty`/`env_or_dotenv`, so these assert the
+    // behavior once per surface.
+
+    #[test]
+    fn empty_shell_does_not_shadow_dotenv() {
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", "dot_k"),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        // Both shell vars exported but empty — should be treated as absent.
+        let env = env_map(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", ""),
+            ("CLICKHOUSE_CLOUD_API_SECRET", ""),
+        ]);
+        let lookup = lookup_from(&env);
+        let resolved = resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        match resolved.creds {
+            ResolvedCreds::Basic { key, secret } => {
+                assert_eq!(key, "dot_k");
+                assert_eq!(secret, "dot_s");
+            }
+            _ => panic!("expected Basic creds"),
+        }
+        // Empty real vars are absent, so provenance is purely .env.
+        assert_eq!(
+            dotenv_env_provenance_with_sources(&dotenv, &lookup)
+                .unwrap()
+                .display()
+                .to_string(),
+            "/synthetic/.env"
+        );
+        // And the status table sees both creds present.
+        let presence = env_cred_presence_with_sources(&dotenv, &lookup);
+        assert!(presence.key && presence.secret);
+    }
+
+    #[test]
+    fn empty_dotenv_value_is_absent() {
+        // `.env` has the key but its value is empty; secret is populated.
+        let dotenv = dotenv_with(&[
+            ("CLICKHOUSE_CLOUD_API_KEY", ""),
+            ("CLICKHOUSE_CLOUD_API_SECRET", "dot_s"),
+        ]);
+        let env = env_map(&[]);
+        let lookup = lookup_from(&env);
+        // The empty key isn't a usable credential, so env-tier doesn't fully
+        // resolve and provenance must not claim .env was the sole source.
+        assert!(dotenv_env_provenance_with_sources(&dotenv, &lookup).is_none());
+        let presence = env_cred_presence_with_sources(&dotenv, &lookup);
+        assert!(!presence.key);
+        assert!(presence.secret);
+    }
+
+    #[test]
+    fn all_empty_registers_as_absent() {
+        let dotenv = dotenv_with(&[("CLICKHOUSE_CLOUD_API_KEY", "")]);
+        let env = env_map(&[("CLICKHOUSE_CLOUD_API_SECRET", "")]);
+        let lookup = lookup_from(&env);
+        let presence = env_cred_presence_with_sources(&dotenv, &lookup);
+        assert!(!presence.key);
+        assert!(!presence.secret);
+        assert!(dotenv_env_provenance_with_sources(&dotenv, &lookup).is_none());
     }
 }

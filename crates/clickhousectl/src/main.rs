@@ -1,5 +1,6 @@
 mod cli;
 mod cloud;
+mod dotenv;
 mod error;
 mod init;
 mod local;
@@ -24,6 +25,12 @@ use error::{Error, Result};
 
 #[tokio::main]
 async fn main() {
+    // Snapshot any project-local `.env` before anything else so credential
+    // resolution can use it. Safe to call here even though tokio has worker
+    // threads — we populate an in-process `OnceLock` rather than touching
+    // libc's environ.
+    dotenv::init();
+
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
@@ -242,13 +249,29 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     });
                 }
 
-                let env_key = std::env::var("CLICKHOUSE_CLOUD_API_KEY").ok();
-                let env_secret = std::env::var("CLICKHOUSE_CLOUD_API_SECRET").ok();
-                match (env_key.is_some(), env_secret.is_some()) {
+                // Presence is computed through the same `env_or_dotenv` merge
+                // the resolver uses (shell env with `.env` fallback, empties
+                // treated as absent) so this table can't disagree with which
+                // source actually wins.
+                let env_creds = cloud::env_cred_presence();
+                let has_key = env_creds.key;
+                let has_secret = env_creds.secret;
+
+                match (has_key, has_secret) {
                     (true, true) => {
+                        // Only label the `.env` path when BOTH credentials
+                        // come exclusively from it — otherwise the status
+                        // would imply the file was the source even though
+                        // one value is actually exported in the shell. Use
+                        // the same rule as `dotenv_env_provenance()` so the
+                        // table and `--debug describe()` stay consistent.
+                        let status = match cloud::dotenv_env_provenance() {
+                            Some(path) => format!("Active (from {})", path.display()),
+                            None => "Active".into(),
+                        };
                         rows.push(AuthRow {
                             auth_type: "Env vars".into(),
-                            status: "Active".into(),
+                            status,
                             scope: "read/write".into(),
                             active: mark(cloud::AuthSource::EnvVars),
                         });
