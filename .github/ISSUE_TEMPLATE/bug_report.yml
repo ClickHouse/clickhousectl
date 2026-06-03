@@ -1,0 +1,81 @@
+name: Bug report
+description: Report a problem with clickhousectl (chctl)
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill out the sections below so we can reproduce and fix the issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen instead.
+      placeholder: When I run `clickhousectl ...`, I expected ... but instead ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands you ran, in order. Include relevant flags and config.
+      placeholder: |
+        1. `clickhousectl local server start ...`
+        2. `clickhousectl ...`
+        3. ...
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: clickhousectl version
+      description: Output of `clickhousectl --version`.
+      placeholder: clickhousectl 0.2.4
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      description: How did you install clickhousectl?
+      options:
+        - Quick install script (curl ... | sh)
+        - cargo binstall
+        - npm
+        - pip / pipx / uv (PyPI)
+        - cargo install (crates.io)
+        - Built from source
+        - Other (describe in "What happened?")
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - Windows
+        - Other (describe in "What happened?")
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      description: e.g. macOS 15.5, Ubuntu 24.04, Debian 12.
+      placeholder: macOS 15.5
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste any error messages or command output. This will be rendered as code, so no need for backticks.
+      render: shell
+    validations:
+      required: false
