@@ -207,7 +207,7 @@ EOF
 clickhousectl local server start --config-file analytics    # Start a server with it
 ```
 
-The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config-file analytics` or `--config-file analytics.xml`).
+The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config-file analytics` or `--config-file analytics.xml`). `--config-file` takes a name within `~/.clickhouse/configs/` **not a path**.
 
 The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP ports are always forced as command-line overrides, which take precedence over the config file. This means a custom config can never break the managed server lifecycle (`list`, `stop`, `remove`, `dotenv`) regardless of its contents. Starting a server again without `--config-file` reverts it to plain defaults.
 

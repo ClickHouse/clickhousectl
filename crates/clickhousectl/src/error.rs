@@ -64,6 +64,9 @@ pub enum Error {
     #[error("{0}")]
     ConfigNotFound(String),
 
+    #[error("Invalid config name '{0}': must be a file in the configs dir, not a path (no '/', '\\', or '..')")]
+    InvalidConfigName(String),
+
     #[error("--json and --foreground cannot be used together")]
     JsonForegroundConflict,
 

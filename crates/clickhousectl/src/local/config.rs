@@ -51,12 +51,35 @@ pub fn list_configs_in(dir: &Path) -> Vec<String> {
     names
 }
 
+/// Rejects config names that would resolve outside `dir`.
+///
+/// A named config is, by design, a file living directly in the configs store.
+/// Without this guard `dir.join(name)` would let an absolute path or `..`
+/// segments escape the store (`Path::join` replaces the base on an absolute
+/// argument), copying arbitrary files into the server overlay. Mirrors
+/// `server::validate_server_name`.
+fn validate_config_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name == "."
+        || name == ".."
+    {
+        return Err(Error::InvalidConfigName(name.to_string()));
+    }
+    Ok(())
+}
+
 /// Resolves a config `name` to a file path within `dir`.
 ///
 /// If `name` already carries a recognized extension, that exact file must
 /// exist. Otherwise each known extension is tried; exactly one match must be
-/// found. Missing or ambiguous names produce a helpful error.
+/// found. Missing or ambiguous names produce a helpful error. Names that would
+/// escape `dir` (path separators or `..`) are rejected.
 pub fn resolve_config_in(dir: &Path, name: &str) -> Result<PathBuf> {
+    validate_config_name(name)?;
+
     if has_config_ext(name) {
         let path = dir.join(name);
         if path.is_file() {
@@ -214,6 +237,60 @@ mod tests {
         assert!(msg.contains("ambiguous"), "got: {msg}");
         assert!(msg.contains("shared.xml"));
         assert!(msg.contains("shared.yaml"));
+    }
+
+    #[test]
+    fn rejects_parent_dir_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A real file outside the configs dir that an escape could target.
+        let outside = tmp.path().join("outside.xml");
+        std::fs::write(&outside, "<clickhouse/>").unwrap();
+        let configs = tmp.path().join("configs");
+        std::fs::create_dir(&configs).unwrap();
+
+        let err = resolve_config_in(&configs, "../outside").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidConfigName(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_parent_dir_escape_with_extension() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside.xml");
+        std::fs::write(&outside, "<clickhouse/>").unwrap();
+        let configs = tmp.path().join("configs");
+        std::fs::create_dir(&configs).unwrap();
+
+        let err = resolve_config_in(&configs, "../outside.xml").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidConfigName(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_file(tmp.path(), "dev.xml");
+        // Absolute path would make `dir.join` discard the configs dir entirely.
+        let abs = tmp.path().join("dev.xml");
+        let err = resolve_config_in(tmp.path(), abs.to_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidConfigName(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_dotdot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = resolve_config_in(tmp.path(), "..").unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidConfigName(_)),
+            "got: {err:?}"
+        );
     }
 
     #[test]
