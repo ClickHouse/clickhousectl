@@ -1,4 +1,5 @@
 pub mod cli;
+pub mod config;
 pub mod discovery;
 pub mod docker;
 pub mod output;
@@ -265,12 +266,14 @@ fn run_client(
     Err(Error::Exec(err.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_server(
     name: Option<String>,
     version_spec: Option<String>,
     http_port: Option<u16>,
     tcp_port: Option<u16>,
     foreground: bool,
+    config_file: Option<String>,
     args: Vec<String>,
     json: bool,
 ) -> Result<()> {
@@ -319,29 +322,49 @@ async fn start_server(
             http_port, tcp_port
         );
     }
-    // Reject --config-file / -C in passthrough args. A custom config file
-    // redirects where ClickHouse stores data, which breaks the managed
-    // server lifecycle (list, stop, remove, dotenv all rely on the data
-    // directory living under .clickhouse/servers/<name>/). Individual
-    // --setting=value flags are fine — they don't change the data directory.
-    // Users who need a fully custom config should run `clickhouse server` directly.
+    // Reject --config-file / -C in passthrough args. Passing a raw config path
+    // here would bypass the managed `--config-file` handling below and could
+    // redirect where ClickHouse stores data, breaking the managed server
+    // lifecycle (list, stop, remove, dotenv all rely on the data directory
+    // living under .clickhouse/servers/<name>/). Individual --setting=value
+    // flags are fine — they don't change the data directory.
     if args
         .iter()
         .any(|a| a.starts_with("--config-file") || a.starts_with("-C"))
     {
         return Err(Error::Exec(
-            "--config-file / -C cannot be passed through to managed servers. \
-             Individual --setting=value flags are supported. \
-             For a fully custom config, run `clickhouse server` directly."
+            "--config-file / -C cannot be passed through in trailing args. \
+             Use `--config-file <NAME>` with a file in ~/.clickhouse/configs/ \
+             (see `clickhousectl local server configs`). \
+             Individual --setting=value flags are supported."
                 .into(),
         ));
     }
+
+    // Resolve a named config file before any process is spawned, so a bad name
+    // fails fast with a helpful error.
+    let resolved_config = match &config_file {
+        Some(name) => Some(config::resolve_config(name)?),
+        None => None,
+    };
 
     let mut cmd = Command::new(&binary);
     cmd.arg("server");
 
     server::ensure_server_data_dir(&server_name)?;
-    cmd.current_dir(server::server_data_dir(&server_name));
+    let data_dir = server::server_data_dir(&server_name);
+
+    // Stage the named config as a config.d overlay inside the data dir. With no
+    // --config-file, ClickHouse uses its built-in defaults and merges any
+    // config.d/ next to its working directory, so a partial override file (e.g.
+    // just <query_log>) takes effect without replacing the whole config.
+    // Passing it as --config-file instead would replace the embedded defaults
+    // and a partial file would fail to start. The forced --path=./ and port
+    // flags below are command-line overrides that still win over the file, so
+    // the managed lifecycle is preserved regardless of the file's contents.
+    config::apply_config_overlay(&data_dir, resolved_config.as_deref())?;
+
+    cmd.current_dir(&data_dir);
     cmd.args(init::server_flags());
 
     cmd.args(server::port_flags(http_port, tcp_port));
@@ -414,6 +437,16 @@ async fn start_server(
         }
         Ok(())
     }
+}
+
+fn list_configs(json: bool) -> Result<()> {
+    let dir = paths::configs_dir()?;
+    let out = output::ServerConfigsOutput {
+        dir: dir.display().to_string(),
+        configs: config::list_configs()?,
+    };
+    output::print_output(&out, json);
+    Ok(())
 }
 
 fn dotenv_server(
@@ -566,8 +599,22 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             http_port,
             tcp_port,
             foreground,
+            config_file,
             args,
-        } => start_server(name, version, http_port, tcp_port, foreground, args, json).await,
+        } => {
+            start_server(
+                name,
+                version,
+                http_port,
+                tcp_port,
+                foreground,
+                config_file,
+                args,
+                json,
+            )
+            .await
+        }
+        ServerCommands::Configs => list_configs(json),
         ServerCommands::List { global } => {
             if global {
                 list_servers_global(json)
@@ -860,7 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_start_rejects_json_with_foreground() {
-        let result = start_server(None, None, None, None, true, vec![], true).await;
+        let result = start_server(None, None, None, None, true, None, vec![], true).await;
         let err = result.unwrap_err();
         assert!(
             matches!(err, Error::JsonForegroundConflict),

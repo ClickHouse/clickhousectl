@@ -61,6 +61,9 @@ pub enum Error {
     #[error("Invalid server name '{0}': must not contain path separators or '..'")]
     InvalidServerName(String),
 
+    #[error("{0}")]
+    ConfigNotFound(String),
+
     #[error("--json and --foreground cannot be used together")]
     JsonForegroundConflict,
 

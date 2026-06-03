@@ -32,6 +32,11 @@ pub fn default_file() -> Result<PathBuf> {
     Ok(base_dir()?.join("default"))
 }
 
+/// Returns the custom server configs directory (~/.clickhouse/configs/)
+pub fn configs_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("configs"))
+}
+
 /// Ensures all necessary directories exist
 pub fn ensure_dirs() -> Result<()> {
     let versions = versions_dir()?;
