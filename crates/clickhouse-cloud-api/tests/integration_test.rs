@@ -21,7 +21,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // the modern `instance_replica_scaling_update` endpoint which
         // accepts multiples of 4. Use a dedicated pair of values for the
         // deprecated round-trip to satisfy that constraint.
+        #[cfg(feature = "deprecated-fields")]
         let deprecated_base_total_memory_gb = 12.0_f64;
+        #[cfg(feature = "deprecated-fields")]
         let deprecated_scaled_total_memory_gb = 24.0_f64;
         let base_replicas = 1.0_f64;
         let scaled_replicas = 3.0_f64;
@@ -267,6 +269,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "clickhousectl integration test query key".to_string(),
                             ),
                         }],
+                        #[cfg(feature = "deprecated-fields")]
                         roles: None,
                         state: ApiKeyPostRequestState::Enabled,
                     };
@@ -1833,6 +1836,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // `deprecated_base_total_memory_gb` before the round-trip. We stay
         // at 1 replica so the total-memory body maps directly to
         // per-replica memory.
+        //
+        // The whole deprecated vertical-scaling phase is gated on the
+        // `deprecated-fields` feature: the post-scale verification reads
+        // `min/max_total_memory_gb`, which only exist with the feature on.
+        #[cfg(feature = "deprecated-fields")]
+        {
         failures
             .run(
                 &ctx,
@@ -1941,6 +1950,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 },
             )
             .await?;
+        }
 
         // ── 9. Scaling Schedule (Beta) ───────────────────────────────
         //
@@ -2617,6 +2627,7 @@ fn synthetic_private_endpoint_id(ctx: &TestContext) -> String {
     }
 }
 
+#[cfg(feature = "deprecated-fields")]
 #[allow(deprecated)]
 #[allow(clippy::too_many_arguments)]
 async fn scale_service_vertical_and_wait(

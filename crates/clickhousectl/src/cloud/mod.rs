@@ -3,6 +3,7 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod credentials;
+pub mod output;
 pub mod postgres;
 pub mod service_query;
 pub mod types;

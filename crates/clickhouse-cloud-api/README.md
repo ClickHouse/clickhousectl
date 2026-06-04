@@ -28,11 +28,18 @@ Additional rules:
 
 In `models.rs`, required non-nullable fields use bare types (`T`) and optional/nullable fields use `Option<T>`. All fields keep `#[serde(default)]` so deserialization is tolerant of partial data.
 
+### Deprecated fields
+
+The OpenAPI spec marks some response fields as deprecated (e.g. `Service.tier`, `ApiKey.roles`, `Member.role`). In almost all cases, these are not needed. The Cloud API library disables them by default, gated by a Cargo feature flag `deprecated-fields`. Enable this feature if you need to consume deprecated fields.
+
 ### Scripts
 
 ```bash
 # Show a JSON manifest of required/optional fields per schema
 python3 scripts/resolve-field-requirements.py
+
+# Regenerate the DEPRECATED_FIELDS constant from the snapshot
+python3 scripts/regenerate-deprecated-fields.py
 
 # Check for drift between the live spec and the library (dry run)
 python3 scripts/check-openapi-drift.py --dry-run
@@ -77,6 +84,7 @@ The `spec_coverage_test` suite checks three things against the checked-in spec:
 1. Every OpenAPI operation has a matching `pub async fn` in `client.rs`
 2. Every OpenAPI schema has a matching `pub struct`/`pub enum` in `models.rs`
 3. Every field's `Option<T>` vs `T` matches the spec's required/optional semantics
+4. `DEPRECATED_FIELDS` matches the spec's `deprecated: true` fields (request- and response-side), and each one carries the `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`
 
 There are also `#[ignore]`d variants that run the same checks against the live spec.
 

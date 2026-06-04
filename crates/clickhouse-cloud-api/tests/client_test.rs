@@ -353,7 +353,7 @@ async fn create_invitation() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/invitations"))
-        .and(body_partial_json(serde_json::json!({"email": "newuser@example.com", "role": "developer"})))
+        .and(body_partial_json(serde_json::json!({"email": "newuser@example.com"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": 200,
             "result": {
@@ -368,7 +368,8 @@ async fn create_invitation() {
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let body = InvitationPostRequest {
         email: "newuser@example.com".to_string(),
-        role: InvitationPostRequestRole::Developer,
+        #[cfg(feature = "deprecated-fields")]
+        role: Some(InvitationPostRequestRole::Developer),
         ..Default::default()
     };
     let resp = client.invitation_create("org-1", &body).await.unwrap();
@@ -393,6 +394,7 @@ async fn get_invitation() {
     let resp = c.invitation_get("org-1", "inv-1").await.unwrap();
     let inv = resp.result.unwrap();
     assert_eq!(inv.email, "bob@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(inv.role, InvitationRole::Admin);
 }
 
@@ -564,8 +566,11 @@ async fn list_members() {
     let resp = client.member_get_list("org-1").await.unwrap();
     let members = resp.result.unwrap();
     assert_eq!(members.len(), 2);
-    assert_eq!(members[0].role, MemberRole::Admin);
-    assert_eq!(members[1].role, MemberRole::Developer);
+    #[cfg(feature = "deprecated-fields")]
+    {
+        assert_eq!(members[0].role, MemberRole::Admin);
+        assert_eq!(members[1].role, MemberRole::Developer);
+    }
 }
 
 #[tokio::test]
@@ -586,6 +591,7 @@ async fn get_member() {
     let resp = c.member_get("org-1", "user-1").await.unwrap();
     let member = resp.result.unwrap();
     assert_eq!(member.name, "Alice");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
 
@@ -595,7 +601,6 @@ async fn update_member() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/members/user-1"))
-        .and(body_partial_json(serde_json::json!({"role": "admin"})))
         .respond_with(ok_json(serde_json::json!({
             "userId": "user-1",
             "name": "Alice",
@@ -606,11 +611,14 @@ async fn update_member() {
         .await;
 
     let body = MemberPatchRequest {
+        #[cfg(feature = "deprecated-fields")]
         role: Some(MemberPatchRequestRole::Admin),
         ..Default::default()
     };
     let resp = c.member_update("org-1", "user-1", &body).await.unwrap();
     let member = resp.result.unwrap();
+    assert_eq!(member.email, "alice@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
 
@@ -669,7 +677,7 @@ async fn create_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-123/services"))
-        .and(body_partial_json(serde_json::json!({"name": "new-service", "provider": "aws", "region": "us-east-1", "tier": "production"})))
+        .and(body_partial_json(serde_json::json!({"name": "new-service", "provider": "aws", "region": "us-east-1"})))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": 200,
             "result": {
@@ -692,6 +700,7 @@ async fn create_service() {
         name: "new-service".to_string(),
         provider: ServicePostRequestProvider::Aws,
         region: ServicePostRequestRegion::Us_east_1,
+        #[cfg(feature = "deprecated-fields")]
         tier: Some(ServicePostRequestTier::Production),
         ..Default::default()
     };
