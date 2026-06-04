@@ -290,7 +290,7 @@ CONTEXT FOR AGENTS:
   Starts a named Postgres server backed by a Docker container.
   Without --name, the first server is called \"default\"; if \"default\" is running,
   a random name is generated (e.g. \"bold-crane\").
-  --version (-v) selects a postgres image tag (16, 17, or 18 — e.g. 16, 16-alpine, 17.0, 18-bookworm).
+  --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
   Defaults to 18. Image is pulled if not already present locally.
   --port defaults to 5432; if taken, a free port is auto-assigned.
   Data persists at .clickhouse/servers/<name>/data/ and is bind-mounted into the container.
@@ -303,7 +303,7 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         name: Option<String>,
 
-        /// Postgres image tag (16, 17, or 18 — e.g. 16, 16-alpine, 17.0, 18-bookworm). Default: 18. Pulls if missing.
+        /// Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing.
         #[arg(long, short = 'v')]
         version: Option<String>,
 

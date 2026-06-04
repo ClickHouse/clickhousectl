@@ -191,12 +191,12 @@ clickhousectl local server dotenv --user default --password secret --database my
 When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
 
 ```bash
-# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 16, 17, 18 (and any sub-tag like 16-alpine, 17.0, 18-bookworm).
-clickhousectl local install postgres@16
+# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 17, 18 (and any sub-tag like 17-alpine, 17.0, 18-bookworm).
+clickhousectl local install postgres@17
 
 # Start a Postgres instance (defaults: postgres:18, port 5432, user "postgres", db "postgres")
 clickhousectl local postgres start
-clickhousectl local postgres start --name dev --version 16 --port 5433
+clickhousectl local postgres start --name dev --version 17 --port 5433
 clickhousectl local postgres start --user app --password s3cret --database myapp
 clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
 
@@ -212,7 +212,7 @@ clickhousectl local postgres dotenv --name dev
 
 # Stop / remove. Pass --version when more than one major shares a name.
 clickhousectl local postgres stop dev
-clickhousectl local postgres stop dev --version 16        # disambiguate
+clickhousectl local postgres stop dev --version 17        # disambiguate
 clickhousectl local postgres remove dev
 ```
 
@@ -537,7 +537,7 @@ clickhousectl cloud postgres switchover <pg-id>
 | `--region` | Cloud region, e.g. `us-east-1` (required) |
 | `--size` | Instance size, e.g. `m7i.2xlarge` (required; server-validated) |
 | `--provider` | Cloud provider (default: `aws`) |
-| `--pg-version` | Postgres major version: `18`, `17`, `16` |
+| `--pg-version` | Postgres major version: `18`, `17` |
 | `--ha-type` | High-availability: `none`, `async`, `sync` |
 | `--tag` | Resource tag `key` or `key=value` (repeatable) |
 | `--pg-config-file` | Path to JSON file with a `PgConfig` object |

@@ -560,8 +560,6 @@ pub enum PgVersion {
     _18,
     #[serde(rename = "17")]
     _17,
-    #[serde(rename = "16")]
-    _16,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -572,7 +570,6 @@ impl std::fmt::Display for PgVersion {
         match self {
             Self::_18 => write!(f, "18"),
             Self::_17 => write!(f, "17"),
-            Self::_16 => write!(f, "16"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }

@@ -631,7 +631,7 @@ mod tests {
         let info = ServerInfo {
             name: "dev".into(),
             pid: 0,
-            version: "postgres:16".into(),
+            version: "postgres:17".into(),
             http_port: 0,
             tcp_port: 5432,
             started_at: "1700000000".into(),
