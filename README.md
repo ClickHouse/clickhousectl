@@ -709,6 +709,19 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`.
+
+### Exit codes
+
+Follow `gh` conventions:
+
+| Code | Meaning                                                  |
+| ---- | -------------------------------------------------------- |
+| `0`  | Success                                                  |
+| `1`  | Error (anything not classified below)                    |
+| `2`  | Cancelled (user aborted)                                 |
+| `4`  | Auth required (no credentials, 401/403, OAuth-only writes) |
+
 ## Skills
 
 Install the official ClickHouse Agent Skills from [ClickHouse/agent-skills](https://github.com/ClickHouse/agent-skills).

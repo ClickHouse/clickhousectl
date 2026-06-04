@@ -11,7 +11,8 @@ This is a Cargo workspace with two crates:
 The user-facing CLI surface. Contains all logic for local commands, wraps `clickhouse-cloud-api` for cloud.
 
 - Cloud handlers go through the `CloudClient` wrapper (`src/cloud/client.rs`), not `clickhouse_cloud_api::Client` directly. The wrapper handles credential precedence, error conversion, and response unwrapping.
-- Cloud handlers always support `--json` output unless there is good reason not to.
+- Cloud handlers always support `--json` output unless there is good reason not to. JSON is emitted automatically when `--json` is passed or a coding agent is detected (`is_ai_agent::detect()` via the `json_output()` helper in `main.rs`).
+- `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `main.rs`, driving `gh`-style exit codes via `Error::exit_code()`: `0` success, `1` error, `2` cancelled, `4` auth required.
 
 Use `--help` to learn the current command surface.
 

@@ -4,9 +4,33 @@ use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CloudErrorKind {
+    #[default]
+    Generic,
+    Auth,
+}
+
 #[derive(Debug)]
 pub struct CloudError {
     pub message: String,
+    pub kind: CloudErrorKind,
+}
+
+impl CloudError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: CloudErrorKind::Generic,
+        }
+    }
+
+    pub fn auth(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: CloudErrorKind::Auth,
+        }
+    }
 }
 
 impl std::fmt::Display for CloudError {
@@ -133,12 +157,12 @@ fn resolve_auth_with_sources(
     };
 
     if api_key.is_some() || api_secret.is_some() {
-        let key = api_key.map(String::from).ok_or_else(|| CloudError {
-            message: "API key required when --api-key or --api-secret is set".into(),
-        })?;
-        let secret = api_secret.map(String::from).ok_or_else(|| CloudError {
-            message: "API secret required when --api-key or --api-secret is set".into(),
-        })?;
+        let key = api_key
+            .map(String::from)
+            .ok_or_else(|| CloudError::auth("API key required when --api-key or --api-secret is set"))?;
+        let secret = api_secret
+            .map(String::from)
+            .ok_or_else(|| CloudError::auth("API secret required when --api-key or --api-secret is set"))?;
         return Ok(ResolvedAuth {
             creds: ResolvedCreds::Basic { key, secret },
             source: AuthSource::CliFlags,
@@ -181,9 +205,9 @@ fn resolve_auth_with_sources(
         });
     }
 
-    Err(CloudError {
-        message: "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET (also picked up from a `.env` file in the current directory), or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl".into(),
-    })
+    Err(CloudError::auth(
+        "No credentials found. Run `clickhousectl cloud auth login` (OAuth, read-only), `clickhousectl cloud auth login --api-key KEY --api-secret SECRET` (read/write), set CLICKHOUSE_CLOUD_API_KEY + CLICKHOUSE_CLOUD_API_SECRET (also picked up from a `.env` file in the current directory), or use --api-key/--api-secret.\n\nLearn how to create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
+    ))
 }
 
 /// Peek which credential source would win precedence right now without
@@ -306,9 +330,7 @@ impl CloudClient {
         let http = reqwest::Client::builder()
             .user_agent(crate::user_agent::user_agent())
             .build()
-            .map_err(|e| CloudError {
-                message: format!("Failed to create HTTP client: {}", e),
-            })?;
+            .map_err(|e| CloudError::new(format!("Failed to create HTTP client: {}", e)))?;
 
         let resolved = resolve_auth(api_key, api_secret, url_override)?;
         let lib_url = lib_base_url(&resolved.base_url);
@@ -354,14 +376,14 @@ impl CloudClient {
 
     /// Unwrap an `ApiResponse<T>` into `T`, returning an error if the result is empty.
     pub fn unwrap_response<T>(response: clickhouse_cloud_api::models::ApiResponse<T>) -> Result<T> {
-        response.result.ok_or_else(|| CloudError {
-            message: "Empty response from API".into(),
-        })
+        response
+            .result
+            .ok_or_else(|| CloudError::new("Empty response from API"))
     }
 
     /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
     pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
-        let message = match &err {
+        match &err {
             clickhouse_cloud_api::Error::Api { status, message } => {
                 let mut msg = message.clone();
                 if *status == 403 && self.is_bearer_auth() {
@@ -373,11 +395,14 @@ impl CloudClient {
                          https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl",
                     );
                 }
-                msg
+                if matches!(*status, 401 | 403) {
+                    CloudError::auth(msg)
+                } else {
+                    CloudError::new(msg)
+                }
             }
-            other => other.to_string(),
-        };
-        CloudError { message }
+            other => CloudError::new(other.to_string()),
+        }
     }
 
     // Organization endpoints (delegated to library client)
@@ -1042,15 +1067,12 @@ impl CloudClient {
     pub async fn get_default_org_id(&self) -> Result<String> {
         let orgs = self.list_organizations().await?;
         match orgs.len() {
-            0 => Err(CloudError {
-                message: "No organization found for this API key".into(),
-            }),
+            0 => Err(CloudError::new("No organization found for this API key")),
             1 => Ok(orgs[0].id.to_string()),
-            _ => Err(CloudError {
-                message: "Multiple organizations found. Specify --org-id to choose one. \
-                          Use `clickhousectl cloud org list` to see your organizations."
-                    .into(),
-            }),
+            _ => Err(CloudError::new(
+                "Multiple organizations found. Specify --org-id to choose one. \
+                 Use `clickhousectl cloud org list` to see your organizations.",
+            )),
         }
     }
 }
@@ -1213,6 +1235,40 @@ mod tests {
         });
         assert!(!err.message.contains("Hint:"));
         assert_eq!(err.message, "Forbidden");
+    }
+
+    #[test]
+    fn convert_error_flags_401_as_auth() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 401,
+            message: "Unauthorized".into(),
+        });
+        assert_eq!(err.kind, CloudErrorKind::Auth);
+    }
+
+    #[test]
+    fn convert_error_flags_403_as_auth() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 403,
+            message: "Forbidden".into(),
+        });
+        assert_eq!(err.kind, CloudErrorKind::Auth);
+    }
+
+    #[test]
+    fn convert_error_treats_other_status_as_generic() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 500,
+            message: "Internal Server Error".into(),
+        });
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_treats_non_api_error_as_generic() {
+        let err =
+            test_client().convert_error(clickhouse_cloud_api::Error::AuthMismatch("nope".into()));
+        assert_eq!(err.kind, CloudErrorKind::Generic);
     }
 
     // ── Dotenv resolver tests ──────────────────────────────────────────────
