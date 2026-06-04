@@ -112,6 +112,7 @@ fn deserialize_service() {
     assert_eq!(svc.provider, ServiceProvider::Aws);
     assert_eq!(svc.region, ServiceRegion::Us_east_1);
     assert_eq!(svc.state, ServiceState::Running);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(svc.tier, ServiceTier::Production);
     assert_eq!(svc.num_replicas, 3.0);
     assert!(svc.idle_scaling);
@@ -124,8 +125,11 @@ fn serialize_service_post_request() {
         name: "new-service".to_string(),
         provider: ServicePostRequestProvider::Aws,
         region: ServicePostRequestRegion::Us_east_1,
+        #[cfg(feature = "deprecated-fields")]
         tier: Some(ServicePostRequestTier::Production),
+        #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: Some(24.0),
+        #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: Some(48.0),
         num_replicas: Some(3.0),
         idle_scaling: Some(true),
@@ -140,7 +144,9 @@ fn serialize_service_post_request() {
     assert_eq!(json["name"], "new-service");
     assert_eq!(json["provider"], "aws");
     assert_eq!(json["region"], "us-east-1");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["tier"], "production");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["minTotalMemoryGb"], 24.0);
     assert_eq!(json["ipAccessList"][0]["source"], "0.0.0.0/0");
 }
@@ -207,6 +213,7 @@ fn deserialize_member() {
     let member: Member = serde_json::from_str(json).unwrap();
     assert_eq!(member.name, "John Doe");
     assert_eq!(member.email, "john@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
 
@@ -220,6 +227,7 @@ fn deserialize_invitation() {
     }"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
     assert_eq!(inv.email, "new@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(inv.role, InvitationRole::Developer);
 }
 
@@ -562,13 +570,17 @@ fn serialize_service_replica_scaling_patch_request() {
 fn serialize_service_scaling_patch_request() {
     let req = ServiceScalingPatchRequest {
         num_replicas: Some(3.0),
+        #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: Some(24.0),
+        #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: Some(48.0),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["numReplicas"], 3.0);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["minTotalMemoryGb"], 24.0);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["maxTotalMemoryGb"], 48.0);
     assert!(json.get("idleScaling").is_none());
 }
@@ -627,7 +639,6 @@ fn serialize_postgres_service_post_request() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_medium,
-        storage_size: 100,
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -635,7 +646,7 @@ fn serialize_postgres_service_post_request() {
     assert_eq!(json["provider"], "aws");
     assert_eq!(json["region"], "us-east-1");
     assert_eq!(json["size"], "c6gd.medium");
-    assert_eq!(json["storageSize"], 100);
+    assert!(json.get("storageSize").is_none());
     // Optional fields omitted
     assert!(json.get("haType").is_none());
     assert!(json.get("pgConfig").is_none());
@@ -697,14 +708,20 @@ fn serialize_byoc_infrastructure_patch_request() {
 fn serialize_invitation_post_request() {
     let req = InvitationPostRequest {
         email: "alice@example.com".to_string(),
-        role: InvitationPostRequestRole::Developer,
+        #[cfg(feature = "deprecated-fields")]
+        role: Some(InvitationPostRequestRole::Developer),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["email"], "alice@example.com");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["role"], "developer");
+    // By default the deprecated `role` field is gated out and never serialized.
+    #[cfg(not(feature = "deprecated-fields"))]
+    assert!(json.get("role").is_none());
 }
 
+#[cfg(feature = "deprecated-fields")]
 #[test]
 fn serialize_member_patch_request() {
     let req = MemberPatchRequest {
@@ -713,6 +730,37 @@ fn serialize_member_patch_request() {
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["role"], "admin");
+}
+
+/// In the default build the deprecated request fields don't exist on the
+/// struct, so callers can't set them and they never reach the wire.
+#[cfg(not(feature = "deprecated-fields"))]
+#[test]
+fn deprecated_request_fields_absent_by_default() {
+    let member = MemberPatchRequest {
+        assigned_role_ids: Some(vec!["admin".to_string()]),
+    };
+    assert!(serde_json::to_value(&member)
+        .unwrap()
+        .get("role")
+        .is_none());
+
+    let invitation = InvitationPostRequest {
+        email: "alice@example.com".to_string(),
+        assigned_role_ids: vec!["admin".to_string()],
+    };
+    assert!(serde_json::to_value(&invitation)
+        .unwrap()
+        .get("role")
+        .is_none());
+
+    let scaling = ServiceScalingPatchRequest {
+        num_replicas: Some(3.0),
+        ..Default::default()
+    };
+    let scaling = serde_json::to_value(&scaling).unwrap();
+    assert!(scaling.get("minTotalMemoryGb").is_none());
+    assert!(scaling.get("maxTotalMemoryGb").is_none());
 }
 
 #[test]
@@ -821,6 +869,7 @@ fn member_ignores_extra_fields() {
     let json = r#"{"name":"Alice","role":"admin","department":"eng","mfa":true}"#;
     let m: Member = serde_json::from_str(json).unwrap();
     assert_eq!(m.name, "Alice");
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(m.role, MemberRole::Admin);
 }
 
@@ -871,6 +920,69 @@ fn service_minimal_response() {
     assert_eq!(svc.provider, ServiceProvider::default());
     assert_eq!(svc.state, ServiceState::default());
     assert!(svc.endpoints.is_empty());
+}
+
+#[cfg(feature = "deprecated-fields")]
+#[test]
+fn service_deserializes_deprecated_fields() {
+    // With the `deprecated-fields` feature on, deprecated fields exist on the
+    // struct and deserialize normally. Without the feature they are absent from
+    // the struct entirely (see `deprecated_fields_absent_by_default`).
+    let json = r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#;
+    let svc: Service = serde_json::from_str(json).unwrap();
+    assert_eq!(svc.min_total_memory_gb, 24.0);
+    assert_eq!(svc.max_total_memory_gb, 48.0);
+}
+
+/// In the default build (no `deprecated-fields` feature) deprecated response
+/// fields don't exist on the struct, so they can't be read and never appear in
+/// serialized output. Deserializing a payload that contains them simply ignores
+/// the extra keys.
+#[cfg(not(feature = "deprecated-fields"))]
+#[test]
+fn deprecated_fields_absent_by_default() {
+    let svc: Service = serde_json::from_str(
+        r#"{"name":"svc","tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#,
+    )
+    .unwrap();
+    let v = serde_json::to_value(&svc).unwrap();
+    assert!(v.get("tier").is_none());
+    assert!(v.get("minTotalMemoryGb").is_none());
+    assert!(v.get("maxTotalMemoryGb").is_none());
+
+    let m: Member = serde_json::from_str(r#"{"name":"Alice","role":"admin"}"#).unwrap();
+    assert!(serde_json::to_value(&m).unwrap().get("role").is_none());
+}
+
+#[test]
+#[cfg(not(feature = "deprecated-fields"))]
+fn service_hides_deprecated_fields_when_serializing() {
+    let svc: Service = serde_json::from_str(
+        r#"{"name":"svc","tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&svc).unwrap();
+    let obj = value.as_object().unwrap();
+    // Deprecated fields are omitted from serialized output by default.
+    assert!(!obj.contains_key("tier"), "tier should be hidden");
+    assert!(!obj.contains_key("minTotalMemoryGb"));
+    assert!(!obj.contains_key("maxTotalMemoryGb"));
+    // Non-deprecated fields are still present.
+    assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("svc"));
+}
+
+#[test]
+#[cfg(feature = "deprecated-fields")]
+fn service_shows_deprecated_fields_with_feature() {
+    let svc: Service = serde_json::from_str(
+        r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#,
+    )
+    .unwrap();
+    let value = serde_json::to_value(&svc).unwrap();
+    let obj = value.as_object().unwrap();
+    assert!(obj.contains_key("tier"));
+    assert!(obj.contains_key("minTotalMemoryGb"));
+    assert!(obj.contains_key("maxTotalMemoryGb"));
 }
 
 #[test]
@@ -1100,6 +1212,7 @@ fn deserialize_clickpipe_scaling() {
     }"#;
     let s: ClickPipeScaling = serde_json::from_str(json).unwrap();
     assert_eq!(s.replicas, 3);
+    #[cfg(feature = "deprecated-fields")]
     assert_eq!(s.concurrency, 2);
 }
 

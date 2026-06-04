@@ -11,7 +11,8 @@ This is a Cargo workspace with two crates:
 The user-facing CLI surface. Contains all logic for local commands, wraps `clickhouse-cloud-api` for cloud.
 
 - Cloud handlers go through the `CloudClient` wrapper (`src/cloud/client.rs`), not `clickhouse_cloud_api::Client` directly. The wrapper handles credential precedence, error conversion, and response unwrapping.
-- Cloud handlers always support `--json` output unless there is good reason not to.
+- Cloud handlers always support `--json` output unless there is good reason not to. JSON is emitted automatically when `--json` is passed or a coding agent is detected (`is_ai_agent::detect()` via the `json_output()` helper in `main.rs`).
+- `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `main.rs`, driving `gh`-style exit codes via `Error::exit_code()`: `0` success, `1` error, `2` cancelled, `4` auth required.
 
 Use `--help` to learn the current command surface.
 
@@ -37,14 +38,15 @@ For both local and cloud commands, define the clap variant in the appropriate `c
 4. Add the match arm in `run_cloud()` in `src/main.rs`.
 5. Add a thin wrapper method on `CloudClient` in `src/cloud/client.rs`. It should delegate to `self.api().<lib_method>()`, map errors via `self.convert_error(e)`, and unwrap with `Self::unwrap_response`. Use the library's request/response types here.
 6. If the command sends a request body, extract a `build_<name>_request(...)` helper in `src/cloud/commands.rs` that returns the library's request struct. Cover the helper with minimal + maximal unit tests in the `mod tests` block at the bottom of `commands.rs`, asserting directly on library struct fields.
-7. Implement the handler in `src/cloud/commands.rs`. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern:
+7. Implement the handler in `src/cloud/commands.rs`. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern. For detail/get views (rendering a single resource), drive human output through `print_human` so it shares serde's behaviour — including deprecated-field hiding — instead of hand-writing `println!` lines:
    ```rust
    if json {
        println!("{}", serde_json::to_string_pretty(&data)?);
    } else {
-       println!("Human readable: {}", data.field);
+       print_human(&data)?;
    }
    ```
+   List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`.
 8. Add `Cli::try_parse_from` coverage in `src/cloud/cli.rs` for the new command's body-related flags, asserting parsed values.
 
 ### API library (`crates/clickhouse-cloud-api/`)
@@ -88,6 +90,16 @@ Field optionality is maintained by hand. When the drift check or test flags a mi
 **Optionality exemptions:**
 
 Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
+
+##### Deprecated field hiding
+
+Fields the spec marks `deprecated: true` — on both response schemas (e.g. `Service.tier`, `ApiKey.roles`) and request schemas (e.g. `ServicePostRequest.tier`, `InvitationPostRequest.role`) — are removed from the struct entirely so consumers, including the CLI, can't even reference a field the API has deprecated. Each carries `#[cfg(feature = "deprecated-fields")]` in `models.rs`: absent from the struct by default, present only when the `deprecated-fields` Cargo feature is on. On a **response** struct that means reading it is a compile error and it never appears in output (deserializing a payload that still contains it just ignores the extra key — no schema uses `deny_unknown_fields`). On a **request** struct it means callers can't set it and `skip_serializing_if` keeps it off the wire entirely.
+
+Because the field is gone by default, table/list output built by direct field access (e.g. `member list`, `invitation list`) can no longer leak a deprecated field — the compiler rejects it. Where a deprecated field had a non-deprecated replacement (e.g. `Member.role` → `assignedRoles`), the list column was switched to the replacement. CLI request builders (`commands.rs`, `service_query.rs`) likewise drop the deprecated fields; where they still construct a struct under the feature, the inert assignment (`field: None`) carries its own `#[cfg(feature = "deprecated-fields")]` so both feature configs compile.
+
+A deprecated request field that the spec marks required (description heuristic, e.g. `InvitationPostRequest.role`, `OrganizationPrivateEndpointsPatch.add`) is modelled as `Option<T>` so it can be gated out and omitted — these carry an `OPTIONALITY_EXEMPTIONS` entry in `spec_coverage_test.rs`.
+
+The list is the `DEPRECATED_FIELDS` constant in `src/meta.rs`. `scripts/regenerate-deprecated-fields.py` regenerates it from the snapshot; `deprecated_fields_match_spec` (drift vs spec) and `deprecated_fields_hidden` (constant vs the `models.rs` markers) in `spec_coverage_test.rs` keep all three in lockstep. The daily `check-openapi-drift.py` reports deprecation changes too.
 
 ## Tests
 

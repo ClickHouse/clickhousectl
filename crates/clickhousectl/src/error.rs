@@ -56,6 +56,12 @@ pub enum Error {
     Cloud(String),
 
     #[error("{0}")]
+    AuthRequired(String),
+
+    #[error("Cancelled")]
+    Cancelled,
+
+    #[error("{0}")]
     Skills(String),
 
     #[error("Invalid server name '{0}': must not contain path separators or '..'")]
@@ -67,9 +73,6 @@ pub enum Error {
     #[error("Invalid config name '{0}': must be a file in the configs dir, not a path (no '/', '\\', or '..')")]
     InvalidConfigName(String),
 
-    #[error("--json and --foreground cannot be used together")]
-    JsonForegroundConflict,
-
     #[error("Docker is not available: {0}")]
     DockerNotAvailable(String),
 
@@ -79,3 +82,37 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl Error {
+    /// Process exit code following `gh` CLI conventions:
+    /// `0` success, `1` error, `2` cancelled, `4` auth required.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Error::AuthRequired(_) => 4,
+            Error::Cancelled => 2,
+            _ => 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_required_maps_to_4() {
+        assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
+    }
+
+    #[test]
+    fn cancelled_maps_to_2() {
+        assert_eq!(Error::Cancelled.exit_code(), 2);
+    }
+
+    #[test]
+    fn generic_errors_map_to_1() {
+        assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
+        assert_eq!(Error::NoVersionsInstalled.exit_code(), 1);
+        assert_eq!(Error::VersionNotFound("25.12".into()).exit_code(), 1);
+    }
+}

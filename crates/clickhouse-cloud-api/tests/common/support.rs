@@ -677,7 +677,8 @@ impl CleanupRegistry {
         {
             let body = MemberPatchRequest {
                 assigned_role_ids: Some(original_assigned_role_ids.clone()),
-                ..Default::default()
+                #[cfg(feature = "deprecated-fields")]
+                role: None,
             };
             match client.member_update(org_id, &user_id, &body).await {
                 Ok(_) => {}

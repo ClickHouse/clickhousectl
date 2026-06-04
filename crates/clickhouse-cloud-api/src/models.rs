@@ -560,8 +560,6 @@ pub enum PgVersion {
     _18,
     #[serde(rename = "17")]
     _17,
-    #[serde(rename = "16")]
-    _16,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -572,7 +570,6 @@ impl std::fmt::Display for PgVersion {
         match self {
             Self::_18 => write!(f, "18"),
             Self::_17 => write!(f, "17"),
-            Self::_16 => write!(f, "16"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -7618,6 +7615,7 @@ pub struct ApiKey {
     pub key_suffix: String,
     #[serde(default)]
     pub name: String,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(default)]
     pub roles: Vec<String>,
     #[serde(default)]
@@ -7648,6 +7646,7 @@ pub struct ApiKeyPatchRequest {
     pub ip_access_list: Option<Vec<IpAccessListEntry>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name: Option<String>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub roles: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -7667,6 +7666,7 @@ pub struct ApiKeyPostRequest {
     pub ip_access_list: Vec<IpAccessListEntry>,
     #[serde(default)]
     pub name: String,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub roles: Option<Vec<String>>,
     #[serde(default)]
@@ -7860,8 +7860,6 @@ pub struct BasePostgresService {
     pub region: PgRegion,
     #[serde(default)]
     pub size: PgSize,
-    #[serde(rename = "storageSize", default)]
-    pub storage_size: PgStorageSize,
     #[serde(default)]
     pub tags: PgTags,
 }
@@ -8890,6 +8888,7 @@ pub struct ClickPipePubSubSource {
 /// `ClickPipeScaling` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeScaling {
+    #[cfg(feature = "deprecated-fields")]
     #[serde(default)]
     pub concurrency: i64,
     #[serde(rename = "replicaCpuMillicores", default)]
@@ -8903,6 +8902,7 @@ pub struct ClickPipeScaling {
 /// `ClickPipeScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeScalingPatchRequest {
+    #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub concurrency: Option<i64>,
     #[serde(rename = "replicaCpuMillicores", skip_serializing_if = "Option::is_none", default)]
@@ -9935,6 +9935,7 @@ pub struct ClickStackTableRawSqlChartConfig {
 /// `ClickStackTileInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTileInput {
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
     pub as_ratio: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -9945,6 +9946,7 @@ pub struct ClickStackTileInput {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub id: Option<String>,
     pub name: String,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub series: Option<Vec<ClickStackDashboardChartSeries>>,
     #[serde(rename = "tabId", skip_serializing_if = "Option::is_none", default)]
@@ -10281,6 +10283,7 @@ pub struct Invitation {
     pub expire_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub id: uuid::Uuid,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(default)]
     pub role: InvitationRole,
 }
@@ -10292,8 +10295,9 @@ pub struct InvitationPostRequest {
     pub assigned_role_ids: Vec<String>,
     #[serde(default)]
     pub email: String,
-    #[serde(default)]
-    pub role: InvitationPostRequestRole,
+    #[cfg(feature = "deprecated-fields")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub role: Option<InvitationPostRequestRole>,
 }
 
 /// `IpAccessListEntry` from the ClickHouse Cloud API.
@@ -10325,6 +10329,7 @@ pub struct Member {
     pub joined_at: chrono::DateTime<chrono::Utc>,
     #[serde(default)]
     pub name: String,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(default)]
     pub role: MemberRole,
     #[serde(rename = "userId", default)]
@@ -10336,6 +10341,7 @@ pub struct Member {
 pub struct MemberPatchRequest {
     #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none", default)]
     pub assigned_role_ids: Option<Vec<String>>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub role: Option<MemberPatchRequestRole>,
 }
@@ -10422,8 +10428,9 @@ pub struct OrganizationPrivateEndpoint {
 /// `OrganizationPrivateEndpointsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPrivateEndpointsPatch {
-    #[serde(default)]
-    pub add: Vec<OrganizationPatchPrivateEndpoint>,
+    #[cfg(feature = "deprecated-fields")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
     #[serde(default)]
     pub remove: Vec<OrganizationPatchPrivateEndpoint>,
 }
@@ -10497,8 +10504,6 @@ pub struct PostgresServiceListItem {
     pub size: PgSize,
     #[serde(default)]
     pub state: PgStateProperty,
-    #[serde(rename = "storageSize", default)]
-    pub storage_size: PgStorageSize,
     #[serde(default)]
     pub tags: PgTags,
 }
@@ -10525,8 +10530,6 @@ pub struct PostgresServicePatchRequest {
     pub region: Option<PgRegion>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub size: Option<PgSize>,
-    #[serde(rename = "storageSize", skip_serializing_if = "Option::is_none", default)]
-    pub storage_size: Option<PgStorageSize>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<PgTags>,
 }
@@ -10546,8 +10549,6 @@ pub struct PostgresServicePostRequest {
     pub provider: PgProvider,
     pub region: PgRegion,
     pub size: PgSize,
-    #[serde(rename = "storageSize")]
-    pub storage_size: PgStorageSize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<PgTags>,
 }
@@ -11467,12 +11468,14 @@ pub struct Service {
     pub max_replica_memory_gb: f64,
     #[serde(rename = "maxReplicas", default)]
     pub max_replicas: f64,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", default)]
     pub max_total_memory_gb: f64,
     #[serde(rename = "minReplicaMemoryGb", default)]
     pub min_replica_memory_gb: f64,
     #[serde(rename = "minReplicas", default)]
     pub min_replicas: f64,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", default)]
     pub min_total_memory_gb: f64,
     #[serde(default)]
@@ -11497,6 +11500,7 @@ pub struct Service {
     pub state: ServiceState,
     #[serde(default)]
     pub tags: Vec<ResourceTagsV1>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(default)]
     pub tier: ServiceTier,
     #[serde(rename = "transparentDataEncryptionKeyId", default)]
@@ -11667,16 +11671,19 @@ pub struct ServicePostRequest {
     pub is_readonly: Option<bool>,
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub max_replica_memory_gb: Option<f64>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub max_total_memory_gb: Option<f64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub min_replica_memory_gb: Option<f64>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub min_total_memory_gb: Option<f64>,
     #[serde(default)]
     pub name: String,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
     pub num_replicas: Option<f64>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none", default)]
     pub private_endpoint_ids: Option<Vec<String>>,
     #[serde(rename = "privatePreviewTermsChecked", skip_serializing_if = "Option::is_none", default)]
@@ -11691,6 +11698,7 @@ pub struct ServicePostRequest {
     pub release_channel: Option<ServicePostRequestReleasechannel>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<ResourceTagsV1>>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tier: Option<ServicePostRequestTier>,
 }
@@ -11745,8 +11753,10 @@ pub struct ServiceScalingPatchRequest {
     pub idle_scaling: Option<bool>,
     #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none", default)]
     pub idle_timeout_minutes: Option<f64>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub max_total_memory_gb: Option<f64>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub min_total_memory_gb: Option<f64>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
@@ -11800,12 +11810,14 @@ pub struct ServiceScalingPatchResponse {
     pub max_replica_memory_gb: f64,
     #[serde(rename = "maxReplicas", default)]
     pub max_replicas: f64,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", default)]
     pub max_total_memory_gb: f64,
     #[serde(rename = "minReplicaMemoryGb", default)]
     pub min_replica_memory_gb: f64,
     #[serde(rename = "minReplicas", default)]
     pub min_replicas: f64,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", default)]
     pub min_total_memory_gb: f64,
     #[serde(default)]
@@ -11830,6 +11842,7 @@ pub struct ServiceScalingPatchResponse {
     pub state: ServiceScalingPatchResponseState,
     #[serde(default)]
     pub tags: Vec<ResourceTagsV1>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(default)]
     pub tier: ServiceScalingPatchResponseTier,
     #[serde(rename = "transparentDataEncryptionKeyId", default)]

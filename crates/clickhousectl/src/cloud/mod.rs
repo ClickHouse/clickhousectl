@@ -3,6 +3,7 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod credentials;
+pub mod output;
 pub mod postgres;
 pub mod service_query;
 pub mod types;
@@ -11,5 +12,6 @@ pub mod types;
 mod types_test;
 
 pub use client::{
-    AuthSource, CloudClient, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
+    AuthSource, CloudClient, CloudError, CloudErrorKind, dotenv_env_provenance, env_cred_presence,
+    resolve_active_auth_source,
 };

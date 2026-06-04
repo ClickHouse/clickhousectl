@@ -277,9 +277,8 @@ async fn start_server(
     args: Vec<String>,
     json: bool,
 ) -> Result<()> {
-    if json && foreground {
-        return Err(Error::JsonForegroundConflict);
-    }
+    // `--foreground` streams the server's stdout/stderr and never emits a JSON
+    // summary, so it simply ignores `json` rather than erroring on `--json`.
 
     // Recover any orphaned servers so name resolution and collision checks
     // see processes that lost their metadata files.
@@ -905,20 +904,10 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_server_start_rejects_json_with_foreground() {
-        let result = start_server(None, None, None, None, true, None, vec![], true).await;
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, Error::JsonForegroundConflict),
-            "expected JsonForegroundConflict, got: {err}"
-        );
-    }
-
     #[test]
     fn parse_postgres_install_spec_recognizes_at_and_colon() {
-        assert_eq!(parse_postgres_install_spec("postgres@16"), Some("16"));
-        assert_eq!(parse_postgres_install_spec("postgres:16-alpine"), Some("16-alpine"));
+        assert_eq!(parse_postgres_install_spec("postgres@17"), Some("17"));
+        assert_eq!(parse_postgres_install_spec("postgres:17-alpine"), Some("17-alpine"));
         assert_eq!(parse_postgres_install_spec("25.12"), None);
         assert_eq!(parse_postgres_install_spec("stable"), None);
     }

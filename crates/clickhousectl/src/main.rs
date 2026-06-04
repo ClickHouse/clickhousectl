@@ -64,13 +64,21 @@ async fn main() {
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
-        std::process::exit(1);
+        std::process::exit(e.exit_code());
     }
+}
+
+/// Resolve whether to emit machine-readable JSON. True when `--json` was passed
+/// or we're running under a known coding agent (same detection as the outbound
+/// User-Agent in `user_agent.rs`). Pipes/redirects stay human-readable unless
+/// `--json` is passed, matching `gh`/`kubectl` norms.
+fn json_output(flag: bool) -> bool {
+    flag || is_ai_agent::detect().is_some()
 }
 
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
-        Commands::Local(args) => local::run(args.command, args.json).await,
+        Commands::Local(args) => local::run(args.command, json_output(args.json)).await,
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
         Commands::Update(args) => run_update(args).await,
@@ -113,10 +121,14 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 } else if api_key.is_some() || api_secret.is_some() {
                     // Non-interactive API key login
                     let key = api_key.ok_or_else(|| {
-                        Error::Cloud("--api-key is required when --api-secret is provided".into())
+                        Error::AuthRequired(
+                            "--api-key is required when --api-secret is provided".into(),
+                        )
                     })?;
                     let secret = api_secret.ok_or_else(|| {
-                        Error::Cloud("--api-secret is required when --api-key is provided".into())
+                        Error::AuthRequired(
+                            "--api-secret is required when --api-key is provided".into(),
+                        )
                     })?;
                     let mut creds = cloud::credentials::load_credentials().unwrap_or_default();
                     creds.api_key = Some(key);
@@ -311,7 +323,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     }
                 }
 
-                if args.json {
+                if json_output(args.json) {
                     println!("{}", serde_json::to_string_pretty(&rows)?);
                 } else {
                     println!("{}", Table::new(rows).with(Style::markdown()));
@@ -321,7 +333,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         };
     }
 
-    // Refresh OAuth tokens if needed before creating the client
+    // Refresh OAuth tokens if needed. Errors here are filesystem failures
+    // (refresh-rpc failures are swallowed and tokens cleared), so this stays
+    // a generic error rather than `AuthRequired`.
     cloud::auth::ensure_fresh_tokens()
         .await
         .map_err(|e| Error::Cloud(e.to_string()))?;
@@ -331,7 +345,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         args.api_secret.as_deref(),
         args.url.as_deref(),
     )
-    .map_err(|e| Error::Cloud(e.to_string()))?;
+    .map_err(cloud_error_to_top_level)?;
 
     if args.debug {
         eprintln!("[debug] auth source: {}", client.auth_source().describe());
@@ -341,7 +355,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
     if client.is_bearer_auth() && args.command.is_write_command() {
-        return Err(Error::Cloud(
+        return Err(Error::AuthRequired(
             "This command requires API key authentication. \
              OAuth (browser login) provides read-only access.\n\n\
              To authenticate with an API key:\n  \
@@ -355,7 +369,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         ));
     }
 
-    let json = args.json;
+    let json = json_output(args.json);
 
     let result = match args.command {
         CloudCommands::Auth { .. } => unreachable!("handled above"),
@@ -985,7 +999,24 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         },
     };
 
-    result.map_err(|e| Error::Cloud(e.to_string()))
+    result.map_err(boxed_cloud_error_to_top_level)
+}
+
+fn cloud_error_to_top_level(e: cloud::CloudError) -> Error {
+    match e.kind {
+        cloud::CloudErrorKind::Auth => Error::AuthRequired(e.message),
+        cloud::CloudErrorKind::Generic => Error::Cloud(e.message),
+    }
+}
+
+// Cloud command fns return `Box<dyn std::error::Error>`, so the `CloudError.kind`
+// only survives via downcast — without it, auth-flagged errors silently fall back
+// to `Error::Cloud` (exit 1) instead of `Error::AuthRequired` (exit 4).
+fn boxed_cloud_error_to_top_level(e: Box<dyn std::error::Error>) -> Error {
+    match e.downcast::<cloud::CloudError>() {
+        Ok(ce) => cloud_error_to_top_level(*ce),
+        Err(other) => Error::Cloud(other.to_string()),
+    }
 }
 
 async fn run_postgres(
@@ -1011,7 +1042,6 @@ async fn run_postgres(
             name,
             region,
             size,
-            storage_gb,
             provider,
             pg_version,
             ha_type,
@@ -1024,7 +1054,6 @@ async fn run_postgres(
                 name: &name,
                 region: &region,
                 size: &size,
-                storage_gb,
                 provider: &provider,
                 pg_version: pg_version.as_deref(),
                 ha_type: ha_type.as_deref(),
@@ -1040,7 +1069,6 @@ async fn run_postgres(
             name,
             region,
             size,
-            storage_gb,
             provider,
             pg_version,
             ha_type,
@@ -1052,7 +1080,6 @@ async fn run_postgres(
                 name: name.as_deref(),
                 region: region.as_deref(),
                 size: size.as_deref(),
-                storage_gb,
                 provider: provider.as_deref(),
                 pg_version: pg_version.as_deref(),
                 ha_type: ha_type.as_deref(),
@@ -1198,5 +1225,51 @@ async fn run_postgres(
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cloud::{CloudError, CloudErrorKind};
+
+    #[test]
+    fn json_output_true_when_flag_set() {
+        assert!(json_output(true));
+    }
+
+    #[test]
+    fn cloud_error_kind_routes_to_top_level() {
+        assert!(matches!(
+            cloud_error_to_top_level(CloudError::auth("nope")),
+            Error::AuthRequired(_)
+        ));
+        assert!(matches!(
+            cloud_error_to_top_level(CloudError::new("boom")),
+            Error::Cloud(_)
+        ));
+        // Default kind is Generic.
+        assert_eq!(CloudError::new("x").kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn boxed_cloud_error_preserves_auth_kind_through_downcast() {
+        let boxed: Box<dyn std::error::Error> = Box::new(CloudError::auth("nope"));
+        assert!(matches!(
+            boxed_cloud_error_to_top_level(boxed),
+            Error::AuthRequired(_)
+        ));
+    }
+
+    #[test]
+    fn boxed_non_cloud_error_falls_back_to_generic() {
+        // Anything that isn't a CloudError must not downcast to AuthRequired —
+        // it falls back to Error::Cloud (exit 1). This pins the contract that a
+        // handler stringifying a CloudError before boxing silently loses exit 4.
+        let boxed: Box<dyn std::error::Error> = "plain string error".into();
+        assert!(matches!(
+            boxed_cloud_error_to_top_level(boxed),
+            Error::Cloud(_)
+        ));
     }
 }

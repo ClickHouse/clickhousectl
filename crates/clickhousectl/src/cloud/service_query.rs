@@ -51,6 +51,7 @@ pub async fn ensure_service_query_setup(
                 "clickhousectl auto-provisioned key for service {service_name}"
             )),
         }],
+        #[cfg(feature = "deprecated-fields")]
         roles: None,
         state: ApiKeyPostRequestState::Enabled,
     };

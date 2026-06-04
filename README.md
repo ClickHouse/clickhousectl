@@ -216,12 +216,12 @@ The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP
 When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
 
 ```bash
-# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 16, 17, 18 (and any sub-tag like 16-alpine, 17.0, 18-bookworm).
-clickhousectl local install postgres@16
+# Pre-pull a Postgres image (optional; start will pull on demand). Supported: 17, 18 (and any sub-tag like 17-alpine, 17.0, 18-bookworm).
+clickhousectl local install postgres@17
 
 # Start a Postgres instance (defaults: postgres:18, port 5432, user "postgres", db "postgres")
 clickhousectl local postgres start
-clickhousectl local postgres start --name dev --version 16 --port 5433
+clickhousectl local postgres start --name dev --version 17 --port 5433
 clickhousectl local postgres start --user app --password s3cret --database myapp
 clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
 
@@ -237,7 +237,7 @@ clickhousectl local postgres dotenv --name dev
 
 # Stop / remove. Pass --version when more than one major shares a name.
 clickhousectl local postgres stop dev
-clickhousectl local postgres stop dev --version 16        # disambiguate
+clickhousectl local postgres stop dev --version 17        # disambiguate
 clickhousectl local postgres remove dev
 ```
 
@@ -509,16 +509,15 @@ clickhousectl cloud postgres get <pg-id>
 clickhousectl cloud postgres create \
   --name my-pg \
   --region us-east-1 \
-  --size m7i.2xlarge \
-  --storage-gb 100
+  --size c6gd.xlarge \
+  --pg-version 18
 
-# Create with version + HA + tags + advanced config
+# Create with HA + tags + advanced config
 clickhousectl cloud postgres create \
   --name my-pg \
   --region us-east-1 \
-  --size m7i.2xlarge \
-  --storage-gb 100 \
-  --pg-version 17 \
+  --size c6gd.xlarge \
+  --pg-version 18 \
   --ha-type sync \
   --tag env=prod \
   --pg-config-file ./pg.json
@@ -527,7 +526,6 @@ clickhousectl cloud postgres create \
 clickhousectl cloud postgres update <pg-id> \
   --name renamed \
   --size m7i.4xlarge \
-  --storage-gb 200 \
   --add-tag env=prod --remove-tag legacy
 
 # Delete
@@ -563,9 +561,8 @@ clickhousectl cloud postgres switchover <pg-id>
 | `--name` | Service name (required) |
 | `--region` | Cloud region, e.g. `us-east-1` (required) |
 | `--size` | Instance size, e.g. `m7i.2xlarge` (required; server-validated) |
-| `--storage-gb` | Storage size in GB (required) |
 | `--provider` | Cloud provider (default: `aws`) |
-| `--pg-version` | Postgres major version: `18`, `17`, `16` |
+| `--pg-version` | Postgres major version: `18`, `17` |
 | `--ha-type` | High-availability: `none`, `async`, `sync` |
 | `--tag` | Resource tag `key` or `key=value` (repeatable) |
 | `--pg-config-file` | Path to JSON file with a `PgConfig` object |
@@ -733,6 +730,19 @@ Use the `--json` flag to print JSON-formatted responses.
 clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
+
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`.
+
+### Exit codes
+
+Follow `gh` conventions:
+
+| Code | Meaning                                                  |
+| ---- | -------------------------------------------------------- |
+| `0`  | Success                                                  |
+| `1`  | Error (anything not classified below)                    |
+| `2`  | Cancelled (user aborted)                                 |
+| `4`  | Auth required (no credentials, 401/403, OAuth-only writes) |
 
 ## Skills
 

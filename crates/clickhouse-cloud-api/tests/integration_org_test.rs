@@ -196,7 +196,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 let user_id = secondary_user_id.clone();
                                 let body = MemberPatchRequest {
                                     assigned_role_ids: Some(target_for_patch.clone()),
-                                    ..Default::default()
+                                    #[cfg(feature = "deprecated-fields")]
+                                    role: None,
                                 };
                                 async move {
                                     let resp = client
@@ -285,7 +286,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 let want_ids = original_for_restore.clone();
                                 let body = MemberPatchRequest {
                                     assigned_role_ids: Some(want_ids.clone()),
-                                    ..Default::default()
+                                    #[cfg(feature = "deprecated-fields")]
+                                    role: None,
                                 };
                                 let interval = ctx.poll_interval;
                                 async move {
@@ -373,7 +375,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 let org_id = ctx.org_id.clone();
                 let body = InvitationPostRequest {
                     email: invitation_email.clone(),
-                    role: InvitationPostRequestRole::Developer,
+                    #[cfg(feature = "deprecated-fields")]
+                    role: Some(InvitationPostRequestRole::Developer),
                     assigned_role_ids: vec![],
                 };
                 async move {
@@ -391,6 +394,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 invitation.email, invitation_email_for_assert,
                 "invitation create echoed unexpected email"
             );
+            #[cfg(feature = "deprecated-fields")]
             assert_eq!(
                 invitation.role.to_string(),
                 InvitationPostRequestRole::Developer.to_string(),
@@ -453,6 +457,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             )
                             .into());
                         }
+                        #[cfg(feature = "deprecated-fields")]
                         if fetched.role.to_string() != "developer" {
                             return Err(format!(
                                 "invitation get returned wrong role {}; wanted developer",
@@ -1046,6 +1051,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 "clickhousectl org integration test key".to_string(),
                             ),
                         }],
+                        #[cfg(feature = "deprecated-fields")]
                         roles: Some(vec!["admin".to_string()]),
                         state: ApiKeyPostRequestState::Enabled,
                     };
