@@ -484,16 +484,15 @@ clickhousectl cloud postgres get <pg-id>
 clickhousectl cloud postgres create \
   --name my-pg \
   --region us-east-1 \
-  --size m7i.2xlarge \
-  --storage-gb 100
+  --size c6gd.xlarge \
+  --pg-version 18
 
-# Create with version + HA + tags + advanced config
+# Create with HA + tags + advanced config
 clickhousectl cloud postgres create \
   --name my-pg \
   --region us-east-1 \
-  --size m7i.2xlarge \
-  --storage-gb 100 \
-  --pg-version 17 \
+  --size c6gd.xlarge \
+  --pg-version 18 \
   --ha-type sync \
   --tag env=prod \
   --pg-config-file ./pg.json
@@ -502,7 +501,6 @@ clickhousectl cloud postgres create \
 clickhousectl cloud postgres update <pg-id> \
   --name renamed \
   --size m7i.4xlarge \
-  --storage-gb 200 \
   --add-tag env=prod --remove-tag legacy
 
 # Delete
@@ -538,7 +536,6 @@ clickhousectl cloud postgres switchover <pg-id>
 | `--name` | Service name (required) |
 | `--region` | Cloud region, e.g. `us-east-1` (required) |
 | `--size` | Instance size, e.g. `m7i.2xlarge` (required; server-validated) |
-| `--storage-gb` | Storage size in GB (required) |
 | `--provider` | Cloud provider (default: `aws`) |
 | `--pg-version` | Postgres major version: `18`, `17`, `16` |
 | `--ha-type` | High-availability: `none`, `async`, `sync` |

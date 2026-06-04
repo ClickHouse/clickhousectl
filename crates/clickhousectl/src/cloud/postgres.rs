@@ -46,9 +46,6 @@ pub enum PostgresCommands {
         /// Instance size (e.g. m7i.2xlarge). Server validates — accepts any value.
         #[arg(long)]
         size: String,
-        /// Storage size in GB
-        #[arg(long)]
-        storage_gb: i64,
         /// Cloud provider
         #[arg(long, default_value = "aws")]
         provider: String,
@@ -80,8 +77,6 @@ pub enum PostgresCommands {
         region: Option<String>,
         #[arg(long)]
         size: Option<String>,
-        #[arg(long)]
-        storage_gb: Option<i64>,
         #[arg(long)]
         provider: Option<String>,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_VERSIONS))]
@@ -431,7 +426,6 @@ pub struct PostgresCreateOptions<'a> {
     pub name: &'a str,
     pub region: &'a str,
     pub size: &'a str,
-    pub storage_gb: i64,
     pub provider: &'a str,
     pub pg_version: Option<&'a str>,
     pub ha_type: Option<&'a str>,
@@ -445,7 +439,6 @@ pub struct PostgresUpdateOptions<'a> {
     pub name: Option<&'a str>,
     pub region: Option<&'a str>,
     pub size: Option<&'a str>,
-    pub storage_gb: Option<i64>,
     pub provider: Option<&'a str>,
     pub pg_version: Option<&'a str>,
     pub ha_type: Option<&'a str>,
@@ -598,7 +591,6 @@ pub async fn postgres_create(
         provider,
         region: opts.region.to_string(),
         size,
-        storage_size: opts.storage_gb,
         postgres_version: pg_version,
         ha_type,
         tags,
@@ -671,7 +663,6 @@ pub async fn postgres_update(
         provider,
         region: opts.region.map(|s| s.to_string()),
         size,
-        storage_size: opts.storage_gb,
         postgres_version: pg_version,
         ha_type,
         tags,
@@ -1067,10 +1058,9 @@ mod tests {
             "--name", "pg1",
             "--region", "us-east-1",
             "--size", "m7i.2xlarge",
-            "--storage-gb", "100",
         ]);
         let PostgresCommands::Create {
-            name, region, size, storage_gb, provider, pg_version, ha_type, ..
+            name, region, size, provider, pg_version, ha_type, ..
         } = cmd
         else {
             panic!("expected create");
@@ -1078,7 +1068,6 @@ mod tests {
         assert_eq!(name, "pg1");
         assert_eq!(region, "us-east-1");
         assert_eq!(size, "m7i.2xlarge");
-        assert_eq!(storage_gb, 100);
         assert_eq!(provider, "aws");
         assert!(pg_version.is_none());
         assert!(ha_type.is_none());
@@ -1091,7 +1080,6 @@ mod tests {
             "--name", "pg1",
             "--region", "us-east-1",
             "--size", "m7i.2xlarge",
-            "--storage-gb", "100",
             "--pg-version", "17",
             "--ha-type", "sync",
             "--tag", "env=prod",
@@ -1111,10 +1099,10 @@ mod tests {
             "clickhousectl", "cloud", "postgres", "create",
             "--name", "pg1",
             "--region", "us-east-1",
-            // missing --size and --storage-gb
+            // missing --size
         ])
         .err().expect("expected parse error");
-        assert!(err.to_string().contains("--size") || err.to_string().contains("--storage-gb"));
+        assert!(err.to_string().contains("--size"));
     }
 
     #[test]
@@ -1124,7 +1112,6 @@ mod tests {
             "--name", "pg1",
             "--region", "us-east-1",
             "--size", "m7i.2xlarge",
-            "--storage-gb", "100",
             "--pg-version", "15",
         ])
         .err().expect("expected parse error");

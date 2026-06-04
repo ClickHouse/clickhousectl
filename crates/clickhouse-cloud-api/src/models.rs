@@ -7863,8 +7863,6 @@ pub struct BasePostgresService {
     pub region: PgRegion,
     #[serde(default)]
     pub size: PgSize,
-    #[serde(rename = "storageSize", default)]
-    pub storage_size: PgStorageSize,
     #[serde(default)]
     pub tags: PgTags,
 }
@@ -10509,8 +10507,6 @@ pub struct PostgresServiceListItem {
     pub size: PgSize,
     #[serde(default)]
     pub state: PgStateProperty,
-    #[serde(rename = "storageSize", default)]
-    pub storage_size: PgStorageSize,
     #[serde(default)]
     pub tags: PgTags,
 }
@@ -10537,8 +10533,6 @@ pub struct PostgresServicePatchRequest {
     pub region: Option<PgRegion>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub size: Option<PgSize>,
-    #[serde(rename = "storageSize", skip_serializing_if = "Option::is_none", default)]
-    pub storage_size: Option<PgStorageSize>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<PgTags>,
 }
@@ -10558,8 +10552,6 @@ pub struct PostgresServicePostRequest {
     pub provider: PgProvider,
     pub region: PgRegion,
     pub size: PgSize,
-    #[serde(rename = "storageSize")]
-    pub storage_size: PgStorageSize,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<PgTags>,
 }

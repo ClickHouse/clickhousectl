@@ -14,7 +14,6 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         log_run_header("cloud_postgres_crud_lifecycle", &ctx);
         let mut failures = FailureRecorder::default();
         let size = PgSize::R8gd_medium;
-        let storage_gb: i64 = 59;
 
         // ── Preflight ───────────────────────────────────────────────
 
@@ -57,7 +56,6 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             provider: PgProvider::Unknown(ctx.provider.clone()),
             region: ctx.region.clone(),
             size: size.clone(),
-            storage_size: storage_gb,
             tags: Some(ctx.postgres_run_tags()),
             ..Default::default()
         };
@@ -122,7 +120,6 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
 
         assert_eq!(ready.name, ctx.postgres_service_name());
         assert_eq!(ready.size.to_string(), size.to_string());
-        assert_eq!(ready.storage_size, storage_gb);
         assert_eq!(ready.region, ctx.region);
         assert_eq!(ready.provider.to_string(), ctx.provider);
         assert!(

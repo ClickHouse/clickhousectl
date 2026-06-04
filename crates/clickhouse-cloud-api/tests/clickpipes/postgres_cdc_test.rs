@@ -109,7 +109,6 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             provider: PgProvider::Unknown(ctx.provider.clone()),
             region: ctx.region.clone(),
             size: PgSize::R8gd_medium,
-            storage_size: 59,
             tags: Some(ctx.clickpipe_run_tags()),
             ..Default::default()
         };
