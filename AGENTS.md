@@ -82,14 +82,23 @@ In `models.rs`, required non-nullable fields use bare types (`T`), optional/null
 **Tooling:**
 
 - `scripts/resolve-field-requirements.py` — resolves required/optional for every schema field, outputs a JSON manifest. Handles both conventions + PATCH + nullable.
-- `scripts/check-openapi-drift.py` — daily CI drift check; reports missing/extra methods, missing schemas/fields, and field-level optionality mismatches against the live spec.
+- `scripts/check-openapi-drift.py` — daily CI drift check; reports missing/extra methods, missing/extra struct fields, missing schemas, and field-level optionality mismatches against the live spec.
 - `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the snapshot.
+
+Field coverage is **bidirectional**, mirroring the missing/extra split used for client methods:
+
+- `struct_fields_cover_every_spec_property` (spec → code) — every spec property has a matching struct field; catches fields *added* to the spec.
+- `struct_fields_have_no_extras_vs_spec` (code → spec) — every struct field maps to a spec property; catches fields *removed* from the spec but left behind in `models.rs` (a superset model would otherwise pass every other field check). Schemas with no/empty `properties` are skipped, so composition/marker schemas don't flag every field. The drift script's "Extra Struct Fields" section reports the same finding.
 
 Field optionality is maintained by hand. When the drift check or test flags a mismatch, edit `models.rs` directly to flip the field (`T` ↔ `Option<T>`) and adjust the `#[serde(skip_serializing_if = "Option::is_none")]` attribute to match.
 
 **Optionality exemptions:**
 
 Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
+
+**Extra-field exemptions:**
+
+A struct field that intentionally has no spec property (a code-only/computed field, or a standard attribute the upstream spec omits) goes in the `EXTRA_FIELD_EXEMPTIONS` constant in `spec_coverage_test.rs`, analogous to `OPTIONALITY_EXEMPTIONS` and to `NON_OPENAPI_CLIENT_METHODS` for methods. `struct_fields_have_no_extras_vs_spec` fails on a stale entry (one that no longer corresponds to an actual extra field), and `check-openapi-drift.py` parses the same list so the report and test stay in sync. The list is empty by default — only add an entry for a *deliberate* addition, not to silence a field that should be removed.
 
 ##### Deprecated field hiding
 
