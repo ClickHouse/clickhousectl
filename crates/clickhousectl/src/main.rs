@@ -1066,22 +1066,14 @@ async fn run_postgres(
         }
         PostgresCommands::Update {
             postgres_id,
-            name,
-            region,
             size,
-            provider,
-            pg_version,
             ha_type,
             add_tag,
             remove_tag,
             org_id,
         } => {
             let opts = PostgresUpdateOptions {
-                name: name.as_deref(),
-                region: region.as_deref(),
                 size: size.as_deref(),
-                provider: provider.as_deref(),
-                pg_version: pg_version.as_deref(),
                 ha_type: ha_type.as_deref(),
                 add_tag: &add_tag,
                 remove_tag: &remove_tag,

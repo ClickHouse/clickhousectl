@@ -10521,14 +10521,6 @@ pub struct PostgresServicePatchRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none", default)]
     pub ha_type: Option<PgHaType>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub name: Option<PgNameProperty>,
-    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none", default)]
-    pub postgres_version: Option<PgVersion>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub provider: Option<PgProvider>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub region: Option<PgRegion>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub size: Option<PgSize>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<PgTags>,
@@ -10818,8 +10810,6 @@ pub struct ScalingSchedulePostRequest {
 /// `ScimEnterpriseManager` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimEnterpriseManager {
-    #[serde(rename = "$ref", default)]
-    pub r#ref: String,
     #[serde(rename = "displayName", default)]
     pub display_name: String,
     #[serde(default)]

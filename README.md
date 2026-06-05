@@ -499,7 +499,6 @@ clickhousectl cloud postgres create \
 
 # Update metadata (all flags optional)
 clickhousectl cloud postgres update <pg-id> \
-  --name renamed \
   --size m7i.4xlarge \
   --add-tag env=prod --remove-tag legacy
 
