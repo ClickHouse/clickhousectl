@@ -40,7 +40,7 @@ pub fn init() -> Result<()> {
     )?;
     create_project_scaffold(
         postgres_project_dir(),
-        &["tables", "materialized_views", "queries", "seed"],
+        &["tables", "views", "functions", "queries", "seed"],
     )?;
 
     Ok(())

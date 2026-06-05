@@ -79,9 +79,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Creates a .clickhouse/ directory (runtime data, git-ignored) plus clickhouse/ and postgres/
-  project scaffolds, each with subdirs: tables/, materialized_views/, queries/, seed/ (each
-  with .gitkeep). The clickhouse/ and postgres/ directories are meant to be committed —
-  organize your SQL files there.
+  project scaffolds (each subdir has a .gitkeep). clickhouse/: tables/, materialized_views/,
+  queries/, seed/. postgres/: tables/, views/, functions/, queries/, seed/. The clickhouse/ and
+  postgres/ directories are meant to be committed — organize your SQL files there.
   Related: `clickhousectl local server start` to start a server with project-local data.")]
     Init,
 
