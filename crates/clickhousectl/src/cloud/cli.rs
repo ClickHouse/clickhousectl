@@ -572,11 +572,6 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         enable_core_dumps: Option<bool>,
 
-        /// Skip auto-provisioning of the Query API endpoint and per-service
-        /// API key
-        #[arg(long)]
-        no_enable_query: bool,
-
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
         org_id: Option<String>,
@@ -779,8 +774,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Runs SQL over HTTP — no local clickhouse binary or service password required.
   Uses a per-service API key (read+write, scoped to this service via the
-  query endpoint binding) auto-provisioned on first use (or on
-  `cloud service create`) and stored in .clickhouse/credentials.json.
+  query endpoint binding) auto-provisioned on first use and stored in
+  .clickhouse/credentials.json.
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
   on a TTY, TabSeparated when piped.")]
     Query {

@@ -554,7 +554,6 @@ pub struct CreateServiceOptions {
     pub disable_endpoints: Vec<String>,
     pub private_preview_terms_checked: bool,
     pub enable_core_dumps: Option<bool>,
-    pub no_enable_query: bool,
     pub org_id: Option<String>,
 }
 
@@ -843,12 +842,10 @@ pub async fn service_create(
     // Validate input before any network call so typos like --provider awss
     // fail locally instead of on the /organizations lookup.
     let request = build_create_service_request(&opts)?;
-    let no_enable_query = opts.no_enable_query;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let response = client.create_service(&org_id, &request).await?;
     let svc_id = response.service.id.to_string();
-    let svc_name = response.service.name.clone();
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -860,42 +857,12 @@ pub async fn service_create(
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
         println!("  Password: {}", response.password);
-    }
-
-    if !no_enable_query && !json {
-        // The endpoint upsert 500s while the service is still provisioning
-        // (issue #242), so wait for the service to come up first.
-        eprintln!();
-        eprintln!("Waiting for the service to be ready to enable the Query API endpoint...");
-        let setup = match crate::cloud::service_query::wait_for_service_ready(
-            client, &org_id, &svc_id,
-        )
-        .await
-        {
-            Ok(()) => {
-                crate::cloud::service_query::ensure_service_query_setup(
-                    client, &org_id, &svc_id, &svc_name,
-                )
-                .await
-            }
-            Err(e) => Err(e),
-        };
-        match setup {
-            Ok(_) => {
-                println!();
-                println!(
-                    "Query API endpoint enabled. Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"",
-                    svc_id
-                );
-            }
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to auto-provision Query API endpoint: {e}. \
-                     Run `clickhousectl cloud service query --id {}` later to retry.",
-                    svc_id
-                );
-            }
-        }
+        println!();
+        println!(
+            "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"",
+            svc_id
+        );
+        println!("(the Query API endpoint is provisioned automatically on first use)");
     }
     Ok(())
 }
@@ -2884,7 +2851,6 @@ mod tests {
             disable_endpoints: vec![],
             private_preview_terms_checked: true,
             enable_core_dumps: Some(true),
-            no_enable_query: false,
             org_id: None,
         };
 
@@ -2924,7 +2890,6 @@ mod tests {
             disable_endpoints: vec![],
             private_preview_terms_checked: false,
             enable_core_dumps: None,
-            no_enable_query: false,
             org_id: None,
         };
 
@@ -2960,7 +2925,6 @@ mod tests {
             disable_endpoints: vec![],
             private_preview_terms_checked: false,
             enable_core_dumps: None,
-            no_enable_query: false,
             org_id: None,
         };
 

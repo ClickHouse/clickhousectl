@@ -434,7 +434,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 disable_endpoint,
                 private_preview_terms_checked,
                 enable_core_dumps,
-                no_enable_query,
                 org_id,
             } => {
                 let opts = cloud::commands::CreateServiceOptions {
@@ -461,7 +460,6 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     disable_endpoints: disable_endpoint,
                     private_preview_terms_checked,
                     enable_core_dumps,
-                    no_enable_query,
                     org_id,
                 };
                 cloud::commands::service_create(&client, opts, json).await

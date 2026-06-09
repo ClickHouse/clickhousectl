@@ -25,67 +25,6 @@ const QUERY_ENDPOINT_ROLE: &str = "sql_console_admin";
 /// caller so CORS doesn't apply, but the API still requires a value.
 const ALLOWED_ORIGINS: &str = "*";
 
-/// Polling cadence while waiting for a service to become ready.
-const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Upper bound on the readiness wait: 120 polls × 5s ≈ 10 minutes, well
-/// above normal provisioning time. On timeout the caller falls back to its
-/// "retry later" path rather than blocking forever.
-const READY_POLL_MAX_ATTEMPTS: u32 = 120;
-
-/// What a service state means for binding a query endpoint. The control
-/// plane returns 500 "Internal error" on the endpoint upsert while the
-/// service is still provisioning, so callers must hold off until the
-/// service is ready (issue #242).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReadyState {
-    /// Provisioned — safe to bind the query endpoint.
-    Ready,
-    /// Still coming up — keep polling.
-    Pending,
-    /// Won't become ready by waiting (stopped/failed/terminating/unknown).
-    Unavailable,
-}
-
-fn classify_ready_state(state: &str) -> ReadyState {
-    match state {
-        "running" | "idle" | "partially_running" => ReadyState::Ready,
-        "provisioning" | "starting" | "awaking" => ReadyState::Pending,
-        _ => ReadyState::Unavailable,
-    }
-}
-
-/// Poll until `service_id` reaches a state where the query endpoint can be
-/// bound, printing each state transition to stderr. Errors out (rather than
-/// waiting) on states that won't resolve on their own, and after
-/// [`READY_POLL_MAX_ATTEMPTS`] polls.
-pub async fn wait_for_service_ready(
-    client: &CloudClient,
-    org_id: &str,
-    service_id: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut last_state = String::new();
-    for _ in 0..READY_POLL_MAX_ATTEMPTS {
-        let svc = client.get_service(org_id, service_id).await?;
-        let state = svc.state.to_string();
-        if state != last_state {
-            eprintln!("  state: {state}");
-            last_state = state.clone();
-        }
-        match classify_ready_state(&state) {
-            ReadyState::Ready => return Ok(()),
-            ReadyState::Pending => tokio::time::sleep(READY_POLL_INTERVAL).await,
-            ReadyState::Unavailable => {
-                return Err(format!(
-                    "service is in state '{state}' and will not become ready by waiting"
-                )
-                .into())
-            }
-        }
-    }
-    Err("timed out waiting for service to become ready".into())
-}
-
 /// Ensure a query endpoint is provisioned for `service_id` and return the
 /// persisted key. If a key is already cached locally, returns it unchanged;
 /// otherwise creates the API key, binds it to the query endpoint (merging
@@ -180,44 +119,4 @@ async fn bind_query_endpoint(
     Ok(client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ready_states() {
-        for state in ["running", "idle", "partially_running"] {
-            assert_eq!(classify_ready_state(state), ReadyState::Ready, "{state}");
-        }
-    }
-
-    #[test]
-    fn pending_states() {
-        for state in ["provisioning", "starting", "awaking"] {
-            assert_eq!(classify_ready_state(state), ReadyState::Pending, "{state}");
-        }
-    }
-
-    #[test]
-    fn unavailable_states() {
-        for state in [
-            "stopping",
-            "stopped",
-            "terminating",
-            "terminated",
-            "softdeleting",
-            "softdeleted",
-            "degraded",
-            "failed",
-            "some-future-state",
-        ] {
-            assert_eq!(
-                classify_ready_state(state),
-                ReadyState::Unavailable,
-                "{state}"
-            );
-        }
-    }
 }
