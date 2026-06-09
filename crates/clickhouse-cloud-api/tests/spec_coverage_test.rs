@@ -281,6 +281,18 @@ async fn struct_fields_cover_every_live_spec_property() {
     assert_field_coverage(&spec);
 }
 
+#[test]
+fn struct_fields_have_no_extras_vs_spec() {
+    assert_no_extra_struct_fields(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn struct_fields_have_no_extras_vs_live_spec() {
+    let spec = load_live_spec().await;
+    assert_no_extra_struct_fields(&spec);
+}
+
 /// Fields where our `Option<T>` vs `T` intentionally disagrees with the spec.
 ///
 /// The spec sometimes marks fields as required when the API actually treats them
@@ -538,6 +550,98 @@ fn assert_field_coverage(spec: &Value) {
         "Spec properties missing from Rust structs ({} total):\n{}",
         missing.len(),
         missing.join("\n")
+    );
+}
+
+/// Struct fields we deliberately keep in `models.rs` even though the mapped
+/// spec schema has no such property. Analogous to `NON_OPENAPI_CLIENT_METHODS`
+/// (intentional client methods with no spec operation): a code-only field we
+/// add on purpose — a response-only/computed field, or a standard attribute the
+/// upstream spec omits. Each entry is `("RustStructName", "specFieldName")`.
+///
+/// Empty by design. Every extra field the detector surfaces today is a real
+/// drift finding (a field removed upstream but left in `models.rs`), not an
+/// intentional addition — so nothing is exempted. The
+/// `struct_fields_have_no_extras_vs_spec` test fails on a stale entry (one that
+/// no longer corresponds to an actual extra field) so this list can't rot.
+const EXTRA_FIELD_EXEMPTIONS: &[(&str, &str)] = &[];
+
+/// Assert that no field in a Rust struct is absent from its mapped OpenAPI
+/// schema. The mirror of `assert_field_coverage`: that catches spec properties
+/// missing from structs (spec → code); this catches struct fields missing from
+/// the spec (code → spec), e.g. a field removed from the schema upstream but
+/// left behind in `models.rs`. Intentional code-only fields are listed in
+/// `EXTRA_FIELD_EXEMPTIONS`.
+///
+/// Schemas with no `properties` (or an empty `properties` object) are skipped,
+/// matching `assert_field_coverage` — composition/marker schemas carry their
+/// fields elsewhere and would otherwise flag every struct field as extra.
+fn assert_no_extra_struct_fields(spec: &Value) {
+    let schemas = spec["components"]["schemas"].as_object().unwrap();
+    let model_fields = parse_model_fields(MODELS_RS);
+
+    let exemptions: BTreeSet<(&str, &str)> = EXTRA_FIELD_EXEMPTIONS.iter().copied().collect();
+    let mut exemptions_hit: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut extras = Vec::new();
+
+    for (spec_name, schema) in schemas {
+        let rust_name = pascalize_identifier(spec_name);
+        let fields = match model_fields.get(&rust_name) {
+            Some(f) => f,
+            None => continue, // Schema not in models — covered by other tests
+        };
+
+        let props = match schema.get("properties").and_then(Value::as_object) {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+
+        for spec_field in fields.keys() {
+            if props.contains_key(spec_field.as_str()) {
+                continue;
+            }
+
+            if exemptions
+                .iter()
+                .any(|(s, f)| *s == rust_name && *f == spec_field.as_str())
+            {
+                exemptions_hit.insert(
+                    *exemptions
+                        .iter()
+                        .find(|(s, f)| *s == rust_name && *f == spec_field.as_str())
+                        .unwrap(),
+                );
+                eprintln!(
+                    "NOTE: {}.{} extra-field exempted — see EXTRA_FIELD_EXEMPTIONS",
+                    rust_name, spec_field
+                );
+                continue;
+            }
+
+            extras.push(format!("{}.{}", rust_name, spec_field));
+        }
+    }
+
+    // Detect stale exemptions — entries that no longer correspond to an extra.
+    let stale: Vec<_> = exemptions
+        .difference(&exemptions_hit)
+        .map(|(s, f)| format!("({}, {})", s, f))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "Stale EXTRA_FIELD_EXEMPTIONS (struct field now matches the spec or was removed):\n{}",
+        stale.join("\n")
+    );
+
+    extras.sort();
+    assert!(
+        extras.is_empty(),
+        "Struct fields with no matching spec property ({} total):\n{}\n\
+         A field listed here was removed from (or never existed in) its OpenAPI \
+         schema but still lives in models.rs. Remove it, or — if it's an \
+         intentional code-only field — add it to EXTRA_FIELD_EXEMPTIONS.",
+        extras.len(),
+        extras.join("\n")
     );
 }
 

@@ -213,6 +213,28 @@ def parse_optionality_exemptions() -> set[tuple[str, str]]:
     return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
 
 
+def parse_extra_field_exemptions() -> set[tuple[str, str]]:
+    """Parse `EXTRA_FIELD_EXEMPTIONS` from spec_coverage_test.rs.
+
+    Mirror of `parse_optionality_exemptions`: these (struct, field) pairs are
+    fields we intentionally keep in `models.rs` even though the mapped spec
+    schema has no such property (code-only/computed fields, or standard
+    attributes the upstream spec omits). Re-use the same list so the drift
+    report does not re-flag them and stays in sync with the test.
+    """
+    if not SPEC_COVERAGE_TEST_RS.exists():
+        return set()
+    source = SPEC_COVERAGE_TEST_RS.read_text()
+    match = re.search(
+        r"const\s+EXTRA_FIELD_EXEMPTIONS\s*:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return set()
+    return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
+
+
 def model_type_names() -> set[str]:
     """Extract all pub struct/enum/type names from models.rs."""
     source = MODELS_RS.read_text()
@@ -476,6 +498,48 @@ def check_missing_fields(
     return missing
 
 
+def check_extra_fields(
+    spec: dict,
+    model_fields: dict[str, dict[str, bool]],
+    exemptions: set[tuple[str, str]] | None = None,
+) -> list[dict]:
+    """Find Rust struct fields that have no corresponding spec property.
+
+    The reverse of `check_missing_fields`: catches fields removed from (or never
+    present in) the OpenAPI schema but still lingering in `models.rs`. Schemas
+    with no/empty `properties` are skipped (composition/marker schemas carry
+    their fields elsewhere), matching the Rust test.
+
+    Returns list of: [{schema, spec_name, field}]
+    """
+    exemptions = exemptions or set()
+    extra = []
+    schemas = spec.get("components", {}).get("schemas", {})
+
+    for spec_name, schema in schemas.items():
+        pascal_name = pascalize(spec_name)
+        fields = model_fields.get(pascal_name)
+        if fields is None:
+            continue
+
+        props = schema.get("properties")
+        if not props:
+            continue
+
+        for field_name in fields:
+            if field_name in props:
+                continue
+            if (pascal_name, field_name) in exemptions:
+                continue
+            extra.append({
+                "schema": pascal_name,
+                "spec_name": spec_name,
+                "field": field_name,
+            })
+
+    return extra
+
+
 # ---------------------------------------------------------------------------
 # GitHub helpers
 # ---------------------------------------------------------------------------
@@ -531,6 +595,7 @@ def build_issue_body(
     all_spec_schemas: dict[str, dict],
     field_mismatches: list[dict] | None = None,
     missing_fields: list[dict] | None = None,
+    extra_fields: list[dict] | None = None,
     snapshot_staleness: dict | None = None,
     beta_status_changes: dict | None = None,
     deprecation_changes: dict | None = None,
@@ -561,6 +626,7 @@ def build_issue_body(
         f"| Extra client methods (not in spec) | {len(extra_ops)} |",
         f"| Missing model types | {len(missing_types)} |",
         f"| Missing struct fields | {len(missing_fields or [])} |",
+        f"| Extra struct fields (not in spec) | {len(extra_fields or [])} |",
         f"| Field optionality mismatches | {len(field_mismatches or [])} |",
         f"| Beta status changes | {beta_total} |",
         f"| Deprecated output field changes | {dep_total} |",
@@ -658,6 +724,24 @@ def build_issue_body(
             "|--------|-------|",
         ]
         for m in sorted(missing_fields, key=lambda m: (m["schema"], m["field"])):
+            lines.append(f"| `{m['schema']}` | `{m['field']}` |")
+        lines.append("")
+
+    # ---- Extra struct fields ----
+    if extra_fields:
+        lines += [
+            "## Extra Struct Fields",
+            "",
+            "These fields exist in a Rust struct but have no corresponding property",
+            "in the mapped OpenAPI schema. The field was likely removed from the spec",
+            "upstream while the struct field was left behind in `models.rs`. Remove the",
+            "field, or — if it is an intentional code-only field — add it to",
+            "`EXTRA_FIELD_EXEMPTIONS` in `spec_coverage_test.rs`.",
+            "",
+            "| Schema | Field |",
+            "|--------|-------|",
+        ]
+        for m in sorted(extra_fields, key=lambda m: (m["schema"], m["field"])):
             lines.append(f"| `{m['schema']}` | `{m['field']}` |")
         lines.append("")
 
@@ -846,6 +930,8 @@ def main():
     optionality_exemptions = parse_optionality_exemptions()
     field_mismatches = check_field_optionality(live_spec, model_fields, optionality_exemptions)
     missing_fields = check_missing_fields(live_spec, model_fields)
+    extra_field_exemptions = parse_extra_field_exemptions()
+    extra_fields = check_extra_fields(live_spec, model_fields, extra_field_exemptions)
 
     # Check committed snapshot staleness
     snapshot_staleness = check_snapshot_staleness(live_spec)
@@ -877,6 +963,7 @@ def main():
         + len(missing_types)
         + len(field_mismatches)
         + len(missing_fields)
+        + len(extra_fields)
         + beta_total
         + dep_total
         + snap_total
@@ -890,6 +977,7 @@ def main():
     print(f"Extra methods:   {len(extra_op_names)}", file=sys.stderr)
     print(f"Missing types:   {len(missing_types)}", file=sys.stderr)
     print(f"Missing fields:  {len(missing_fields)}", file=sys.stderr)
+    print(f"Extra fields:    {len(extra_fields)}", file=sys.stderr)
     print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
     print(f"Beta changes:    {beta_total}", file=sys.stderr)
     print(f"Deprecation chg: {dep_total}", file=sys.stderr)
@@ -906,6 +994,7 @@ def main():
         live_schemas,
         field_mismatches,
         missing_fields,
+        extra_fields,
         snapshot_staleness,
         beta_status_changes,
         deprecation_changes,

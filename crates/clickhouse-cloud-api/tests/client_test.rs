@@ -2052,16 +2052,16 @@ async fn update_postgres_service() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/postgres/pg-1"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-renamed"})))
+        .and(body_partial_json(serde_json::json!({"size": "c6gd.medium"})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-            "name": "pg-renamed"
+            "name": "pg-1"
         })))
         .mount(&s)
         .await;
 
     let body = PostgresServicePatchRequest {
-        name: Some("pg-renamed".to_string()),
+        size: Some(PgSize::C6gd_medium),
         ..Default::default()
     };
     let resp = c
@@ -2069,7 +2069,7 @@ async fn update_postgres_service() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, "pg-renamed");
+    assert_eq!(pg.name, "pg-1");
 }
 
 #[tokio::test]

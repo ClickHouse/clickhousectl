@@ -72,15 +72,7 @@ pub enum PostgresCommands {
     Update {
         postgres_id: String,
         #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        region: Option<String>,
-        #[arg(long)]
         size: Option<String>,
-        #[arg(long)]
-        provider: Option<String>,
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_VERSIONS))]
-        pg_version: Option<String>,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_HA_TYPES))]
         ha_type: Option<String>,
         /// Add a tag (repeatable), e.g. --add-tag env=prod
@@ -436,11 +428,7 @@ pub struct PostgresCreateOptions<'a> {
 }
 
 pub struct PostgresUpdateOptions<'a> {
-    pub name: Option<&'a str>,
-    pub region: Option<&'a str>,
     pub size: Option<&'a str>,
-    pub provider: Option<&'a str>,
-    pub pg_version: Option<&'a str>,
     pub ha_type: Option<&'a str>,
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
@@ -630,15 +618,7 @@ pub async fn postgres_update(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, opts.org_id).await?;
 
-    let provider = opts
-        .provider
-        .map(|v| parse_serde_enum::<PgProvider>(v, "provider", KNOWN_PG_PROVIDERS))
-        .transpose()?;
     let size = opts.size.map(parse_pg_size).transpose()?;
-    let pg_version = opts
-        .pg_version
-        .map(|v| parse_serde_enum::<PgVersion>(v, "pg-version", KNOWN_PG_VERSIONS))
-        .transpose()?;
     let ha_type = opts
         .ha_type
         .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", KNOWN_PG_HA_TYPES))
@@ -659,11 +639,7 @@ pub async fn postgres_update(
     };
 
     let req = PostgresServicePatchRequest {
-        name: opts.name.map(|s| s.to_string()),
-        provider,
-        region: opts.region.map(|s| s.to_string()),
         size,
-        postgres_version: pg_version,
         ha_type,
         tags,
     };
@@ -1135,19 +1111,19 @@ mod tests {
     fn parses_postgres_update_tag_diff_flags() {
         let cmd = parse_postgres(&[
             "clickhousectl", "cloud", "postgres", "update", "pg-1",
-            "--name", "renamed",
+            "--size", "c6gd.large",
             "--add-tag", "env=prod",
             "--add-tag", "team=data",
             "--remove-tag", "old",
         ]);
         let PostgresCommands::Update {
-            postgres_id, name, add_tag, remove_tag, ..
+            postgres_id, size, add_tag, remove_tag, ..
         } = cmd
         else {
             panic!("expected update");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert_eq!(name.as_deref(), Some("renamed"));
+        assert_eq!(size.as_deref(), Some("c6gd.large"));
         assert_eq!(add_tag, vec!["env=prod", "team=data"]);
         assert_eq!(remove_tag, vec!["old"]);
     }
@@ -1155,11 +1131,11 @@ mod tests {
     #[test]
     fn parses_postgres_update_no_fields() {
         let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "update", "pg-1"]);
-        let PostgresCommands::Update { postgres_id, name, .. } = cmd else {
+        let PostgresCommands::Update { postgres_id, size, .. } = cmd else {
             panic!("expected update");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert!(name.is_none());
+        assert!(size.is_none());
     }
 
     #[test]

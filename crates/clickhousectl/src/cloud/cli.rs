@@ -2673,7 +2673,7 @@ mod tests {
 
         // Postgres writes
         assert_write(&["clickhousectl", "cloud", "postgres", "create", "--name", "pg", "--region", "us-east-1", "--size", "m7i.2xlarge"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "update", "pg-1", "--name", "renamed"], true);
+        assert_write(&["clickhousectl", "cloud", "postgres", "update", "pg-1", "--size", "c6gd.large"], true);
         assert_write(&["clickhousectl", "cloud", "postgres", "delete", "pg-1"], true);
         assert_write(&["clickhousectl", "cloud", "postgres", "config", "replace", "pg-1", "--file", "/tmp/c.json"], true);
         assert_write(&["clickhousectl", "cloud", "postgres", "config", "patch", "pg-1", "--set", "max_connections=500"], true);
