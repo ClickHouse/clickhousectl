@@ -863,11 +863,24 @@ pub async fn service_create(
     }
 
     if !no_enable_query && !json {
-        match crate::cloud::service_query::ensure_service_query_setup(
-            client, &org_id, &svc_id, &svc_name,
+        // The endpoint upsert 500s while the service is still provisioning
+        // (issue #242), so wait for the service to come up first.
+        eprintln!();
+        eprintln!("Waiting for the service to be ready to enable the Query API endpoint...");
+        let setup = match crate::cloud::service_query::wait_for_service_ready(
+            client, &org_id, &svc_id,
         )
         .await
         {
+            Ok(()) => {
+                crate::cloud::service_query::ensure_service_query_setup(
+                    client, &org_id, &svc_id, &svc_name,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
+        match setup {
             Ok(_) => {
                 println!();
                 println!(

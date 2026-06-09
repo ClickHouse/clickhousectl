@@ -25,6 +25,67 @@ const QUERY_ENDPOINT_ROLE: &str = "sql_console_admin";
 /// caller so CORS doesn't apply, but the API still requires a value.
 const ALLOWED_ORIGINS: &str = "*";
 
+/// Polling cadence while waiting for a service to become ready.
+const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Upper bound on the readiness wait: 120 polls × 5s ≈ 10 minutes, well
+/// above normal provisioning time. On timeout the caller falls back to its
+/// "retry later" path rather than blocking forever.
+const READY_POLL_MAX_ATTEMPTS: u32 = 120;
+
+/// What a service state means for binding a query endpoint. The control
+/// plane returns 500 "Internal error" on the endpoint upsert while the
+/// service is still provisioning, so callers must hold off until the
+/// service is ready (issue #242).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyState {
+    /// Provisioned — safe to bind the query endpoint.
+    Ready,
+    /// Still coming up — keep polling.
+    Pending,
+    /// Won't become ready by waiting (stopped/failed/terminating/unknown).
+    Unavailable,
+}
+
+fn classify_ready_state(state: &str) -> ReadyState {
+    match state {
+        "running" | "idle" | "partially_running" => ReadyState::Ready,
+        "provisioning" | "starting" | "awaking" => ReadyState::Pending,
+        _ => ReadyState::Unavailable,
+    }
+}
+
+/// Poll until `service_id` reaches a state where the query endpoint can be
+/// bound, printing each state transition to stderr. Errors out (rather than
+/// waiting) on states that won't resolve on their own, and after
+/// [`READY_POLL_MAX_ATTEMPTS`] polls.
+pub async fn wait_for_service_ready(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut last_state = String::new();
+    for _ in 0..READY_POLL_MAX_ATTEMPTS {
+        let svc = client.get_service(org_id, service_id).await?;
+        let state = svc.state.to_string();
+        if state != last_state {
+            eprintln!("  state: {state}");
+            last_state = state.clone();
+        }
+        match classify_ready_state(&state) {
+            ReadyState::Ready => return Ok(()),
+            ReadyState::Pending => tokio::time::sleep(READY_POLL_INTERVAL).await,
+            ReadyState::Unavailable => {
+                return Err(format!(
+                    "service is in state '{state}' and will not become ready by waiting"
+                )
+                .into())
+            }
+        }
+    }
+    Err("timed out waiting for service to become ready".into())
+}
+
 /// Ensure a query endpoint is provisioned for `service_id` and return the
 /// persisted key. If a key is already cached locally, returns it unchanged;
 /// otherwise creates the API key, binds it to the query endpoint (merging
@@ -65,30 +126,16 @@ pub async fn ensure_service_query_setup(
     // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept.
     let api_key_uuid = key_response.key.id.to_string();
 
-    // Merge our new key UUID into any existing endpoint config so we don't
-    // silently revoke other bindings the user set up.
-    let mut open_api_keys = match client
-        .api()
-        .instance_query_endpoint_get(org_id, service_id)
-        .await
-    {
-        Ok(resp) => resp.result.map(|ep| ep.open_api_keys).unwrap_or_default(),
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error(e).into()),
+    let endpoint = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            // The key was created but never bound or persisted, so nothing
+            // can use it. Delete it (best-effort) so a later retry doesn't
+            // leave an orphaned key behind per attempt.
+            let _ = client.delete_api_key(org_id, &api_key_uuid).await;
+            return Err(e);
+        }
     };
-    if !open_api_keys.contains(&api_key_uuid) {
-        open_api_keys.push(api_key_uuid);
-    }
-
-    let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
-        roles: vec![QUERY_ENDPOINT_ROLE.to_string()],
-        open_api_keys,
-        allowed_origins: ALLOWED_ORIGINS.to_string(),
-    };
-
-    let endpoint = client
-        .create_query_endpoint(org_id, service_id, &endpoint_request)
-        .await?;
 
     let stored = ServiceQueryKey {
         key_id,
@@ -100,4 +147,77 @@ pub async fn ensure_service_query_setup(
     credentials::set_service_query_key(service_id, stored.clone())?;
 
     Ok(stored)
+}
+
+/// Bind `api_key_uuid` to the service's query endpoint, merging into any
+/// existing endpoint configuration so we don't silently revoke other
+/// bindings the user set up.
+async fn bind_query_endpoint(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_uuid: &str,
+) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint, Box<dyn std::error::Error>> {
+    let mut open_api_keys = match client
+        .api()
+        .instance_query_endpoint_get(org_id, service_id)
+        .await
+    {
+        Ok(resp) => resp.result.map(|ep| ep.open_api_keys).unwrap_or_default(),
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
+        Err(e) => return Err(client.convert_error(e).into()),
+    };
+    if !open_api_keys.iter().any(|k| k == api_key_uuid) {
+        open_api_keys.push(api_key_uuid.to_string());
+    }
+
+    let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
+        roles: vec![QUERY_ENDPOINT_ROLE.to_string()],
+        open_api_keys,
+        allowed_origins: ALLOWED_ORIGINS.to_string(),
+    };
+
+    Ok(client
+        .create_query_endpoint(org_id, service_id, &endpoint_request)
+        .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ready_states() {
+        for state in ["running", "idle", "partially_running"] {
+            assert_eq!(classify_ready_state(state), ReadyState::Ready, "{state}");
+        }
+    }
+
+    #[test]
+    fn pending_states() {
+        for state in ["provisioning", "starting", "awaking"] {
+            assert_eq!(classify_ready_state(state), ReadyState::Pending, "{state}");
+        }
+    }
+
+    #[test]
+    fn unavailable_states() {
+        for state in [
+            "stopping",
+            "stopped",
+            "terminating",
+            "terminated",
+            "softdeleting",
+            "softdeleted",
+            "degraded",
+            "failed",
+            "some-future-state",
+        ] {
+            assert_eq!(
+                classify_ready_state(state),
+                ReadyState::Unavailable,
+                "{state}"
+            );
+        }
+    }
 }
