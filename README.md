@@ -131,6 +131,12 @@ clickhouse/
 ├── materialized_views/     # Materialized view definitions
 ├── queries/                # Saved queries
 └── seed/                   # Seed data / INSERT statements
+postgres/
+├── tables/                 # Table definitions (CREATE TABLE ...)
+├── views/                  # View definitions (CREATE VIEW ...)
+├── functions/              # Function / procedure definitions (CREATE FUNCTION ...)
+├── queries/                # Saved queries
+└── seed/                   # Seed data / INSERT statements
 ```
 
 ### Running queries
