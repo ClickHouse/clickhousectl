@@ -65,30 +65,16 @@ pub async fn ensure_service_query_setup(
     // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept.
     let api_key_uuid = key_response.key.id.to_string();
 
-    // Merge our new key UUID into any existing endpoint config so we don't
-    // silently revoke other bindings the user set up.
-    let mut open_api_keys = match client
-        .api()
-        .instance_query_endpoint_get(org_id, service_id)
-        .await
-    {
-        Ok(resp) => resp.result.map(|ep| ep.open_api_keys).unwrap_or_default(),
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error(e).into()),
+    let endpoint = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            // The key was created but never bound or persisted, so nothing
+            // can use it. Delete it (best-effort) so a later retry doesn't
+            // leave an orphaned key behind per attempt.
+            let _ = client.delete_api_key(org_id, &api_key_uuid).await;
+            return Err(e);
+        }
     };
-    if !open_api_keys.contains(&api_key_uuid) {
-        open_api_keys.push(api_key_uuid);
-    }
-
-    let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
-        roles: vec![QUERY_ENDPOINT_ROLE.to_string()],
-        open_api_keys,
-        allowed_origins: ALLOWED_ORIGINS.to_string(),
-    };
-
-    let endpoint = client
-        .create_query_endpoint(org_id, service_id, &endpoint_request)
-        .await?;
 
     let stored = ServiceQueryKey {
         key_id,
@@ -100,4 +86,37 @@ pub async fn ensure_service_query_setup(
     credentials::set_service_query_key(service_id, stored.clone())?;
 
     Ok(stored)
+}
+
+/// Bind `api_key_uuid` to the service's query endpoint, merging into any
+/// existing endpoint configuration so we don't silently revoke other
+/// bindings the user set up.
+async fn bind_query_endpoint(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_uuid: &str,
+) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint, Box<dyn std::error::Error>> {
+    let mut open_api_keys = match client
+        .api()
+        .instance_query_endpoint_get(org_id, service_id)
+        .await
+    {
+        Ok(resp) => resp.result.map(|ep| ep.open_api_keys).unwrap_or_default(),
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
+        Err(e) => return Err(client.convert_error(e).into()),
+    };
+    if !open_api_keys.iter().any(|k| k == api_key_uuid) {
+        open_api_keys.push(api_key_uuid.to_string());
+    }
+
+    let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
+        roles: vec![QUERY_ENDPOINT_ROLE.to_string()],
+        open_api_keys,
+        allowed_origins: ALLOWED_ORIGINS.to_string(),
+    };
+
+    Ok(client
+        .create_query_endpoint(org_id, service_id, &endpoint_request)
+        .await?)
 }
