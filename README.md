@@ -155,7 +155,10 @@ clickhousectl local server start --name dev               # Named "dev"
 clickhousectl local server start --version stable         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
-clickhousectl local server start -- --config-file=/path/to/config.xml
+clickhousectl local server start --config-file analytics  # Apply a custom config (see "Custom config files" below)
+
+# List custom config files available to --config-file
+clickhousectl local server configs
 
 # List all servers (running and stopped)
 clickhousectl local server list
@@ -185,6 +188,28 @@ clickhousectl local server dotenv --user default --password secret --database my
 **Orphaned server recovery:** If server metadata files are lost while the ClickHouse process is still running, the CLI automatically recovers them via process discovery. Running `server list`, `server start`, or any server command will detect orphaned processes belonging to the current project and bring them back under management.
 
 **Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to.
+
+#### Custom config files
+
+Drop ClickHouse config files into `~/.clickhouse/configs/` and apply one by name when starting a server:
+
+```bash
+mkdir -p ~/.clickhouse/configs
+cat > ~/.clickhouse/configs/analytics.xml <<'EOF'
+<clickhouse>
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+    </query_log>
+</clickhouse>
+EOF
+                      # List available config files
+clickhousectl local server start --config-file analytics    # Start a server with it
+```
+
+The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config-file analytics` or `--config-file analytics.xml`). `--config-file` takes a name within `~/.clickhouse/configs/` **not a path**.
+
+The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP ports are always forced as command-line overrides, which take precedence over the config file. This means a custom config can never break the managed server lifecycle (`list`, `stop`, `remove`, `dotenv`) regardless of its contents. Starting a server again without `--config-file` reverts it to plain defaults.
 
 #### Local Postgres (Docker-backed)
 

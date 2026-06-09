@@ -165,6 +165,11 @@ CONTEXT FOR AGENTS:
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
   If --name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
+  Use --config-file <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
+  (see `clickhousectl local server configs`). The file is merged as an overlay on top of
+  ClickHouse's built-in defaults (via config.d), so it can contain just the settings you want
+  to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
+  file's contents (they are forced as command-line overrides).
   Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop <name>` to stop one.")]
     Start {
         /// Server name (default: \"default\", or random if default is already running)
@@ -187,10 +192,26 @@ CONTEXT FOR AGENTS:
         #[arg(long, alias = "fg", short = 'F')]
         foreground: bool,
 
+        /// Overlay a named config file from ~/.clickhouse/configs/ on top of the defaults (see `server configs`)
+        #[arg(long, value_name = "NAME")]
+        config_file: Option<String>,
+
         /// Arguments to pass to clickhouse-server
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+
+    /// List custom config files available to `server start --config-file`
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Lists ClickHouse config files in ~/.clickhouse/configs/ and prints that directory's path.
+  Drop a config file there (e.g. analytics.xml) and start a server with it via
+  `clickhousectl local server start --config-file analytics`. The file is overlaid on top of
+  ClickHouse's built-in defaults (config.d merge), so it only needs the settings you want to
+  change. Files may be .xml, .yaml, or .yml; reference them by name with or without the
+  extension.
+  Related: `clickhousectl local server start --config-file <NAME>`.")]
+    Configs,
 
     /// List all server instances (running and stopped)
     #[command(after_help = "\
@@ -410,4 +431,54 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         local: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    fn local_command(args: &[&str]) -> LocalCommands {
+        let mut argv = vec!["clickhousectl", "local"];
+        argv.extend_from_slice(args);
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let Commands::Local(local) = cli.command else {
+            panic!("expected local command");
+        };
+        local.command
+    }
+
+    #[test]
+    fn parses_server_start_config_file() {
+        let LocalCommands::Server {
+            command: ServerCommands::Start { config_file, .. },
+        } = local_command(&["server", "start", "--config-file", "analytics"])
+        else {
+            panic!("expected server start");
+        };
+        assert_eq!(config_file.as_deref(), Some("analytics"));
+    }
+
+    #[test]
+    fn server_start_config_file_defaults_to_none() {
+        let LocalCommands::Server {
+            command: ServerCommands::Start { config_file, args, .. },
+        } = local_command(&["server", "start"])
+        else {
+            panic!("expected server start");
+        };
+        assert_eq!(config_file, None);
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parses_server_configs() {
+        let LocalCommands::Server {
+            command: ServerCommands::Configs,
+        } = local_command(&["server", "configs"])
+        else {
+            panic!("expected server configs");
+        };
+    }
 }

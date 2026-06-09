@@ -173,6 +173,36 @@ impl fmt::Display for InitOutput {
     }
 }
 
+// ── server configs ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerConfigsOutput {
+    pub dir: String,
+    pub configs: Vec<String>,
+}
+
+impl fmt::Display for ServerConfigsOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.configs.is_empty() {
+            writeln!(f, "No config files in {}", self.dir)?;
+            write!(
+                f,
+                "Drop a ClickHouse config file there, then start with: \
+                 clickhousectl local server start --config-file <NAME>"
+            )?;
+            return Ok(());
+        }
+        writeln!(f, "Config files in {}:", self.dir)?;
+        for name in &self.configs {
+            writeln!(f, "  {name}")?;
+        }
+        write!(
+            f,
+            "Use with: clickhousectl local server start --config-file <NAME>"
+        )
+    }
+}
+
 // ── server start ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -784,6 +814,42 @@ mod tests {
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["servers"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn server_configs_json() {
+        let output = ServerConfigsOutput {
+            dir: "/home/user/.clickhouse/configs".to_string(),
+            configs: vec!["dev.xml".to_string(), "prod.yaml".to_string()],
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
+        assert_eq!(json["dir"], "/home/user/.clickhouse/configs");
+        assert_eq!(json["configs"][0], "dev.xml");
+        assert_eq!(json["configs"][1], "prod.yaml");
+        assert_eq!(json["configs"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn server_configs_display_empty() {
+        let output = ServerConfigsOutput {
+            dir: "/home/user/.clickhouse/configs".to_string(),
+            configs: vec![],
+        };
+        let text = output.to_string();
+        assert!(text.contains("No config files"));
+        assert!(text.contains("--config-file"));
+    }
+
+    #[test]
+    fn server_configs_display_with_entries() {
+        let output = ServerConfigsOutput {
+            dir: "/home/user/.clickhouse/configs".to_string(),
+            configs: vec!["dev.xml".to_string()],
+        };
+        let text = output.to_string();
+        assert!(text.contains("dev.xml"));
+        assert!(text.contains("Use with:"));
     }
 
     #[test]

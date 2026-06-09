@@ -67,6 +67,12 @@ pub enum Error {
     #[error("Invalid server name '{0}': must not contain path separators or '..'")]
     InvalidServerName(String),
 
+    #[error("{0}")]
+    ConfigNotFound(String),
+
+    #[error("Invalid config name '{0}': must be a file in the configs dir, not a path (no '/', '\\', or '..')")]
+    InvalidConfigName(String),
+
     #[error("Docker is not available: {0}")]
     DockerNotAvailable(String),
 
