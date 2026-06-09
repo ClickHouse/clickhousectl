@@ -70,18 +70,20 @@ cargo install --path crates/clickhousectl
 
 ### Direct download
 
-Prebuilt archives for each release are hosted at `https://builds.clickhouse.com/clickhousectl/`. Archives are named `clickhousectl-{target}-v{version}.tar.gz` and contain a single directory of the same name with the `clickhousectl` binary inside. Supported targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Example: `https://builds.clickhouse.com/clickhousectl/clickhousectl-aarch64-apple-darwin-v0.2.2.tar.gz`.
+Prebuilt archives for each release are hosted at `https://builds.clickhouse.com/clickhousectl/`. Archives are named `clickhousectl-{target}-v{version}.tar.gz` and contain a single directory of the same name with the `clickhousectl` binary inside. Supported targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Example: `https://builds.clickhouse.com/clickhousectl/clickhousectl-aarch64-apple-darwin-v0.3.0.tar.gz`.
 
 ## Local
 
 ### Installing and managing ClickHouse versions
 
-`clickhousectl` downloads ClickHouse binaries from [GitHub releases](https://github.com/ClickHouse/ClickHouse/releases).
+`clickhousectl` downloads ClickHouse binaries from `builds.clickhouse.com`, falling back to `packages.clickhouse.com` (Linux) or [GitHub releases](https://github.com/ClickHouse/ClickHouse/releases) (macOS) when a build isn't available there.
 
 ```bash
 # Install a version
+clickhousectl local install latest          # Latest master build
 clickhousectl local install stable          # Latest stable release
 clickhousectl local install lts             # Latest LTS release
+clickhousectl local install 25              # Latest 25.x.x.x
 clickhousectl local install 25.12           # Latest 25.12.x.x
 clickhousectl local install 25.12.5.44      # Exact version
 
@@ -209,7 +211,7 @@ cat > ~/.clickhouse/configs/analytics.xml <<'EOF'
     </query_log>
 </clickhouse>
 EOF
-                      # List available config files
+clickhousectl local server configs                          # List available config files
 clickhousectl local server start --config-file analytics    # Start a server with it
 ```
 
@@ -244,6 +246,7 @@ clickhousectl local postgres dotenv --name dev
 # Stop / remove. Pass --version when more than one major shares a name.
 clickhousectl local postgres stop dev
 clickhousectl local postgres stop dev --version 17        # disambiguate
+clickhousectl local postgres stop-all                     # Stop all Postgres instances in this project
 clickhousectl local postgres remove dev
 ```
 
@@ -271,6 +274,8 @@ Each named server has its own data directory, so servers are fully isolated from
 ## Authentication
 
 Authenticate to ClickHouse Cloud using OAuth (browser-based) or API keys. OAuth provides **read-only** access; API keys provide full **read/write** access.
+
+If you don't have a ClickHouse Cloud account yet, `clickhousectl cloud auth signup` opens the sign-up page in your browser.
 
 ### OAuth login (read-only)
 
@@ -403,6 +408,8 @@ clickhousectl cloud service stop <service-id>
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
 clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
+clickhousectl cloud service query --name my-service --queries-file schema.sql   # "-" reads from stdin
+clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 
 # Update service metadata and patches
