@@ -1246,6 +1246,221 @@ async fn dotenv_creds_produce_basic_auth_request() {
     );
 }
 
+// ── Service query auth modes (issue #247) ──────────────────────────────────
+//
+// `cloud service query` has two auth paths:
+//   - API key auth: a per-service Query API key (stored locally, else
+//     auto-provisioned) is sent as Basic auth to the query host.
+//   - OAuth: the user's own bearer token is sent directly to the query host
+//     — no key lookup and, crucially, NO provisioning calls (key creation
+//     and endpoint upsert need write access an OAuth token doesn't have).
+// Both tests run the binary against two mocks: one impersonating the
+// control plane (service lookup), one impersonating the query host (wired
+// up via CLICKHOUSE_CLOUD_QUERY_HOST, which overrides host derivation).
+
+const QUERY_TEST_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+async fn start_mock_control_plane_with_service() -> MockServer {
+    let mock = MockServer::start().await;
+    let stub_service = serde_json::json!({
+        "result": { "id": QUERY_TEST_SERVICE_ID, "name": "demo" },
+        "status": 200,
+        "requestId": "stub-service-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_service))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+async fn start_mock_query_host() -> MockServer {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+fn assert_success(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "clickhousectl exited {}\nstderr:\n{}\nstdout:\n{}",
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
+#[tokio::test]
+async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+
+    // OAuth tokens are the lowest-precedence credential tier, so clear the
+    // API key env vars and run in a temp dir whose .clickhouse/tokens.json
+    // is the only credential source.
+    let dir = tempfile::tempdir().unwrap();
+    let ch_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    let tokens = serde_json::json!({
+        "access_token": "test-bearer-token",
+        "refresh_token": "unused",
+        "expires_at": 4102444800u64, // 2100-01-01: never expires in tests
+        "api_url": format!("{}/v1", control.uri()),
+    });
+    std::fs::write(
+        ch_dir.join("tokens.json"),
+        serde_json::to_vec(&tokens).unwrap(),
+    )
+    .unwrap();
+
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    // The query request must carry the OAuth bearer token, not Basic auth,
+    // and no `auth-provider: custom` marker (that header means "custom
+    // Query API key").
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), 1);
+    let run = &query_requests[0];
+    let auth = run.headers.get("authorization").unwrap().to_str().unwrap();
+    assert_eq!(auth, "Bearer test-bearer-token");
+    assert!(
+        run.headers.get("auth-provider").is_none(),
+        "auth-provider header must not accompany a bearer token",
+    );
+
+    // No provisioning: key creation and query-endpoint upsert are both
+    // POSTs, so the control plane must see only GETs.
+    let control_requests = control.received_requests().await.unwrap();
+    assert!(
+        control_requests
+            .iter()
+            .all(|r| r.method == wiremock::http::Method::GET),
+        "OAuth service query made non-GET control-plane calls: {:?}",
+        control_requests
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.url.path()))
+            .collect::<Vec<_>>(),
+    );
+
+    // And no Query API key may be written locally for the OAuth path.
+    assert!(
+        !ch_dir.join("credentials.json").exists(),
+        "OAuth service query wrote .clickhouse/credentials.json",
+    );
+
+    // The query result streams through to stdout untouched.
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+}
+
+#[tokio::test]
+async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+
+    // A stored per-service Query API key short-circuits provisioning; the
+    // control-plane creds come from the env tier (the credentials file
+    // carries only service_query_keys, no api_key/api_secret).
+    let dir = tempfile::tempdir().unwrap();
+    let ch_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    let creds = serde_json::json!({
+        "service_query_keys": {
+            QUERY_TEST_SERVICE_ID: {
+                "key_id": "stored-key-id",
+                "key_secret": "stored-key-secret",
+                "endpoint_id": "ep-1",
+                "service_name": "demo",
+                "created_at": "2026-05-11T12:00:00Z",
+            }
+        }
+    });
+    std::fs::write(
+        ch_dir.join("credentials.json"),
+        serde_json::to_vec(&creds).unwrap(),
+    )
+    .unwrap();
+
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    // The query request authenticates with the stored per-service key, not
+    // the org-level env creds, and keeps the custom-key marker header.
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), 1);
+    let run = &query_requests[0];
+    let auth = run.headers.get("authorization").unwrap().to_str().unwrap();
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "stored-key-id:stored-key-secret",
+        )
+    );
+    assert_eq!(auth, expected);
+    assert_eq!(run.headers.get("auth-provider").unwrap(), "custom");
+
+    // Stored key present → no provisioning POSTs on the control plane.
+    let control_requests = control.received_requests().await.unwrap();
+    assert!(
+        control_requests
+            .iter()
+            .all(|r| r.method == wiremock::http::Method::GET),
+        "stored-key service query made non-GET control-plane calls: {:?}",
+        control_requests
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.url.path()))
+            .collect::<Vec<_>>(),
+    );
+}
+
 // Shell env vars must win over `.env` — if both are set, the request is
 // signed with the shell values, never the file values.
 
