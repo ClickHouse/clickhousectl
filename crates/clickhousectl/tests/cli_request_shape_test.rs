@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::Value;
-use wiremock::matchers::{method, path, path_regex};
+use wiremock::matchers::{header, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
@@ -1455,6 +1455,159 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
             .map(|r| format!("{} {}", r.method, r.url.path()))
             .collect::<Vec<_>>(),
     );
+}
+
+// ── Idled / stopped services (query host 206 protocol) ─────────────────────
+//
+// An idled or stopped service answers the run request with 206 and
+// `{"data": "<state>"}` instead of executing the query. For `Confirm wake
+// service` the CLI must resend the query once with the `wake-service: true`
+// header (waking the service, like the SQL console does after prompting);
+// for `Service is stopped` it must fail with a hint to start the service.
+
+/// Write an OAuth tokens.json into `ch_dir` so the binary authenticates with
+/// a bearer token against the given control plane.
+fn write_oauth_tokens(ch_dir: &std::path::Path, control_uri: &str) {
+    let tokens = serde_json::json!({
+        "access_token": "test-bearer-token",
+        "refresh_token": "unused",
+        "expires_at": 4102444800u64, // 2100-01-01: never expires in tests
+        "api_url": format!("{control_uri}/v1"),
+    });
+    std::fs::write(
+        ch_dir.join("tokens.json"),
+        serde_json::to_vec(&tokens).unwrap(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn service_query_resends_with_wake_header_when_service_is_idle() {
+    let control = start_mock_control_plane_with_service().await;
+
+    // Query host that refuses attempts without the wake confirmation: the
+    // header-matched mock (higher priority) runs the query, the fallback
+    // answers 206 `Confirm wake service`.
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("wake-service", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .with_priority(1)
+        .mount(&query_host)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(
+            ResponseTemplate::new(206).set_body_string(r#"{"data":"Confirm wake service"}"#),
+        )
+        .with_priority(5)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ch_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &control.uri());
+
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    // Exactly two attempts: the refused one without the wake header, then
+    // the resend carrying the wake confirmation.
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), 2);
+    assert!(
+        query_requests[0].headers.get("wake-service").is_none(),
+        "first attempt must not pre-emptively wake the service",
+    );
+    assert_eq!(
+        query_requests[1].headers.get("wake-service").unwrap(),
+        "true"
+    );
+
+    // The 206 body must not leak into the query output, and the user is
+    // told about the wake on stderr.
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("idle"),
+        "stderr should mention the service is idle:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[tokio::test]
+async fn service_query_fails_with_start_hint_when_service_is_stopped() {
+    let control = start_mock_control_plane_with_service().await;
+
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(206).set_body_string(r#"{"data":"Service is stopped"}"#))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ch_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &control.uri());
+
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert!(
+        !output.status.success(),
+        "querying a stopped service must fail\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stopped") && stderr.contains("service start"),
+        "stderr should say the service is stopped and hint at `service start`:\n{stderr}",
+    );
+
+    // A stopped service is never woken: no wake-service resend.
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), 1);
 }
 
 // Shell env vars must win over `.env` — if both are set, the request is

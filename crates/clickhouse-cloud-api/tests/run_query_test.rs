@@ -37,6 +37,7 @@ async fn run_query_sends_basic_auth_with_query_key() {
             "SELECT 1",
             None,
             "TabSeparated",
+            false,
         )
         .await
         .expect("run_query failed");
@@ -57,6 +58,10 @@ async fn run_query_sends_basic_auth_with_query_key() {
 
     assert_eq!(request.headers.get("auth-provider").unwrap(), "custom");
     assert_eq!(request.headers.get("x-service-type").unwrap(), "clickhouse");
+    assert!(
+        request.headers.get("wake-service").is_none(),
+        "wake-service header must not be sent unless wake_service is set",
+    );
 
     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(body["sql"], "SELECT 1");
@@ -80,7 +85,7 @@ async fn run_query_bearer_sends_bearer_token() {
     let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
 
     let response = client
-        .run_query_bearer("svc-1", "SELECT 1", Some("mydb"), "JSONEachRow")
+        .run_query_bearer("svc-1", "SELECT 1", Some("mydb"), "JSONEachRow", false)
         .await
         .expect("run_query_bearer failed");
     assert_eq!(response.status(), 200);
@@ -106,7 +111,7 @@ async fn run_query_bearer_sends_bearer_token() {
 async fn run_query_bearer_on_basic_auth_client_is_auth_mismatch() {
     let client = Client::with_base_url("https://api.clickhouse.cloud", "k", "s");
     let err = client
-        .run_query_bearer("svc-1", "SELECT 1", None, "CSV")
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
         .await
         .expect_err("expected AuthMismatch");
     assert!(
@@ -116,12 +121,82 @@ async fn run_query_bearer_on_basic_auth_client_is_auth_mismatch() {
 }
 
 #[tokio::test]
+async fn run_query_wake_service_sends_wake_header() {
+    let mock = start_mock_query_host(200, "1\n").await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    client
+        .run_query_bearer("svc-1", "SELECT 1", None, "TabSeparated", true)
+        .await
+        .expect("run_query_bearer failed");
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].headers.get("wake-service").unwrap(), "true");
+}
+
+// ── 206 responses: the query host's service-state protocol ─────────────────
+//
+// An idled or stopped service answers 206 with `{"data": "<state>"}` instead
+// of running the query. `Confirm wake service` invites a resend with the
+// `wake-service: true` header (which wakes the service); `Service is
+// stopped` is terminal until the service is started.
+
+#[tokio::test]
+async fn run_query_206_confirm_wake_maps_to_service_idle() {
+    let mock = start_mock_query_host(206, r#"{"data":"Confirm wake service"}"#).await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
+        .await
+        .expect_err("expected ServiceIdle");
+    assert!(
+        matches!(err, Error::ServiceIdle),
+        "expected ServiceIdle, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_query_206_service_stopped_maps_to_service_stopped() {
+    let mock = start_mock_query_host(206, r#"{"data":"Service is stopped"}"#).await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
+        .await
+        .expect_err("expected ServiceStopped");
+    assert!(
+        matches!(err, Error::ServiceStopped),
+        "expected ServiceStopped, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn run_query_206_unrecognized_body_maps_to_api_error() {
+    let mock = start_mock_query_host(206, r#"{"data":"Something new"}"#).await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
+        .await
+        .expect_err("expected Api error");
+    match err {
+        Error::Api { status, message } => {
+            assert_eq!(status, 206);
+            assert_eq!(message, r#"{"data":"Something new"}"#);
+        }
+        other => panic!("expected Error::Api, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn run_query_non_success_status_maps_to_api_error() {
     let mock = start_mock_query_host(404, "query endpoint not found").await;
     let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
 
     let err = client
-        .run_query_bearer("svc-1", "SELECT 1", None, "CSV")
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
         .await
         .expect_err("expected Api error");
     match err {

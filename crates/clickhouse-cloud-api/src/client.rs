@@ -197,8 +197,12 @@ impl Client {
     /// bypasses the client's primary auth because Query API keys are scoped
     /// to a single service.
     ///
+    /// `wake_service` resends the wake confirmation the query host asks for
+    /// when the target service is idled — see [`Error::ServiceIdle`].
+    ///
     /// Returns the streaming response so the caller can forward it to
     /// stdout or buffer it into memory.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_query(
         &self,
         service_id: &str,
@@ -207,6 +211,7 @@ impl Client {
         sql: &str,
         database: Option<&str>,
         format: &str,
+        wake_service: bool,
     ) -> Result<reqwest::Response, Error> {
         self.run_query_with(
             QueryAuth::Basic { key_id, key_secret },
@@ -214,6 +219,7 @@ impl Client {
             sql,
             database,
             format,
+            wake_service,
         )
         .await
     }
@@ -226,6 +232,9 @@ impl Client {
     /// the user's identity directly (SQL-console style), and SQL permissions
     /// follow the user's console role.
     ///
+    /// `wake_service` resends the wake confirmation the query host asks for
+    /// when the target service is idled — see [`Error::ServiceIdle`].
+    ///
     /// Returns an error if the client is using Basic auth.
     pub async fn run_query_bearer(
         &self,
@@ -233,6 +242,7 @@ impl Client {
         sql: &str,
         database: Option<&str>,
         format: &str,
+        wake_service: bool,
     ) -> Result<reqwest::Response, Error> {
         let token = match &self.auth {
             Auth::Bearer { token } => token,
@@ -248,6 +258,7 @@ impl Client {
             sql,
             database,
             format,
+            wake_service,
         )
         .await
     }
@@ -259,6 +270,7 @@ impl Client {
         sql: &str,
         database: Option<&str>,
         format: &str,
+        wake_service: bool,
     ) -> Result<reqwest::Response, Error> {
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -287,6 +299,14 @@ impl Client {
             .query(&[("format", format)])
             .header("content-type", "text/plain;charset=UTF-8")
             .header("x-service-type", "clickhouse");
+        // `wake-service: true` is the wake confirmation the query host asks
+        // for via a 206 `Confirm wake service` response (the SQL console
+        // sends it after prompting the user).
+        let request = if wake_service {
+            request.header("wake-service", "true")
+        } else {
+            request
+        };
         // `auth-provider: custom` tells the query host the credentials are a
         // custom (user-provisioned) Query API key. Bearer tokens carry their
         // own provider information, so the header is omitted for them.
@@ -300,6 +320,28 @@ impl Client {
         let response = request.json(&body).send().await?;
 
         let status = response.status();
+        // 206 means the service can't take the query in its current state:
+        // `Confirm wake service` for an idled service (resend with the
+        // wake confirmation to wake it and run the query), `Service is
+        // stopped` for one that must be started explicitly.
+        if status.as_u16() == 206 {
+            let body_text = response.text().await.unwrap_or_default();
+            #[derive(serde::Deserialize)]
+            struct StateBody {
+                data: Option<String>,
+            }
+            let data = serde_json::from_str::<StateBody>(&body_text)
+                .ok()
+                .and_then(|b| b.data);
+            return Err(match data.as_deref() {
+                Some("Confirm wake service") => Error::ServiceIdle,
+                Some("Service is stopped") => Error::ServiceStopped,
+                _ => Error::Api {
+                    status: 206,
+                    message: body_text,
+                },
+            });
+        }
         if !status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
             return Err(Error::Api {

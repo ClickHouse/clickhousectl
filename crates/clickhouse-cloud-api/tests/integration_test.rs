@@ -311,6 +311,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "SELECT 1",
                                 None,
                                 "TabSeparated",
+                                false,
                             )
                             .await
                         {
@@ -455,6 +456,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                         "SELECT 1",
                                         None,
                                         "TabSeparated",
+                                        false,
                                     )
                                     .await
                                 {
@@ -522,6 +524,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                     sql,
                                     None,
                                     "TabSeparated",
+                                    false,
                                 )
                                 .await?;
                             response
@@ -657,6 +660,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 "SELECT 1",
                                 None,
                                 "TabSeparated",
+                                false,
                             )
                             .await?;
                         let body = response
