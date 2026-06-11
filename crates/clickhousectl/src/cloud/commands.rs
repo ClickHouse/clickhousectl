@@ -2078,25 +2078,17 @@ pub async fn service_query(
     let format = opts.format.unwrap_or_else(default_query_format);
 
     let response = if client.is_bearer_auth() {
-        // OAuth: the query endpoint authenticates the user's bearer token
-        // directly — read-only SQL, no per-service Query API key, and no
-        // auto-provisioning (which would need write access the token doesn't
-        // have). `--no-auto-enable` is a no-op here since nothing is ever
-        // provisioned. The endpoint itself must already be enabled.
+        // OAuth: the Query API authenticates the user's bearer token
+        // directly, SQL-console style — the query runs as the user's own
+        // cloud identity, with no per-service Query API key and no
+        // query-endpoint configuration needed on the service.
+        // `--no-auto-enable` is a no-op here since nothing is ever
+        // provisioned.
         client
             .api()
             .run_query_bearer(&service_id, &sql, opts.database.as_deref(), &format)
             .await
-            .map_err(|e| -> Box<dyn std::error::Error> {
-                match e {
-                    clickhouse_cloud_api::Error::Api { status: 404, .. } => format!(
-                        "the query endpoint for service '{}' is not enabled. Ask an org admin to enable it:\n  clickhousectl cloud service query-endpoint create {service_id}",
-                        service.name
-                    )
-                    .into(),
-                    e => client.convert_error(e).into(),
-                }
-            })?
+            .map_err(|e| client.convert_error(e))?
     } else {
         let key = match credentials::get_service_query_key(&service_id) {
             Some(k) => k,

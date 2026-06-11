@@ -217,10 +217,10 @@ impl Client {
     /// Run a SQL statement against a service's Query API endpoint using the
     /// client's own OAuth Bearer token.
     ///
-    /// Unlike [`Client::run_query`], no per-service Query API key is needed:
-    /// the query endpoint authenticates the user's identity directly, with
-    /// read-only SQL access. The query endpoint must already be enabled on
-    /// the service.
+    /// Unlike [`Client::run_query`], no per-service Query API key and no
+    /// query-endpoint configuration are needed: the Query API authenticates
+    /// the user's identity directly (SQL-console style), and SQL permissions
+    /// follow the user's console role.
     ///
     /// Returns an error if the client is using Basic auth.
     pub async fn run_query_bearer(

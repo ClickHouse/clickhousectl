@@ -285,7 +285,7 @@ clickhousectl cloud auth login
 
 This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhouse/tokens.json` (project-local).
 
-> **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication. `cloud service query` works under OAuth too, running read-only SQL as your own identity — see [Query API auth modes](#query-api-auth-modes).
+> **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication. `cloud service query` works under OAuth too, running SQL as your own identity with your console role's permissions — see [Query API auth modes](#query-api-auth-modes).
 
 ### API key/secret (required for write operations)
 
@@ -500,7 +500,7 @@ clickhousectl cloud service delete <service-id> --force
 `cloud service query` is the canonical way to run SQL against a cloud service — over HTTP, with no `clickhouse` binary and no service password required. It works with both credential modes:
 
 - **API key auth** (read + write SQL): the first time `cloud service query` runs against a service without a stored key, it provisions a Query API endpoint for that service and creates a dedicated API key bound to it. The key (`keyId`, `keySecret`, and `endpointId`) is stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. Subsequent queries use that key. It is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org. Pass `--no-auto-enable` to fail instead of provisioning.
-- **OAuth** (`cloud auth login`, read-only SQL): the query runs as your own identity — the CLI sends your bearer token straight to the query endpoint. No Query API key is provisioned or stored (provisioning needs write access an OAuth token doesn't have), so the query endpoint must already be enabled on the service; an org admin can enable it with `cloud service query-endpoint create <service-id>`. `--no-auto-enable` has no effect in this mode.
+- **OAuth** (`cloud auth login`): the query runs as your own identity, SQL-console style — the CLI sends your bearer token straight to the Query API, and your SQL permissions follow your ClickHouse Cloud console role. No Query API key is provisioned or stored, and no query endpoint needs to be configured on the service. `--no-auto-enable` has no effect in this mode.
 
 Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it.
 

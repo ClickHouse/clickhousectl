@@ -776,9 +776,9 @@ CONTEXT FOR AGENTS:
   With API key auth: uses a per-service API key (read+write, scoped to this
   service via the query endpoint binding) auto-provisioned on first use and
   stored in .clickhouse/credentials.json.
-  With OAuth (cloud auth login): sends your own bearer token — read-only SQL,
-  no key provisioning; the query endpoint must already be enabled by an org
-  admin (cloud service query-endpoint create).
+  With OAuth (cloud auth login): sends your own bearer token — SQL runs as
+  your cloud user (permissions follow your console role); no key provisioning
+  and no query endpoint required on the service.
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
   on a TTY, TabSeparated when piped.")]
     Query {
