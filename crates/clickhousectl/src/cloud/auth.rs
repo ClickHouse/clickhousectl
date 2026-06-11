@@ -21,14 +21,14 @@ const KNOWN_CONFIGS: &[(&str, AuthConfig)] = &[
         },
     ),
     (
-        "api.clickhouse-staging.com",
+        "api.control-plane.clickhouse-staging.com",
         AuthConfig {
             auth_url: "https://auth.control-plane.clickhouse-staging.com",
             client_id: "ZC8AupPshQt2UNO2hEDutnKitx4PhizY",
         },
     ),
     (
-        "api.clickhouse-dev.com",
+        "api.control-plane.clickhouse-dev.com",
         AuthConfig {
             auth_url: "https://auth.control-plane.clickhouse-dev.com",
             client_id: "bVVcrqNw1t5dya9WFzfnM7PSsAgmfzwY",
@@ -417,14 +417,17 @@ mod tests {
     #[test]
     fn test_auth_config_lookup() {
         assert!(auth_config_for_url("https://api.clickhouse.cloud/v1").is_some());
-        assert!(auth_config_for_url("https://api.clickhouse-staging.com/v1").is_some());
-        assert!(auth_config_for_url("https://api.clickhouse-dev.com/v1").is_some());
+        assert!(
+            auth_config_for_url("https://api.control-plane.clickhouse-staging.com/v1").is_some()
+        );
+        assert!(auth_config_for_url("https://api.control-plane.clickhouse-dev.com/v1").is_some());
         assert!(auth_config_for_url("https://api.unknown.com/v1").is_none());
 
         // Verify distinct configs
         let prod = auth_config_for_url("https://api.clickhouse.cloud/v1").unwrap();
-        let staging = auth_config_for_url("https://api.clickhouse-staging.com/v1").unwrap();
-        let dev = auth_config_for_url("https://api.clickhouse-dev.com/v1").unwrap();
+        let staging =
+            auth_config_for_url("https://api.control-plane.clickhouse-staging.com/v1").unwrap();
+        let dev = auth_config_for_url("https://api.control-plane.clickhouse-dev.com/v1").unwrap();
         assert_ne!(prod.client_id, staging.client_id);
         assert_ne!(prod.client_id, dev.client_id);
         assert_ne!(staging.client_id, dev.client_id);

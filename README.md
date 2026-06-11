@@ -506,7 +506,7 @@ Provisioning happens lazily (rather than at `service create` time) because the e
 
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. `cloud service delete` removes the stored key from `credentials.json`.
 
-The Query API host is derived from the API base URL per environment (`api.<domain>` → `queries.<domain>`, e.g. `https://queries.clickhouse.cloud` for production). Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override it.
+The Query API host is derived from the API base URL per environment (`api.[control-plane.]<domain>` → `queries.<domain>`, e.g. `https://queries.clickhouse.cloud` for production). Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override it.
 
 ### Postgres (beta)
 

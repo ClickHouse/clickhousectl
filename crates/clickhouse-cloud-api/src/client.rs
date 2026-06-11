@@ -38,12 +38,20 @@ pub struct Client {
 
 /// Derive the Query API host from a management API base URL by swapping the
 /// `api.` host prefix for `queries.`, so each environment talks to its own
-/// query host (e.g. `https://api.clickhouse-staging.com` →
-/// `https://queries.clickhouse-staging.com`). Returns `None` when the base
-/// URL isn't of that shape (e.g. a localhost test server).
+/// query host. Staging and dev serve the management API under an extra
+/// `control-plane.` label that the query host doesn't have, so it is
+/// dropped too:
+///
+/// - `https://api.clickhouse.cloud` → `https://queries.clickhouse.cloud`
+/// - `https://api.control-plane.clickhouse-staging.com` →
+///   `https://queries.clickhouse-staging.com`
+///
+/// Returns `None` when the base URL isn't of that shape (e.g. a localhost
+/// test server).
 fn derive_query_host(base_url: &str) -> Option<String> {
     let parsed = url::Url::parse(base_url).ok()?;
     let rest = parsed.host_str()?.strip_prefix("api.")?;
+    let rest = rest.strip_prefix("control-plane.").unwrap_or(rest);
     Some(format!("{}://queries.{}", parsed.scheme(), rest))
 }
 
@@ -2829,7 +2837,7 @@ mod tests {
     #[test]
     fn derive_query_host_staging() {
         assert_eq!(
-            derive_query_host("https://api.clickhouse-staging.com").as_deref(),
+            derive_query_host("https://api.control-plane.clickhouse-staging.com").as_deref(),
             Some("https://queries.clickhouse-staging.com")
         );
     }
@@ -2837,8 +2845,16 @@ mod tests {
     #[test]
     fn derive_query_host_dev() {
         assert_eq!(
-            derive_query_host("https://api.clickhouse-dev.com").as_deref(),
+            derive_query_host("https://api.control-plane.clickhouse-dev.com").as_deref(),
             Some("https://queries.clickhouse-dev.com")
+        );
+    }
+
+    #[test]
+    fn derive_query_host_plain_api_prefix_without_control_plane() {
+        assert_eq!(
+            derive_query_host("https://api.clickhouse-staging.com").as_deref(),
+            Some("https://queries.clickhouse-staging.com")
         );
     }
 
