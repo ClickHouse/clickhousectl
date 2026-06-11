@@ -1,6 +1,6 @@
 {
   "name": "clickhousectl",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "The CLI for ClickHouse: local and cloud.",
   "homepage": "https://github.com/ClickHouse/clickhousectl",
   "repository": {
