@@ -52,7 +52,11 @@ fn derive_query_host(base_url: &str) -> Option<String> {
     let parsed = url::Url::parse(base_url).ok()?;
     let rest = parsed.host_str()?.strip_prefix("api.")?;
     let rest = rest.strip_prefix("control-plane.").unwrap_or(rest);
-    Some(format!("{}://queries.{}", parsed.scheme(), rest))
+    let port = parsed
+        .port()
+        .map(|p| format!(":{p}"))
+        .unwrap_or_default();
+    Some(format!("{}://queries.{}{}", parsed.scheme(), rest, port))
 }
 
 impl Client {
@@ -2867,5 +2871,19 @@ mod tests {
     #[test]
     fn derive_query_host_invalid_url_is_none() {
         assert_eq!(derive_query_host("not a url"), None);
+    }
+
+    #[test]
+    fn derive_query_host_preserves_non_default_port() {
+        assert_eq!(
+            derive_query_host("https://api.mycorp.example.com:8443").as_deref(),
+            Some("https://queries.mycorp.example.com:8443")
+        );
+        // Default ports are normalized away by the URL parser and stay off
+        // the derived host.
+        assert_eq!(
+            derive_query_host("https://api.clickhouse.cloud:443").as_deref(),
+            Some("https://queries.clickhouse.cloud")
+        );
     }
 }

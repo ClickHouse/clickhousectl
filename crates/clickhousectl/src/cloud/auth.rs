@@ -364,12 +364,15 @@ mod tests {
             access_token: "a".into(),
             refresh_token: "r".into(),
             expires_at: 1700000000,
-            api_url: "https://api.clickhouse-staging.com/v1".into(),
+            api_url: "https://api.control-plane.clickhouse-staging.com/v1".into(),
         };
         let json = serde_json::to_string(&tokens).unwrap();
         assert!(json.contains("clickhouse-staging.com"));
         let parsed: TokenStore = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.api_url, "https://api.clickhouse-staging.com/v1");
+        assert_eq!(
+            parsed.api_url,
+            "https://api.control-plane.clickhouse-staging.com/v1"
+        );
     }
 
     #[test]
@@ -453,8 +456,8 @@ mod tests {
             "https://api.clickhouse.cloud/v1"
         );
         assert_eq!(
-            normalize_api_url("https://api.clickhouse-staging.com/v1/"),
-            "https://api.clickhouse-staging.com/v1"
+            normalize_api_url("https://api.control-plane.clickhouse-staging.com/v1/"),
+            "https://api.control-plane.clickhouse-staging.com/v1"
         );
     }
 }

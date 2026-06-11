@@ -61,6 +61,18 @@ async fn start_mock_clickpipes_api() -> MockServer {
     mock
 }
 
+/// Assert the binary exited zero, panicking with the captured stderr/stdout
+/// so the failure cause is visible in the test output.
+fn assert_success(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "clickhousectl exited {}\nstderr:\n{}\nstdout:\n{}",
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
 /// Run the clickhousectl binary against the mock, returning the JSON body
 /// the binary POSTed. Panics with the captured stderr if the binary exits
 /// non-zero — a failure here is almost always a clap-parsing error, which
@@ -1215,13 +1227,7 @@ async fn dotenv_creds_produce_basic_auth_request() {
         .output()
         .expect("failed to spawn clickhousectl");
 
-    assert!(
-        output.status.success(),
-        "clickhousectl exited {}\nstderr:\n{}\nstdout:\n{}",
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout),
-    );
+    assert_success(&output);
 
     let requests = mock
         .received_requests()
@@ -1285,16 +1291,6 @@ async fn start_mock_query_host() -> MockServer {
         .mount(&mock)
         .await;
     mock
-}
-
-fn assert_success(output: &std::process::Output) {
-    assert!(
-        output.status.success(),
-        "clickhousectl exited {}\nstderr:\n{}\nstdout:\n{}",
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout),
-    );
 }
 
 #[tokio::test]
@@ -1497,7 +1493,7 @@ async fn shell_env_overrides_dotenv_creds_in_request() {
         .output()
         .expect("failed to spawn clickhousectl");
 
-    assert!(output.status.success(), "binary failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert_success(&output);
 
     let requests = mock.received_requests().await.unwrap();
     let auth = requests
