@@ -73,9 +73,10 @@ fn spec_schema_type_names(spec: &Value) -> BTreeSet<String> {
 }
 
 /// Public client methods that intentionally don't correspond to an OpenAPI
-/// operation. The Query API endpoint that backs `run_query` is hosted at
-/// `queries.clickhouse.cloud` and is not described by the control-plane spec.
-const NON_OPENAPI_CLIENT_METHODS: &[&str] = &["run_query"];
+/// operation. The Query API endpoint that backs `run_query` /
+/// `run_query_bearer` is hosted at `queries.<environment-domain>` (e.g.
+/// `queries.clickhouse.cloud`) and is not described by the control-plane spec.
+const NON_OPENAPI_CLIENT_METHODS: &[&str] = &["run_query", "run_query_bearer"];
 
 fn assert_client_operation_coverage(spec: &Value) {
     let spec_operations = spec_operation_ids(spec);

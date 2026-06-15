@@ -2075,42 +2075,75 @@ pub async fn service_query(
         .await?;
     let service_id = service.id.to_string();
 
-    let key = match credentials::get_service_query_key(&service_id) {
-        Some(k) => k,
-        None if opts.no_auto_enable => {
-            return Err(format!(
-                "no stored Query API key for service {service_id}; rerun without --no-auto-enable to auto-provision"
-            )
-            .into());
-        }
-        None => {
-            eprintln!(
-                "Provisioning Query API endpoint + key for service '{}'...",
-                service.name
-            );
-            crate::cloud::service_query::ensure_service_query_setup(
-                client,
-                &org_id,
-                &service_id,
-                &service.name,
-            )
-            .await?
-        }
-    };
-
     let format = opts.format.unwrap_or_else(default_query_format);
-    let response = client
-        .api()
-        .run_query(
-            &service_id,
-            &key.key_id,
-            &key.key_secret,
-            &sql,
-            opts.database.as_deref(),
-            &format,
-        )
-        .await
-        .map_err(|e| client.convert_error(e))?;
+
+    let response = if client.is_bearer_auth() {
+        // OAuth: the Query API authenticates the user's bearer token
+        // directly, SQL-console style — the query runs as the user's own
+        // cloud identity, with no per-service Query API key and no
+        // query-endpoint configuration needed on the service.
+        // `--no-auto-enable` is a no-op here since nothing is ever
+        // provisioned.
+        let run = |wake: bool| {
+            client
+                .api()
+                .run_query_bearer(&service_id, &sql, opts.database.as_deref(), &format, wake)
+        };
+        let result = match run(false).await {
+            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
+                eprint_waking_service(&service.name);
+                run(true).await
+            }
+            other => other,
+        };
+        result.map_err(|e| convert_query_error(client, e, &service.name))?
+    } else {
+        let key = match credentials::get_service_query_key(&service_id) {
+            Some(k) => k,
+            None if opts.no_auto_enable => {
+                return Err(format!(
+                    "no stored Query API key for service {service_id}; rerun without --no-auto-enable to auto-provision"
+                )
+                .into());
+            }
+            None => {
+                eprintln!(
+                    "Provisioning Query API endpoint + key for service '{}'...",
+                    service.name
+                );
+                crate::cloud::service_query::ensure_service_query_setup(
+                    client,
+                    &org_id,
+                    &service_id,
+                    &service.name,
+                )
+                .await?
+            }
+        };
+
+        // The query host normally wakes an idled service on its own for
+        // Query API key auth, but handle the wake confirmation here too so
+        // both auth paths behave the same if it ever asks.
+        let run = |wake: bool| {
+            client.api().run_query(
+                &service_id,
+                &key.key_id,
+                &key.key_secret,
+                &sql,
+                opts.database.as_deref(),
+                &format,
+                wake,
+            )
+        };
+        let result = match run(false).await {
+            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
+                eprint_waking_service(&service.name);
+                run(true).await
+            }
+            other => other,
+        };
+        result.map_err(|e| convert_query_error(client, e, &service.name))?
+    };
 
     use futures_util::StreamExt;
     use std::io::Write as _;
@@ -2125,6 +2158,29 @@ pub async fn service_query(
     }
     handle.flush()?;
     Ok(())
+}
+
+/// Stderr notice shown when the query host reports the service is idled and
+/// the CLI resends the query with the wake confirmation.
+fn eprint_waking_service(service_name: &str) {
+    eprintln!("Service '{service_name}' is idle; waking it (this may take a minute)...");
+}
+
+/// Map Query API errors to user-facing messages: a stopped service gets a
+/// hint to start it (the query host never wakes a stopped service), the
+/// rest go through the standard cloud error conversion.
+fn convert_query_error(
+    client: &CloudClient,
+    err: clickhouse_cloud_api::Error,
+    service_name: &str,
+) -> Box<dyn std::error::Error> {
+    match err {
+        clickhouse_cloud_api::Error::ServiceStopped => format!(
+            "service '{service_name}' is stopped; start it with `clickhousectl cloud service start` and retry"
+        )
+        .into(),
+        other => client.convert_error(other).into(),
+    }
 }
 
 fn read_query_sql(

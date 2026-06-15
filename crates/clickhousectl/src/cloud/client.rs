@@ -1141,8 +1141,8 @@ mod tests {
     #[test]
     fn lib_base_url_strips_v1_from_staging() {
         assert_eq!(
-            lib_base_url("https://api.clickhouse-staging.com/v1"),
-            "https://api.clickhouse-staging.com"
+            lib_base_url("https://api.control-plane.clickhouse-staging.com/v1"),
+            "https://api.control-plane.clickhouse-staging.com"
         );
     }
 
