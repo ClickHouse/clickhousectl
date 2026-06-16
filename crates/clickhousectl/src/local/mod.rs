@@ -11,6 +11,7 @@ use cli::{LocalCommands, ServerCommands};
 
 use crate::error::{Error, Result};
 use crate::{init, paths, version_manager};
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -820,6 +821,7 @@ fn stop_all_servers_local(json: bool) -> Result<()> {
     for s in &servers {
         if !json {
             print!("Stopping '{}'...", s.name);
+            let _ = std::io::stdout().flush();
         }
         match server::kill_server(&s.name) {
             Ok(()) => {
@@ -863,6 +865,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
     for s in &servers {
         if !json {
             print!("Stopping '{}' ({})...", s.name, s.project);
+            let _ = std::io::stdout().flush();
         }
         match server::kill_server_by_pid(s.pid) {
             Ok(()) => {
