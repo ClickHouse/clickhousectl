@@ -25,7 +25,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             }
         }
         LocalCommands::Use { version, no_global } => use_version(&version, no_global, json).await,
-        LocalCommands::Remove { version } => remove(&version, json),
+        LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
             init::init()?;
@@ -175,11 +175,35 @@ async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<
     Ok(())
 }
 
-fn remove(version: &str, json: bool) -> Result<()> {
+fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     let version_dir = paths::version_dir(version)?;
 
     if !version_dir.exists() {
         return Err(Error::VersionNotFound(version.to_string()));
+    }
+
+    // Recover orphaned servers so we detect a running process even when its
+    // metadata file is missing, then refuse to pull the binary out from under
+    // a server running on this version.
+    server::recover_current_project_servers();
+    let in_use: Vec<String> = server::list_running_servers()
+        .into_iter()
+        .filter(|i| i.version == version)
+        .map(|i| i.name)
+        .collect();
+    if !in_use.is_empty() {
+        if !force {
+            return Err(Error::VersionInUse {
+                version: version.to_string(),
+                servers: in_use.join(", "),
+            });
+        }
+        for name in &in_use {
+            server::kill_server(name)?;
+            if !json {
+                println!("Stopped server '{}'", name);
+            }
+        }
     }
 
     // Check if this is the default version
