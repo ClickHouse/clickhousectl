@@ -777,8 +777,8 @@ CONTEXT FOR AGENTS:
   service via the query endpoint binding) auto-provisioned on first use and
   stored in .clickhouse/credentials.json.
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
-  your cloud user (permissions follow your console role); no key provisioning
-  and no query endpoint required on the service.
+  your cloud user with read-only access (SELECT only, no writes); no key
+  provisioning and no query endpoint required on the service.
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
   on a TTY, TabSeparated when piped.")]
     Query {
