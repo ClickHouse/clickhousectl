@@ -17,7 +17,7 @@ pub enum LocalCommands {
 CONTEXT FOR AGENTS:
   `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
     Install {
-        /// Version to install (e.g., latest, stable, lts, 25, 25.12, 25.12.9.61)
+        /// Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.9.61".
         version: String,
 
         /// Force re-install even if version is already installed
@@ -42,12 +42,12 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
-  Accepts version specs: \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
+  Accepts version specs: \"latest\" (recommended), \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
   Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
   Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
     Use {
-        /// Version to use as default
+        /// Version to use as default. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.5.44".
         version: String,
 
         /// Do not create or update the ~/.local/bin/clickhouse symlink
@@ -160,7 +160,7 @@ CONTEXT FOR AGENTS:
   a random name is generated (e.g., \"bold-crane\").
   Use --name to give a server a stable identity (e.g., --name dev, --name test).
   Use --version (-v) to run a specific ClickHouse version without changing the default.
-  Accepts same specs as install/use: stable, lts, latest, 25.12, etc. Installs if needed.
+  Accepts same specs as install/use: \"latest\" (recommended), stable, lts, 25.12, etc. Installs if needed.
   Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
   Use --http-port and --tcp-port to set explicit ports.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
@@ -177,7 +177,7 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         name: Option<String>,
 
-        /// ClickHouse version to use (e.g. stable, lts, latest, 25.12). Installs if needed. Does not change the default version.
+        /// ClickHouse version to use (e.g. "latest" (recommended), stable, lts, 25.12). Installs if needed. Does not change the default version.
         #[arg(long, short = 'v')]
         version: Option<String>,
 
