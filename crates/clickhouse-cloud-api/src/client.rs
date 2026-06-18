@@ -229,8 +229,8 @@ impl Client {
     ///
     /// Unlike [`Client::run_query`], no per-service Query API key and no
     /// query-endpoint configuration are needed: the Query API authenticates
-    /// the user's identity directly (SQL-console style), and SQL permissions
-    /// follow the user's console role.
+    /// the user's identity directly and grants read-only SQL access (SELECT
+    /// and other read statements only; no INSERT, DDL, or other writes).
     ///
     /// `wake_service` resends the wake confirmation the query host asks for
     /// when the target service is idled — see [`Error::ServiceIdle`].
