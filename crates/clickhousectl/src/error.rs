@@ -25,6 +25,9 @@ pub enum Error {
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 
+    #[error("Version {version} is in use by running server(s): {servers}. Stop them first, or pass --force.")]
+    VersionInUse { version: String, servers: String },
+
     #[error("Unsupported platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
 
@@ -114,5 +117,13 @@ mod tests {
         assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
         assert_eq!(Error::NoVersionsInstalled.exit_code(), 1);
         assert_eq!(Error::VersionNotFound("25.12".into()).exit_code(), 1);
+        assert_eq!(
+            Error::VersionInUse {
+                version: "25.12".into(),
+                servers: "default".into(),
+            }
+            .exit_code(),
+            1
+        );
     }
 }

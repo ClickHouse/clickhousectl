@@ -11,6 +11,7 @@ use cli::{LocalCommands, ServerCommands};
 
 use crate::error::{Error, Result};
 use crate::{init, paths, version_manager};
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -25,7 +26,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             }
         }
         LocalCommands::Use { version, no_global } => use_version(&version, no_global, json).await,
-        LocalCommands::Remove { version } => remove(&version, json),
+        LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
             init::init()?;
@@ -175,11 +176,35 @@ async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<
     Ok(())
 }
 
-fn remove(version: &str, json: bool) -> Result<()> {
+fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     let version_dir = paths::version_dir(version)?;
 
     if !version_dir.exists() {
         return Err(Error::VersionNotFound(version.to_string()));
+    }
+
+    // Recover orphaned servers so we detect a running process even when its
+    // metadata file is missing, then refuse to pull the binary out from under
+    // a server running on this version.
+    server::recover_current_project_servers();
+    let in_use: Vec<String> = server::list_running_servers()
+        .into_iter()
+        .filter(|i| i.version == version)
+        .map(|i| i.name)
+        .collect();
+    if !in_use.is_empty() {
+        if !force {
+            return Err(Error::VersionInUse {
+                version: version.to_string(),
+                servers: in_use.join(", "),
+            });
+        }
+        for name in &in_use {
+            server::kill_server(name)?;
+            if !json {
+                println!("Stopped server '{}'", name);
+            }
+        }
     }
 
     // Check if this is the default version
@@ -636,13 +661,36 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
                 // that lost their metadata files.
                 server::recover_current_project_servers();
 
-                if !json {
-                    println!("Stopping server '{}'...", name);
+                match classify_stop(
+                    server::is_server_running(&name),
+                    server::server_data_dir(&name).exists(),
+                ) {
+                    StopOutcome::Stop => {
+                        if !json {
+                            println!("Stopping server '{}'...", name);
+                        }
+                        server::kill_server(&name)?;
+                        let out = output::ServerStopOutput {
+                            name,
+                            already_stopped: false,
+                        };
+                        output::print_output(&out, json);
+                        Ok(())
+                    }
+                    StopOutcome::AlreadyStopped => {
+                        // Server exists on disk but isn't running. `stop` is
+                        // idempotent: this is the desired end state, so succeed
+                        // instead of erroring.
+                        let out = output::ServerStopOutput {
+                            name,
+                            already_stopped: true,
+                        };
+                        output::print_output(&out, json);
+                        Ok(())
+                    }
+                    // No such server in this project — surface the typo.
+                    StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
                 }
-                server::kill_server(&name)?;
-                let out = output::ServerStopOutput { name };
-                output::print_output(&out, json);
-                Ok(())
             }
         }
         ServerCommands::StopAll { global } => {
@@ -681,6 +729,26 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             output::print_output(&out, json);
             Ok(())
         }
+    }
+}
+
+/// What a project-scoped `server stop <name>` should do, given whether the
+/// server is currently running and whether its data directory exists on disk.
+#[derive(Debug, PartialEq, Eq)]
+enum StopOutcome {
+    /// Running — kill it.
+    Stop,
+    /// Exists on disk but not running — idempotent noop (success).
+    AlreadyStopped,
+    /// Unknown server name — error, so typos surface.
+    NotFound,
+}
+
+fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
+    match (running, exists_on_disk) {
+        (true, _) => StopOutcome::Stop,
+        (false, true) => StopOutcome::AlreadyStopped,
+        (false, false) => StopOutcome::NotFound,
     }
 }
 
@@ -804,6 +872,7 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
     server::kill_server_by_pid(entry.pid)?;
     let out = output::ServerStopOutput {
         name: name.to_string(),
+        already_stopped: false,
     };
     output::print_output(&out, json);
     Ok(())
@@ -821,6 +890,7 @@ fn stop_all_servers_local(json: bool) -> Result<()> {
     for s in &servers {
         if !json {
             print!("Stopping '{}'...", s.name);
+            let _ = std::io::stdout().flush();
         }
         match server::kill_server(&s.name) {
             Ok(()) => {
@@ -864,6 +934,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
     for s in &servers {
         if !json {
             print!("Stopping '{}' ({})...", s.name, s.project);
+            let _ = std::io::stdout().flush();
         }
         match server::kill_server_by_pid(s.pid) {
             Ok(()) => {
@@ -904,6 +975,23 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_stop_running_server_is_stopped() {
+        // Running takes precedence regardless of on-disk state.
+        assert_eq!(classify_stop(true, true), StopOutcome::Stop);
+        assert_eq!(classify_stop(true, false), StopOutcome::Stop);
+    }
+
+    #[test]
+    fn classify_stop_existing_but_stopped_is_idempotent_noop() {
+        assert_eq!(classify_stop(false, true), StopOutcome::AlreadyStopped);
+    }
+
+    #[test]
+    fn classify_stop_unknown_name_is_not_found() {
+        assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
 
     #[test]
     fn parse_postgres_install_spec_recognizes_at_and_colon() {

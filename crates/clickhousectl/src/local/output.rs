@@ -464,11 +464,17 @@ impl fmt::Display for PostgresDotenvOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopOutput {
     pub name: String,
+    /// True when the server existed but was already stopped (idempotent noop).
+    pub already_stopped: bool,
 }
 
 impl fmt::Display for ServerStopOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Server '{}' stopped", self.name)
+        if self.already_stopped {
+            write!(f, "Server '{}' is already stopped", self.name)
+        } else {
+            write!(f, "Server '{}' stopped", self.name)
+        }
     }
 }
 
@@ -771,11 +777,26 @@ mod tests {
     fn server_stop_json() {
         let output = ServerStopOutput {
             name: "default".to_string(),
+            already_stopped: false,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "default");
+        assert_eq!(json["already_stopped"], false);
+    }
+
+    #[test]
+    fn server_stop_already_stopped() {
+        let output = ServerStopOutput {
+            name: "default".to_string(),
+            already_stopped: true,
+        };
+        assert_eq!(output.to_string(), "Server 'default' is already stopped");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
+        assert_eq!(json["already_stopped"], true);
     }
 
     #[test]
@@ -1083,6 +1104,7 @@ mod tests {
     fn server_stop_display() {
         let output = ServerStopOutput {
             name: "default".to_string(),
+            already_stopped: false,
         };
         assert_eq!(output.to_string(), "Server 'default' stopped");
     }

@@ -101,9 +101,12 @@ clickhousectl local which                   # Show current default
 
 # Remove a version
 clickhousectl local remove 25.12.5.44
+clickhousectl local remove 25.12.5.44 --force   # Stop running servers on this version first
 ```
 
 `local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning. `local remove` of the active default version also clears the symlink.
+
+`local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with the running server names. Stop the server first, or pass `--force` to stop the running server(s) and then remove the version.
 
 #### ClickHouse binary storage
 
@@ -188,6 +191,8 @@ clickhousectl local server dotenv --name dev             # From "dev" server →
 clickhousectl local server dotenv --local                # Write to .env.local instead
 clickhousectl local server dotenv --user default --password secret --database mydb  # Include credentials
 ```
+
+**Idempotent stop:** `server stop <name>` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
@@ -285,7 +290,7 @@ clickhousectl cloud auth login
 
 This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhouse/tokens.json` (project-local).
 
-> **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication. `cloud service query` works under OAuth too, running SQL as your own identity with your console role's permissions — see [Query API auth modes](#query-api-auth-modes).
+> **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication. `cloud service query` works under OAuth too, running SQL as your own identity with **read-only** access — see [Query API auth modes](#query-api-auth-modes).
 
 ### API key/secret (required for write operations)
 
@@ -500,7 +505,7 @@ clickhousectl cloud service delete <service-id> --force
 `cloud service query` is the canonical way to run SQL against a cloud service — over HTTP, with no `clickhouse` binary and no service password required. It works with both credential modes:
 
 - **API key auth** (read + write SQL): the first time `cloud service query` runs against a service without a stored key, it provisions a Query API endpoint for that service and creates a dedicated API key bound to it. The key (`keyId`, `keySecret`, and `endpointId`) is stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. Subsequent queries use that key. It is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org. Pass `--no-auto-enable` to fail instead of provisioning.
-- **OAuth** (`cloud auth login`): the query runs as your own identity, SQL-console style — the CLI sends your bearer token straight to the Query API, and your SQL permissions follow your ClickHouse Cloud console role. No Query API key is provisioned or stored, and no query endpoint needs to be configured on the service. `--no-auto-enable` has no effect in this mode.
+- **OAuth** (`cloud auth login`): the query runs as your own identity — the CLI sends your bearer token straight to the Query API, which grants **read-only** SQL access (SELECT and other read statements only; no INSERT, DDL, or other writes). No Query API key is provisioned or stored, and no query endpoint needs to be configured on the service. Use API key auth if you need to write. `--no-auto-enable` has no effect in this mode.
 
 Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it.
 
