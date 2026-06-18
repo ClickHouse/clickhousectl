@@ -188,7 +188,7 @@ impl fmt::Display for ServerConfigsOutput {
             write!(
                 f,
                 "Drop a ClickHouse config file there, then start with: \
-                 clickhousectl local server start --config-file <NAME>"
+                 clickhousectl local server start --config <NAME>"
             )?;
             return Ok(());
         }
@@ -198,7 +198,7 @@ impl fmt::Display for ServerConfigsOutput {
         }
         write!(
             f,
-            "Use with: clickhousectl local server start --config-file <NAME>"
+            "Use with: clickhousectl local server start --config <NAME>"
         )
     }
 }
@@ -859,7 +859,7 @@ mod tests {
         };
         let text = output.to_string();
         assert!(text.contains("No config files"));
-        assert!(text.contains("--config-file"));
+        assert!(text.contains("--config <NAME>"));
     }
 
     #[test]

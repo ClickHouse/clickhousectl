@@ -166,9 +166,9 @@ clickhousectl local server start --name dev               # Named "dev"
 clickhousectl local server start --version stable         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
-clickhousectl local server start --config-file analytics  # Apply a custom config (see "Custom config files" below)
+clickhousectl local server start --config analytics       # Apply a custom config (see "Custom config files" below)
 
-# List custom config files available to --config-file
+# List custom config files available to --config
 clickhousectl local server configs
 
 # List all servers (running and stopped)
@@ -217,12 +217,12 @@ cat > ~/.clickhouse/configs/analytics.xml <<'EOF'
 </clickhouse>
 EOF
 clickhousectl local server configs                          # List available config files
-clickhousectl local server start --config-file analytics    # Start a server with it
+clickhousectl local server start --config analytics         # Start a server with it
 ```
 
-The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config-file analytics` or `--config-file analytics.xml`). `--config-file` takes a name within `~/.clickhouse/configs/` **not a path**.
+The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config analytics` or `--config analytics.xml`). `--config` takes a name within `~/.clickhouse/configs/` **not a path**. (`--config-file` remains supported as a legacy alias.)
 
-The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP ports are always forced as command-line overrides, which take precedence over the config file. This means a custom config can never break the managed server lifecycle (`list`, `stop`, `remove`, `dotenv`) regardless of its contents. Starting a server again without `--config-file` reverts it to plain defaults.
+The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP ports are always forced as command-line overrides, which take precedence over the config file. This means a custom config can never break the managed server lifecycle (`list`, `stop`, `remove`, `dotenv`) regardless of its contents. Starting a server again without `--config` reverts it to plain defaults.
 
 #### Local Postgres (Docker-backed)
 

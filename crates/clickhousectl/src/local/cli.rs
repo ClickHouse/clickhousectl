@@ -172,7 +172,7 @@ CONTEXT FOR AGENTS:
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
   If --name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
-  Use --config-file <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
+  Use --config <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
   (see `clickhousectl local server configs`). The file is merged as an overlay on top of
   ClickHouse's built-in defaults (via config.d), so it can contain just the settings you want
   to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
@@ -200,7 +200,7 @@ CONTEXT FOR AGENTS:
         foreground: bool,
 
         /// Overlay a named config file from ~/.clickhouse/configs/ on top of the defaults (see `server configs`)
-        #[arg(long, value_name = "NAME")]
+        #[arg(long = "config", alias = "config-file", value_name = "NAME")]
         config_file: Option<String>,
 
         /// Arguments to pass to clickhouse-server
@@ -208,16 +208,16 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// List custom config files available to `server start --config-file`
+    /// List custom config files available to `server start --config`
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Lists ClickHouse config files in ~/.clickhouse/configs/ and prints that directory's path.
   Drop a config file there (e.g. analytics.xml) and start a server with it via
-  `clickhousectl local server start --config-file analytics`. The file is overlaid on top of
+  `clickhousectl local server start --config analytics`. The file is overlaid on top of
   ClickHouse's built-in defaults (config.d merge), so it only needs the settings you want to
   change. Files may be .xml, .yaml, or .yml; reference them by name with or without the
   extension.
-  Related: `clickhousectl local server start --config-file <NAME>`.")]
+  Related: `clickhousectl local server start --config <NAME>`.")]
     Configs,
 
     /// List all server instances (running and stopped)
@@ -480,7 +480,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_server_start_config_file() {
+    fn parses_server_start_config() {
+        let LocalCommands::Server {
+            command: ServerCommands::Start { config_file, .. },
+        } = local_command(&["server", "start", "--config", "analytics"])
+        else {
+            panic!("expected server start");
+        };
+        assert_eq!(config_file.as_deref(), Some("analytics"));
+    }
+
+    #[test]
+    fn parses_server_start_config_file_legacy_alias() {
         let LocalCommands::Server {
             command: ServerCommands::Start { config_file, .. },
         } = local_command(&["server", "start", "--config-file", "analytics"])
