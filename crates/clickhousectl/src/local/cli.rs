@@ -61,10 +61,16 @@ CONTEXT FOR AGENTS:
   Removes an installed ClickHouse version from ~/.clickhouse/versions/.
   Takes an exact version string as shown by `clickhousectl local list` (e.g., \"25.12.5.44\").
   Does NOT accept keywords like \"stable\" — use the exact version number.
+  Fails if a local server is currently running on this version; stop it first, or pass
+  --force to stop the running server(s) before removing.
   Related: `clickhousectl local list` to see installed versions.")]
     Remove {
         /// Version to remove
         version: String,
+
+        /// Stop any running servers using this version, then remove it
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show the current default version
@@ -450,6 +456,27 @@ mod tests {
             panic!("expected local command");
         };
         local.command
+    }
+
+    #[test]
+    fn parses_remove_without_force() {
+        let LocalCommands::Remove { version, force } = local_command(&["remove", "25.12.5.44"])
+        else {
+            panic!("expected remove");
+        };
+        assert_eq!(version, "25.12.5.44");
+        assert!(!force);
+    }
+
+    #[test]
+    fn parses_remove_with_force() {
+        let LocalCommands::Remove { version, force } =
+            local_command(&["remove", "25.12.5.44", "--force"])
+        else {
+            panic!("expected remove");
+        };
+        assert_eq!(version, "25.12.5.44");
+        assert!(force);
     }
 
     #[test]

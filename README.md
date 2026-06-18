@@ -101,9 +101,12 @@ clickhousectl local which                   # Show current default
 
 # Remove a version
 clickhousectl local remove 25.12.5.44
+clickhousectl local remove 25.12.5.44 --force   # Stop running servers on this version first
 ```
 
 `local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning. `local remove` of the active default version also clears the symlink.
+
+`local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with the running server names. Stop the server first, or pass `--force` to stop the running server(s) and then remove the version.
 
 #### ClickHouse binary storage
 
