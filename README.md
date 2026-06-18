@@ -189,6 +189,8 @@ clickhousectl local server dotenv --local                # Write to .env.local i
 clickhousectl local server dotenv --user default --password secret --database mydb  # Include credentials
 ```
 
+**Idempotent stop:** `server stop <name>` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
+
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.

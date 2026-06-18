@@ -408,6 +408,7 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::kill_server(&target.name)?;
     let out = output::ServerStopOutput {
         name: user_name_from_key(&target.name).to_string(),
+        already_stopped: false,
     };
     output::print_output(&out, json);
     Ok(())

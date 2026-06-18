@@ -233,6 +233,8 @@ CONTEXT FOR AGENTS:
   Stops a named ClickHouse server. Use the name from `clickhousectl local server list`.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data directory is preserved — restart with `clickhousectl local server start --name <name>`.
+  Idempotent: a server that exists but is already stopped exits 0 (no error).
+  An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop

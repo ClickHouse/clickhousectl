@@ -636,13 +636,36 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
                 // that lost their metadata files.
                 server::recover_current_project_servers();
 
-                if !json {
-                    println!("Stopping server '{}'...", name);
+                match classify_stop(
+                    server::is_server_running(&name),
+                    server::server_data_dir(&name).exists(),
+                ) {
+                    StopOutcome::Stop => {
+                        if !json {
+                            println!("Stopping server '{}'...", name);
+                        }
+                        server::kill_server(&name)?;
+                        let out = output::ServerStopOutput {
+                            name,
+                            already_stopped: false,
+                        };
+                        output::print_output(&out, json);
+                        Ok(())
+                    }
+                    StopOutcome::AlreadyStopped => {
+                        // Server exists on disk but isn't running. `stop` is
+                        // idempotent: this is the desired end state, so succeed
+                        // instead of erroring.
+                        let out = output::ServerStopOutput {
+                            name,
+                            already_stopped: true,
+                        };
+                        output::print_output(&out, json);
+                        Ok(())
+                    }
+                    // No such server in this project — surface the typo.
+                    StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
                 }
-                server::kill_server(&name)?;
-                let out = output::ServerStopOutput { name };
-                output::print_output(&out, json);
-                Ok(())
             }
         }
         ServerCommands::StopAll { global } => {
@@ -681,6 +704,26 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             output::print_output(&out, json);
             Ok(())
         }
+    }
+}
+
+/// What a project-scoped `server stop <name>` should do, given whether the
+/// server is currently running and whether its data directory exists on disk.
+#[derive(Debug, PartialEq, Eq)]
+enum StopOutcome {
+    /// Running — kill it.
+    Stop,
+    /// Exists on disk but not running — idempotent noop (success).
+    AlreadyStopped,
+    /// Unknown server name — error, so typos surface.
+    NotFound,
+}
+
+fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
+    match (running, exists_on_disk) {
+        (true, _) => StopOutcome::Stop,
+        (false, true) => StopOutcome::AlreadyStopped,
+        (false, false) => StopOutcome::NotFound,
     }
 }
 
@@ -804,6 +847,7 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
     server::kill_server_by_pid(entry.pid)?;
     let out = output::ServerStopOutput {
         name: name.to_string(),
+        already_stopped: false,
     };
     output::print_output(&out, json);
     Ok(())
@@ -906,6 +950,23 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_stop_running_server_is_stopped() {
+        // Running takes precedence regardless of on-disk state.
+        assert_eq!(classify_stop(true, true), StopOutcome::Stop);
+        assert_eq!(classify_stop(true, false), StopOutcome::Stop);
+    }
+
+    #[test]
+    fn classify_stop_existing_but_stopped_is_idempotent_noop() {
+        assert_eq!(classify_stop(false, true), StopOutcome::AlreadyStopped);
+    }
+
+    #[test]
+    fn classify_stop_unknown_name_is_not_found() {
+        assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
 
     #[test]
     fn parse_postgres_install_spec_recognizes_at_and_colon() {
