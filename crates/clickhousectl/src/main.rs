@@ -2,6 +2,7 @@ mod cli;
 mod cloud;
 mod dotenv;
 mod error;
+mod http;
 mod init;
 mod local;
 mod paths;

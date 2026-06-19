@@ -72,8 +72,7 @@ pub struct VersionEntry {
 /// Fetches available versions from GitHub releases
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
+    let client = crate::http::client_builder()
         .build()?;
 
     let response = client
@@ -114,8 +113,7 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
     use crate::version_manager::platform::{Platform, builds_probe_url};
 
     let platform = Platform::detect()?;
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
+    let client = crate::http::client_builder()
         .build()
         .map_err(|e| Error::Download(e.to_string()))?;
 

@@ -1667,3 +1667,69 @@ async fn shell_env_overrides_dotenv_creds_in_request() {
         "shell env vars must override .env values on the wire"
     );
 }
+
+// ── Issue #267: agent session/trace headers land on outbound requests ────────
+//
+// When invoked under a detected AI agent that publishes a session id /
+// traceparent to its subprocesses (Claude Code uses CLAUDE_CODE_SESSION_ID;
+// TRACEPARENT is the W3C standard var), `clickhousectl` forwards them as the
+// `agent-session-id` and `traceparent` request headers via the default headers
+// on the shared HTTP client (`crate::http::client_builder`). This proves they
+// reach the wire through the client the Cloud library actually uses.
+
+#[tokio::test]
+async fn agent_session_and_trace_headers_are_forwarded() {
+    let mock = MockServer::start().await;
+
+    let stub_orgs = serde_json::json!({
+        "result": [],
+        "status": 200,
+        "requestId": "stub-org-list",
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_orgs))
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    let output = Command::new(clickhousectl_binary())
+        .args(["cloud", "--url", &url, "--json", "org", "list"])
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        // Mark this invocation as Claude Code and expose the session/trace ids.
+        .env("AGENT", "claude-code")
+        .env("CLAUDE_CODE_SESSION_ID", "sess-test-267")
+        .env("TRACEPARENT", traceparent)
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+
+    let requests = mock
+        .received_requests()
+        .await
+        .expect("mock requests log unavailable");
+    let req = requests
+        .iter()
+        .find(|r| r.method == wiremock::http::Method::GET)
+        .expect("no GET request recorded");
+
+    assert_eq!(
+        req.headers
+            .get("agent-session-id")
+            .expect("agent-session-id header missing")
+            .to_str()
+            .unwrap(),
+        "sess-test-267",
+    );
+    assert_eq!(
+        req.headers
+            .get("traceparent")
+            .expect("traceparent header missing")
+            .to_str()
+            .unwrap(),
+        traceparent,
+    );
+}

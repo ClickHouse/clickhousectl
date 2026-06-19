@@ -327,8 +327,7 @@ impl CloudClient {
         api_secret: Option<&str>,
         url_override: Option<&str>,
     ) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(crate::user_agent::user_agent())
+        let http = crate::http::client_builder()
             .build()
             .map_err(|e| CloudError::new(format!("Failed to create HTTP client: {}", e)))?;
 
