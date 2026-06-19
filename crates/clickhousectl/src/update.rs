@@ -59,8 +59,7 @@ fn is_newer(current: &str, latest: &str) -> bool {
 /// Fetch the latest release info from GitHub with configurable timeout.
 async fn fetch_latest_release(timeout: std::time::Duration) -> Result<GitHubRelease> {
     let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
+    let client = crate::http::client_builder()
         .timeout(timeout)
         .build()?;
 
@@ -149,8 +148,7 @@ pub async fn perform_update() -> Result<()> {
     let display = latest.strip_prefix('v').unwrap_or(latest);
     println!("Downloading clickhousectl v{}...", display);
 
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
+    let client = crate::http::client_builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
