@@ -121,9 +121,13 @@ pub async fn check_for_update() -> Result<Option<(String, String)>> {
     let current = env!("CARGO_PKG_VERSION");
     let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
+    let display = latest.strip_prefix('v').unwrap_or(latest);
+
+    // An explicit check always refreshes the cache and resets the staleness
+    // timer, so subsequent commands reflect what we just learned.
+    let _ = save_update_check(display);
 
     if is_newer(current, latest) {
-        let display = latest.strip_prefix('v').unwrap_or(latest);
         Ok(Some((current.to_string(), display.to_string())))
     } else {
         Ok(None)
@@ -206,8 +210,8 @@ pub async fn perform_update() -> Result<()> {
     })?;
 
     println!("Updated clickhousectl: v{} → v{}", current, display);
-    // Save the check cache so we don't nag right after updating
-    let _ = save_update_check(display);
+    // Clear the check cache so the update notice disappears immediately.
+    let _ = clear_update_check();
     Ok(())
 }
 
@@ -245,6 +249,27 @@ fn read_update_check() -> Option<(u64, String)> {
     Some((ts, version))
 }
 
+/// Remove the cached update check. Used after a successful self-update so the
+/// notice disappears immediately. Missing file is not an error.
+fn clear_update_check() -> Result<()> {
+    let path = update_check_path()?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+/// Whether the cache is stale enough to warrant a network refresh. A missing
+/// cache is always stale; a present one is stale once it is older than the
+/// check interval.
+fn cache_is_stale(cache: Option<(u64, String)>, now: u64) -> bool {
+    match cache {
+        Some((ts, _)) => now.saturating_sub(ts) >= CHECK_INTERVAL_SECS,
+        None => true,
+    }
+}
+
 /// Print an update notice from cached data only. No network, no async.
 /// Called synchronously before the command runs so output never interleaves.
 pub fn print_cached_update_notice() {
@@ -252,40 +277,49 @@ pub fn print_cached_update_notice() {
         let current = env!("CARGO_PKG_VERSION");
         if is_newer(current, &cached_version) {
             eprintln!(
-                "\nA new version of clickhousectl is available: v{} (current: v{})",
-                cached_version, current
+                "\nThere is a new version of clickhousectl. Update with `clickhousectl update`."
             );
-            eprintln!("Run `clickhousectl update` to upgrade.\n");
         }
     }
 }
 
-/// Refresh the update cache in the background if stale. Never prints.
-/// On any failure (timeout, network error, etc.), writes the current version
-/// to the cache so we don't retry for another 24 hours.
-pub async fn refresh_update_cache() {
-    // Only hit the network if cache is stale or missing
-    let needs_refresh = match read_update_check() {
-        Some((ts, _)) => now_secs().saturating_sub(ts) >= CHECK_INTERVAL_SECS,
-        None => true,
-    };
-    if !needs_refresh {
-        return;
-    }
-
+/// Hit the network, refresh the cache, and reset the staleness timer. Never
+/// prints. On any failure (timeout, network error, etc.) the timestamp is still
+/// reset so we back off for another 24h, but a previously-cached "update
+/// available" version is preserved so we don't hide a known update.
+async fn do_refresh_update_cache(timeout: std::time::Duration) {
     let current = env!("CARGO_PKG_VERSION");
-    let release = fetch_latest_release(BACKGROUND_TIMEOUT).await;
-    match release {
+    match fetch_latest_release(timeout).await {
         Ok(r) => {
             let latest = r.tag_name;
             let display = latest.strip_prefix('v').unwrap_or(&latest);
             let _ = save_update_check(display);
         }
         Err(_) => {
-            // Failed or timed out — write current version so we back off for 24h
-            let _ = save_update_check(current);
+            // Preserve any previously-cached latest version; fall back to the
+            // current version when there is nothing cached yet.
+            let version = read_update_check()
+                .map(|(_, v)| v)
+                .unwrap_or_else(|| current.to_string());
+            let _ = save_update_check(&version);
         }
     }
+}
+
+/// Refresh the update cache in the background if stale. Never prints. Skips the
+/// network entirely when the cache is still fresh (within 24h).
+pub async fn refresh_update_cache() {
+    if !cache_is_stale(read_update_check(), now_secs()) {
+        return;
+    }
+    do_refresh_update_cache(BACKGROUND_TIMEOUT).await;
+}
+
+/// Force a network check and refresh the cache + timer regardless of staleness.
+/// Used by explicit user actions (e.g. `--version`) that should always reflect
+/// the freshest state. Uses the longer explicit timeout. Never prints.
+pub async fn force_refresh_update_cache() {
+    do_refresh_update_cache(EXPLICIT_TIMEOUT).await;
 }
 
 #[cfg(test)]
@@ -309,6 +343,30 @@ mod tests {
         assert!(!is_newer("0.1.17", "0.1.17"));
         assert!(!is_newer("0.1.17", "0.1.16"));
         assert!(!is_newer("0.2.0", "0.1.99"));
+    }
+
+    #[test]
+    fn test_cache_is_stale() {
+        let now = 1_000_000;
+        // Missing cache is always stale.
+        assert!(cache_is_stale(None, now));
+        // Fresh cache (just written) is not stale.
+        assert!(!cache_is_stale(Some((now, "0.2.0".into())), now));
+        // Cache one second short of the interval is not stale.
+        assert!(!cache_is_stale(
+            Some((now - (CHECK_INTERVAL_SECS - 1), "0.2.0".into())),
+            now
+        ));
+        // Cache exactly at the interval is stale.
+        assert!(cache_is_stale(
+            Some((now - CHECK_INTERVAL_SECS, "0.2.0".into())),
+            now
+        ));
+        // Older cache is stale.
+        assert!(cache_is_stale(
+            Some((now - 2 * CHECK_INTERVAL_SECS, "0.2.0".into())),
+            now
+        ));
     }
 
     #[test]
