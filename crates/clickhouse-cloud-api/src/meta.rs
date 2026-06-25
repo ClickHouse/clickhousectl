@@ -40,6 +40,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "postgres_instance_config_patch",
     "postgres_instance_config_post",
     "postgres_instance_create_read_replica",
+    "postgres_instance_metrics_get",
     "postgres_instance_prometheus_get",
     "postgres_instance_restore",
     "postgres_org_prometheus_get",
@@ -54,10 +55,13 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "scaling_schedule_delete",
     "scaling_schedule_get",
     "scaling_schedule_upsert",
+    "service_clickhouse_setting_delete",
     "service_clickhouse_setting_get",
     "service_clickhouse_settings_list_get",
     "service_clickhouse_settings_schema_get",
     "service_clickhouse_settings_update",
+    "slow_query_pattern_get",
+    "slow_query_patterns_get_list",
 ];
 
 /// Returns `true` if `name` matches a client method backed by a Beta endpoint.
