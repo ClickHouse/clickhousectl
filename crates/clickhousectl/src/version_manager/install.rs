@@ -165,8 +165,16 @@ pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -
         }
     }
 
-    // Not installed — delegate to install_resolved
-    install_resolved(resolved, platform, false).await
+    // Not installed (or a master/`latest` build whose exact version we can only
+    // learn after downloading) — delegate to install_resolved. For master builds
+    // try_resolve_local always returns None and the exact version isn't known
+    // upfront, so install_resolved downloads, detects the version, and may find it
+    // already installed. That's a success for the "ensure" contract, not an error:
+    // map VersionAlreadyInstalled back to the existing version.
+    match install_resolved(resolved, platform, false).await {
+        Err(Error::VersionAlreadyInstalled(version)) => Ok(version),
+        other => other,
+    }
 }
 
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`
