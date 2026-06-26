@@ -143,6 +143,9 @@ pub async fn perform_update() -> Result<()> {
     if !is_newer(current, latest) {
         let display = latest.strip_prefix('v').unwrap_or(latest);
         println!("Already up to date (v{}).", display);
+        // Refresh the cache with the network truth so a stale "update available"
+        // notice can't keep nagging after the user explicitly checked.
+        let _ = save_update_check(display);
         return Ok(());
     }
 
