@@ -2742,8 +2742,6 @@ pub enum ClickPipePostPubSubSourceSeektype {
     Earliest,
     #[serde(rename = "timestamp")]
     Timestamp,
-    #[serde(rename = "snapshot")]
-    Snapshot,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -2755,7 +2753,6 @@ impl std::fmt::Display for ClickPipePostPubSubSourceSeektype {
             Self::Latest => write!(f, "latest"),
             Self::Earliest => write!(f, "earliest"),
             Self::Timestamp => write!(f, "timestamp"),
-            Self::Snapshot => write!(f, "snapshot"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2935,8 +2932,6 @@ pub enum ClickPipePubSubSourceSeektype {
     Earliest,
     #[serde(rename = "timestamp")]
     Timestamp,
-    #[serde(rename = "snapshot")]
-    Snapshot,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -2948,7 +2943,6 @@ impl std::fmt::Display for ClickPipePubSubSourceSeektype {
             Self::Latest => write!(f, "latest"),
             Self::Earliest => write!(f, "earliest"),
             Self::Timestamp => write!(f, "timestamp"),
-            Self::Snapshot => write!(f, "snapshot"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
