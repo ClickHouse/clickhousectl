@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use crate::paths;
 use crate::version_manager::download::download_from_source;
 use crate::version_manager::list::list_installed_versions;
+use crate::version_manager::master;
 use crate::version_manager::platform::{DownloadSource, Platform};
 use crate::version_manager::resolve::{ResolvedVersion, resolve, try_resolve_local};
 use crate::version_manager::spec::VersionSpec;
@@ -54,6 +55,27 @@ pub async fn install_resolved(
     force: bool,
 ) -> Result<String> {
     paths::ensure_dirs()?;
+
+    // The floating `latest`/master build has no version upfront and a stable
+    // URL whose content moves. Use the HTTP etag to skip the ~153MB download
+    // when master hasn't changed since the installed build.
+    let is_master = matches!(
+        resolved.source,
+        DownloadSource::Builds { ref version_path } if version_path == "master"
+    );
+    let mut master_head = None;
+    if is_master {
+        master_head = master::head_info(platform).await;
+        if !force
+            && let Some(version) = master::reuse_if_unchanged(platform, master_head.as_ref())
+        {
+            eprintln!(
+                "latest is up to date (master build unchanged); using {}",
+                version
+            );
+            return Ok(version);
+        }
+    }
 
     // If we know the exact version upfront, check if already installed
     if let Some(ref version) = resolved.exact_version {
@@ -115,9 +137,12 @@ pub async fn install_resolved(
         detect_binary_version(&binary_path)?
     };
 
-    // Check if this exact version is already installed (post-detection check for builds source)
+    // Check if this exact version is already installed (post-detection check for builds source).
+    // Skipped for master: a master build's version string is shared across commits, so an
+    // existing dir doesn't mean the content matches — we got here because the etag changed
+    // (or there was no record), so overwrite the stale binary in place.
     let version_dir = paths::version_dir(&exact_version)?;
-    if version_dir.exists() && !force {
+    if version_dir.exists() && !force && !is_master {
         let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(Error::VersionAlreadyInstalled(exact_version));
     }
@@ -131,6 +156,15 @@ pub async fn install_resolved(
 
     // Clean up temp dir
     let _ = std::fs::remove_dir_all(&temp_dir);
+
+    // Record the master etag so a later `latest` resolve can skip the download
+    // when master is unchanged. Best-effort: a sidecar write failure must not
+    // fail an otherwise-successful install.
+    if is_master
+        && let Some(head) = &master_head
+    {
+        let _ = master::record(platform, head, &exact_version);
+    }
 
     let channel_suffix = match resolved.channel {
         Some(ch) => format!(" ({})", ch),
@@ -165,8 +199,16 @@ pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -
         }
     }
 
-    // Not installed — delegate to install_resolved
-    install_resolved(resolved, platform, false).await
+    // Not installed (or a master/`latest` build whose exact version we can only
+    // learn after downloading) — delegate to install_resolved. For master builds
+    // try_resolve_local always returns None and the exact version isn't known
+    // upfront, so install_resolved downloads, detects the version, and may find it
+    // already installed. That's a success for the "ensure" contract, not an error:
+    // map VersionAlreadyInstalled back to the existing version.
+    match install_resolved(resolved, platform, false).await {
+        Err(Error::VersionAlreadyInstalled(version)) => Ok(version),
+        other => other,
+    }
 }
 
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`

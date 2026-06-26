@@ -31,7 +31,7 @@ CONTEXT FOR AGENTS:
 
   `clickhousectl skills`
 
-  Typical local workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.")]
+  Typical local workflow: `clickhousectl local server start` (bootstraps from zero — installs `latest` if nothing is set up).")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -43,7 +43,7 @@ pub enum Commands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Manage local ClickHouse installations: install versions, run queries, manage servers.
-  Typical workflow: `clickhousectl local install stable && clickhousectl local use stable && clickhousectl local server start`.
+  Typical workflow: `clickhousectl local server start` (bootstraps from zero — installs `latest` if nothing is set up).
   Use `clickhousectl local <command> --help` for details on each subcommand.
   For a local Postgres instance via Docker, see `clickhousectl local postgres --help`.")]
     Local(LocalArgs),

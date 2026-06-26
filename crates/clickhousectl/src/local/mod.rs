@@ -321,7 +321,23 @@ async fn start_server(
         let platform = version_manager::platform::Platform::detect()?;
         version_manager::install::ensure_installed_local_first(&spec, &platform).await?
     } else {
-        version_manager::get_default_version()?
+        match version_manager::get_default_version() {
+            Ok(v) => v,
+            Err(Error::NoDefaultVersion) => {
+                // No version specified and no default set: bootstrap `latest`.
+                // Deliberately do NOT set it as the default, so unpinned users keep
+                // tracking latest on each start. This branch is therefore hit on every
+                // subsequent bare start too; `ensure_installed_local_first` returns the
+                // already-installed build silently if `latest` still resolves to it,
+                // otherwise it pulls the newer master build.
+                let spec = version_manager::parse_version_spec("latest")?;
+                let platform = version_manager::platform::Platform::detect()?;
+                eprintln!("No version specified and no default set; installing latest...");
+                version_manager::install::ensure_installed_local_first(&spec, &platform).await?
+            }
+            // A default pointing at a removed binary stays an error.
+            Err(e) => return Err(e),
+        }
     };
     let binary = paths::binary_path(&version)?;
 
