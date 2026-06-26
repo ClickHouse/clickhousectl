@@ -34,24 +34,39 @@ async fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            // For --help and --version, show the update notice after the output
-            if e.kind() == ErrorKind::DisplayHelp || e.kind() == ErrorKind::DisplayVersion {
-                e.print().expect("failed to print output");
-                update::print_cached_update_notice();
-                std::process::exit(0);
+            match e.kind() {
+                // --version always hits the network to refresh the cache + timer,
+                // then prints the notice from the freshly-updated cache.
+                ErrorKind::DisplayVersion => {
+                    e.print().expect("failed to print output");
+                    update::force_refresh_update_cache().await;
+                    update::print_cached_update_notice();
+                    std::process::exit(0);
+                }
+                // --help shows the notice from cache (no blocking network call).
+                ErrorKind::DisplayHelp => {
+                    e.print().expect("failed to print output");
+                    update::print_cached_update_notice();
+                    std::process::exit(0);
+                }
+                _ => e.exit(),
             }
-            e.exit();
         }
     };
 
-    // Spawn a background task to refresh the update cache for non-update commands.
-    // The notice itself is only shown on --help (above), not during normal execution.
+    // Spawn a background task to refresh the update cache for non-update
+    // commands. The refresh is gated to one network call per 24h; the notice
+    // below is driven off whatever the cache currently holds.
     let is_update_cmd = matches!(cli.command, Commands::Update(_));
     let cache_refresh = if !is_update_cmd {
         Some(tokio::spawn(update::refresh_update_cache()))
     } else {
         None
     };
+
+    // Decide whether to surface the update notice before `run` consumes the
+    // command. Shown on every command that does not emit machine-readable JSON.
+    let show_notice = should_show_update_notice(&cli.command);
 
     let result = run(cli.command).await;
 
@@ -62,9 +77,43 @@ async fn main() {
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
     }
 
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        std::process::exit(e.exit_code());
+    let exit_code = match result {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            e.exit_code()
+        }
+    };
+
+    // Always print the notice at the very end, after the command's own output
+    // (stdout) and any error message.
+    if show_notice {
+        update::print_cached_update_notice();
+    }
+
+    std::process::exit(exit_code);
+}
+
+/// The explicit `--json` flag for a command, or `None` for commands that never
+/// surface the update notice (the `update` command itself). `Skills` has no
+/// `--json` flag, so it reports `false`. Kept separate from agent detection so
+/// the mapping is deterministic and unit-testable regardless of environment.
+fn command_json_flag(cmd: &Commands) -> Option<bool> {
+    match cmd {
+        Commands::Update(_) => None,
+        Commands::Local(args) => Some(args.json),
+        Commands::Cloud(args) => Some(args.json),
+        Commands::Skills(_) => Some(false),
+    }
+}
+
+/// Whether to surface the cached update notice for this invocation. Shown for
+/// every command that does not emit machine-readable JSON (`--json` or a
+/// detected coding agent both suppress it), except the `update` command itself.
+fn should_show_update_notice(cmd: &Commands) -> bool {
+    match command_json_flag(cmd) {
+        None => false,
+        Some(flag) => !json_output(flag),
     }
 }
 
@@ -1226,6 +1275,69 @@ mod tests {
     #[test]
     fn json_output_true_when_flag_set() {
         assert!(json_output(true));
+    }
+
+    fn parse(args: &[&str]) -> Commands {
+        Cli::try_parse_from(args).unwrap().command
+    }
+
+    #[test]
+    fn command_json_flag_tracks_each_command() {
+        // Human-readable commands report an explicit `false` flag.
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "cloud", "service", "list"])),
+            Some(false)
+        );
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "local", "list"])),
+            Some(false)
+        );
+        // --json is picked up on both cloud and local (global flag).
+        assert_eq!(
+            command_json_flag(&parse(&[
+                "clickhousectl",
+                "cloud",
+                "--json",
+                "service",
+                "list"
+            ])),
+            Some(true)
+        );
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "local", "--json", "list"])),
+            Some(true)
+        );
+        // Skills has no --json flag, so it always reports `false`.
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "skills"])),
+            Some(false)
+        );
+        // The update command never surfaces the notice.
+        assert_eq!(command_json_flag(&parse(&["clickhousectl", "update"])), None);
+    }
+
+    #[test]
+    fn update_notice_suppressed_for_json_and_update() {
+        // --json suppresses the notice so machine output stays clean,
+        // regardless of agent detection.
+        assert!(!should_show_update_notice(&parse(&[
+            "clickhousectl",
+            "cloud",
+            "--json",
+            "service",
+            "list"
+        ])));
+        assert!(!should_show_update_notice(&parse(&[
+            "clickhousectl",
+            "local",
+            "--json",
+            "list"
+        ])));
+        // The update command never nags about itself.
+        assert!(!should_show_update_notice(&parse(&[
+            "clickhousectl",
+            "update"
+        ])));
     }
 
     #[test]
