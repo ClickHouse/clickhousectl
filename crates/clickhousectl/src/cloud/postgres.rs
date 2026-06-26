@@ -639,6 +639,7 @@ pub async fn postgres_update(
     };
 
     let req = PostgresServicePatchRequest {
+        name: None,
         size,
         ha_type,
         tags,

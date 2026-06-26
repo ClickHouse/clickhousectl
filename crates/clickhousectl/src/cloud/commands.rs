@@ -1179,6 +1179,7 @@ pub async fn clickpipe_create_kafka(
         brokers: args.brokers.clone(),
         topics: args.topics.clone(),
         consumer_group: args.consumer_group.clone(),
+        exactly_once: None,
         authentication,
         credentials,
         iam_role: args.iam_role.clone(),
@@ -1482,7 +1483,7 @@ fn build_destination(
         table: Some(table.to_string()),
         columns,
         managed_table: Some(true),
-        roles: vec![],
+        roles: None,
         table_definition: Some(
             clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition::default(),
         ),
@@ -1574,6 +1575,8 @@ pub async fn clickpipe_create_postgres(
         host: args.host.clone(),
         port: i64::from(args.port),
         database: args.pg_database.clone(),
+        disable_tls: false,
+        skip_cert_verification: false,
         authentication: parse_enum(&args.auth)?,
         iam_role: args.iam_role.clone(),
         tls_host: args.tls_host.clone(),
@@ -1725,6 +1728,7 @@ pub async fn clickpipe_create_mongodb(
         tls_host: args.tls_host.clone(),
         ca_certificate: ca_cert_contents,
         disable_tls: if args.disable_tls { Some(true) } else { None },
+        skip_cert_verification: None,
         settings: ClickPipeMongoDBPipeSettings {
             replication_mode: parse_enum(&args.replication_mode)?,
             ..Default::default()
