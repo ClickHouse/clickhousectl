@@ -2026,10 +2026,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 weekdays: vec![0], // Sunday only
                 start_hour_utc: 1,
                 end_hour_utc: 2,
+                // The API rejects an entry that sets both the replica-count
+                // knobs and the replica-memory knobs together. The test
+                // service scales by memory, so only set the memory bounds.
                 min_replica_memory_gb: Some(base_memory_gb),
                 max_replica_memory_gb: Some(base_memory_gb),
-                min_replicas: Some(base_replicas as i64),
-                max_replicas: Some(base_replicas as i64),
+                min_replicas: None,
+                max_replicas: None,
                 idle_scaling: Some(true),
                 idle_timeout_minutes: Some(5),
             };
