@@ -1,3 +1,4 @@
+// CI baseline check: no-op change to trigger path-filtered workflows.
 mod cli;
 mod cloud;
 mod dotenv;

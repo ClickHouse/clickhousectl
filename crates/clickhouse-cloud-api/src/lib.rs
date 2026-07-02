@@ -1,5 +1,7 @@
 //! # clickhouse-cloud-api
 //!
+//! <!-- CI baseline check: no-op change to trigger path-filtered workflows. -->
+//!
 //! Typed Rust client for the ClickHouse Cloud API.
 //!
 //! ## Usage
