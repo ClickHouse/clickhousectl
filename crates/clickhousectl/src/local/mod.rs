@@ -332,7 +332,10 @@ async fn start_server(
                 // otherwise it pulls the newer master build.
                 let spec = version_manager::parse_version_spec("latest")?;
                 let platform = version_manager::platform::Platform::detect()?;
-                eprintln!("No version specified and no default set; installing latest...");
+                // Says "using", not "installing": on repeat starts the build is
+                // usually already installed and nothing is downloaded. The install
+                // path prints its own Resolving/Downloading/up-to-date messages.
+                eprintln!("No version specified and no default set; using latest");
                 version_manager::install::ensure_installed_local_first(&spec, &platform).await?
             }
             // A default pointing at a removed binary stays an error.

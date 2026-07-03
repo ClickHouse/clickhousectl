@@ -140,7 +140,8 @@ pub async fn install_resolved(
     // Check if this exact version is already installed (post-detection check for builds source).
     // Skipped for master: a master build's version string is shared across commits, so an
     // existing dir doesn't mean the content matches — we got here because the etag changed
-    // (or there was no record), so overwrite the stale binary in place.
+    // (or there was no record), so overwrite the existing binary in place and adopt the dir
+    // as the master install (the record write below re-points the master record at it).
     let version_dir = paths::version_dir(&exact_version)?;
     if version_dir.exists() && !force && !is_master {
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -148,11 +149,21 @@ pub async fn install_resolved(
     }
 
     // Move to final location
-    if version_dir.exists() {
+    let replaced_existing = version_dir.exists();
+    if replaced_existing {
         std::fs::remove_dir_all(&version_dir)?;
     }
     std::fs::create_dir_all(&version_dir)?;
     std::fs::rename(&binary_path, version_dir.join("clickhouse"))?;
+
+    // Replacing a build on disk never affects already-running servers (they keep
+    // executing the old binary) — just say so, so the swap isn't silent.
+    if is_master && replaced_existing && version_in_use_by_running_server(&exact_version) {
+        eprintln!(
+            "Note: running servers keep using the previous {} build until restarted",
+            exact_version
+        );
+    }
 
     // Clean up temp dir
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -160,10 +171,16 @@ pub async fn install_resolved(
     // Record the master etag so a later `latest` resolve can skip the download
     // when master is unchanged. Best-effort: a sidecar write failure must not
     // fail an otherwise-successful install.
-    if is_master
-        && let Some(head) = &master_head
-    {
-        let _ = master::record(platform, head, &exact_version);
+    if is_master {
+        if let Some(head) = &master_head {
+            let _ = master::record(platform, head, &exact_version);
+        }
+    } else {
+        // A non-master install just wrote versions/<exact_version>/. If the
+        // sidecar recorded that dir as the installed master build, the record
+        // is now stale and would make a later `latest` resolve reuse this
+        // binary as if it were master. Best-effort, like `record`.
+        let _ = master::clear_record_for_version(platform, &exact_version);
     }
 
     let channel_suffix = match resolved.channel {
@@ -209,6 +226,16 @@ pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -
         Err(Error::VersionAlreadyInstalled(version)) => Ok(version),
         other => other,
     }
+}
+
+/// Whether a running managed server (in the current project) was started from
+/// this version. Recovers orphans first (like `local remove`) so a server that
+/// lost its metadata file is still counted.
+fn version_in_use_by_running_server(version: &str) -> bool {
+    crate::local::server::recover_current_project_servers();
+    crate::local::server::list_running_servers()
+        .iter()
+        .any(|s| s.version == version)
 }
 
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`
@@ -322,4 +349,5 @@ mod tests {
     fn test_parse_version_output_empty() {
         assert!(parse_version_output("").is_err());
     }
+
 }

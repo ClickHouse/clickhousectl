@@ -69,6 +69,33 @@ fn load_record(platform: &Platform) -> Option<MasterRecord> {
     load_sidecar().builds.remove(platform.builds_path())
 }
 
+/// Pure core of [`clear_record_for_version`]: drop the platform's record iff it
+/// records exactly `version`. Returns whether the sidecar changed.
+fn clear_version_from(sidecar: &mut Sidecar, platform_key: &str, version: &str) -> bool {
+    if sidecar
+        .builds
+        .get(platform_key)
+        .is_some_and(|r| r.version == version)
+    {
+        sidecar.builds.remove(platform_key);
+        true
+    } else {
+        false
+    }
+}
+
+/// Invalidate the record when a non-master install overwrites `versions/<version>/`:
+/// the recorded etag no longer describes the binary on disk, and a stale match
+/// would make a later `latest` resolve silently reuse the wrong build.
+pub fn clear_record_for_version(platform: &Platform, version: &str) -> Result<()> {
+    let mut sidecar = load_sidecar();
+    if clear_version_from(&mut sidecar, platform.builds_path(), version) {
+        let json = serde_json::to_vec_pretty(&sidecar)?;
+        std::fs::write(sidecar_path()?, json)?;
+    }
+    Ok(())
+}
+
 /// Persist the master state for this platform, merging into any existing
 /// sidecar so other platforms' records are preserved.
 pub fn record(platform: &Platform, head: &HeadInfo, version: &str) -> Result<()> {
@@ -220,5 +247,46 @@ mod tests {
     fn corrupt_sidecar_deserializes_to_default() {
         let back: Sidecar = serde_json::from_slice(b"not json").unwrap_or_default();
         assert!(back.builds.is_empty());
+    }
+
+    #[test]
+    fn clear_version_removes_matching_record() {
+        let mut sidecar = Sidecar::default();
+        sidecar
+            .builds
+            .insert("macos-aarch64".to_string(), rec("\"x-1\"", "26.5.1.1"));
+        assert!(clear_version_from(&mut sidecar, "macos-aarch64", "26.5.1.1"));
+        assert!(!sidecar.builds.contains_key("macos-aarch64"));
+    }
+
+    #[test]
+    fn clear_version_keeps_record_for_other_version() {
+        // The record points at a different version dir than the one being
+        // overwritten — it still describes the binary on disk, keep it.
+        let mut sidecar = Sidecar::default();
+        sidecar
+            .builds
+            .insert("macos-aarch64".to_string(), rec("\"x-1\"", "26.5.1.1"));
+        assert!(!clear_version_from(&mut sidecar, "macos-aarch64", "25.12.9.61"));
+        assert!(sidecar.builds.contains_key("macos-aarch64"));
+    }
+
+    #[test]
+    fn clear_version_keeps_other_platforms() {
+        let mut sidecar = Sidecar::default();
+        sidecar
+            .builds
+            .insert("amd64".to_string(), rec("\"x-1\"", "26.5.1.1"));
+        sidecar
+            .builds
+            .insert("macos-aarch64".to_string(), rec("\"y-2\"", "26.5.1.1"));
+        assert!(clear_version_from(&mut sidecar, "macos-aarch64", "26.5.1.1"));
+        assert!(sidecar.builds.contains_key("amd64"));
+    }
+
+    #[test]
+    fn clear_version_no_record_is_noop() {
+        let mut sidecar = Sidecar::default();
+        assert!(!clear_version_from(&mut sidecar, "macos-aarch64", "26.5.1.1"));
     }
 }
