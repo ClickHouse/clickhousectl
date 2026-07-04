@@ -12155,7 +12155,7 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub effective_cache_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub effective_io_concurrency: Option<i64>,
+    pub effective_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -12165,23 +12165,23 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub maintenance_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_connections: Option<i64>,
+    pub max_connections: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_parallel_maintenance_workers: Option<i64>,
+    pub max_parallel_maintenance_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_parallel_workers: Option<i64>,
+    pub max_parallel_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_parallel_workers_per_gather: Option<i64>,
+    pub max_parallel_workers_per_gather: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_wal_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub max_worker_processes: Option<i64>,
+    pub max_worker_processes: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub min_wal_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub random_page_cost: Option<f64>,
+    pub random_page_cost: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
     #[serde(skip_serializing_if = "Option::is_none", default)]

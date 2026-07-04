@@ -812,7 +812,7 @@ fn serialize_servic_private_endpointe_post_request() {
 fn serialize_postgres_instance_config() {
     let config = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(200),
+            max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig::default(),
@@ -830,7 +830,7 @@ fn serialize_postgres_instance_config_always_includes_both_nested() {
     // fields stay opt-in. See #163 for the matrix evidence.
     let config = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(200),
+            max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig::default(),
@@ -1193,7 +1193,27 @@ fn deserialize_postgres_instance_config() {
         "pgBouncerConfig": {}
     }"#;
     let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(200));
+    assert_eq!(config.pg_config.max_connections, Some(serde_json::json!(200)));
+}
+
+#[test]
+fn deserialize_postgres_instance_config_string_wrapped_numbers() {
+    // The live GET endpoint returns numeric pgConfig values wrapped in JSON
+    // strings (e.g. "max_connections": "100"). The spec types these fields
+    // as string-or-number, so they are modelled as serde_json::Value and
+    // both representations must deserialize.
+    let json = r#"{
+        "pgConfig": {
+            "max_connections": "100",
+            "random_page_cost": "1.1",
+            "max_worker_processes": 8
+        },
+        "pgBouncerConfig": {}
+    }"#;
+    let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.pg_config.max_connections, Some(serde_json::json!("100")));
+    assert_eq!(config.pg_config.random_page_cost, Some(serde_json::json!("1.1")));
+    assert_eq!(config.pg_config.max_worker_processes, Some(serde_json::json!(8)));
 }
 
 #[test]

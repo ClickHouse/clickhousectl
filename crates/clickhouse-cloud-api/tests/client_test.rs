@@ -2176,7 +2176,7 @@ async fn get_postgres_config() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(100));
+    assert_eq!(config.pg_config.max_connections, Some(serde_json::json!(100)));
 }
 
 #[tokio::test]
@@ -2186,7 +2186,7 @@ async fn replace_postgres_config() {
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
         .and(body_partial_json(
-            serde_json::json!({"pgConfig": {"max_connections": 200}}),
+            serde_json::json!({"pgConfig": {"max_connections": 200}, "pgBouncerConfig": {}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "message": "Configuration updated",
@@ -2198,7 +2198,7 @@ async fn replace_postgres_config() {
 
     let body = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(200),
+            max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig::default(),
@@ -2209,7 +2209,7 @@ async fn replace_postgres_config() {
         .unwrap();
     let result = resp.result.unwrap();
     assert_eq!(result.message, Some("Configuration updated".to_string()));
-    assert_eq!(result.pg_config.max_connections, Some(200));
+    assert_eq!(result.pg_config.max_connections, Some(serde_json::json!(200)));
 }
 
 #[tokio::test]
@@ -2219,7 +2219,7 @@ async fn patch_postgres_config() {
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
         .and(body_partial_json(
-            serde_json::json!({"pgConfig": {"max_connections": 150}}),
+            serde_json::json!({"pgConfig": {"max_connections": 150}, "pgBouncerConfig": {}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "message": "OK",
@@ -2231,7 +2231,7 @@ async fn patch_postgres_config() {
 
     let body = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: Some(150),
+            max_connections: Some(serde_json::json!(150)),
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig::default(),
@@ -2241,7 +2241,7 @@ async fn patch_postgres_config() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.pg_config.max_connections, Some(150));
+    assert_eq!(result.pg_config.max_connections, Some(serde_json::json!(150)));
 }
 
 #[tokio::test]

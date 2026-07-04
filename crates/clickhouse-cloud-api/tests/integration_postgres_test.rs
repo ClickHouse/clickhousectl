@@ -231,9 +231,17 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         }
 
         // Round-trip a single pgConfig field: PATCH max_connections to a
-        // new value, poll-until GET reflects it, then PATCH back.
+        // new value, poll-until GET reflects it, then PATCH back. GET
+        // returns numeric pgConfig values wrapped in JSON strings (the spec
+        // types them string-or-number), so extract via pg_config_value_as_i64
+        // and compare tolerantly.
         if let Some(baseline) = baseline {
-            let baseline_max = baseline.pg_config.max_connections.unwrap_or(100);
+            let baseline_max = baseline
+                .pg_config
+                .max_connections
+                .as_ref()
+                .and_then(pg_config_value_as_i64)
+                .unwrap_or(100);
             let target = baseline_max + 7;
 
             failures
@@ -248,7 +256,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let body = PostgresInstanceConfig {
                                 pg_config: PgConfig {
-                                    max_connections: Some(target),
+                                    max_connections: Some(serde_json::json!(target)),
                                     ..Default::default()
                                 },
                                 pg_bouncer_config: PgBouncerConfig::default(),
@@ -288,7 +296,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                                             .await?;
                                         let observed = resp
                                             .result
-                                            .and_then(|r| r.pg_config.max_connections);
+                                            .and_then(|r| r.pg_config.max_connections)
+                                            .as_ref()
+                                            .and_then(pg_config_value_as_i64);
                                         if observed == Some(target) {
                                             Ok(Some(()))
                                         } else {
@@ -315,7 +325,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let body = PostgresInstanceConfig {
                                 pg_config: PgConfig {
-                                    max_connections: Some(baseline_max),
+                                    max_connections: Some(serde_json::json!(baseline_max)),
                                     ..Default::default()
                                 },
                                 pg_bouncer_config: PgBouncerConfig::default(),
@@ -844,6 +854,18 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         (Err(error), Err(cleanup_error)) => {
             Err(format!("{error}\ncleanup failed:\n{cleanup_error}").into())
         }
+    }
+}
+
+// pgConfig numeric values come back from GET wrapped in JSON strings (e.g.
+// `"max_connections": "100"`), while PATCH accepts plain numbers. The spec
+// types these fields as string-or-number, so extract an i64 from either
+// representation.
+fn pg_config_value_as_i64(value: &serde_json::Value) -> Option<i64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
     }
 }
 
