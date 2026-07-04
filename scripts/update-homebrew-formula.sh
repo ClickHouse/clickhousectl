@@ -112,8 +112,10 @@ SSH_KEY="${TMPDIR}/deploy_key"
 printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > "$SSH_KEY"
 chmod 600 "$SSH_KEY"
 
-# Ensure known_hosts has GitHub's SSH key fingerprints.
-ssh-keyscan -t ed25519 github.com >> "${TMPDIR}/known_hosts" 2>/dev/null
+# Pin GitHub's published ed25519 SSH key so a MITM attacker can't substitute
+# their own host key during the deploy-key session. See:
+# https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+echo "github.com ssh-ed25519 AAAAC3NzC1lZDI1NTE5AAAAIOMqqnkVzq0S2G4Ue0hKQipxwlPGB0XzYxgO0GR6djQx" > "${TMPDIR}/known_hosts"
 
 GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o UserKnownHostsFile=${TMPDIR}/known_hosts -o IdentitiesOnly=yes" \
   git clone "git@github.com:${TAP_REPO}.git" "$TAP_DIR"

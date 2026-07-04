@@ -46,6 +46,6 @@ class Clickhousectl < Formula
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/clickhousectl --version")
+    assert_match(/^clickhousectl #{Regexp.escape(version.to_s)}$/, shell_output("#{bin}/clickhousectl --version"))
   end
 end
