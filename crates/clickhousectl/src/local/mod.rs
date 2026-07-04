@@ -218,6 +218,15 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&version_dir)?;
+
+    // If the removed dir was recorded as the installed master build, clear the
+    // master sidecar record so a later `latest` resolve doesn't see a stale
+    // entry pointing at a now-deleted binary. Best-effort, like the install
+    // overwrite path: a sidecar failure must not fail a successful removal.
+    if let Ok(platform) = version_manager::platform::Platform::detect() {
+        let _ = version_manager::master::clear_record_for_version(&platform, version);
+    }
+
     let out = output::RemoveOutput {
         version: version.to_string(),
     };
