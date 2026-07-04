@@ -7,6 +7,8 @@ on:
       - "crates/clickhousectl/src/main.rs"
       - "crates/clickhousectl/src/cli.rs"
       - "crates/clickhousectl/Cargo.toml"
+      - "homebrew/**"
+      - "scripts/update-homebrew-formula.sh"
       - ".github/workflows/test-install.yml"
 
 permissions:
@@ -144,3 +146,36 @@ jobs:
         run: |
           version_dir=$(ls -d ~/.clickhouse/versions/*/clickhouse | head -1)
           $version_dir --version
+
+  homebrew-formula:
+    name: Homebrew formula
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Ruby
+        uses: ruby/setup-ruby@d5123d83b85bf5fc943d23f88231b89204f0f3e9 # v1.207.0
+        with:
+          ruby-version: '3.3'
+
+      - name: Render template and verify Ruby syntax
+        run: |
+          # Render the template with placeholder values to verify it produces
+          # syntactically valid Ruby. Uses dummy SHA256 hashes.
+          TMPDIR=$(mktemp -d)
+          sed \
+            -e 's|{{VERSION}}|0.0.0-test|g' \
+            -e 's|{{SHA256_X86_64_LINUX_MUSL}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
+            -e 's|{{SHA256_AARCH64_LINUX_MUSL}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
+            -e 's|{{SHA256_X86_64_APPLE_DARWIN}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
+            -e 's|{{SHA256_AARCH64_APPLE_DARWIN}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
+            homebrew/clickhousectl.rb.tmpl > "${TMPDIR}/clickhousectl.rb"
+
+          ruby -c "${TMPDIR}/clickhousectl.rb"
+
+      - name: Shellcheck update script
+        run: |
+          # shellcheck is pre-installed on ubuntu-latest.
+          shellcheck scripts/update-homebrew-formula.sh

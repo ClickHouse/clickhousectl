@@ -24,11 +24,15 @@ With `clickhousectl` you can:
 curl https://clickhouse.com/cli | sh
 ```
 
-The install script will download the correct version for your OS and install to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
+Installs to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
+
+### Homebrew
+
+```bash
+brew install clickhouse/tap/clickhousectl
+```
 
 ### `cargo binstall`
-
-If you already have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall), this pulls the prebuilt binary from `builds.clickhouse.com`:
 
 ```bash
 cargo binstall clickhousectl
@@ -40,8 +44,6 @@ cargo binstall clickhousectl
 npm install -g clickhousectl
 ```
 
-This installs an npm wrapper package that downloads the matching prebuilt binary from `builds.clickhouse.com` at install time. Both `clickhousectl` and `chctl` are exposed as commands. If you use `npm install --ignore-scripts`, the download is skipped — fall back to one of the other install paths.
-
 ### pip
 
 ```bash
@@ -51,8 +53,6 @@ pipx install clickhousectl
 # or
 uv tool install clickhousectl
 ```
-
-This installs a prebuilt wheel containing the matching `clickhousectl` binary. Linux (glibc and musl, x86_64 and aarch64) and macOS (Intel and Apple Silicon) wheels are published to PyPI.
 
 ### From crates.io
 
@@ -67,10 +67,6 @@ cargo install clickhousectl
 ```bash
 cargo install --path crates/clickhousectl
 ```
-
-### Direct download
-
-Prebuilt archives for each release are hosted at `https://builds.clickhouse.com/clickhousectl/`. Archives are named `clickhousectl-{target}-v{version}.tar.gz` and contain a single directory of the same name with the `clickhousectl` binary inside. Supported targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`. Example: `https://builds.clickhouse.com/clickhousectl/clickhousectl-aarch64-apple-darwin-v0.3.0.tar.gz`.
 
 ## Local
 
@@ -872,5 +868,5 @@ export CONTINUE_ON_NON_BLOCKING_FAILURES=1
 
 ## Requirements
 
-- macOS (aarch64, x86_64) or Linux (aarch64, x86_64)
+- macOS (aarch64, x86_64) or Linux (aarch64, x86_64) or WSL
 - Cloud commands require a [ClickHouse Cloud API key](https://clickhouse.com/docs/en/cloud/manage/api)
