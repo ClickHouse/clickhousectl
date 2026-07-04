@@ -66,6 +66,26 @@ for key in "${!TARGETS[@]}"; do
   echo "  sha256: ${hash}"
 done
 
+# ── 1b. Verify builds.clickhouse.com URLs are reachable ────────────────────
+# The formula serves from builds.clickhouse.com, which is populated async
+# from the GitHub release. Fail fast if the mirror isn't ready yet so the
+# tap isn't published with 404 URLs — re-run this job after the async push
+# completes.
+BUILDS_BASE="https://builds.clickhouse.com/clickhousectl"
+for key in "${!TARGETS[@]}"; do
+  target="${TARGETS[$key]}"
+  asset="clickhousectl-${target}-${TAG}.tar.gz"
+  builds_url="${BUILDS_BASE}/${asset}"
+  echo "Verifying ${builds_url}..."
+  if ! curl -fsSI "$builds_url" -o /dev/null; then
+    echo "error: ${builds_url} is not reachable." >&2
+    echo "       builds.clickhouse.com may not have propagated this release yet." >&2
+    echo "       Trigger the async push and re-run this job." >&2
+    exit 1
+  fi
+  echo "  OK"
+done
+
 # ── 2. Render the template ─────────────────────────────────────────────────
 if [ ! -f "$TEMPLATE" ]; then
   echo "error: template not found: ${TEMPLATE}" >&2
@@ -101,9 +121,15 @@ mkdir -p "${TAP_DIR}/Formula"
 cp "$RENDERED" "${TAP_DIR}/Formula/clickhousectl.rb"
 
 git -C "$TAP_DIR" add Formula/clickhousectl.rb
-git -C "$TAP_DIR" -c user.name="github-actions[bot]" \
-  -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-  commit -m "clickhousectl ${VERSION}"
+# Allow a no-op commit when the formula is already up to date (e.g. a
+# re-run of the release job after the first push succeeded).
+if ! git -C "$TAP_DIR" diff --cached --quiet; then
+  git -C "$TAP_DIR" -c user.name="github-actions[bot]" \
+    -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+    commit -m "clickhousectl ${VERSION}"
+else
+  echo "Formula unchanged; nothing to commit."
+fi
 
 GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o UserKnownHostsFile=${TMPDIR}/known_hosts -o IdentitiesOnly=yes" \
   git -C "$TAP_DIR" push origin HEAD
