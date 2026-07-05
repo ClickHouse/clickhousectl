@@ -1122,6 +1122,73 @@ where
     }
 }
 
+// ── Retry ────────────────────────────────────────────────────────────
+
+/// Retry an API call whose error matches `retryable`.
+///
+/// Unlike [`poll_until`], which polls a *status* and returns once a condition
+/// is met, this retries an *operation* that may itself fail with a transient
+/// error. The closure is re-invoked on each attempt; errors for which
+/// `retryable` returns `true` are logged and retried after `interval`, up to
+/// `timeout`. Non-retryable errors are returned immediately. On timeout the
+/// last retryable error (if any) is returned, otherwise a generic timeout
+/// error.
+///
+/// Used to smooth over races where the API rejects an otherwise-valid request
+/// because a prerequisite resource hasn't settled yet (e.g. creating a
+/// Postgres read replica against a primary that hasn't taken its first
+/// backup). The test infra is ClickHouse-Cloud-specific, so this is typed to
+/// [`clickhouse_cloud_api::Error`] directly — no downcasting needed.
+pub async fn retry_api_call<F, Fut, T>(
+    description: &str,
+    timeout: Duration,
+    interval: Duration,
+    mut attempt: F,
+    retryable: impl Fn(&clickhouse_cloud_api::Error) -> bool,
+) -> TestResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+{
+    let started = Instant::now();
+    let mut last_retryable: Option<String> = None;
+    loop {
+        match attempt().await {
+            Ok(value) => {
+                if last_retryable.is_some() {
+                    eprintln!(
+                        "  retry: {description} succeeded after {:?}",
+                        started.elapsed()
+                    );
+                }
+                return Ok(value);
+            }
+            Err(error) => {
+                if !retryable(&error) {
+                    return Err(error.into());
+                }
+                let message = error.to_string();
+                eprintln!(
+                    "  retry: {description} transient failure (will retry): {}",
+                    first_line(&message)
+                );
+                last_retryable = Some(message);
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            let detail = last_retryable.unwrap_or_else(|| "no retryable error recorded".into());
+            return Err(format!(
+                "timed out after {:?} retrying {description}; last error: {detail}",
+                started.elapsed()
+            )
+            .into());
+        }
+
+        tokio::time::sleep(interval).await;
+    }
+}
+
 // ── Logging ──────────────────────────────────────────────────────────
 
 pub fn log_run_header(test_name: &str, ctx: &TestContext) {
