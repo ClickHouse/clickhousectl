@@ -288,7 +288,7 @@ If you don't have a ClickHouse Cloud account yet, `clickhousectl cloud auth sign
 clickhousectl cloud auth login
 ```
 
-This opens your browser for authentication via the OAuth device flow. Tokens are saved to `.clickhouse/tokens.json` (project-local).
+This opens your browser for authentication via the OAuth device flow. Tokens are saved to `~/.clickhouse/tokens.json` (global, shared across all directories).
 
 > **Note:** OAuth tokens provide **read-only** access. You can list and inspect resources (organizations, services, backups, etc.) but cannot create, modify, or delete them. For write operations, use API key authentication. `cloud service query` works under OAuth too, running SQL as your own identity with **read-only** access — see [Query API auth modes](#query-api-auth-modes).
 
@@ -302,7 +302,7 @@ clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
 clickhousectl cloud auth login --interactive
 ```
 
-Credentials are saved to `.clickhouse/credentials.json` (project-local).
+Credentials are saved to `.clickhouse/credentials.json` (project-local). API keys are org-scoped, so they stay per-project; OAuth tokens represent your user identity and are stored globally in `~/.clickhouse/tokens.json`.
 
 You can also use environment variables, either exported in your session:
 ```bash

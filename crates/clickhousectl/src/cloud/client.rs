@@ -60,7 +60,7 @@ pub enum AuthSource {
     CredentialsFile,
     /// `CLICKHOUSE_CLOUD_API_KEY` / `CLICKHOUSE_CLOUD_API_SECRET` env vars
     EnvVars,
-    /// OAuth tokens saved by `cloud auth login` (`.clickhouse/tokens.json`)
+    /// OAuth tokens saved by `cloud auth login` (`~/.clickhouse/tokens.json`)
     OAuthTokens,
 }
 
@@ -98,7 +98,7 @@ fn real_env_lookup(key: &str) -> Option<String> {
 /// the env tier these tests are exercising.
 type CredentialsLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::credentials::Credentials>;
 
-/// Loader for the OAuth token tier (`.clickhouse/tokens.json`). Injected for
+/// Loader for the OAuth token tier (`~/.clickhouse/tokens.json`). Injected for
 /// the same reason as `CredentialsLookup`.
 type TokensLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::auth::TokenStore>;
 
@@ -140,7 +140,8 @@ fn resolve_auth(
 /// `env_lookup`, `load_credentials`, and `load_tokens` are the injection
 /// points that let tests feed a controlled snapshot of every source without
 /// mutating the process environment or reading the real `.clickhouse/` files
-/// under the (un-isolated) test cwd.
+/// (credentials.json under cwd, tokens.json under the home dir) that `cargo
+/// test` does not isolate.
 fn resolve_auth_with_sources(
     api_key: Option<&str>,
     api_secret: Option<&str>,
@@ -299,7 +300,9 @@ impl AuthSource {
             }
             AuthSource::OAuthTokens => format!(
                 "OAuth tokens ({})",
-                crate::cloud::auth::tokens_path().display()
+                crate::cloud::auth::tokens_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "~/.clickhouse/tokens.json".to_string())
             ),
         }
     }

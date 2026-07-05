@@ -151,7 +151,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         .map_err(|e| Error::Cloud(e.to_string()))?;
                     cloud::auth::save_tokens(&tokens).map_err(|e| Error::Cloud(e.to_string()))?;
                     println!("Logged in successfully.");
-                    println!("Tokens saved to {}", cloud::auth::tokens_path().display());
+                    let tokens_path = cloud::auth::tokens_path()
+                        .map_err(|e| Error::Cloud(e.to_string()))?;
+                    println!("Tokens saved to {}", tokens_path.display());
                     Ok(())
                 }
             }

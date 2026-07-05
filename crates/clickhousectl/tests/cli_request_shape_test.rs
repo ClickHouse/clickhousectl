@@ -1299,10 +1299,11 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
     let query_host = start_mock_query_host().await;
 
     // OAuth tokens are the lowest-precedence credential tier, so clear the
-    // API key env vars and run in a temp dir whose .clickhouse/tokens.json
-    // is the only credential source.
+    // API key env vars. Tokens now live in the global ~/.clickhouse/tokens.json
+    // (issue #277), so point HOME at a temp dir and write them there.
     let dir = tempfile::tempdir().unwrap();
-    let ch_dir = dir.path().join(".clickhouse");
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
     std::fs::create_dir_all(&ch_dir).unwrap();
     let tokens = serde_json::json!({
         "access_token": "test-bearer-token",
@@ -1332,6 +1333,7 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
             "SELECT 1",
         ])
         .current_dir(dir.path())
+        .env("HOME", &home_dir)
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
@@ -1465,8 +1467,9 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
 // header (waking the service, like the SQL console does after prompting);
 // for `Service is stopped` it must fail with a hint to start the service.
 
-/// Write an OAuth tokens.json into `ch_dir` so the binary authenticates with
-/// a bearer token against the given control plane.
+/// Write an OAuth tokens.json into `ch_dir` (the caller's `$HOME/.clickhouse`)
+/// so the binary authenticates with a bearer token against the given control
+/// plane. Callers must also set `HOME` to the parent of `ch_dir`.
 fn write_oauth_tokens(ch_dir: &std::path::Path, control_uri: &str) {
     let tokens = serde_json::json!({
         "access_token": "test-bearer-token",
@@ -1506,7 +1509,8 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    let ch_dir = dir.path().join(".clickhouse");
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
     std::fs::create_dir_all(&ch_dir).unwrap();
     write_oauth_tokens(&ch_dir, &control.uri());
 
@@ -1526,6 +1530,7 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
             "SELECT 1",
         ])
         .current_dir(dir.path())
+        .env("HOME", &home_dir)
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
@@ -1568,7 +1573,8 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    let ch_dir = dir.path().join(".clickhouse");
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
     std::fs::create_dir_all(&ch_dir).unwrap();
     write_oauth_tokens(&ch_dir, &control.uri());
 
@@ -1588,6 +1594,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
             "SELECT 1",
         ])
         .current_dir(dir.path())
+        .env("HOME", &home_dir)
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
