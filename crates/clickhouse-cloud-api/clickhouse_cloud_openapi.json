@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-838082",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-887333",
       "email": "support@clickhouse.com"
     }
   },
@@ -3480,7 +3480,7 @@
       },
       "patch": {
         "summary": "Update ClickHouse settings",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Updates one or more ClickHouse settings for the service. Use the [schema endpoint](#tag/Service/operation/serviceClickhouseSettingsSchemaGet) to discover which settings are configurable.",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Updates one or more ClickHouse settings for the service. To reset a setting to its platform default, use the [DELETE single setting](#tag/Service/operation/serviceClickhouseSettingDelete) endpoint. Use the [schema endpoint](#tag/Service/operation/serviceClickhouseSettingsSchemaGet) to discover which settings are configurable.",
         "operationId": "serviceClickhouseSettingsUpdate",
         "parameters": [
           {
@@ -3776,6 +3776,127 @@
                     },
                     "result": {
                       "$ref": "#/components/schemas/ServiceClickhouseSetting"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Service"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Reset ClickHouse setting to default",
+        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Removes a previously-configured ClickHouse setting, reverting its effective value to the platform default. Settings under `spec.extraConfig.server.*` (e.g. `keep_alive_timeout`, `shared_merge_tree_disable_merges_and_mutations_assignment`) trigger a ClickHouse server rollout restart; other settings propagate to all replicas after a short delay. Deleting a setting that was never configured is a no-op (200 OK).",
+        "operationId": "serviceClickhouseSettingDelete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "settingName",
+            "description": "Name of the setting to reset.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
                     }
                   }
                 }
@@ -9940,7 +10061,7 @@
       },
       "patch": {
         "summary": "Update a PostgreSQL service",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Update a Postgres service that belongs to the organization",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Update a Postgres service that belongs to the organization. **WARNING:** Changing the name also updates the host name and certificates for the service.",
         "operationId": "postgresServicePatch",
         "parameters": [
           {
@@ -11144,6 +11265,552 @@
         ]
       }
     },
+    "/v1/organizations/{organizationId}/postgres/{postgresId}/metrics": {
+      "get": {
+        "summary": "Get Postgres time-series metrics",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns bucketed time-series metrics for a PostgreSQL service over the requested window (CPU, memory, disk, network, connections, cache hit ratio, throughput, transactions, and more). Use this to chart or analyze how a service behaved over time.",
+        "operationId": "postgresInstanceMetricsGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_date",
+            "description": "Inclusive start of the time window (RFC 3339 date-time).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "to_date",
+            "description": "Exclusive end of the time window (RFC 3339 date-time).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "bucket_size_seconds",
+            "description": "Time-series bucket size in seconds. When omitted, a bucket size is derived from the requested window. Requests are capped at 250 data points.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/PostgresMetrics"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/postgres/{postgresId}/slowQueryPatterns": {
+      "get": {
+        "summary": "List Postgres slow query patterns",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns aggregate metrics for the slowest query patterns observed on a Postgres service during the given time window. Use this to discover which queries dominate total execution time, CPU, I/O, or WAL generation.",
+        "operationId": "slowQueryPatternsGetList",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the requested Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_date",
+            "description": "Inclusive start of the time window (RFC 3339 date-time).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "to_date",
+            "description": "Exclusive end of the time window (RFC 3339 date-time).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "db_name",
+            "description": "Database name filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "db_user",
+            "description": "Database user filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "db_operation",
+            "description": "Database operation filter (for example, SELECT, INSERT, UPDATE, DELETE, UTILITY).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "app",
+            "description": "Application name filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_by",
+            "description": "Field to sort results by.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "total_duration",
+                "avg_duration",
+                "call_count",
+                "total_blks_read",
+                "total_cpu_time",
+                "error_count",
+                "max_duration",
+                "p50_duration",
+                "p95_duration",
+                "p99_duration",
+                "total_rows",
+                "total_shared_blks_hit",
+                "total_wal_bytes"
+              ],
+              "default": "total_duration"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort_order",
+            "description": "Sort order. One of `asc` or `desc`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "desc"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "Maximum number of results to return.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 20
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "description": "Number of results to skip before returning.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PostgresSlowQueryPattern"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/postgres/{postgresId}/slowQueryPatterns/{queryId}": {
+      "get": {
+        "summary": "Get a Postgres slow query pattern with recent executions",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns aggregate metrics for a single slow query pattern together with its most recent individual executions.",
+        "operationId": "slowQueryPatternGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "postgresId",
+            "description": "ID of the requested Postgres service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "queryId",
+            "description": "Stable identifier for the query pattern.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "db_name",
+            "description": "Database name filter.",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "db_user",
+            "description": "Database user filter.",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "db_operation",
+            "description": "Database operation filter (for example, SELECT, INSERT, UPDATE, DELETE, UTILITY).",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "app",
+            "description": "Application name filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timestamp",
+            "description": "Timestamp of a specific execution (RFC 3339).",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/PostgresSlowQueryPatternDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Postgres"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
     "/v1/organizations/{organizationId}/privateEndpointConfig": {
       "get": {
         "summary": "Get private endpoint configuration for region within cloud provider for an organization",
@@ -12067,6 +12734,134 @@
         "tags": [
           "ClickPipes"
         ]
+      },
+      "patch": {
+        "summary": "Update reverse private endpoint",
+        "description": "Update mutable fields for an existing reverse private endpoint. customPrivateDnsMappings is a full replacement list. Use an empty array to clear mappings.",
+        "operationId": "clickPipeReversePrivateEndpointUpdate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service that owns the Reverse Private Endpoint.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "reversePrivateEndpointId",
+            "description": "ID of the reverse private endpoint to update.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateReversePrivateEndpoint"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ReversePrivateEndpoint"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "ClickPipes"
+        ]
       }
     }
   },
@@ -12305,6 +13100,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "exactlyOnce": {
+            "description": "Enable exactly-once delivery. Guarantees every Kafka record is inserted exactly once across restarts and rebalances. Can only be set at pipe creation.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           }
         }
       },
@@ -12403,6 +13205,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "exactlyOnce": {
+            "description": "Enable exactly-once delivery. Guarantees every Kafka record is inserted exactly once across restarts and rebalances. Can only be set at pipe creation.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "credentials": {
             "description": "Credentials for Kafka source. Choose one that is supported by the authentication method.",
@@ -13090,7 +13899,12 @@
             "description": "List of column names to exclude from replication. Column names must be unique within this list.",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "internal_id",
+              "temp_data"
+            ],
+            "uniqueItems": true
           },
           "useCustomSortingKey": {
             "description": "Whether to use a custom sorting key. If true, sortingKeys must be provided. If false or omitted, the default sorting key is the PostgreSQL primary key.",
@@ -13102,7 +13916,12 @@
             "description": "Ordered list of column names to use as the sorting (ORDER BY) key in ClickHouse. Only used when useCustomSortingKey is true. Column names must be unique within this list.",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "created_at_date",
+              "event_id"
+            ],
+            "uniqueItems": true
           },
           "tableEngine": {
             "description": "ClickHouse table engine: \"ReplacingMergeTree\" (handles updates/deletes), \"MergeTree\" (append-only), or \"Null\" (forward data to materialized views without storing it).",
@@ -13234,6 +14053,16 @@
             "type": "string",
             "example": "-----BEGIN CERTIFICATE-----\n..."
           },
+          "disableTls": {
+            "description": "Disable TLS for the Postgres connection. Use with caution in production environments.",
+            "type": "boolean",
+            "example": false
+          },
+          "skipCertVerification": {
+            "description": "Skip TLS certificate verification for the Postgres connection. Use with caution in production environments.",
+            "type": "boolean",
+            "example": false
+          },
           "settings": {
             "$ref": "#/components/schemas/ClickPipePostgresPipeSettings"
           },
@@ -13316,6 +14145,16 @@
             "type": "string",
             "example": "-----BEGIN CERTIFICATE-----\n..."
           },
+          "disableTls": {
+            "description": "Disable TLS for the Postgres connection. Use with caution in production environments.",
+            "type": "boolean",
+            "example": false
+          },
+          "skipCertVerification": {
+            "description": "Skip TLS certificate verification for the Postgres connection. Use with caution in production environments.",
+            "type": "boolean",
+            "example": false
+          },
           "tableMappings": {
             "type": "array",
             "description": "List of table mappings defining which PostgreSQL tables to replicate and how they map to ClickHouse tables.",
@@ -13373,6 +14212,22 @@
             ],
             "example": "-----BEGIN CERTIFICATE-----\n..."
           },
+          "disableTls": {
+            "description": "Disable TLS for the Postgres connection. Use with caution in production environments.",
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "example": false
+          },
+          "skipCertVerification": {
+            "description": "Skip TLS certificate verification for the Postgres connection. Use with caution in production environments.",
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "example": false
+          },
           "settings": {
             "$ref": "#/components/schemas/ClickPipePatchPostgresPipeSettings"
           },
@@ -13381,14 +14236,16 @@
             "description": "Table mappings to add to the pipe. Can be an empty array if no tables are being added.",
             "items": {
               "$ref": "#/components/schemas/ClickPipePostgresPipeTableMapping"
-            }
+            },
+            "minItems": 0
           },
           "tableMappingsToRemove": {
             "type": "array",
             "description": "Table mappings to remove from the pipe. Only sourceSchemaName, sourceTable, and targetTable are required for removal.",
             "items": {
               "$ref": "#/components/schemas/ClickPipePatchPostgresPipeRemoveTableMapping"
-            }
+            },
+            "minItems": 0
           }
         }
       },
@@ -13515,7 +14372,12 @@
             "description": "List of column names to exclude from replication. Column names must be unique within this list.",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "internal_id",
+              "temp_data"
+            ],
+            "uniqueItems": true
           },
           "useCustomSortingKey": {
             "description": "Whether to use a custom sorting key. If true, sortingKeys must be provided. If false or omitted, the default sorting key is the MySQL primary key.",
@@ -13527,7 +14389,12 @@
             "description": "Ordered list of column names to use as the sorting (ORDER BY) key in ClickHouse. Only used when useCustomSortingKey is true. Column names must be unique within this list.",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "created_at_date",
+              "event_id"
+            ],
+            "uniqueItems": true
           },
           "tableEngine": {
             "description": "ClickHouse table engine: \"ReplacingMergeTree\" (handles updates/deletes), \"MergeTree\" (append-only), or \"Null\" (forward data to materialized views without storing it).",
@@ -13854,14 +14721,16 @@
             "description": "Table mappings to add to the pipe. Can be an empty array if no tables are being added.",
             "items": {
               "$ref": "#/components/schemas/ClickPipeMySQLPipeTableMapping"
-            }
+            },
+            "minItems": 0
           },
           "tableMappingsToRemove": {
             "type": "array",
             "description": "Table mappings to remove from the pipe. Only sourceSchemaName, sourceTable, and targetTable are required for removal.",
             "items": {
               "$ref": "#/components/schemas/ClickPipePatchMySQLPipeRemoveTableMapping"
-            }
+            },
+            "minItems": 0
           }
         },
         "required": [
@@ -14160,6 +15029,11 @@
             "type": "boolean",
             "example": false
           },
+          "skipCertVerification": {
+            "description": "Skip TLS certificate verification for the MongoDB connection. Use with caution in production environments.",
+            "type": "boolean",
+            "example": false
+          },
           "caCertificate": {
             "description": "PEM encoded CA certificate to validate the MongoDB server certificate.",
             "type": "string",
@@ -14210,6 +15084,11 @@
           },
           "disableTls": {
             "description": "Disable TLS for the MongoDB connection. Defaults to false (TLS enabled).",
+            "type": "boolean",
+            "example": false
+          },
+          "skipCertVerification": {
+            "description": "Skip TLS certificate verification for the MongoDB connection. Use with caution in production environments.",
             "type": "boolean",
             "example": false
           },
@@ -14280,6 +15159,14 @@
             ],
             "example": false
           },
+          "skipCertVerification": {
+            "description": "Skip TLS certificate verification for the MongoDB connection. Use with caution in production environments.",
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "example": false
+          },
           "caCertificate": {
             "description": "PEM encoded CA certificate to validate the MongoDB server certificate.",
             "type": [
@@ -14296,14 +15183,16 @@
             "description": "Collection mappings to add to the pipe. Can be an empty array if no collections are being added.",
             "items": {
               "$ref": "#/components/schemas/ClickPipeMongoDBPipeTableMapping"
-            }
+            },
+            "minItems": 0
           },
           "tableMappingsToRemove": {
             "type": "array",
             "description": "Collection mappings to remove from the pipe. Only sourceDatabaseName, sourceCollection, and targetTable are required for removal.",
             "items": {
               "$ref": "#/components/schemas/ClickPipePatchMongoDBPipeRemoveTableMapping"
-            }
+            },
+            "minItems": 0
           }
         },
         "required": [
@@ -14342,13 +15231,12 @@
             "example": "SERVICE_ACCOUNT"
           },
           "seekType": {
-            "description": "Starting position strategy for consuming the subscription. Companion fields (seekTimestamp, seekSnapshot) are required only when matching the seek type; setting a companion for a mismatched seek type is rejected.",
+            "description": "Starting position strategy for consuming the subscription. The seekTimestamp companion is required only when seekType is \"timestamp\"; setting it for a mismatched seek type is rejected.",
             "type": "string",
             "enum": [
               "latest",
               "earliest",
-              "timestamp",
-              "snapshot"
+              "timestamp"
             ],
             "example": "earliest"
           },
@@ -14360,13 +15248,6 @@
             ],
             "format": "date-time",
             "example": "2026-04-10T12:00:00Z"
-          },
-          "seekSnapshot": {
-            "description": "Pub/Sub snapshot identifier to seek to. Required when seekType is \"snapshot\"; must be omitted otherwise.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "filter": {
             "description": "Optional Pub/Sub subscription filter expression (CEL). Maximum 256 characters.",
@@ -14432,13 +15313,12 @@
             "example": "SERVICE_ACCOUNT"
           },
           "seekType": {
-            "description": "Starting position strategy for consuming the subscription. Companion fields (seekTimestamp, seekSnapshot) are required only when matching the seek type; setting a companion for a mismatched seek type is rejected.",
+            "description": "Starting position strategy for consuming the subscription. The seekTimestamp companion is required only when seekType is \"timestamp\"; setting it for a mismatched seek type is rejected.",
             "type": "string",
             "enum": [
               "latest",
               "earliest",
-              "timestamp",
-              "snapshot"
+              "timestamp"
             ],
             "example": "earliest"
           },
@@ -14450,13 +15330,6 @@
             ],
             "format": "date-time",
             "example": "2026-04-10T12:00:00Z"
-          },
-          "seekSnapshot": {
-            "description": "Pub/Sub snapshot identifier to seek to. Required when seekType is \"snapshot\"; must be omitted otherwise.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "filter": {
             "description": "Optional Pub/Sub subscription filter expression (CEL). Maximum 256 characters.",
@@ -15113,7 +15986,7 @@
           },
           "roles": {
             "type": "array",
-            "description": "ClickPipe will create a ClickHouse user with these roles. Add your custom roles here if required.",
+            "description": "Optional. Roles to grant to the ClickHouse user that ClickPipe creates. If omitted, the user is granted the default role (`default_role`). Add your custom roles here if required.",
             "items": {
               "type": "string"
             }
@@ -15137,7 +16010,7 @@
             "description": "CPU in millicores for DB ClickPipes.",
             "type": "integer",
             "minimum": 1000,
-            "maximum": 24000,
+            "maximum": 32000,
             "multipleOf": 1000,
             "example": 2000
           },
@@ -15145,7 +16018,7 @@
             "description": "Memory in GiB for DB ClickPipes. Must be 4× the CPU core count.",
             "type": "number",
             "minimum": 4,
-            "maximum": 96,
+            "maximum": 128,
             "multipleOf": 4,
             "example": 8
           }
@@ -15276,14 +16149,16 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Tag key. Must be alphanumeric with dashes, underscores and dots."
+            "description": "Tag key. Must be alphanumeric with dashes, underscores and dots.",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-zA-Z0-9._-]+$"
           },
           "value": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Tag value. Must be alphanumeric with dashes, underscores and dots."
+            "type": "string",
+            "description": "Tag value. Must be alphanumeric with dashes, underscores and dots.",
+            "maxLength": 256,
+            "pattern": "^[a-zA-Z0-9._-]+$"
           }
         },
         "required": [
@@ -15310,7 +16185,8 @@
             "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
             "items": {
               "type": "integer"
-            }
+            },
+            "minItems": 1
           },
           "startHourUtc": {
             "description": "UTC hour (0–23) when this entry becomes active (inclusive).",
@@ -15425,7 +16301,15 @@
             "description": "Days of the week this entry applies to. 0 = Sunday, 1 = Monday, …, 6 = Saturday.",
             "items": {
               "type": "integer"
-            }
+            },
+            "example": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "minItems": 1
           },
           "startHourUtc": {
             "description": "UTC hour (0–23) when this entry becomes active (inclusive).",
@@ -15840,7 +16724,8 @@
             "description": "Tags associated with the service.",
             "items": {
               "$ref": "#/components/schemas/ResourceTagsV1"
-            }
+            },
+            "maxItems": 50
           },
           "enableCoreDumps": {
             "description": "True if the service's underline infra is enabled for collecting core dumps. This is an experimental feature",
@@ -15940,14 +16825,16 @@
             "description": "Elements to add. Executed after \"remove\" part is processed.",
             "items": {
               "$ref": "#/components/schemas/ResourceTagsV1"
-            }
+            },
+            "maxItems": 50
           },
           "remove": {
             "type": "array",
             "description": "Elements to remove. Executed before \"add\" part is processed.",
             "items": {
               "$ref": "#/components/schemas/ResourceTagsV1"
-            }
+            },
+            "maxItems": 50
           }
         }
       },
@@ -16550,6 +17437,260 @@
           }
         }
       },
+      "CustomPrivateDnsMapping": {
+        "properties": {
+          "privateDnsName": {
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "type": "string",
+            "example": "*.my-service.example.com"
+          }
+        }
+      },
+      "CreateReversePrivateEndpoint": {
+        "properties": {
+          "description": {
+            "description": "Reverse private endpoint description. Maximum length is 255 characters.",
+            "type": "string",
+            "example": "My reverse private endpoint"
+          },
+          "type": {
+            "description": "Reverse private endpoint type.",
+            "type": "string",
+            "enum": [
+              "VPC_ENDPOINT_SERVICE",
+              "VPC_RESOURCE",
+              "MSK_MULTI_VPC",
+              "GCP_PSC_SERVICE_ATTACHMENT"
+            ],
+            "example": "VPC_ENDPOINT_SERVICE"
+          },
+          "vpcEndpointServiceName": {
+            "description": "VPC endpoint service name.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "com.amazonaws.vpce.us-east-1.vpce-svc-12345678901234567"
+          },
+          "vpcResourceConfigurationId": {
+            "description": "VPC resource configuration ID. Required for VPC_RESOURCE type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "rcfg-12345678901234567"
+          },
+          "vpcResourceShareArn": {
+            "description": "VPC resource share ARN. Required for VPC_RESOURCE type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "arn:aws:ram:us-east-1:123456789012:resource-share/share-12345678901234567"
+          },
+          "mskClusterArn": {
+            "description": "MSK cluster ARN. Required for MSK_MULTI_VPC type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster"
+          },
+          "mskAuthentication": {
+            "description": "MSK cluster authentication type. Required for MSK_MULTI_VPC type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "SASL_IAM",
+              "SASL_SCRAM"
+            ],
+            "example": "SASL_IAM"
+          },
+          "gcpServiceAttachment": {
+            "description": "Private Preview. GCP PSC service attachment URI. Required for GCP_PSC_SERVICE_ATTACHMENT type. Format: projects/{project}/regions/{region}/serviceAttachments/{name}.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
+          },
+          "customPrivateDnsMappings": {
+            "type": "array",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "items": {
+              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
+            },
+            "example": [
+              {
+                "privateDnsName": "my-service.example.com"
+              },
+              {
+                "privateDnsName": "*.example.com"
+              }
+            ]
+          }
+        }
+      },
+      "UpdateReversePrivateEndpoint": {
+        "properties": {
+          "customPrivateDnsMappings": {
+            "type": "array",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "items": {
+              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
+            },
+            "example": [
+              {
+                "privateDnsName": "my-service.example.com"
+              },
+              {
+                "privateDnsName": "*.example.com"
+              }
+            ]
+          }
+        }
+      },
+      "ReversePrivateEndpoint": {
+        "properties": {
+          "description": {
+            "description": "Reverse private endpoint description. Maximum length is 255 characters.",
+            "type": "string",
+            "example": "My reverse private endpoint"
+          },
+          "type": {
+            "description": "Reverse private endpoint type.",
+            "type": "string",
+            "enum": [
+              "VPC_ENDPOINT_SERVICE",
+              "VPC_RESOURCE",
+              "MSK_MULTI_VPC",
+              "GCP_PSC_SERVICE_ATTACHMENT"
+            ],
+            "example": "VPC_ENDPOINT_SERVICE"
+          },
+          "vpcEndpointServiceName": {
+            "description": "VPC endpoint service name.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "com.amazonaws.vpce.us-east-1.vpce-svc-12345678901234567"
+          },
+          "vpcResourceConfigurationId": {
+            "description": "VPC resource configuration ID. Required for VPC_RESOURCE type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "rcfg-12345678901234567"
+          },
+          "vpcResourceShareArn": {
+            "description": "VPC resource share ARN. Required for VPC_RESOURCE type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "arn:aws:ram:us-east-1:123456789012:resource-share/share-12345678901234567"
+          },
+          "mskClusterArn": {
+            "description": "MSK cluster ARN. Required for MSK_MULTI_VPC type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster"
+          },
+          "mskAuthentication": {
+            "description": "MSK cluster authentication type. Required for MSK_MULTI_VPC type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "SASL_IAM",
+              "SASL_SCRAM"
+            ],
+            "example": "SASL_IAM"
+          },
+          "gcpServiceAttachment": {
+            "description": "Private Preview. GCP PSC service attachment URI. Required for GCP_PSC_SERVICE_ATTACHMENT type. Format: projects/{project}/regions/{region}/serviceAttachments/{name}.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
+          },
+          "customPrivateDnsMappings": {
+            "type": "array",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "items": {
+              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
+            },
+            "example": [
+              {
+                "privateDnsName": "my-service.example.com"
+              },
+              {
+                "privateDnsName": "*.example.com"
+              }
+            ]
+          },
+          "id": {
+            "description": "Reverse private endpoint ID.",
+            "type": "string",
+            "format": "uuid",
+            "example": "12345678-1234-1234-1234-123456789012"
+          },
+          "serviceId": {
+            "description": "ClickHouse service ID reverse private endpoint is associated with.",
+            "type": "string",
+            "format": "uuid",
+            "example": "12345678-1234-1234-1234-123456789012"
+          },
+          "endpointId": {
+            "description": "Reverse private endpoint endpoint ID.",
+            "type": "string",
+            "example": "vpce-12345678901234567"
+          },
+          "dnsNames": {
+            "type": "array",
+            "description": "Reverse private endpoint internal DNS names.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "vpce-12345678901234567-abcdefg.execute-api.us-east-1.vpce.amazonaws.com"
+            ]
+          },
+          "privateDnsNames": {
+            "type": "array",
+            "description": "Reverse private endpoint private DNS names.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "vpce-12345678901234567-abcdefg.execute-api.us-east-1.vpce.amazonaws.com"
+            ]
+          },
+          "status": {
+            "description": "Reverse private endpoint status.",
+            "type": "string",
+            "enum": [
+              "Unknown",
+              "Provisioning",
+              "Deleting",
+              "Ready",
+              "Failed",
+              "PendingAcceptance",
+              "Rejected",
+              "Expired"
+            ],
+            "example": "Ready"
+          }
+        }
+      },
       "Activity": {
         "properties": {
           "id": {
@@ -16994,7 +18135,7 @@
             "type": "number"
           },
           "backupRetentionPeriodInHours": {
-            "description": "The minimum duration in hours for which the backups are available.",
+            "description": "The minimum duration in hours for which the backups are available. Must be a whole number of days between 24 (1 day) and 1080 (45 days) — i.e. a multiple of 24.",
             "type": "number"
           },
           "backupStartTime": {
@@ -17066,219 +18207,6 @@
                 "$ref": "#/components/schemas/AzureBackupBucketProperties"
               }
             ]
-          }
-        }
-      },
-      "CustomPrivateDnsMapping": {
-        "properties": {
-          "privateDnsName": {
-            "description": "Custom private DNS name managed by the DNS controller. No Route53 hosted zone is required.",
-            "type": "string",
-            "example": "my-service.example.com"
-          }
-        }
-      },
-      "CreateReversePrivateEndpoint": {
-        "properties": {
-          "description": {
-            "description": "Reverse private endpoint description. Maximum length is 255 characters.",
-            "type": "string",
-            "example": "My reverse private endpoint"
-          },
-          "type": {
-            "description": "Reverse private endpoint type.",
-            "type": "string",
-            "enum": [
-              "VPC_ENDPOINT_SERVICE",
-              "VPC_RESOURCE",
-              "MSK_MULTI_VPC",
-              "GCP_PSC_SERVICE_ATTACHMENT"
-            ],
-            "example": "VPC_ENDPOINT_SERVICE"
-          },
-          "vpcEndpointServiceName": {
-            "description": "VPC endpoint service name.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "com.amazonaws.vpce.us-east-1.vpce-svc-12345678901234567"
-          },
-          "vpcResourceConfigurationId": {
-            "description": "VPC resource configuration ID. Required for VPC_RESOURCE type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "rcfg-12345678901234567"
-          },
-          "vpcResourceShareArn": {
-            "description": "VPC resource share ARN. Required for VPC_RESOURCE type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "arn:aws:ram:us-east-1:123456789012:resource-share/share-12345678901234567"
-          },
-          "mskClusterArn": {
-            "description": "MSK cluster ARN. Required for MSK_MULTI_VPC type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster"
-          },
-          "mskAuthentication": {
-            "description": "MSK cluster authentication type. Required for MSK_MULTI_VPC type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "SASL_IAM",
-              "SASL_SCRAM"
-            ],
-            "example": "SASL_IAM"
-          },
-          "gcpServiceAttachment": {
-            "description": "Private Preview. GCP PSC service attachment URI. Required for GCP_PSC_SERVICE_ATTACHMENT type. Format: projects/{project}/regions/{region}/serviceAttachments/{name}.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
-          },
-          "customPrivateDnsMappings": {
-            "type": "array",
-            "description": "Private Preview. Optional list of custom private DNS mappings. Each mapping points a private DNS name at this endpoint without creating a Route53 hosted zone.",
-            "items": {
-              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
-            }
-          }
-        }
-      },
-      "ReversePrivateEndpoint": {
-        "properties": {
-          "description": {
-            "description": "Reverse private endpoint description. Maximum length is 255 characters.",
-            "type": "string",
-            "example": "My reverse private endpoint"
-          },
-          "type": {
-            "description": "Reverse private endpoint type.",
-            "type": "string",
-            "enum": [
-              "VPC_ENDPOINT_SERVICE",
-              "VPC_RESOURCE",
-              "MSK_MULTI_VPC",
-              "GCP_PSC_SERVICE_ATTACHMENT"
-            ],
-            "example": "VPC_ENDPOINT_SERVICE"
-          },
-          "vpcEndpointServiceName": {
-            "description": "VPC endpoint service name.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "com.amazonaws.vpce.us-east-1.vpce-svc-12345678901234567"
-          },
-          "vpcResourceConfigurationId": {
-            "description": "VPC resource configuration ID. Required for VPC_RESOURCE type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "rcfg-12345678901234567"
-          },
-          "vpcResourceShareArn": {
-            "description": "VPC resource share ARN. Required for VPC_RESOURCE type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "arn:aws:ram:us-east-1:123456789012:resource-share/share-12345678901234567"
-          },
-          "mskClusterArn": {
-            "description": "MSK cluster ARN. Required for MSK_MULTI_VPC type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster"
-          },
-          "mskAuthentication": {
-            "description": "MSK cluster authentication type. Required for MSK_MULTI_VPC type.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "enum": [
-              "SASL_IAM",
-              "SASL_SCRAM"
-            ],
-            "example": "SASL_IAM"
-          },
-          "gcpServiceAttachment": {
-            "description": "Private Preview. GCP PSC service attachment URI. Required for GCP_PSC_SERVICE_ATTACHMENT type. Format: projects/{project}/regions/{region}/serviceAttachments/{name}.",
-            "type": [
-              "string",
-              "null"
-            ],
-            "example": "projects/my-project/regions/us-central1/serviceAttachments/my-service"
-          },
-          "customPrivateDnsMappings": {
-            "type": "array",
-            "description": "Private Preview. Optional list of custom private DNS mappings. Each mapping points a private DNS name at this endpoint without creating a Route53 hosted zone.",
-            "items": {
-              "$ref": "#/components/schemas/CustomPrivateDnsMapping"
-            }
-          },
-          "id": {
-            "description": "Reverse private endpoint ID.",
-            "type": "string",
-            "format": "uuid",
-            "example": "12345678-1234-1234-1234-123456789012"
-          },
-          "serviceId": {
-            "description": "ClickHouse service ID reverse private endpoint is associated with.",
-            "type": "string",
-            "format": "uuid",
-            "example": "12345678-1234-1234-1234-123456789012"
-          },
-          "endpointId": {
-            "description": "Reverse private endpoint endpoint ID.",
-            "type": "string",
-            "example": "vpce-12345678901234567"
-          },
-          "dnsNames": {
-            "type": "array",
-            "description": "Reverse private endpoint internal DNS names.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "privateDnsNames": {
-            "type": "array",
-            "description": "Reverse private endpoint private DNS names.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "status": {
-            "description": "Reverse private endpoint status.",
-            "type": "string",
-            "enum": [
-              "Unknown",
-              "Provisioning",
-              "Deleting",
-              "Ready",
-              "Failed",
-              "PendingAcceptance",
-              "Rejected",
-              "Expired"
-            ],
-            "example": "Ready"
           }
         }
       },
@@ -18068,7 +18996,10 @@
             "description": "Fields to group results by (creates separate series for each group)",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "host"
+            ]
           },
           "numberFormat": {
             "$ref": "#/components/schemas/ClickStackNumberFormat"
@@ -18175,7 +19106,10 @@
             "description": "Fields to group results by (creates separate rows for each group)",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "errorType"
+            ]
           },
           "sortOrder": {
             "description": "Sort order for table rows",
@@ -18326,7 +19260,12 @@
             "description": "List of field names to display in the search results table",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "timestamp",
+              "level",
+              "message"
+            ]
           },
           "where": {
             "description": "Filter query for the data (syntax depends on whereLanguage)",
@@ -19650,7 +20589,10 @@
             "description": "Tags for organizing and filtering dashboards.",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "development"
+            ]
           },
           "filters": {
             "type": "array",
@@ -19718,7 +20660,11 @@
             "description": "Tags for organizing and filtering dashboards.",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "production",
+              "updated"
+            ]
           },
           "filters": {
             "type": "array",
@@ -19791,7 +20737,11 @@
             "description": "Tags for organizing and filtering dashboards",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "production",
+              "monitoring"
+            ]
           },
           "filters": {
             "type": "array",
@@ -21052,6 +22002,32 @@
           }
         }
       },
+      "License": {
+        "properties": {
+          "id": {
+            "description": "Unique license ID.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "description": "User-provided name for the license.",
+            "type": "string"
+          },
+          "expiration": {
+            "description": "Expiration timestamp. ISO-8601.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "memory": {
+            "description": "Memory reserved for license.",
+            "type": "string"
+          },
+          "environmentFingerprint": {
+            "description": "Environment fingerprint generated by private infrastructure.",
+            "type": "string"
+          }
+        }
+      },
       "ScimUserName": {
         "properties": {
           "formatted": {
@@ -21282,7 +22258,10 @@
             "description": "SCIM schemas URIs. Should include \"urn:ietf:params:scim:schemas:core:2.0:User\".",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "urn:ietf:params:scim:schemas:core:2.0:User"
+            ]
           },
           "id": {
             "description": "Unique identifier for the SCIM resource. Returned by the server.",
@@ -21461,7 +22440,10 @@
             "description": "SCIM schemas URIs. Should include \"urn:ietf:params:scim:schemas:core:2.0:User\".",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "urn:ietf:params:scim:schemas:core:2.0:User"
+            ]
           },
           "userName": {
             "description": "Unique identifier for the User, typically used by the user to directly authenticate to the service provider.",
@@ -21680,7 +22662,10 @@
             "description": "SCIM schemas URIs. Should include \"urn:ietf:params:scim:schemas:core:2.0:User\".",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "urn:ietf:params:scim:schemas:core:2.0:User"
+            ]
           },
           "userName": {
             "description": "Unique identifier for the User, typically used by the user to directly authenticate to the service provider.",
@@ -21868,7 +22853,10 @@
             "description": "SCIM schema URIs. Must include \"urn:ietf:params:scim:schemas:core:2.0:Group\".",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "urn:ietf:params:scim:schemas:core:2.0:Group"
+            ]
           },
           "id": {
             "description": "Unique identifier for this Group (corresponds to Role ID).",
@@ -21908,7 +22896,10 @@
             "description": "SCIM schema URIs. Must include \"urn:ietf:params:scim:schemas:core:2.0:Group\".",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "urn:ietf:params:scim:schemas:core:2.0:Group"
+            ]
           },
           "externalId": {
             "description": "Identifier for the resource as defined by the provisioning client.",
@@ -21938,7 +22929,10 @@
             "description": "SCIM schema URIs. Must include \"urn:ietf:params:scim:schemas:core:2.0:Group\".",
             "items": {
               "type": "string"
-            }
+            },
+            "example": [
+              "urn:ietf:params:scim:schemas:core:2.0:Group"
+            ]
           },
           "externalId": {
             "description": "Identifier for the resource as defined by the provisioning client.",
@@ -22610,7 +23604,11 @@
             "description": "List of allowed values, if the setting is an enum.",
             "items": {
               "type": "integer"
-            }
+            },
+            "example": [
+              0,
+              1
+            ]
           },
           "warning": {
             "description": "Warning message about potential disruptive effects of changing this setting.",
@@ -22646,7 +23644,10 @@
         "description": "Postgres [runtime configuration](https://www.postgresql.org/docs/current/runtime-config.html) configuration.",
         "properties": {
           "max_connections": {
-            "type": "integer",
+            "type": [
+              "string",
+              "integer"
+            ],
             "description": "Sets the maximum number of concurrent connections to the database server.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/max_connections/"
@@ -22718,7 +23719,10 @@
             "minimum": 8
           },
           "random_page_cost": {
-            "type": "number",
+            "type": [
+              "string",
+              "number"
+            ],
             "description": "Sets the planner's estimate of the cost of a non-sequentially-fetched disk page. Lower values (1.1-1.5) are better for SSDs.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/random_page_cost/"
@@ -22727,7 +23731,10 @@
             "minimum": 0
           },
           "effective_io_concurrency": {
-            "type": "integer",
+            "type": [
+              "string",
+              "integer"
+            ],
             "description": "Number of concurrent disk I/O operations the planner expects. Higher values (100-200) benefit SSDs.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/effective_io_concurrency/"
@@ -22736,7 +23743,10 @@
             "minimum": 0
           },
           "max_worker_processes": {
-            "type": "integer",
+            "type": [
+              "string",
+              "integer"
+            ],
             "description": "Maximum number of background processes the system can support. Includes parallel query workers, logical replication, and more.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/max_worker_processes/"
@@ -22745,7 +23755,10 @@
             "minimum": 0
           },
           "max_parallel_workers": {
-            "type": "integer",
+            "type": [
+              "string",
+              "integer"
+            ],
             "description": "Maximum number of workers that can be used for parallel operations. Cannot exceed max_worker_processes.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/max_parallel_workers/"
@@ -22754,7 +23767,10 @@
             "minimum": 0
           },
           "max_parallel_workers_per_gather": {
-            "type": "integer",
+            "type": [
+              "string",
+              "integer"
+            ],
             "description": "Maximum number of parallel workers per executor node for parallel queries. Use 0 to disable parallel queries.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/max_parallel_workers_per_gather/"
@@ -22763,7 +23779,10 @@
             "minimum": 0
           },
           "max_parallel_maintenance_workers": {
-            "type": "integer",
+            "type": [
+              "string",
+              "integer"
+            ],
             "description": "Maximum number of parallel workers for maintenance operations like CREATE INDEX and VACUUM.",
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/max_parallel_maintenance_workers/"
@@ -23047,8 +24066,7 @@
         "title": "Postgres major version",
         "enum": [
           "18",
-          "17",
-          "16"
+          "17"
         ]
       },
       "pgTags": {
@@ -23056,6 +24074,7 @@
         "items": {
           "$ref": "#/components/schemas/ResourceTagsV1"
         },
+        "maxItems": 50,
         "title": "Postgres Tags",
         "description": "Tags associated with the Postgres service. Tag keys starting with “chc_” are reserved for internal use."
       },
@@ -23219,6 +24238,9 @@
       },
       "PostgresServicePatchRequest": {
         "properties": {
+          "name": {
+            "$ref": "#/components/schemas/pgNameProperty"
+          },
           "size": {
             "$ref": "#/components/schemas/pgSize"
           },
@@ -23392,6 +24414,424 @@
         "required": [
           "pgConfig",
           "pgBouncerConfig"
+        ]
+      },
+      "PostgresMetricDataPoint": {
+        "properties": {
+          "timestamp": {
+            "description": "Bucket start time as a Unix timestamp in seconds.",
+            "type": "integer"
+          },
+          "value": {
+            "description": "Metric value for the bucket.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "timestamp",
+          "value"
+        ]
+      },
+      "PostgresMetricSeries": {
+        "properties": {
+          "label": {
+            "description": "Distinguishing label for this series within the metric (for example a CPU mode, a database name, or \"Reads\").",
+            "type": "string"
+          },
+          "dataPoints": {
+            "type": "array",
+            "description": "Time-ordered data points, one per bucket.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresMetricDataPoint"
+            }
+          }
+        },
+        "required": [
+          "label",
+          "dataPoints"
+        ]
+      },
+      "PostgresMetric": {
+        "properties": {
+          "key": {
+            "description": "Stable metric identifier (for example cpu_usage, connection_count, cache_hit_ratio).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Human-readable metric name.",
+            "type": "string"
+          },
+          "unit": {
+            "description": "Unit of the metric values (for example %, IOPS, bytes/s, count).",
+            "type": "string"
+          },
+          "description": {
+            "description": "Human-readable description of what the metric measures.",
+            "type": "string"
+          },
+          "series": {
+            "type": "array",
+            "description": "One series per label dimension of the metric.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresMetricSeries"
+            }
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "unit",
+          "description",
+          "series"
+        ]
+      },
+      "PostgresMetrics": {
+        "properties": {
+          "metrics": {
+            "type": "array",
+            "description": "Available metrics, each with its bucketed time series.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresMetric"
+            }
+          }
+        },
+        "required": [
+          "metrics"
+        ]
+      },
+      "PostgresSlowQueryPattern": {
+        "properties": {
+          "queryId": {
+            "description": "Stable identifier for the query pattern (normalized SQL).",
+            "type": "string"
+          },
+          "queryText": {
+            "description": "Normalized query text with literals replaced by placeholders.",
+            "type": "string"
+          },
+          "dbName": {
+            "description": "Database the query ran in.",
+            "type": "string"
+          },
+          "dbUser": {
+            "description": "Database user that executed the query.",
+            "type": "string"
+          },
+          "dbOperation": {
+            "description": "Top-level SQL operation type (for example, SELECT, INSERT, UPDATE, DELETE, UTILITY).",
+            "type": "string"
+          },
+          "app": {
+            "description": "Value of the Postgres `application_name` for executions matching this pattern.",
+            "type": "string"
+          },
+          "callCount": {
+            "description": "Number of times the pattern executed in the window.",
+            "type": "integer"
+          },
+          "errorCount": {
+            "description": "Number of executions of the pattern that raised an error.",
+            "type": "integer"
+          },
+          "totalDurationUs": {
+            "description": "Total execution time across all calls, in microseconds.",
+            "type": "integer"
+          },
+          "avgDurationUs": {
+            "description": "Average execution time per call, in microseconds.",
+            "type": "integer"
+          },
+          "maxDurationUs": {
+            "description": "Maximum execution time of any call, in microseconds.",
+            "type": "integer"
+          },
+          "p50DurationUs": {
+            "description": "50th percentile execution time, in microseconds.",
+            "type": "integer"
+          },
+          "p95DurationUs": {
+            "description": "95th percentile execution time, in microseconds.",
+            "type": "integer"
+          },
+          "p99DurationUs": {
+            "description": "99th percentile execution time, in microseconds.",
+            "type": "integer"
+          },
+          "totalRows": {
+            "description": "Total number of rows returned or affected across all calls.",
+            "type": "integer"
+          },
+          "totalSharedBlksRead": {
+            "description": "Total shared buffer blocks read from disk (cache misses) across all calls.",
+            "type": "integer"
+          },
+          "totalSharedBlksHit": {
+            "description": "Total shared buffer blocks hit (cache hits) across all calls.",
+            "type": "integer"
+          },
+          "totalCpuTimeUs": {
+            "description": "Total CPU time across all calls, in microseconds.",
+            "type": "integer"
+          },
+          "totalWalBytes": {
+            "description": "Total WAL (write-ahead log) bytes generated across all calls.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "queryId",
+          "queryText",
+          "dbName",
+          "dbUser",
+          "dbOperation",
+          "app",
+          "callCount",
+          "errorCount",
+          "totalDurationUs",
+          "avgDurationUs",
+          "maxDurationUs",
+          "p50DurationUs",
+          "p95DurationUs",
+          "p99DurationUs",
+          "totalRows",
+          "totalSharedBlksRead",
+          "totalSharedBlksHit",
+          "totalCpuTimeUs",
+          "totalWalBytes"
+        ]
+      },
+      "PostgresQueryExecution": {
+        "properties": {
+          "timestamp": {
+            "description": "Execution timestamp (RFC 3339).",
+            "type": "string",
+            "format": "date-time"
+          },
+          "queryId": {
+            "description": "Stable identifier for the query pattern.",
+            "type": "string"
+          },
+          "dbName": {
+            "description": "Database the query ran in.",
+            "type": "string"
+          },
+          "dbUser": {
+            "description": "Database user that executed the query.",
+            "type": "string"
+          },
+          "dbOperation": {
+            "description": "Top-level SQL operation type.",
+            "type": "string"
+          },
+          "app": {
+            "description": "Value of the Postgres `application_name` for this execution.",
+            "type": "string"
+          },
+          "queryText": {
+            "description": "Normalized query text for this execution.",
+            "type": "string"
+          },
+          "pid": {
+            "description": "Postgres backend process ID that executed the query.",
+            "type": "string"
+          },
+          "durationUs": {
+            "description": "Execution duration in microseconds.",
+            "type": "integer"
+          },
+          "rows": {
+            "description": "Rows returned or affected.",
+            "type": "integer"
+          },
+          "sharedBlksHit": {
+            "description": "Shared buffer blocks hit.",
+            "type": "integer"
+          },
+          "sharedBlksRead": {
+            "description": "Shared buffer blocks read from disk.",
+            "type": "integer"
+          },
+          "sharedBlksWritten": {
+            "description": "Shared buffer blocks written.",
+            "type": "integer"
+          },
+          "sharedBlksDirtied": {
+            "description": "Shared buffer blocks dirtied.",
+            "type": "integer"
+          },
+          "sharedBlkReadTimeUs": {
+            "description": "Time spent reading shared blocks, in microseconds.",
+            "type": "integer"
+          },
+          "sharedBlkWriteTimeUs": {
+            "description": "Time spent writing shared blocks, in microseconds.",
+            "type": "integer"
+          },
+          "localBlksHit": {
+            "description": "Local buffer blocks hit (temp tables).",
+            "type": "integer"
+          },
+          "localBlksRead": {
+            "description": "Local buffer blocks read (temp tables).",
+            "type": "integer"
+          },
+          "localBlksWritten": {
+            "description": "Local buffer blocks written (temp tables).",
+            "type": "integer"
+          },
+          "localBlksDirtied": {
+            "description": "Local buffer blocks dirtied (temp tables).",
+            "type": "integer"
+          },
+          "tempBlksRead": {
+            "description": "Temp blocks read (spills to disk).",
+            "type": "integer"
+          },
+          "tempBlksWritten": {
+            "description": "Temp blocks written (spills to disk).",
+            "type": "integer"
+          },
+          "tempBlkReadTimeUs": {
+            "description": "Time spent reading temp blocks, in microseconds.",
+            "type": "integer"
+          },
+          "tempBlkWriteTimeUs": {
+            "description": "Time spent writing temp blocks, in microseconds.",
+            "type": "integer"
+          },
+          "walRecords": {
+            "description": "Number of WAL records produced.",
+            "type": "integer"
+          },
+          "walBytes": {
+            "description": "Number of WAL bytes produced.",
+            "type": "integer"
+          },
+          "walFpi": {
+            "description": "Number of WAL full-page images produced.",
+            "type": "integer"
+          },
+          "cpuUserTimeUs": {
+            "description": "CPU time spent in user mode, in microseconds.",
+            "type": "integer"
+          },
+          "cpuSysTimeUs": {
+            "description": "CPU time spent in kernel mode, in microseconds.",
+            "type": "integer"
+          },
+          "jitFunctions": {
+            "description": "Number of JIT-compiled functions.",
+            "type": "integer"
+          },
+          "jitGenerationTimeUs": {
+            "description": "JIT generation time, in microseconds.",
+            "type": "integer"
+          },
+          "jitInliningTimeUs": {
+            "description": "JIT inlining time, in microseconds.",
+            "type": "integer"
+          },
+          "jitOptimizationTimeUs": {
+            "description": "JIT optimization time, in microseconds.",
+            "type": "integer"
+          },
+          "jitEmissionTimeUs": {
+            "description": "JIT emission time, in microseconds.",
+            "type": "integer"
+          },
+          "jitDeformTimeUs": {
+            "description": "JIT deform time, in microseconds.",
+            "type": "integer"
+          },
+          "parallelWorkersPlanned": {
+            "description": "Parallel workers planned for this execution.",
+            "type": "integer"
+          },
+          "parallelWorkersLaunched": {
+            "description": "Parallel workers actually launched for this execution.",
+            "type": "integer"
+          },
+          "errMessage": {
+            "description": "Error message if the execution raised an error.",
+            "type": "string"
+          },
+          "errSqlstate": {
+            "description": "Postgres SQLSTATE code if the execution raised an error.",
+            "type": "string"
+          },
+          "errElevel": {
+            "description": "Postgres error severity level if the execution raised an error.",
+            "type": "integer"
+          },
+          "serverRole": {
+            "description": "Role of the server that executed the query (for example, primary or standby).",
+            "type": "string"
+          },
+          "traceId": {
+            "description": "OpenTelemetry trace ID associated with the execution.",
+            "type": "string"
+          },
+          "spanId": {
+            "description": "OpenTelemetry span ID associated with the execution.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "queryId",
+          "dbName",
+          "dbUser",
+          "dbOperation",
+          "app",
+          "queryText",
+          "pid",
+          "durationUs",
+          "rows",
+          "sharedBlksHit",
+          "sharedBlksRead",
+          "sharedBlksWritten",
+          "sharedBlksDirtied",
+          "sharedBlkReadTimeUs",
+          "sharedBlkWriteTimeUs",
+          "localBlksHit",
+          "localBlksRead",
+          "localBlksWritten",
+          "localBlksDirtied",
+          "tempBlksRead",
+          "tempBlksWritten",
+          "tempBlkReadTimeUs",
+          "tempBlkWriteTimeUs",
+          "walRecords",
+          "walBytes",
+          "walFpi",
+          "cpuUserTimeUs",
+          "cpuSysTimeUs",
+          "jitFunctions",
+          "jitGenerationTimeUs",
+          "jitInliningTimeUs",
+          "jitOptimizationTimeUs",
+          "jitEmissionTimeUs",
+          "jitDeformTimeUs",
+          "parallelWorkersPlanned",
+          "parallelWorkersLaunched",
+          "serverRole"
+        ]
+      },
+      "PostgresSlowQueryPatternDetail": {
+        "properties": {
+          "aggregate": {
+            "$ref": "#/components/schemas/PostgresSlowQueryPattern"
+          },
+          "recentExecutions": {
+            "type": "array",
+            "description": "Recent individual executions matching the pattern.",
+            "items": {
+              "$ref": "#/components/schemas/PostgresQueryExecution"
+            }
+          }
+        },
+        "required": [
+          "recentExecutions"
         ]
       },
       "UpgradeWindow": {
@@ -23709,7 +25149,8 @@
             "description": "Tags associated with the service.",
             "items": {
               "$ref": "#/components/schemas/ResourceTagsV1"
-            }
+            },
+            "maxItems": 50
           },
           "enableCoreDumps": {
             "description": "Enables the underlying infra for collecting core dumps. Default is enabled.",
@@ -24081,7 +25522,8 @@
             "description": "Tags associated with the service.",
             "items": {
               "$ref": "#/components/schemas/ResourceTagsV1"
-            }
+            },
+            "maxItems": 50
           },
           "enableCoreDumps": {
             "description": "True if the service's underline infra is enabled for collecting core dumps. This is an experimental feature",
@@ -24206,7 +25648,7 @@
             "type": "number"
           },
           "backupRetentionPeriodInHours": {
-            "description": "The minimum duration in hours for which the backups are available.",
+            "description": "The minimum duration in hours for which the backups are available. Must be a whole number of days between 24 (1 day) and 1080 (45 days) — i.e. a multiple of 24.",
             "type": "number"
           },
           "backupStartTime": {
@@ -24517,7 +25959,7 @@
             "description": "CPU in millicores for DB ClickPipes.",
             "type": "integer",
             "minimum": 1000,
-            "maximum": 24000,
+            "maximum": 32000,
             "multipleOf": 1000,
             "example": 2000
           },
@@ -24525,7 +25967,7 @@
             "description": "Memory in GiB for DB ClickPipes. Must be 4× the CPU core count.",
             "type": "number",
             "minimum": 4,
-            "maximum": 96,
+            "maximum": 128,
             "multipleOf": 4,
             "example": 8
           }

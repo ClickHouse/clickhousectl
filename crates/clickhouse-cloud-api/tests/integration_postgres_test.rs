@@ -353,6 +353,23 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
 
         // ── Read Replica ────────────────────────────────────────────
         //
+        // The replica create is retried for up to the steady-state timeout:
+        // the live API rejects a read-replica create against a primary that
+        // hasn't taken its first backup yet (`400 ... no backups, yet.` /
+        // `... not ready for read replicas`), and that backup lands some
+        // time after the primary reaches `running`. Without the retry the
+        // flake just moves from the wait-for-running step to the create
+        // step.
+        //
+        // The test does NOT poll the replica to `running`. Provisioning a
+        // replica can take longer than the steady-state timeout (observed
+        // 30+ min when the API accepts a create against a backup-less
+        // primary), and the test only needs to prove the API surface works,
+        // not that provisioning completes. So we assert the create response
+        // shape, that the replica is visible in list/get (in any state),
+        // and then tear it down — deleting a still-provisioning replica is
+        // proven safe (prior failed runs deleted stuck replicas in ~11s).
+        //
         // Cleanup-order note: the live API refuses to delete a primary while
         // any read replica still references it, so the replica MUST be torn
         // down BEFORE the primary. We rely on two complementary mechanisms:
@@ -392,14 +409,31 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         tags: Some(replica_tags.clone()),
                         ..Default::default()
                     };
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
                     async move {
-                        let resp = client
-                            .postgres_instance_create_read_replica(
-                                &org_id,
-                                &postgres_id,
-                                &body,
-                            )
-                            .await?;
+                        let resp = retry_api_call(
+                            "create postgres read replica",
+                            timeout,
+                            interval,
+                            || {
+                                let client = client.clone();
+                                let org_id = org_id.clone();
+                                let postgres_id = postgres_id.clone();
+                                let body = body.clone();
+                                async move {
+                                    client
+                                        .postgres_instance_create_read_replica(
+                                            &org_id,
+                                            &postgres_id,
+                                            &body,
+                                        )
+                                        .await
+                                }
+                            },
+                            is_no_backups_yet_error,
+                        )
+                        .await?;
                         resp.result.ok_or_else(|| {
                             "postgres read replica create returned no result".into()
                         })
@@ -415,81 +449,42 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         // step cannot leak the replica.
         cleanup.register_postgres_replica(replica_id.clone());
 
-        // The create response should mark the new service as a replica.
-        // Soft-assert via the FailureRecorder so spec drift on this single
-        // field doesn't take the whole run down.
-        let replica_was_primary_on_create = replica.is_primary;
+        // The create response should mark the new service as a replica with
+        // the requested name and a non-empty state. Soft-assert via the
+        // FailureRecorder so spec drift on a single field doesn't take the
+        // whole run down. We deliberately do NOT wait for `running`: see the
+        // phase header comment.
+        let replica_is_primary_on_create = replica.is_primary;
         let replica_name_on_create = replica.name.clone();
+        let replica_state_on_create = replica.state.to_string();
+        let expected_replica_name = ctx.postgres_replica_name();
         failures
             .run(
                 &ctx,
                 StepKind::NonBlocking,
-                "verify replica create response marks is_primary=false",
+                "verify replica create response shape",
                 || async move {
-                    if replica_was_primary_on_create {
+                    if replica_is_primary_on_create {
                         return Err(format!(
                             "expected replica `{replica_name_on_create}` to have isPrimary=false on create response"
                         )
                         .into());
                     }
+                    if replica_name_on_create != expected_replica_name {
+                        return Err(format!(
+                            "replica name `{replica_name_on_create}` did not match expected `{expected_replica_name}`"
+                        )
+                        .into());
+                    }
+                    if replica_state_on_create.is_empty() {
+                        return Err(
+                            "replica create response returned empty state".into(),
+                        );
+                    }
                     Ok(())
                 },
             )
             .await?;
-
-        let replica_ready = failures
-            .run(
-                &ctx,
-                StepKind::Blocking,
-                "wait for postgres read replica running",
-                || {
-                    let client = client.clone();
-                    let org_id = ctx.org_id.clone();
-                    let replica_id = replica_id.clone();
-                    async move {
-                        poll_until(
-                            "postgres replica running state",
-                            ctx.steady_state_timeout,
-                            ctx.poll_interval,
-                            || {
-                                let client = client.clone();
-                                let org_id = org_id.clone();
-                                let replica_id = replica_id.clone();
-                                async move {
-                                    let resp = client
-                                        .postgres_service_get(&org_id, &replica_id)
-                                        .await?;
-                                    let svc = resp
-                                        .result
-                                        .ok_or("postgres replica get returned no result")?;
-                                    if svc.state.to_string() == "running" {
-                                        Ok(Some(svc))
-                                    } else {
-                                        Ok(None)
-                                    }
-                                }
-                            },
-                        )
-                        .await
-                    }
-                },
-            )
-            .await?
-            .expect("blocking steps always return a value");
-
-        assert_eq!(replica_ready.name, ctx.postgres_replica_name());
-        assert!(
-            !replica_ready.is_primary,
-            "running read replica reported isPrimary=true"
-        );
-        assert!(
-            !replica_ready.hostname.is_empty(),
-            "running postgres replica returned empty hostname"
-        );
-        assert!(
-            !replica_ready.connection_string.is_empty(),
-            "running postgres replica returned empty connection string"
-        );
 
         failures
             .run(
@@ -546,6 +541,11 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                     let expected_provider = ctx.provider.clone();
                     let expected_region = ctx.region.clone();
                     async move {
+                        // The replica may still be provisioning at this point —
+                        // we deliberately don't wait for `running` (see the
+                        // phase header). provider/region are inherited from the
+                        // primary and present regardless of state; isPrimary
+                        // is set at create time.
                         let resp = client
                             .postgres_service_get(&org_id, &replica_id)
                             .await?;
@@ -584,7 +584,10 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         // Explicit replica teardown BEFORE the primary Delete phase. This is
         // Blocking: if it fails the primary delete will fail too, which is
         // a cleanup-order failure that would leak resources. The replica is
-        // also tracked by the cleanup registry as a safety net.
+        // also tracked by the cleanup registry as a safety net. Deleting a
+        // still-provisioning replica is safe (prior failed runs deleted
+        // stuck replicas in ~11s); we don't need it to reach `running`
+        // first.
         failures
             .run(
                 &ctx,
@@ -740,4 +743,25 @@ fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
         tags.iter()
             .any(|t| t.key == key && t.value.as_deref() == Some(value))
     })
+}
+
+/// Predicate for [`retry_api_call`]: is this the "primary has no backups yet"
+/// 400 that blocks read-replica creation?
+///
+/// The live API rejects a read-replica create against a primary that hasn't
+/// taken its first backup with a 400 whose message contains one of:
+///   - `no backups`        — `"Parent server is not ready for read replicas.
+///                             There are no backups, yet."`
+///   - `not ready for read replicas` — same response, alternate phrasing.
+///
+/// Matching on substrings (rather than `status == 400` alone) avoids masking
+/// unrelated validation 400s that should fail the test, not retry.
+fn is_no_backups_yet_error(error: &clickhouse_cloud_api::Error) -> bool {
+    match error {
+        clickhouse_cloud_api::Error::Api { status: 400, message } => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("no backups") || lower.contains("not ready for read replicas")
+        }
+        _ => false,
+    }
 }

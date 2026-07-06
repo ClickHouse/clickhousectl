@@ -2742,8 +2742,6 @@ pub enum ClickPipePostPubSubSourceSeektype {
     Earliest,
     #[serde(rename = "timestamp")]
     Timestamp,
-    #[serde(rename = "snapshot")]
-    Snapshot,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -2755,7 +2753,6 @@ impl std::fmt::Display for ClickPipePostPubSubSourceSeektype {
             Self::Latest => write!(f, "latest"),
             Self::Earliest => write!(f, "earliest"),
             Self::Timestamp => write!(f, "timestamp"),
-            Self::Snapshot => write!(f, "snapshot"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2935,8 +2932,6 @@ pub enum ClickPipePubSubSourceSeektype {
     Earliest,
     #[serde(rename = "timestamp")]
     Timestamp,
-    #[serde(rename = "snapshot")]
-    Snapshot,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -2948,7 +2943,6 @@ impl std::fmt::Display for ClickPipePubSubSourceSeektype {
             Self::Latest => write!(f, "latest"),
             Self::Earliest => write!(f, "earliest"),
             Self::Timestamp => write!(f, "timestamp"),
-            Self::Snapshot => write!(f, "snapshot"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -8079,6 +8073,8 @@ pub struct ClickPipeKafkaSource {
     pub ca_certificate: Option<String>,
     #[serde(rename = "consumerGroup", skip_serializing_if = "Option::is_none", default)]
     pub consumer_group: Option<String>,
+    #[serde(rename = "exactlyOnce", skip_serializing_if = "Option::is_none", default)]
+    pub exactly_once: Option<bool>,
     #[serde(default)]
     pub format: ClickPipeKafkaSourceFormat,
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
@@ -8159,6 +8155,8 @@ pub struct ClickPipeMongoDBSource {
     pub read_preference: ClickPipeMongoDBSourceReadpreference,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub settings: Option<ClickPipeMongoDBPipeSettings>,
+    #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
+    pub skip_cert_verification: Option<bool>,
     #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none", default)]
     pub table_mappings: Option<Vec<ClickPipeMongoDBPipeTableMapping>>,
     #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
@@ -8193,8 +8191,8 @@ pub struct ClickPipeMutateDestination {
     pub database: String,
     #[serde(rename = "managedTable", skip_serializing_if = "Option::is_none", default)]
     pub managed_table: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub roles: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub roles: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub table: Option<String>,
     #[serde(rename = "tableDefinition", skip_serializing_if = "Option::is_none", default)]
@@ -8226,6 +8224,8 @@ pub struct ClickPipeMutateMongoDBSource {
     #[serde(rename = "readPreference")]
     pub read_preference: ClickPipeMutateMongoDBSourceReadpreference,
     pub settings: ClickPipeMongoDBPipeSettings,
+    #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
+    pub skip_cert_verification: Option<bool>,
     #[serde(rename = "tableMappings")]
     pub table_mappings: Vec<ClickPipeMongoDBPipeTableMapping>,
     #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
@@ -8273,6 +8273,8 @@ pub struct ClickPipeMutatePostgresSource {
     pub credentials: PLAIN,
     #[serde(default)]
     pub database: String,
+    #[serde(rename = "disableTls", default)]
+    pub disable_tls: bool,
     #[serde(default)]
     pub host: String,
     // iamRole only applies to RDS-style Postgres + IAM_ROLE auth. Spec marks
@@ -8284,6 +8286,8 @@ pub struct ClickPipeMutatePostgresSource {
     pub port: i64,
     #[serde(default)]
     pub settings: ClickPipePostgresPipeSettings,
+    #[serde(rename = "skipCertVerification", default)]
+    pub skip_cert_verification: bool,
     #[serde(rename = "tableMappings", default)]
     pub table_mappings: Vec<ClickPipePostgresPipeTableMapping>,
     // tlsHost is only set when the broker cert SAN doesn't match `host`.
@@ -8461,6 +8465,8 @@ pub struct ClickPipePatchMongoDBSource {
     pub read_preference: Option<ClickPipePatchMongoDBSourceReadpreference>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub settings: Option<ClickPipePatchMongoDBPipeSettings>,
+    #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
+    pub skip_cert_verification: Option<bool>,
     #[serde(rename = "tableMappingsToAdd", skip_serializing_if = "Option::is_none", default)]
     pub table_mappings_to_add: Option<Vec<ClickPipeMongoDBPipeTableMapping>>,
     #[serde(rename = "tableMappingsToRemove", skip_serializing_if = "Option::is_none", default)]
@@ -8575,12 +8581,16 @@ pub struct ClickPipePatchPostgresSource {
     pub credentials: PLAIN,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub database: Option<String>,
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none", default)]
+    pub disable_tls: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub port: Option<i64>,
     #[serde(default)]
     pub settings: ClickPipePatchPostgresPipeSettings,
+    #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
+    pub skip_cert_verification: Option<bool>,
     #[serde(rename = "tableMappingsToAdd", default)]
     pub table_mappings_to_add: Vec<ClickPipePostgresPipeTableMapping>,
     #[serde(rename = "tableMappingsToRemove", default)]
@@ -8648,6 +8658,8 @@ pub struct ClickPipePostKafkaSource {
     pub consumer_group: Option<String>,
     #[serde(default)]
     pub credentials: serde_json::Value,
+    #[serde(rename = "exactlyOnce", skip_serializing_if = "Option::is_none", default)]
+    pub exactly_once: Option<bool>,
     #[serde(default)]
     pub format: ClickPipePostKafkaSourceFormat,
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
@@ -8733,8 +8745,6 @@ pub struct ClickPipePostPubSubSource {
     pub format: ClickPipePostPubSubSourceFormat,
     #[serde(rename = "projectId")]
     pub project_id: String,
-    #[serde(rename = "seekSnapshot", skip_serializing_if = "Option::is_none", default)]
-    pub seek_snapshot: Option<String>,
     #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none", default)]
     pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "seekType")]
@@ -8847,6 +8857,8 @@ pub struct ClickPipePostgresSource {
     pub ca_certificate: String,
     #[serde(default)]
     pub database: String,
+    #[serde(rename = "disableTls", default)]
+    pub disable_tls: bool,
     #[serde(default)]
     pub host: String,
     #[serde(rename = "iamRole", default)]
@@ -8855,6 +8867,8 @@ pub struct ClickPipePostgresSource {
     pub port: i64,
     #[serde(default)]
     pub settings: ClickPipePostgresPipeSettings,
+    #[serde(rename = "skipCertVerification", default)]
+    pub skip_cert_verification: bool,
     #[serde(rename = "tableMappings", default)]
     pub table_mappings: Vec<ClickPipePostgresPipeTableMapping>,
     #[serde(rename = "tlsHost", default)]
@@ -8876,8 +8890,6 @@ pub struct ClickPipePubSubSource {
     pub format: ClickPipePubSubSourceFormat,
     #[serde(rename = "projectId")]
     pub project_id: String,
-    #[serde(rename = "seekSnapshot", skip_serializing_if = "Option::is_none", default)]
-    pub seek_snapshot: Option<String>,
     #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none", default)]
     pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "seekType")]
@@ -10318,6 +10330,21 @@ pub struct IpAccessListPatch {
     pub remove: Vec<IpAccessListEntry>,
 }
 
+/// `License` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct License {
+    #[serde(rename = "environmentFingerprint", default)]
+    pub environment_fingerprint: String,
+    #[serde(default)]
+    pub expiration: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub memory: String,
+    #[serde(default)]
+    pub name: String,
+}
+
 /// `Member` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Member {
@@ -10521,6 +10548,8 @@ pub struct PostgresServicePatchRequest {
     #[serde(rename = "haType", skip_serializing_if = "Option::is_none", default)]
     pub ha_type: Option<PgHaType>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<PgNameProperty>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub size: Option<PgSize>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<PgTags>,
@@ -10583,6 +10612,189 @@ pub struct PostgresServiceSetPassword {
 pub struct PostgresServiceSetState {
     #[serde(default)]
     pub command: PostgresServiceSetStateCommand,
+}
+
+/// `PostgresMetricDataPoint` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresMetricDataPoint {
+    #[serde(default)]
+    pub timestamp: i64,
+    #[serde(default)]
+    pub value: f64,
+}
+
+/// `PostgresMetricSeries` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresMetricSeries {
+    #[serde(rename = "dataPoints", default)]
+    pub data_points: Vec<PostgresMetricDataPoint>,
+    #[serde(default)]
+    pub label: String,
+}
+
+/// `PostgresMetric` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresMetric {
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub series: Vec<PostgresMetricSeries>,
+    #[serde(default)]
+    pub unit: String,
+}
+
+/// `PostgresMetrics` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresMetrics {
+    #[serde(default)]
+    pub metrics: Vec<PostgresMetric>,
+}
+
+/// `PostgresQueryExecution` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresQueryExecution {
+    #[serde(default)]
+    pub app: String,
+    #[serde(rename = "cpuSysTimeUs", default)]
+    pub cpu_sys_time_us: i64,
+    #[serde(rename = "cpuUserTimeUs", default)]
+    pub cpu_user_time_us: i64,
+    #[serde(rename = "dbName", default)]
+    pub db_name: String,
+    #[serde(rename = "dbOperation", default)]
+    pub db_operation: String,
+    #[serde(rename = "dbUser", default)]
+    pub db_user: String,
+    #[serde(rename = "durationUs", default)]
+    pub duration_us: i64,
+    #[serde(rename = "errElevel", skip_serializing_if = "Option::is_none", default)]
+    pub err_elevel: Option<i64>,
+    #[serde(rename = "errMessage", skip_serializing_if = "Option::is_none", default)]
+    pub err_message: Option<String>,
+    #[serde(rename = "errSqlstate", skip_serializing_if = "Option::is_none", default)]
+    pub err_sqlstate: Option<String>,
+    #[serde(rename = "jitDeformTimeUs", default)]
+    pub jit_deform_time_us: i64,
+    #[serde(rename = "jitEmissionTimeUs", default)]
+    pub jit_emission_time_us: i64,
+    #[serde(rename = "jitFunctions", default)]
+    pub jit_functions: i64,
+    #[serde(rename = "jitGenerationTimeUs", default)]
+    pub jit_generation_time_us: i64,
+    #[serde(rename = "jitInliningTimeUs", default)]
+    pub jit_inlining_time_us: i64,
+    #[serde(rename = "jitOptimizationTimeUs", default)]
+    pub jit_optimization_time_us: i64,
+    #[serde(rename = "localBlksDirtied", default)]
+    pub local_blks_dirtied: i64,
+    #[serde(rename = "localBlksHit", default)]
+    pub local_blks_hit: i64,
+    #[serde(rename = "localBlksRead", default)]
+    pub local_blks_read: i64,
+    #[serde(rename = "localBlksWritten", default)]
+    pub local_blks_written: i64,
+    #[serde(rename = "parallelWorkersLaunched", default)]
+    pub parallel_workers_launched: i64,
+    #[serde(rename = "parallelWorkersPlanned", default)]
+    pub parallel_workers_planned: i64,
+    #[serde(default)]
+    pub pid: String,
+    #[serde(rename = "queryId", default)]
+    pub query_id: String,
+    #[serde(rename = "queryText", default)]
+    pub query_text: String,
+    #[serde(default)]
+    pub rows: i64,
+    #[serde(rename = "serverRole", default)]
+    pub server_role: String,
+    #[serde(rename = "sharedBlkReadTimeUs", default)]
+    pub shared_blk_read_time_us: i64,
+    #[serde(rename = "sharedBlkWriteTimeUs", default)]
+    pub shared_blk_write_time_us: i64,
+    #[serde(rename = "sharedBlksDirtied", default)]
+    pub shared_blks_dirtied: i64,
+    #[serde(rename = "sharedBlksHit", default)]
+    pub shared_blks_hit: i64,
+    #[serde(rename = "sharedBlksRead", default)]
+    pub shared_blks_read: i64,
+    #[serde(rename = "sharedBlksWritten", default)]
+    pub shared_blks_written: i64,
+    #[serde(rename = "spanId", skip_serializing_if = "Option::is_none", default)]
+    pub span_id: Option<String>,
+    #[serde(rename = "tempBlkReadTimeUs", default)]
+    pub temp_blk_read_time_us: i64,
+    #[serde(rename = "tempBlkWriteTimeUs", default)]
+    pub temp_blk_write_time_us: i64,
+    #[serde(rename = "tempBlksRead", default)]
+    pub temp_blks_read: i64,
+    #[serde(rename = "tempBlksWritten", default)]
+    pub temp_blks_written: i64,
+    #[serde(default)]
+    pub timestamp: String,
+    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none", default)]
+    pub trace_id: Option<String>,
+    #[serde(rename = "walBytes", default)]
+    pub wal_bytes: i64,
+    #[serde(rename = "walFpi", default)]
+    pub wal_fpi: i64,
+    #[serde(rename = "walRecords", default)]
+    pub wal_records: i64,
+}
+
+/// `PostgresSlowQueryPattern` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresSlowQueryPattern {
+    #[serde(default)]
+    pub app: String,
+    #[serde(rename = "avgDurationUs", default)]
+    pub avg_duration_us: i64,
+    #[serde(rename = "callCount", default)]
+    pub call_count: i64,
+    #[serde(rename = "dbName", default)]
+    pub db_name: String,
+    #[serde(rename = "dbOperation", default)]
+    pub db_operation: String,
+    #[serde(rename = "dbUser", default)]
+    pub db_user: String,
+    #[serde(rename = "errorCount", default)]
+    pub error_count: i64,
+    #[serde(rename = "maxDurationUs", default)]
+    pub max_duration_us: i64,
+    #[serde(rename = "p50DurationUs", default)]
+    pub p50_duration_us: i64,
+    #[serde(rename = "p95DurationUs", default)]
+    pub p95_duration_us: i64,
+    #[serde(rename = "p99DurationUs", default)]
+    pub p99_duration_us: i64,
+    #[serde(rename = "queryId", default)]
+    pub query_id: String,
+    #[serde(rename = "queryText", default)]
+    pub query_text: String,
+    #[serde(rename = "totalCpuTimeUs", default)]
+    pub total_cpu_time_us: i64,
+    #[serde(rename = "totalDurationUs", default)]
+    pub total_duration_us: i64,
+    #[serde(rename = "totalRows", default)]
+    pub total_rows: i64,
+    #[serde(rename = "totalSharedBlksHit", default)]
+    pub total_shared_blks_hit: i64,
+    #[serde(rename = "totalSharedBlksRead", default)]
+    pub total_shared_blks_read: i64,
+    #[serde(rename = "totalWalBytes", default)]
+    pub total_wal_bytes: i64,
+}
+
+/// `PostgresSlowQueryPatternDetail` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresSlowQueryPatternDetail {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub aggregate: Option<PostgresSlowQueryPattern>,
+    #[serde(rename = "recentExecutions", default)]
+    pub recent_executions: Vec<PostgresQueryExecution>,
 }
 
 /// `PrivateEndpointConfig` from the ClickHouse Cloud API.
@@ -11864,6 +12076,13 @@ pub struct UpgradeWindowPutRequest {
     pub start_hour_utc: i64,
     #[serde(default)]
     pub weekday: i64,
+}
+
+/// `UpdateReversePrivateEndpoint` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UpdateReversePrivateEndpoint {
+    #[serde(rename = "customPrivateDnsMappings", skip_serializing_if = "Option::is_none", default)]
+    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
 }
 
 /// `UsageCost` from the ClickHouse Cloud API.
