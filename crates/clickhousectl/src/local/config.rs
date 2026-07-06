@@ -1,7 +1,7 @@
 //! Resolution and listing of custom server config files.
 //!
 //! Users drop named ClickHouse config files into `~/.clickhouse/configs/` and
-//! reference them by name with `clickhousectl local server start --config-file
+//! reference them by name with `clickhousectl local server start --config
 //! <NAME>`. The file is passed to ClickHouse as `--config-file`; the launcher
 //! still forces `--path=./` and the ports as command-line overrides (which beat
 //! config-file values), so the managed server lifecycle is preserved regardless
@@ -140,7 +140,7 @@ pub fn list_configs() -> Result<Vec<String>> {
 /// directory with its built-in defaults, so a partial override file takes
 /// effect without replacing the whole config. We own a single file there named
 /// `chctl-config.<ext>`; any previously staged overlay (in any recognized
-/// extension) is removed first, so restarting a server without `--config-file`
+/// extension) is removed first, so restarting a server without `--config`
 /// reverts cleanly to plain defaults.
 pub fn apply_config_overlay(data_dir: &Path, source: Option<&Path>) -> Result<()> {
     let config_d = data_dir.join("config.d");

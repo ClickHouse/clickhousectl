@@ -346,19 +346,20 @@ async fn start_server(
             http_port, tcp_port
         );
     }
-    // Reject --config-file / -C in passthrough args. Passing a raw config path
-    // here would bypass the managed `--config-file` handling below and could
-    // redirect where ClickHouse stores data, breaking the managed server
+    // Reject --config / --config-file / -C in passthrough args. Passing a raw
+    // config path here would bypass the managed `--config` handling below and
+    // could redirect where ClickHouse stores data, breaking the managed server
     // lifecycle (list, stop, remove, dotenv all rely on the data directory
     // living under .clickhouse/servers/<name>/). Individual --setting=value
     // flags are fine — they don't change the data directory.
+    // `--config` also matches `--config-file` as a prefix.
     if args
         .iter()
-        .any(|a| a.starts_with("--config-file") || a.starts_with("-C"))
+        .any(|a| a.starts_with("--config") || a.starts_with("-C"))
     {
         return Err(Error::Exec(
-            "--config-file / -C cannot be passed through in trailing args. \
-             Use `--config-file <NAME>` with a file in ~/.clickhouse/configs/ \
+            "--config / --config-file / -C cannot be passed through in trailing args. \
+             Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
              (see `clickhousectl local server configs`). \
              Individual --setting=value flags are supported."
                 .into(),
