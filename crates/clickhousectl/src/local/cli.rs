@@ -167,6 +167,8 @@ CONTEXT FOR AGENTS:
   Use --name to give a server a stable identity (e.g., --name dev, --name test).
   Use --version (-v) to run a specific ClickHouse version without changing the default.
   Accepts same specs as install/use: \"latest\" (recommended), stable, lts, 25.12, etc. Installs if needed.
+  With no --version and no default set, a bare start bootstraps by installing \"latest\" (without
+  setting it as the default, so you keep tracking latest on later starts).
   Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
   Use --http-port and --tcp-port to set explicit ports.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.

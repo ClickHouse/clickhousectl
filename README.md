@@ -90,11 +90,11 @@ clickhousectl local list                    # Installed versions
 clickhousectl local list --remote           # Available for download
 
 # Manage default version
-clickhousectl local use stable              # Latest stable (installs if needed)
+clickhousectl local use latest              # Latest master build (installs if needed)
 clickhousectl local use lts                 # Latest LTS (installs if needed)
 clickhousectl local use 25.12               # Latest 25.12.x.x (installs if needed)
 clickhousectl local use 25.12.5.44          # Exact version
-clickhousectl local use stable --no-global  # Set default but don't touch ~/.local/bin/clickhouse
+clickhousectl local use latest --no-global  # Set default but don't touch ~/.local/bin/clickhouse
 clickhousectl local which                   # Show current default
 
 # Remove a version
@@ -157,11 +157,13 @@ clickhousectl local client --host remote-host --port 9000  # Connect to a specif
 
 Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhouse/servers/<name>/data/`.
 
+A bare `clickhousectl local server start` bootstraps from zero: if no version is installed and no default is set, it installs `latest` and starts with it (it does not set a default, so you keep tracking `latest` on subsequent starts). Pin a version with `--version`, or set a default with `local use`, to opt out. Because `latest` tracks the rolling master build, repeat `latest` installs/starts do a cheap `HEAD` against `builds.clickhouse.com` and skip the ~150 MB re-download when master hasn't changed (the build's `etag` is cached in `~/.clickhouse/versions/.master-builds.json`).
+
 ```bash
 # Start a server (runs in background by default)
-clickhousectl local server start                          # Named "default"
+clickhousectl local server start                          # Named "default" (installs latest if nothing is set up yet)
 clickhousectl local server start --name dev               # Named "dev"
-clickhousectl local server start --version stable         # Use a specific version (installs if needed, doesn't change default)
+clickhousectl local server start --version latest         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start --config analytics       # Apply a custom config (see "Custom config files" below)

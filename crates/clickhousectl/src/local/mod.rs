@@ -218,6 +218,15 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&version_dir)?;
+
+    // If the removed dir was recorded as the installed master build, clear the
+    // master sidecar record so a later `latest` resolve doesn't see a stale
+    // entry pointing at a now-deleted binary. Best-effort, like the install
+    // overwrite path: a sidecar failure must not fail a successful removal.
+    if let Ok(platform) = version_manager::platform::Platform::detect() {
+        let _ = version_manager::master::clear_record_for_version(&platform, version);
+    }
+
     let out = output::RemoveOutput {
         version: version.to_string(),
     };
@@ -321,7 +330,26 @@ async fn start_server(
         let platform = version_manager::platform::Platform::detect()?;
         version_manager::install::ensure_installed_local_first(&spec, &platform).await?
     } else {
-        version_manager::get_default_version()?
+        match version_manager::get_default_version() {
+            Ok(v) => v,
+            Err(Error::NoDefaultVersion) => {
+                // No version specified and no default set: bootstrap `latest`.
+                // Deliberately do NOT set it as the default, so unpinned users keep
+                // tracking latest on each start. This branch is therefore hit on every
+                // subsequent bare start too; `ensure_installed_local_first` returns the
+                // already-installed build silently if `latest` still resolves to it,
+                // otherwise it pulls the newer master build.
+                let spec = version_manager::parse_version_spec("latest")?;
+                let platform = version_manager::platform::Platform::detect()?;
+                // Says "using", not "installing": on repeat starts the build is
+                // usually already installed and nothing is downloaded. The install
+                // path prints its own Resolving/Downloading/up-to-date messages.
+                eprintln!("No version specified and no default set; using latest");
+                version_manager::install::ensure_installed_local_first(&spec, &platform).await?
+            }
+            // A default pointing at a removed binary stays an error.
+            Err(e) => return Err(e),
+        }
     };
     let binary = paths::binary_path(&version)?;
 
