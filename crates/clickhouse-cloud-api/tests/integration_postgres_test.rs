@@ -1,7 +1,10 @@
 mod common;
 
+use std::env;
+
 use clickhouse_cloud_api::models::*;
 use common::support::*;
+use serde_json::json;
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
@@ -183,21 +186,13 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?;
 
         // ── Runtime Config ──────────────────────────────────────────
-        //
-        // PATCH is intentionally not exercised end-to-end here: the generated
-        // PgConfig struct has non-Option `serde_json::Value` fields that
-        // serialize as `null`, which the live API rejects with
-        // `Validation failed for following fields: pg_config.*`. Once the
-        // OpenAPI spec marks these fields as optional (or the generator
-        // emits Option<Value>) we can extend this phase to round-trip a
-        // change to max_connections and verify via GET.
 
         log_phase("Runtime Config");
-        failures
+        let baseline = failures
             .run(
                 &ctx,
                 StepKind::NonBlocking,
-                "get postgres runtime config",
+                "get postgres runtime config baseline",
                 || {
                     let client = client.clone();
                     let org_id = ctx.org_id.clone();
@@ -206,14 +201,144 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         let resp = client
                             .postgres_instance_config_get(&org_id, &postgres_id)
                             .await?;
-                        if resp.result.is_none() {
-                            return Err("postgres config get returned no result".into());
-                        }
-                        Ok(())
+                        resp.result
+                            .ok_or_else(|| "postgres config get returned no result".into())
                     }
                 },
             )
             .await?;
+
+        // Behaviour-matrix probe — gated on env var so it doesn't run on
+        // every integration test invocation. Captures the 6 × 2 scenarios
+        // from #163's follow-up comment for the upstream spec issue.
+        if env::var("CLICKHOUSE_CLOUD_POSTGRES_CONFIG_PROBE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "capture pgConfig behaviour matrix",
+                    || {
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move { run_pg_config_probe(&org_id, &postgres_id).await }
+                    },
+                )
+                .await?;
+        }
+
+        // Round-trip a single pgConfig field: PATCH max_connections to a
+        // new value, poll-until GET reflects it, then PATCH back. GET
+        // returns numeric pgConfig values wrapped in JSON strings (the spec
+        // types them string-or-number), so extract via pg_config_value_as_i64
+        // and compare tolerantly.
+        if let Some(baseline) = baseline {
+            let baseline_max = baseline
+                .pg_config
+                .max_connections
+                .as_ref()
+                .and_then(pg_config_value_as_i64)
+                .unwrap_or(100);
+            let target = baseline_max + 7;
+
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "patch pgConfig.max_connections",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move {
+                            let body = PostgresInstanceConfig {
+                                pg_config: PgConfig {
+                                    max_connections: Some(serde_json::json!(target)),
+                                    ..Default::default()
+                                },
+                                pg_bouncer_config: PgBouncerConfig::default(),
+                            };
+                            client
+                                .postgres_instance_config_patch(&org_id, &postgres_id, &body)
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "verify pgConfig.max_connections patch visible",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        let timeout = ctx.steady_state_timeout;
+                        let interval = ctx.poll_interval;
+                        async move {
+                            poll_until(
+                                "pg_config.max_connections == target",
+                                timeout,
+                                interval,
+                                || {
+                                    let client = client.clone();
+                                    let org_id = org_id.clone();
+                                    let postgres_id = postgres_id.clone();
+                                    async move {
+                                        let resp = client
+                                            .postgres_instance_config_get(&org_id, &postgres_id)
+                                            .await?;
+                                        let observed = resp
+                                            .result
+                                            .and_then(|r| r.pg_config.max_connections)
+                                            .as_ref()
+                                            .and_then(pg_config_value_as_i64);
+                                        if observed == Some(target) {
+                                            Ok(Some(()))
+                                        } else {
+                                            Ok(None)
+                                        }
+                                    }
+                                },
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "reset pgConfig.max_connections to baseline",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move {
+                            let body = PostgresInstanceConfig {
+                                pg_config: PgConfig {
+                                    max_connections: Some(serde_json::json!(baseline_max)),
+                                    ..Default::default()
+                                },
+                                pg_bouncer_config: PgBouncerConfig::default(),
+                            };
+                            client
+                                .postgres_instance_config_patch(&org_id, &postgres_id, &body)
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+        }
 
         // ── Patch (tags) ────────────────────────────────────────────
         //
@@ -732,6 +857,18 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
     }
 }
 
+// pgConfig numeric values come back from GET wrapped in JSON strings (e.g.
+// `"max_connections": "100"`), while PATCH accepts plain numbers. The spec
+// types these fields as string-or-number, so extract an i64 from either
+// representation.
+fn pg_config_value_as_i64(value: &serde_json::Value) -> Option<i64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
 fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
     filters.iter().all(|filter| {
         let Some(expr) = filter.strip_prefix("tag:") else {
@@ -764,4 +901,77 @@ fn is_no_backups_yet_error(error: &clickhouse_cloud_api::Error) -> bool {
         }
         _ => false,
     }
+}
+
+// Sends the 6 body shapes from #163's follow-up comment to both PATCH and
+// POST `/v1/organizations/{org}/postgres/{id}/config` using raw reqwest, so
+// shapes the typed `PostgresInstanceConfig` cannot represent (e.g. omitted
+// `pgBouncerConfig`, explicit nulls) are sent verbatim. Prints a markdown
+// table on stderr for direct copy into the upstream spec issue.
+async fn run_pg_config_probe(org_id: &str, postgres_id: &str) -> TestResult<()> {
+    let key = required_env("CLICKHOUSE_CLOUD_API_KEY")?;
+    let secret = required_env("CLICKHOUSE_CLOUD_API_SECRET")?;
+    let base_url = env::var("CLICKHOUSE_CLOUD_API_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://api.clickhouse.cloud".to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let url = format!("{base_url}/v1/organizations/{org_id}/postgres/{postgres_id}/config");
+
+    let valid_pg_config = json!({ "max_connections": 200 });
+    let scenarios: Vec<(&str, serde_json::Value)> = vec![
+        (
+            "1: pgConfig only (omit pgBouncerConfig)",
+            json!({ "pgConfig": valid_pg_config }),
+        ),
+        (
+            "2: pgConfig + pgBouncerConfig: {}",
+            json!({ "pgConfig": valid_pg_config, "pgBouncerConfig": {} }),
+        ),
+        (
+            "3: pgConfig + pgBouncerConfig: null",
+            json!({ "pgConfig": valid_pg_config, "pgBouncerConfig": null }),
+        ),
+        (
+            "4: pgBouncerConfig only (omit pgConfig)",
+            json!({ "pgBouncerConfig": { "default_pool_size": "10" } }),
+        ),
+        (
+            "5: pgConfig single-field partial",
+            json!({ "pgConfig": { "max_connections": 200 } }),
+        ),
+        (
+            "6: pgConfig single-field explicit null",
+            json!({ "pgConfig": { "max_connections": null } }),
+        ),
+    ];
+
+    let http = reqwest::Client::new();
+    let mut rows: Vec<(String, String, u16, String)> = Vec::new();
+
+    for method in [reqwest::Method::PATCH, reqwest::Method::POST] {
+        for (label, body) in &scenarios {
+            let resp = http
+                .request(method.clone(), &url)
+                .basic_auth(&key, Some(&secret))
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| format!("{method} {label}: {e}"))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            let snippet: String = text.chars().take(180).collect::<String>().replace('\n', " ");
+            rows.push((method.to_string(), label.to_string(), status, snippet));
+        }
+    }
+
+    eprintln!("\n## Postgres config behaviour matrix\n");
+    eprintln!("| Method | Body shape | Status | Response (≤180 chars) |");
+    eprintln!("|--------|------------|--------|------------------------|");
+    for (method, label, status, snippet) in &rows {
+        eprintln!("| {method} | {label} | {status} | `{snippet}` |");
+    }
+    eprintln!();
+    Ok(())
 }

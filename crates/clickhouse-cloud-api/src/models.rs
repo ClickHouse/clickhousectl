@@ -12150,60 +12150,60 @@ pub struct PgBouncerConfig {
 /// `pgConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PgConfig {
-    #[serde(default)]
-    pub default_transaction_isolation: PgConfigDefaultTransactionIsolation,
-    #[serde(default)]
-    pub effective_cache_size: serde_json::Value,
-    #[serde(default)]
-    pub effective_io_concurrency: i64,
-    #[serde(default)]
-    pub idle_in_transaction_session_timeout: serde_json::Value,
-    #[serde(default)]
-    pub idle_session_timeout: serde_json::Value,
-    #[serde(default)]
-    pub lock_timeout: serde_json::Value,
-    #[serde(default)]
-    pub maintenance_work_mem: serde_json::Value,
-    #[serde(default)]
-    pub max_connections: i64,
-    #[serde(default)]
-    pub max_parallel_maintenance_workers: i64,
-    #[serde(default)]
-    pub max_parallel_workers: i64,
-    #[serde(default)]
-    pub max_parallel_workers_per_gather: i64,
-    #[serde(default)]
-    pub max_slot_wal_keep_size: serde_json::Value,
-    #[serde(default)]
-    pub max_wal_size: serde_json::Value,
-    #[serde(default)]
-    pub max_worker_processes: i64,
-    #[serde(default)]
-    pub min_wal_size: serde_json::Value,
-    #[serde(default)]
-    pub random_page_cost: f64,
-    #[serde(default)]
-    pub ssl_min_protocol_version: PgConfigSslMinProtocolVersion,
-    #[serde(default)]
-    pub statement_timeout: serde_json::Value,
-    #[serde(default)]
-    pub transaction_timeout: serde_json::Value,
-    #[serde(default)]
-    pub wal_compression: PgConfigWalCompression,
-    #[serde(default)]
-    pub wal_keep_size: serde_json::Value,
-    #[serde(default)]
-    pub wal_sender_timeout: serde_json::Value,
-    #[serde(default)]
-    pub work_mem: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub effective_cache_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub effective_io_concurrency: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub idle_session_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub maintenance_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_parallel_maintenance_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_parallel_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_parallel_workers_per_gather: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_wal_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_worker_processes: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub min_wal_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub random_page_cost: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub statement_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub wal_compression: Option<PgConfigWalCompression>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub wal_sender_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub work_mem: Option<serde_json::Value>,
 }
 
 /// `postgresInstanceConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresInstanceConfig {
-    #[serde(rename = "pgBouncerConfig")]
+    #[serde(rename = "pgBouncerConfig", default)]
     pub pg_bouncer_config: PgBouncerConfig,
-    #[serde(rename = "pgConfig")]
+    #[serde(rename = "pgConfig", default)]
     pub pg_config: PgConfig,
 }
 
