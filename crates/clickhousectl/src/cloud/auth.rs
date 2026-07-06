@@ -96,37 +96,86 @@ struct TokenErrorResponse {
     error_description: Option<String>,
 }
 
-pub fn tokens_path() -> PathBuf {
+/// Global OAuth token store: `~/.clickhouse/tokens.json`.
+///
+/// OAuth login is user identity (not org-scoped like API keys), so tokens live
+/// in the CLI's global home alongside installed versions and configs, rather
+/// than per-project under `./.clickhouse/`.
+pub fn tokens_path() -> Result<PathBuf, crate::error::Error> {
+    Ok(crate::paths::base_dir()?.join("tokens.json"))
+}
+
+/// Legacy per-project token store: `<cwd>/.clickhouse/tokens.json`.
+///
+/// Earlier versions wrote OAuth tokens here (per-project). `load_tokens`
+/// migrates a legacy file to the global path on first sight, and
+/// `clear_tokens` removes both so logging out from an old project dir doesn't
+/// leave a file that re-migrates.
+fn legacy_tokens_path() -> PathBuf {
     crate::init::local_dir().join("tokens.json")
 }
 
 pub fn load_tokens() -> Option<TokenStore> {
-    let path = tokens_path();
-    let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+    let global = tokens_path().ok()?;
+    let legacy = legacy_tokens_path();
+    load_tokens_from(&global, &legacy)
+}
+
+/// Path-injected core of [`load_tokens`]. Reads the global token file first;
+/// if absent/unreadable, attempts a one-time migration from `legacy_path`
+/// (write the global copy, best-effort delete the legacy file).
+fn load_tokens_from(global_path: &std::path::Path, legacy_path: &std::path::Path) -> Option<TokenStore> {
+    if let Ok(data) = std::fs::read_to_string(global_path)
+        && let Ok(tokens) = serde_json::from_str::<TokenStore>(&data)
+    {
+        return Some(tokens);
+    }
+
+    // Global file missing or unreadable — try a one-time migration from the
+    // legacy cwd-based path. Best-effort: write the global copy, then delete
+    // the legacy file so it can't re-migrate on the next command.
+    if let Ok(data) = std::fs::read_to_string(legacy_path)
+        && let Ok(tokens) = serde_json::from_str::<TokenStore>(&data)
+    {
+        if save_tokens_to(global_path, &tokens).is_ok() {
+            let _ = std::fs::remove_file(legacy_path);
+        }
+        return Some(tokens);
+    }
+
+    None
 }
 
 pub fn save_tokens(tokens: &TokenStore) -> Result<(), Box<dyn std::error::Error>> {
-    let path = tokens_path();
+    let path = tokens_path()?;
+    save_tokens_to(&path, tokens)
+}
+
+fn save_tokens_to(
+    path: &std::path::Path,
+    tokens: &TokenStore,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
     let json = serde_json::to_string_pretty(tokens)?;
-    std::fs::write(&path, &json)?;
+    std::fs::write(path, &json)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
 
     Ok(())
 }
 
 pub fn clear_tokens() {
-    let path = tokens_path();
-    let _ = std::fs::remove_file(path);
+    if let Ok(path) = tokens_path() {
+        let _ = std::fs::remove_file(path);
+    }
+    let _ = std::fs::remove_file(legacy_tokens_path());
 }
 
 pub fn is_token_valid(tokens: &TokenStore) -> bool {
@@ -411,8 +460,110 @@ mod tests {
 
     #[test]
     fn test_tokens_path() {
-        let path = tokens_path();
-        assert!(path.ends_with(".clickhouse/tokens.json"));
+        // Tokens live in the global ~/.clickhouse/ home, not the cwd, so the
+        // path must end with .clickhouse/tokens.json under the home directory
+        // and be independent of the current working directory.
+        let path = tokens_path().expect("home dir should be resolvable");
+        assert!(
+            path.ends_with(".clickhouse/tokens.json"),
+            "expected path to end with .clickhouse/tokens.json, got {}",
+            path.display()
+        );
+        let home = dirs::home_dir().expect("home dir should be resolvable");
+        assert!(
+            path.starts_with(home.join(".clickhouse")),
+            "expected path under {}/.clickhouse, got {}",
+            home.display(),
+            path.display()
+        );
+    }
+
+    fn sample_tokens() -> TokenStore {
+        TokenStore {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+            api_url: DEFAULT_API_URL.into(),
+        }
+    }
+
+    #[test]
+    fn load_tokens_migrates_legacy_file_when_global_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global/.clickhouse/tokens.json");
+        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+
+        let tokens = sample_tokens();
+        std::fs::write(&legacy, serde_json::to_string_pretty(&tokens).unwrap()).unwrap();
+
+        let loaded = load_tokens_from(&global, &legacy).expect("legacy file should migrate");
+        assert_eq!(loaded.access_token, "a");
+
+        // Migration writes the global copy and deletes the legacy file.
+        assert!(global.exists(), "global tokens file should be created");
+        assert!(
+            std::fs::read_to_string(&global)
+                .unwrap()
+                .contains("\"access_token\": \"a\""),
+            "global file should hold the migrated tokens"
+        );
+        assert!(!legacy.exists(), "legacy file should be deleted");
+    }
+
+    #[test]
+    fn load_tokens_prefers_global_over_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global/.clickhouse/tokens.json");
+        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+
+        let mut global_tokens = sample_tokens();
+        global_tokens.access_token = "global-wins".into();
+        std::fs::write(&global, serde_json::to_string_pretty(&global_tokens).unwrap()).unwrap();
+
+        let mut legacy_tokens = sample_tokens();
+        legacy_tokens.access_token = "legacy-ignored".into();
+        std::fs::write(&legacy, serde_json::to_string_pretty(&legacy_tokens).unwrap()).unwrap();
+
+        let loaded = load_tokens_from(&global, &legacy).expect("global file should load");
+        assert_eq!(loaded.access_token, "global-wins");
+        assert!(legacy.exists(), "legacy file must not be touched");
+    }
+
+    #[test]
+    fn load_tokens_returns_none_when_both_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global/.clickhouse/tokens.json");
+        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
+        assert!(load_tokens_from(&global, &legacy).is_none());
+    }
+
+    #[test]
+    fn load_tokens_returns_none_when_both_unparseable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global = tmp.path().join("global/.clickhouse/tokens.json");
+        let legacy = tmp.path().join("legacy/.clickhouse/tokens.json");
+        std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&global, b"not json").unwrap();
+        std::fs::write(&legacy, b"also not json").unwrap();
+        assert!(load_tokens_from(&global, &legacy).is_none());
+    }
+
+    #[test]
+    fn save_tokens_creates_parent_dirs_and_sets_permissions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("nested/dir/tokens.json");
+        save_tokens_to(&path, &sample_tokens()).unwrap();
+        assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "tokens file should be 0o600");
+        }
     }
 
     #[test]

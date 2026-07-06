@@ -16,7 +16,7 @@ The user-facing CLI surface. Contains all logic for local commands, wraps `click
 
 Use `--help` to learn the current command surface.
 
-Project-local data lives in `.clickhouse/`. Globally installed ClickHouse binaries live in `~/.clickhouse/`.
+Project-local data lives in `.clickhouse/`. Globally installed ClickHouse binaries live in `~/.clickhouse/`. OAuth tokens (`~/.clickhouse/tokens.json`) are the exception — they're global user identity, not project-scoped.
 
 The CLI does not need to have 100% coverage of endpoints exposed by the API library: be intentional about what is exposed to users.
 
