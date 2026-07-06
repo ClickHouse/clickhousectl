@@ -831,7 +831,7 @@ clickhousectl update
 clickhousectl update --check
 ```
 
-The CLI also checks for updates in the background (at most once per 24 hours) and displays a notice when a newer version is available.
+The CLI checks for updates in the background (at most once per 24 hours) and caches the result. When a newer version is available, a one-line notice is printed to stderr at the end of every command that produces human-readable output. JSON output (`--json` or a detected coding agent) is never affected, so machine consumers stay clean. Running `clickhousectl update` clears the cached notice.
 
 ## Cloud integration testing
 
