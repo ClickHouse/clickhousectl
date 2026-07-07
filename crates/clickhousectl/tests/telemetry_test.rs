@@ -167,6 +167,23 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     assert_eq!(event["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(event["os"], std::env::consts::OS);
     assert_eq!(event["arch"], std::env::consts::ARCH);
+
+    // The send goes through the canonical http::client_builder(), so it
+    // carries the same User-Agent as every other outbound request. The
+    // ingest worker relies on the `clickhousectl/<version>` prefix to
+    // reject non-CLI traffic (an ` (agent=...)` comment may follow).
+    let requests = sandbox.mock.received_requests().await.unwrap();
+    let ua = requests[0]
+        .headers
+        .get("user-agent")
+        .expect("telemetry POST must carry a User-Agent")
+        .to_str()
+        .unwrap();
+    let prefix = format!("clickhousectl/{}", env!("CARGO_PKG_VERSION"));
+    assert!(
+        ua == prefix || ua.starts_with(&format!("{prefix} (")),
+        "unexpected User-Agent: {ua}"
+    );
 }
 
 #[tokio::test]
