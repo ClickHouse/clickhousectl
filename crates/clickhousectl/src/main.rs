@@ -7,12 +7,14 @@ mod init;
 mod local;
 mod paths;
 mod skills;
+#[cfg(feature = "telemetry")]
+mod telemetry;
 mod update;
 mod user_agent;
 mod version_manager;
 
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{CommandFactory, FromArgMatches};
 use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, ClickPipeCommands,
     ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands, Commands,
@@ -32,8 +34,12 @@ async fn main() {
     // libc's environ.
     dotenv::init();
 
-    let cli = match Cli::try_parse() {
-        Ok(cli) => cli,
+    // Parse via ArgMatches (rather than `Cli::try_parse()`) so the telemetry
+    // capture below can read the command path and passed-flag *names* from the
+    // clap definitions — argument values are never consulted.
+    let mut cmd = Cli::command();
+    let matches = match cmd.try_get_matches_from_mut(std::env::args_os()) {
+        Ok(matches) => matches,
         Err(e) => {
             match e.kind() {
                 // --version always hits the network to refresh the cache + timer,
@@ -50,10 +56,31 @@ async fn main() {
                     update::print_cached_update_notice();
                     std::process::exit(0);
                 }
+                // Parse errors exit here, before telemetry capture: a mistyped
+                // invocation never produces an event.
                 _ => e.exit(),
             }
         }
     };
+
+    #[cfg(feature = "telemetry")]
+    let telemetry_invocation = telemetry::capture(&cmd, &matches);
+
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+
+    // The hidden send child does exactly one POST and exits: no update-cache
+    // refresh, no dispatch, and no telemetry hook of its own (a send can never
+    // trigger another send).
+    #[cfg(feature = "telemetry")]
+    if matches!(
+        cli.command,
+        Commands::Telemetry(cli::TelemetryArgs {
+            command: cli::TelemetryCommands::Send
+        })
+    ) {
+        telemetry::run_child_send().await;
+        std::process::exit(0);
+    }
 
     // Spawn a background task to refresh the update cache for non-update
     // commands. The refresh is gated to one network call per 24h; the notice
@@ -92,6 +119,11 @@ async fn main() {
         update::print_cached_update_notice();
     }
 
+    // Consent is evaluated here, after the command ran, so `telemetry disable`
+    // silences its own event and `telemetry enable` sends one.
+    #[cfg(feature = "telemetry")]
+    telemetry::finalize(telemetry_invocation, exit_code == 0);
+
     std::process::exit(exit_code);
 }
 
@@ -105,6 +137,8 @@ fn command_json_flag(cmd: &Commands) -> Option<bool> {
         Commands::Local(args) => Some(args.json),
         Commands::Cloud(args) => Some(args.json),
         Commands::Skills(_) => Some(false),
+        #[cfg(feature = "telemetry")]
+        Commands::Telemetry(_) => Some(false),
     }
 }
 
@@ -132,6 +166,8 @@ async fn run(cmd: Commands) -> Result<()> {
         Commands::Skills(args) => run_skills(args).await,
         Commands::Cloud(args) => run_cloud(*args).await,
         Commands::Update(args) => run_update(args).await,
+        #[cfg(feature = "telemetry")]
+        Commands::Telemetry(args) => telemetry::run_command(args.command),
     }
 }
 
@@ -1273,6 +1309,7 @@ async fn run_postgres(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
     use cloud::{CloudError, CloudErrorKind};
 
     #[test]
@@ -1317,6 +1354,12 @@ mod tests {
         );
         // The update command never surfaces the notice.
         assert_eq!(command_json_flag(&parse(&["clickhousectl", "update"])), None);
+        // Telemetry management commands are human-readable output.
+        #[cfg(feature = "telemetry")]
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "telemetry", "status"])),
+            Some(false)
+        );
     }
 
     #[test]

@@ -835,6 +835,39 @@ clickhousectl update --check
 
 The CLI checks for updates in the background (at most once per 24 hours) and caches the result. When a newer version is available, a one-line notice is printed to stderr at the end of every command that produces human-readable output. JSON output (`--json` or a detected coding agent) is never affected, so machine consumers stay clean. Running `clickhousectl update` clears the cached notice.
 
+## Telemetry
+
+`clickhousectl` collects anonymous usage data to help us understand which commands matter and improve the CLI. Full details: <https://clickhouse.com/docs/interfaces/cli#telemetry>.
+
+Each event contains exactly:
+
+- the command path (e.g. `local start`)
+- the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
+- whether the command succeeded
+- the CLI version, OS, and architecture
+- whether it ran in CI (`CI` env var) or under a detected coding agent
+
+There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
+
+Nothing is ever sent before you have seen the notice: the first run prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
+
+Opt out any of these ways:
+
+```bash
+# Persistently, per machine
+clickhousectl telemetry disable
+
+# Check the current state
+clickhousectl telemetry status
+
+# Per environment/shell (https://consoledonottrack.com)
+export DO_NOT_TRACK=1
+```
+
+To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG=1` — the payload is printed to stderr and nothing leaves the machine.
+
+Distribution packagers can compile telemetry out entirely (including the `telemetry` subcommand) with `cargo build --no-default-features`.
+
 ## Cloud integration testing
 
 Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests live in three binaries, each a single `#[tokio::test]` lifecycle:

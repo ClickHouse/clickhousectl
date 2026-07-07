@@ -29,5 +29,12 @@ jobs:
       - name: Clippy
         run: cargo clippy -p clickhousectl -- -D warnings
 
+      # Telemetry must compile out entirely for distro packagers.
+      - name: Check without default features (telemetry compiled out)
+        run: cargo check -p clickhousectl --no-default-features
+
+      - name: Clippy without default features
+        run: cargo clippy -p clickhousectl --all-targets --no-default-features -- -D warnings
+
       - name: Test
         run: cargo test -p clickhousectl

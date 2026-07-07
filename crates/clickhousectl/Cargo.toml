@@ -16,6 +16,11 @@ pkg-fmt = "tgz"
 bin-dir = "{ name }-{ target }-v{ version }/{ bin }{ binary-ext }"
 
 [features]
+default = ["telemetry"]
+# Anonymous usage telemetry (first-run notice, `telemetry` subcommand, detached
+# send). On by default; distro packagers can compile it out entirely with
+# `--no-default-features`.
+telemetry = []
 # Forwards to the library feature of the same name: when enabled, deprecated API
 # fields are present on the response structs and surfaced in CLI output. Off by
 # default so the CLI never shows a field the API has deprecated.

@@ -33,6 +33,7 @@ fn local_install_minor_with_existing_match_does_not_hit_network() {
     std::fs::set_permissions(&binary, perms).unwrap();
 
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .env("HOME", tempdir.path())
         .args(["local", "install", "25.12", "--json"])
         .output()

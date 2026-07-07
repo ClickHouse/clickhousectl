@@ -76,6 +76,41 @@ CONTEXT FOR AGENTS:
   Self-update command. Downloads the latest clickhousectl release from GitHub and replaces the
   current binary. Use --check to see if an update is available without installing.")]
     Update(UpdateArgs),
+
+    /// Manage anonymous usage telemetry
+    #[cfg(feature = "telemetry")]
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  clickhousectl collects anonymous usage data: command name, flag names (never values or
+  arguments), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
+  Opt out with `clickhousectl telemetry disable` or DO_NOT_TRACK=1.
+  Details: https://clickhouse.com/docs/interfaces/cli#telemetry")]
+    Telemetry(TelemetryArgs),
+}
+
+#[cfg(feature = "telemetry")]
+#[derive(Args, Debug)]
+pub struct TelemetryArgs {
+    #[command(subcommand)]
+    pub command: TelemetryCommands,
+}
+
+#[cfg(feature = "telemetry")]
+#[derive(Subcommand, Debug)]
+pub enum TelemetryCommands {
+    /// Enable anonymous usage telemetry
+    Enable,
+    /// Disable anonymous usage telemetry
+    Disable,
+    /// Show whether telemetry is enabled and why
+    ///
+    /// On a machine that has never seen the first-run notice, this reports
+    /// "not yet configured" and then completes the first run itself (writes
+    /// the marker file and prints the notice).
+    Status,
+    /// (internal) Fire one telemetry POST from CHCTL_TELEMETRY_PAYLOAD and exit
+    #[command(hide = true)]
+    Send,
 }
 
 #[derive(Args, Debug)]
@@ -159,5 +194,28 @@ mod tests {
         assert!(!args.detected_only);
         assert!(args.global);
         assert_eq!(args.agents, vec!["claude", "codex", "agents"]);
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn parses_telemetry_subcommands() {
+        for (arg, expected) in [
+            ("enable", "Enable"),
+            ("disable", "Disable"),
+            ("status", "Status"),
+            ("send", "Send"),
+        ] {
+            let cli = Cli::try_parse_from(["clickhousectl", "telemetry", arg]).unwrap();
+            let Commands::Telemetry(args) = cli.command else {
+                panic!("expected telemetry command for {arg}");
+            };
+            assert_eq!(format!("{:?}", args.command), expected);
+        }
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn telemetry_requires_a_subcommand() {
+        assert!(Cli::try_parse_from(["clickhousectl", "telemetry"]).is_err());
     }
 }
