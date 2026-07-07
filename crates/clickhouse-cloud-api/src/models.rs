@@ -53,10 +53,8 @@ impl std::fmt::Display for PgProvider {
 /// `pgSize` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgSize {
-    #[serde(rename = "c6gd.medium")]
-    #[default]
-    C6gd_medium,
     #[serde(rename = "c6gd.large")]
+    #[default]
     C6gd_large,
     #[serde(rename = "c6gd.xlarge")]
     C6gd_xlarge,
@@ -66,12 +64,8 @@ pub enum PgSize {
     C6gd_4xlarge,
     #[serde(rename = "c6gd.8xlarge")]
     C6gd_8xlarge,
-    #[serde(rename = "c6gd.12xlarge")]
-    C6gd_12xlarge,
     #[serde(rename = "c6gd.16xlarge")]
     C6gd_16xlarge,
-    #[serde(rename = "c6gd.metal")]
-    C6gd_metal,
     #[serde(rename = "i7i.large")]
     I7i_large,
     #[serde(rename = "i7i.xlarge")]
@@ -88,12 +82,6 @@ pub enum PgSize {
     I7i_16xlarge,
     #[serde(rename = "i7i.24xlarge")]
     I7i_24xlarge,
-    #[serde(rename = "i7i.metal-24xl")]
-    I7i_metal_24xl,
-    #[serde(rename = "i7i.48xlarge")]
-    I7i_48xlarge,
-    #[serde(rename = "i7i.metal-48xl")]
-    I7i_metal_48xl,
     #[serde(rename = "i7ie.large")]
     I7ie_large,
     #[serde(rename = "i7ie.xlarge")]
@@ -110,12 +98,6 @@ pub enum PgSize {
     I7ie_18xlarge,
     #[serde(rename = "i7ie.24xlarge")]
     I7ie_24xlarge,
-    #[serde(rename = "i7ie.metal-24xl")]
-    I7ie_metal_24xl,
-    #[serde(rename = "i7ie.48xlarge")]
-    I7ie_48xlarge,
-    #[serde(rename = "i7ie.metal-48xl")]
-    I7ie_metal_48xl,
     #[serde(rename = "i8g.large")]
     I8g_large,
     #[serde(rename = "i8g.xlarge")]
@@ -126,16 +108,10 @@ pub enum PgSize {
     I8g_4xlarge,
     #[serde(rename = "i8g.8xlarge")]
     I8g_8xlarge,
-    #[serde(rename = "i8g.12xlarge")]
-    I8g_12xlarge,
     #[serde(rename = "i8g.16xlarge")]
     I8g_16xlarge,
     #[serde(rename = "i8g.24xlarge")]
     I8g_24xlarge,
-    #[serde(rename = "i8g.metal-24xl")]
-    I8g_metal_24xl,
-    #[serde(rename = "i8g.48xlarge")]
-    I8g_48xlarge,
     #[serde(rename = "i8ge.large")]
     I8ge_large,
     #[serde(rename = "i8ge.xlarge")]
@@ -152,36 +128,6 @@ pub enum PgSize {
     I8ge_18xlarge,
     #[serde(rename = "i8ge.24xlarge")]
     I8ge_24xlarge,
-    #[serde(rename = "i8ge.metal-24xl")]
-    I8ge_metal_24xl,
-    #[serde(rename = "i8ge.48xlarge")]
-    I8ge_48xlarge,
-    #[serde(rename = "i8ge.metal-48xl")]
-    I8ge_metal_48xl,
-    #[serde(rename = "m6a.large")]
-    M6a_large,
-    #[serde(rename = "m6a.xlarge")]
-    M6a_xlarge,
-    #[serde(rename = "m6a.2xlarge")]
-    M6a_2xlarge,
-    #[serde(rename = "m6a.4xlarge")]
-    M6a_4xlarge,
-    #[serde(rename = "m6a.8xlarge")]
-    M6a_8xlarge,
-    #[serde(rename = "m6a.12xlarge")]
-    M6a_12xlarge,
-    #[serde(rename = "m6a.16xlarge")]
-    M6a_16xlarge,
-    #[serde(rename = "m6a.24xlarge")]
-    M6a_24xlarge,
-    #[serde(rename = "m6a.32xlarge")]
-    M6a_32xlarge,
-    #[serde(rename = "m6a.48xlarge")]
-    M6a_48xlarge,
-    #[serde(rename = "m6a.metal")]
-    M6a_metal,
-    #[serde(rename = "m6gd.medium")]
-    M6gd_medium,
     #[serde(rename = "m6gd.large")]
     M6gd_large,
     #[serde(rename = "m6gd.xlarge")]
@@ -192,12 +138,8 @@ pub enum PgSize {
     M6gd_4xlarge,
     #[serde(rename = "m6gd.8xlarge")]
     M6gd_8xlarge,
-    #[serde(rename = "m6gd.12xlarge")]
-    M6gd_12xlarge,
     #[serde(rename = "m6gd.16xlarge")]
     M6gd_16xlarge,
-    #[serde(rename = "m6gd.metal")]
-    M6gd_metal,
     #[serde(rename = "m6id.large")]
     M6id_large,
     #[serde(rename = "m6id.xlarge")]
@@ -208,64 +150,8 @@ pub enum PgSize {
     M6id_4xlarge,
     #[serde(rename = "m6id.8xlarge")]
     M6id_8xlarge,
-    #[serde(rename = "m6id.12xlarge")]
-    M6id_12xlarge,
     #[serde(rename = "m6id.16xlarge")]
     M6id_16xlarge,
-    #[serde(rename = "m6id.24xlarge")]
-    M6id_24xlarge,
-    #[serde(rename = "m6id.32xlarge")]
-    M6id_32xlarge,
-    #[serde(rename = "m6id.metal")]
-    M6id_metal,
-    #[serde(rename = "m7a.medium")]
-    M7a_medium,
-    #[serde(rename = "m7a.large")]
-    M7a_large,
-    #[serde(rename = "m7a.xlarge")]
-    M7a_xlarge,
-    #[serde(rename = "m7a.2xlarge")]
-    M7a_2xlarge,
-    #[serde(rename = "m7a.4xlarge")]
-    M7a_4xlarge,
-    #[serde(rename = "m7a.8xlarge")]
-    M7a_8xlarge,
-    #[serde(rename = "m7a.12xlarge")]
-    M7a_12xlarge,
-    #[serde(rename = "m7a.16xlarge")]
-    M7a_16xlarge,
-    #[serde(rename = "m7a.24xlarge")]
-    M7a_24xlarge,
-    #[serde(rename = "m7a.32xlarge")]
-    M7a_32xlarge,
-    #[serde(rename = "m7a.48xlarge")]
-    M7a_48xlarge,
-    #[serde(rename = "m7a.metal-48xl")]
-    M7a_metal_48xl,
-    #[serde(rename = "m7i.large")]
-    M7i_large,
-    #[serde(rename = "m7i.xlarge")]
-    M7i_xlarge,
-    #[serde(rename = "m7i.2xlarge")]
-    M7i_2xlarge,
-    #[serde(rename = "m7i.4xlarge")]
-    M7i_4xlarge,
-    #[serde(rename = "m7i.8xlarge")]
-    M7i_8xlarge,
-    #[serde(rename = "m7i.12xlarge")]
-    M7i_12xlarge,
-    #[serde(rename = "m7i.16xlarge")]
-    M7i_16xlarge,
-    #[serde(rename = "m7i.24xlarge")]
-    M7i_24xlarge,
-    #[serde(rename = "m7i.metal-24xl")]
-    M7i_metal_24xl,
-    #[serde(rename = "m7i.48xlarge")]
-    M7i_48xlarge,
-    #[serde(rename = "m7i.metal-48xl")]
-    M7i_metal_48xl,
-    #[serde(rename = "m8gd.medium")]
-    M8gd_medium,
     #[serde(rename = "m8gd.large")]
     M8gd_large,
     #[serde(rename = "m8gd.xlarge")]
@@ -276,18 +162,8 @@ pub enum PgSize {
     M8gd_4xlarge,
     #[serde(rename = "m8gd.8xlarge")]
     M8gd_8xlarge,
-    #[serde(rename = "m8gd.12xlarge")]
-    M8gd_12xlarge,
     #[serde(rename = "m8gd.16xlarge")]
     M8gd_16xlarge,
-    #[serde(rename = "m8gd.24xlarge")]
-    M8gd_24xlarge,
-    #[serde(rename = "m8gd.metal-24xl")]
-    M8gd_metal_24xl,
-    #[serde(rename = "m8gd.48xlarge")]
-    M8gd_48xlarge,
-    #[serde(rename = "m8gd.metal-48xl")]
-    M8gd_metal_48xl,
     #[serde(rename = "r6gd.medium")]
     R6gd_medium,
     #[serde(rename = "r6gd.large")]
@@ -304,8 +180,6 @@ pub enum PgSize {
     R6gd_12xlarge,
     #[serde(rename = "r6gd.16xlarge")]
     R6gd_16xlarge,
-    #[serde(rename = "r6gd.metal")]
-    R6gd_metal,
     #[serde(rename = "r6id.large")]
     R6id_large,
     #[serde(rename = "r6id.xlarge")]
@@ -324,8 +198,6 @@ pub enum PgSize {
     R6id_24xlarge,
     #[serde(rename = "r6id.32xlarge")]
     R6id_32xlarge,
-    #[serde(rename = "r6id.metal")]
-    R6id_metal,
     #[serde(rename = "r8gd.medium")]
     R8gd_medium,
     #[serde(rename = "r8gd.large")]
@@ -344,12 +216,8 @@ pub enum PgSize {
     R8gd_16xlarge,
     #[serde(rename = "r8gd.24xlarge")]
     R8gd_24xlarge,
-    #[serde(rename = "r8gd.metal-24xl")]
-    R8gd_metal_24xl,
     #[serde(rename = "r8gd.48xlarge")]
     R8gd_48xlarge,
-    #[serde(rename = "r8gd.metal-48xl")]
-    R8gd_metal_48xl,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -358,15 +226,12 @@ pub enum PgSize {
 impl std::fmt::Display for PgSize {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::C6gd_medium => write!(f, "c6gd.medium"),
             Self::C6gd_large => write!(f, "c6gd.large"),
             Self::C6gd_xlarge => write!(f, "c6gd.xlarge"),
             Self::C6gd_2xlarge => write!(f, "c6gd.2xlarge"),
             Self::C6gd_4xlarge => write!(f, "c6gd.4xlarge"),
             Self::C6gd_8xlarge => write!(f, "c6gd.8xlarge"),
-            Self::C6gd_12xlarge => write!(f, "c6gd.12xlarge"),
             Self::C6gd_16xlarge => write!(f, "c6gd.16xlarge"),
-            Self::C6gd_metal => write!(f, "c6gd.metal"),
             Self::I7i_large => write!(f, "i7i.large"),
             Self::I7i_xlarge => write!(f, "i7i.xlarge"),
             Self::I7i_2xlarge => write!(f, "i7i.2xlarge"),
@@ -375,9 +240,6 @@ impl std::fmt::Display for PgSize {
             Self::I7i_12xlarge => write!(f, "i7i.12xlarge"),
             Self::I7i_16xlarge => write!(f, "i7i.16xlarge"),
             Self::I7i_24xlarge => write!(f, "i7i.24xlarge"),
-            Self::I7i_metal_24xl => write!(f, "i7i.metal-24xl"),
-            Self::I7i_48xlarge => write!(f, "i7i.48xlarge"),
-            Self::I7i_metal_48xl => write!(f, "i7i.metal-48xl"),
             Self::I7ie_large => write!(f, "i7ie.large"),
             Self::I7ie_xlarge => write!(f, "i7ie.xlarge"),
             Self::I7ie_2xlarge => write!(f, "i7ie.2xlarge"),
@@ -386,19 +248,13 @@ impl std::fmt::Display for PgSize {
             Self::I7ie_12xlarge => write!(f, "i7ie.12xlarge"),
             Self::I7ie_18xlarge => write!(f, "i7ie.18xlarge"),
             Self::I7ie_24xlarge => write!(f, "i7ie.24xlarge"),
-            Self::I7ie_metal_24xl => write!(f, "i7ie.metal-24xl"),
-            Self::I7ie_48xlarge => write!(f, "i7ie.48xlarge"),
-            Self::I7ie_metal_48xl => write!(f, "i7ie.metal-48xl"),
             Self::I8g_large => write!(f, "i8g.large"),
             Self::I8g_xlarge => write!(f, "i8g.xlarge"),
             Self::I8g_2xlarge => write!(f, "i8g.2xlarge"),
             Self::I8g_4xlarge => write!(f, "i8g.4xlarge"),
             Self::I8g_8xlarge => write!(f, "i8g.8xlarge"),
-            Self::I8g_12xlarge => write!(f, "i8g.12xlarge"),
             Self::I8g_16xlarge => write!(f, "i8g.16xlarge"),
             Self::I8g_24xlarge => write!(f, "i8g.24xlarge"),
-            Self::I8g_metal_24xl => write!(f, "i8g.metal-24xl"),
-            Self::I8g_48xlarge => write!(f, "i8g.48xlarge"),
             Self::I8ge_large => write!(f, "i8ge.large"),
             Self::I8ge_xlarge => write!(f, "i8ge.xlarge"),
             Self::I8ge_2xlarge => write!(f, "i8ge.2xlarge"),
@@ -407,74 +263,24 @@ impl std::fmt::Display for PgSize {
             Self::I8ge_12xlarge => write!(f, "i8ge.12xlarge"),
             Self::I8ge_18xlarge => write!(f, "i8ge.18xlarge"),
             Self::I8ge_24xlarge => write!(f, "i8ge.24xlarge"),
-            Self::I8ge_metal_24xl => write!(f, "i8ge.metal-24xl"),
-            Self::I8ge_48xlarge => write!(f, "i8ge.48xlarge"),
-            Self::I8ge_metal_48xl => write!(f, "i8ge.metal-48xl"),
-            Self::M6a_large => write!(f, "m6a.large"),
-            Self::M6a_xlarge => write!(f, "m6a.xlarge"),
-            Self::M6a_2xlarge => write!(f, "m6a.2xlarge"),
-            Self::M6a_4xlarge => write!(f, "m6a.4xlarge"),
-            Self::M6a_8xlarge => write!(f, "m6a.8xlarge"),
-            Self::M6a_12xlarge => write!(f, "m6a.12xlarge"),
-            Self::M6a_16xlarge => write!(f, "m6a.16xlarge"),
-            Self::M6a_24xlarge => write!(f, "m6a.24xlarge"),
-            Self::M6a_32xlarge => write!(f, "m6a.32xlarge"),
-            Self::M6a_48xlarge => write!(f, "m6a.48xlarge"),
-            Self::M6a_metal => write!(f, "m6a.metal"),
-            Self::M6gd_medium => write!(f, "m6gd.medium"),
             Self::M6gd_large => write!(f, "m6gd.large"),
             Self::M6gd_xlarge => write!(f, "m6gd.xlarge"),
             Self::M6gd_2xlarge => write!(f, "m6gd.2xlarge"),
             Self::M6gd_4xlarge => write!(f, "m6gd.4xlarge"),
             Self::M6gd_8xlarge => write!(f, "m6gd.8xlarge"),
-            Self::M6gd_12xlarge => write!(f, "m6gd.12xlarge"),
             Self::M6gd_16xlarge => write!(f, "m6gd.16xlarge"),
-            Self::M6gd_metal => write!(f, "m6gd.metal"),
             Self::M6id_large => write!(f, "m6id.large"),
             Self::M6id_xlarge => write!(f, "m6id.xlarge"),
             Self::M6id_2xlarge => write!(f, "m6id.2xlarge"),
             Self::M6id_4xlarge => write!(f, "m6id.4xlarge"),
             Self::M6id_8xlarge => write!(f, "m6id.8xlarge"),
-            Self::M6id_12xlarge => write!(f, "m6id.12xlarge"),
             Self::M6id_16xlarge => write!(f, "m6id.16xlarge"),
-            Self::M6id_24xlarge => write!(f, "m6id.24xlarge"),
-            Self::M6id_32xlarge => write!(f, "m6id.32xlarge"),
-            Self::M6id_metal => write!(f, "m6id.metal"),
-            Self::M7a_medium => write!(f, "m7a.medium"),
-            Self::M7a_large => write!(f, "m7a.large"),
-            Self::M7a_xlarge => write!(f, "m7a.xlarge"),
-            Self::M7a_2xlarge => write!(f, "m7a.2xlarge"),
-            Self::M7a_4xlarge => write!(f, "m7a.4xlarge"),
-            Self::M7a_8xlarge => write!(f, "m7a.8xlarge"),
-            Self::M7a_12xlarge => write!(f, "m7a.12xlarge"),
-            Self::M7a_16xlarge => write!(f, "m7a.16xlarge"),
-            Self::M7a_24xlarge => write!(f, "m7a.24xlarge"),
-            Self::M7a_32xlarge => write!(f, "m7a.32xlarge"),
-            Self::M7a_48xlarge => write!(f, "m7a.48xlarge"),
-            Self::M7a_metal_48xl => write!(f, "m7a.metal-48xl"),
-            Self::M7i_large => write!(f, "m7i.large"),
-            Self::M7i_xlarge => write!(f, "m7i.xlarge"),
-            Self::M7i_2xlarge => write!(f, "m7i.2xlarge"),
-            Self::M7i_4xlarge => write!(f, "m7i.4xlarge"),
-            Self::M7i_8xlarge => write!(f, "m7i.8xlarge"),
-            Self::M7i_12xlarge => write!(f, "m7i.12xlarge"),
-            Self::M7i_16xlarge => write!(f, "m7i.16xlarge"),
-            Self::M7i_24xlarge => write!(f, "m7i.24xlarge"),
-            Self::M7i_metal_24xl => write!(f, "m7i.metal-24xl"),
-            Self::M7i_48xlarge => write!(f, "m7i.48xlarge"),
-            Self::M7i_metal_48xl => write!(f, "m7i.metal-48xl"),
-            Self::M8gd_medium => write!(f, "m8gd.medium"),
             Self::M8gd_large => write!(f, "m8gd.large"),
             Self::M8gd_xlarge => write!(f, "m8gd.xlarge"),
             Self::M8gd_2xlarge => write!(f, "m8gd.2xlarge"),
             Self::M8gd_4xlarge => write!(f, "m8gd.4xlarge"),
             Self::M8gd_8xlarge => write!(f, "m8gd.8xlarge"),
-            Self::M8gd_12xlarge => write!(f, "m8gd.12xlarge"),
             Self::M8gd_16xlarge => write!(f, "m8gd.16xlarge"),
-            Self::M8gd_24xlarge => write!(f, "m8gd.24xlarge"),
-            Self::M8gd_metal_24xl => write!(f, "m8gd.metal-24xl"),
-            Self::M8gd_48xlarge => write!(f, "m8gd.48xlarge"),
-            Self::M8gd_metal_48xl => write!(f, "m8gd.metal-48xl"),
             Self::R6gd_medium => write!(f, "r6gd.medium"),
             Self::R6gd_large => write!(f, "r6gd.large"),
             Self::R6gd_xlarge => write!(f, "r6gd.xlarge"),
@@ -483,7 +289,6 @@ impl std::fmt::Display for PgSize {
             Self::R6gd_8xlarge => write!(f, "r6gd.8xlarge"),
             Self::R6gd_12xlarge => write!(f, "r6gd.12xlarge"),
             Self::R6gd_16xlarge => write!(f, "r6gd.16xlarge"),
-            Self::R6gd_metal => write!(f, "r6gd.metal"),
             Self::R6id_large => write!(f, "r6id.large"),
             Self::R6id_xlarge => write!(f, "r6id.xlarge"),
             Self::R6id_2xlarge => write!(f, "r6id.2xlarge"),
@@ -493,7 +298,6 @@ impl std::fmt::Display for PgSize {
             Self::R6id_16xlarge => write!(f, "r6id.16xlarge"),
             Self::R6id_24xlarge => write!(f, "r6id.24xlarge"),
             Self::R6id_32xlarge => write!(f, "r6id.32xlarge"),
-            Self::R6id_metal => write!(f, "r6id.metal"),
             Self::R8gd_medium => write!(f, "r8gd.medium"),
             Self::R8gd_large => write!(f, "r8gd.large"),
             Self::R8gd_xlarge => write!(f, "r8gd.xlarge"),
@@ -503,9 +307,7 @@ impl std::fmt::Display for PgSize {
             Self::R8gd_12xlarge => write!(f, "r8gd.12xlarge"),
             Self::R8gd_16xlarge => write!(f, "r8gd.16xlarge"),
             Self::R8gd_24xlarge => write!(f, "r8gd.24xlarge"),
-            Self::R8gd_metal_24xl => write!(f, "r8gd.metal-24xl"),
             Self::R8gd_48xlarge => write!(f, "r8gd.48xlarge"),
-            Self::R8gd_metal_48xl => write!(f, "r8gd.metal-48xl"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1169,6 +971,8 @@ pub enum ByocConfigRegionid {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -1207,6 +1011,7 @@ impl std::fmt::Display for ByocConfigRegionid {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -1278,6 +1083,8 @@ pub enum ByocInfrastructurePostRequestRegionid {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -1316,6 +1123,7 @@ impl std::fmt::Display for ByocInfrastructurePostRequestRegionid {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -3171,6 +2979,18 @@ pub enum ClickStackAlertResponseThresholdtype {
     Above,
     #[serde(rename = "below")]
     Below,
+    #[serde(rename = "above_exclusive")]
+    Above_exclusive,
+    #[serde(rename = "below_or_equal")]
+    Below_or_equal,
+    #[serde(rename = "equal")]
+    Equal,
+    #[serde(rename = "not_equal")]
+    Not_equal,
+    #[serde(rename = "between")]
+    Between,
+    #[serde(rename = "not_between")]
+    Not_between,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -3181,6 +3001,12 @@ impl std::fmt::Display for ClickStackAlertResponseThresholdtype {
         match self {
             Self::Above => write!(f, "above"),
             Self::Below => write!(f, "below"),
+            Self::Above_exclusive => write!(f, "above_exclusive"),
+            Self::Below_or_equal => write!(f, "below_or_equal"),
+            Self::Equal => write!(f, "equal"),
+            Self::Not_equal => write!(f, "not_equal"),
+            Self::Between => write!(f, "between"),
+            Self::Not_between => write!(f, "not_between"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3318,6 +3144,18 @@ pub enum ClickStackCreateAlertRequestThresholdtype {
     Above,
     #[serde(rename = "below")]
     Below,
+    #[serde(rename = "above_exclusive")]
+    Above_exclusive,
+    #[serde(rename = "below_or_equal")]
+    Below_or_equal,
+    #[serde(rename = "equal")]
+    Equal,
+    #[serde(rename = "not_equal")]
+    Not_equal,
+    #[serde(rename = "between")]
+    Between,
+    #[serde(rename = "not_between")]
+    Not_between,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -3328,6 +3166,12 @@ impl std::fmt::Display for ClickStackCreateAlertRequestThresholdtype {
         match self {
             Self::Above => write!(f, "above"),
             Self::Below => write!(f, "below"),
+            Self::Above_exclusive => write!(f, "above_exclusive"),
+            Self::Below_or_equal => write!(f, "below_or_equal"),
+            Self::Equal => write!(f, "equal"),
+            Self::Not_equal => write!(f, "not_equal"),
+            Self::Between => write!(f, "between"),
+            Self::Not_between => write!(f, "not_between"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -4159,6 +4003,8 @@ pub enum ClickStackNumberFormatOutput {
     Data_rate,
     #[serde(rename = "throughput")]
     Throughput,
+    #[serde(rename = "duration")]
+    Duration,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -4174,6 +4020,7 @@ impl std::fmt::Display for ClickStackNumberFormatOutput {
             Self::Number => write!(f, "number"),
             Self::Data_rate => write!(f, "data_rate"),
             Self::Throughput => write!(f, "throughput"),
+            Self::Duration => write!(f, "duration"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -5204,6 +5051,18 @@ pub enum ClickStackUpdateAlertRequestThresholdtype {
     Above,
     #[serde(rename = "below")]
     Below,
+    #[serde(rename = "above_exclusive")]
+    Above_exclusive,
+    #[serde(rename = "below_or_equal")]
+    Below_or_equal,
+    #[serde(rename = "equal")]
+    Equal,
+    #[serde(rename = "not_equal")]
+    Not_equal,
+    #[serde(rename = "between")]
+    Between,
+    #[serde(rename = "not_between")]
+    Not_between,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -5214,6 +5073,12 @@ impl std::fmt::Display for ClickStackUpdateAlertRequestThresholdtype {
         match self {
             Self::Above => write!(f, "above"),
             Self::Below => write!(f, "below"),
+            Self::Above_exclusive => write!(f, "above_exclusive"),
+            Self::Below_or_equal => write!(f, "below_or_equal"),
+            Self::Equal => write!(f, "equal"),
+            Self::Not_equal => write!(f, "not_equal"),
+            Self::Between => write!(f, "between"),
+            Self::Not_between => write!(f, "not_between"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -5270,6 +5135,7 @@ pub enum CreateReversePrivateEndpointType {
     VPC_ENDPOINT_SERVICE,
     VPC_RESOURCE,
     MSK_MULTI_VPC,
+    GCP_PSC_SERVICE_ATTACHMENT,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -5281,6 +5147,7 @@ impl std::fmt::Display for CreateReversePrivateEndpointType {
             Self::VPC_ENDPOINT_SERVICE => write!(f, "VPC_ENDPOINT_SERVICE"),
             Self::VPC_RESOURCE => write!(f, "VPC_RESOURCE"),
             Self::MSK_MULTI_VPC => write!(f, "MSK_MULTI_VPC"),
+            Self::GCP_PSC_SERVICE_ATTACHMENT => write!(f, "GCP_PSC_SERVICE_ATTACHMENT"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -5443,6 +5310,8 @@ pub enum InstancePrivateEndpointRegion {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -5481,6 +5350,7 @@ impl std::fmt::Display for InstancePrivateEndpointRegion {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -5644,6 +5514,8 @@ pub enum OrganizationPatchPrivateEndpointRegion {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -5682,6 +5554,7 @@ impl std::fmt::Display for OrganizationPatchPrivateEndpointRegion {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -5753,6 +5626,8 @@ pub enum OrganizationPrivateEndpointRegion {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -5791,6 +5666,7 @@ impl std::fmt::Display for OrganizationPrivateEndpointRegion {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -5979,6 +5855,7 @@ pub enum ReversePrivateEndpointType {
     VPC_ENDPOINT_SERVICE,
     VPC_RESOURCE,
     MSK_MULTI_VPC,
+    GCP_PSC_SERVICE_ATTACHMENT,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -5990,6 +5867,7 @@ impl std::fmt::Display for ReversePrivateEndpointType {
             Self::VPC_ENDPOINT_SERVICE => write!(f, "VPC_ENDPOINT_SERVICE"),
             Self::VPC_RESOURCE => write!(f, "VPC_RESOURCE"),
             Self::MSK_MULTI_VPC => write!(f, "MSK_MULTI_VPC"),
+            Self::GCP_PSC_SERVICE_ATTACHMENT => write!(f, "GCP_PSC_SERVICE_ATTACHMENT"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -6137,6 +6015,8 @@ pub enum ServiceRegion {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -6175,6 +6055,7 @@ impl std::fmt::Display for ServiceRegion {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -6511,6 +6392,8 @@ pub enum ServicePostRequestRegion {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -6549,6 +6432,7 @@ impl std::fmt::Display for ServicePostRequestRegion {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),
@@ -6754,6 +6638,8 @@ pub enum ServiceScalingPatchResponseRegion {
     Us_east1,
     #[serde(rename = "us-central1")]
     Us_central1,
+    #[serde(rename = "europe-west2")]
+    Europe_west2,
     #[serde(rename = "europe-west4")]
     Europe_west4,
     #[serde(rename = "asia-southeast1")]
@@ -6792,6 +6678,7 @@ impl std::fmt::Display for ServiceScalingPatchResponseRegion {
             Self::Us_west_2 => write!(f, "us-west-2"),
             Self::Us_east1 => write!(f, "us-east1"),
             Self::Us_central1 => write!(f, "us-central1"),
+            Self::Europe_west2 => write!(f, "europe-west2"),
             Self::Europe_west4 => write!(f, "europe-west4"),
             Self::Asia_southeast1 => write!(f, "asia-southeast1"),
             Self::Asia_northeast1 => write!(f, "asia-northeast1"),

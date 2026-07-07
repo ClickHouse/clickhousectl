@@ -660,14 +660,14 @@ fn serialize_postgres_service_post_request() {
         name: "pg-new".to_string(),
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
-        size: PgSize::C6gd_medium,
+        size: PgSize::C6gd_large,
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "pg-new");
     assert_eq!(json["provider"], "aws");
     assert_eq!(json["region"], "us-east-1");
-    assert_eq!(json["size"], "c6gd.medium");
+    assert_eq!(json["size"], "c6gd.large");
     assert!(json.get("storageSize").is_none());
     // Optional fields omitted
     assert!(json.get("haType").is_none());

@@ -1972,7 +1972,7 @@ async fn create_postgres_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.medium"})))
+        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.large"})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "pg-svc",
@@ -1988,7 +1988,7 @@ async fn create_postgres_service() {
         name: "pg-svc".to_string(),
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
-        size: PgSize::C6gd_medium,
+        size: PgSize::C6gd_large,
         ..Default::default()
     };
     let resp = c
@@ -2052,7 +2052,7 @@ async fn update_postgres_service() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/postgres/pg-1"))
-        .and(body_partial_json(serde_json::json!({"size": "c6gd.medium"})))
+        .and(body_partial_json(serde_json::json!({"size": "c6gd.large"})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "pg-1"
@@ -2061,7 +2061,7 @@ async fn update_postgres_service() {
         .await;
 
     let body = PostgresServicePatchRequest {
-        size: Some(PgSize::C6gd_medium),
+        size: Some(PgSize::C6gd_large),
         ..Default::default()
     };
     let resp = c

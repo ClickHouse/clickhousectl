@@ -235,6 +235,27 @@ def parse_extra_field_exemptions() -> set[tuple[str, str]]:
     return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
 
 
+def parse_extra_enum_value_exemptions() -> set[tuple[str, str]]:
+    """Parse `EXTRA_ENUM_VALUE_EXEMPTIONS` from spec_coverage_test.rs.
+
+    Mirror of `parse_extra_field_exemptions` for enum values: these
+    (RustEnumName, wireValue) pairs are variants we intentionally keep in
+    `models.rs` even though the mapped spec enum no longer lists the value.
+    Re-use the same list so the drift report stays in sync with the test.
+    """
+    if not SPEC_COVERAGE_TEST_RS.exists():
+        return set()
+    source = SPEC_COVERAGE_TEST_RS.read_text()
+    match = re.search(
+        r"const\s+EXTRA_ENUM_VALUE_EXEMPTIONS\s*:\s*&\[\(&str,\s*&str\)\]\s*=\s*&\[(.*?)\];",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return set()
+    return set(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
+
+
 def model_type_names() -> set[str]:
     """Extract all pub struct/enum/type names from models.rs."""
     source = MODELS_RS.read_text()
@@ -335,12 +356,12 @@ def collect_refs(value, refs=None) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def parse_model_fields(source: str) -> dict[str, dict[str, bool]]:
-    """Parse models.rs to extract field optionality per struct.
+def parse_model_fields(source: str) -> dict[str, dict[str, dict]]:
+    """Parse models.rs to extract field optionality and type per struct.
 
-    Returns: { StructName: { specFieldName: is_option } }
+    Returns: { StructName: { specFieldName: {"is_option": bool, "type": str} } }
     """
-    result: dict[str, dict[str, bool]] = {}
+    result: dict[str, dict[str, dict]] = {}
     lines = source.splitlines()
     i = 0
 
@@ -353,7 +374,7 @@ def parse_model_fields(source: str) -> dict[str, dict[str, bool]]:
             if match:
                 struct_name = match.group(0)
                 i += 1
-                fields: dict[str, bool] = {}
+                fields: dict[str, dict] = {}
                 pending_rename: str | None = None
 
                 while i < len(lines):
@@ -374,7 +395,7 @@ def parse_model_fields(source: str) -> dict[str, dict[str, bool]]:
                         type_str = m.group(2).strip()
                         is_option = type_str.startswith("Option<")
                         spec_name = pending_rename or rust_name
-                        fields[spec_name] = is_option
+                        fields[spec_name] = {"is_option": is_option, "type": type_str}
                         pending_rename = None
 
                     i += 1
@@ -387,7 +408,7 @@ def parse_model_fields(source: str) -> dict[str, dict[str, bool]]:
 
 def check_field_optionality(
     spec: dict,
-    model_fields: dict[str, dict[str, bool]],
+    model_fields: dict[str, dict[str, dict]],
     exemptions: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """Compare field optionality between spec and models.rs.
@@ -418,7 +439,7 @@ def check_field_optionality(
                 continue
 
             is_required = prop_name in required_fields
-            is_option = fields[prop_name]
+            is_option = fields[prop_name]["is_option"]
 
             if is_required and is_option:
                 mismatches.append({
@@ -471,7 +492,7 @@ def check_snapshot_staleness(live_spec: dict) -> dict:
 
 def check_missing_fields(
     spec: dict,
-    model_fields: dict[str, dict[str, bool]],
+    model_fields: dict[str, dict[str, dict]],
 ) -> list[dict]:
     """Find spec properties that have no corresponding Rust struct field.
 
@@ -500,7 +521,7 @@ def check_missing_fields(
 
 def check_extra_fields(
     spec: dict,
-    model_fields: dict[str, dict[str, bool]],
+    model_fields: dict[str, dict[str, dict]],
     exemptions: set[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """Find Rust struct fields that have no corresponding spec property.
@@ -536,6 +557,216 @@ def check_extra_fields(
                 "spec_name": spec_name,
                 "field": field_name,
             })
+
+    return extra
+
+
+# ---------------------------------------------------------------------------
+# Enum value checking (mirrors spec_coverage_test.rs logic)
+# ---------------------------------------------------------------------------
+
+
+def inner_type(type_str: str) -> str:
+    """Strip `Option<`/`Vec<`/`Box<` wrappers down to the innermost type name."""
+    type_str = type_str.strip()
+    while True:
+        for wrapper in ("Option<", "Vec<", "Box<"):
+            if type_str.startswith(wrapper):
+                type_str = type_str[len(wrapper):]
+                if type_str.endswith(">"):
+                    type_str = type_str[:-1]
+                break
+        else:
+            return type_str
+
+
+def parse_enum_variant_values(source: str) -> dict[str, set[str]]:
+    """Parse models.rs to extract the wire values of every value enum: enums
+    whose non-catch-all variants are all data-free. The wire value is the
+    variant's `#[serde(rename = "...")]` if present, else the variant identifier
+    itself. Variants marked `#[serde(untagged)]` (the `Unknown(String)`-style
+    catch-all) carry no spec value and are skipped — identified by attribute,
+    not by name. Enums with data-carrying variants that are not untagged model
+    `oneOf` unions, not value enums, and are excluded entirely.
+
+    Returns: { RustEnumName: { wireValue } }
+    """
+    result: dict[str, set[str]] = {}
+    lines = source.splitlines()
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].lstrip()
+
+        if line.startswith("pub enum "):
+            rest = line[len("pub enum "):]
+            match = re.match(r"[A-Za-z0-9_]+", rest)
+            if match:
+                enum_name = match.group(0)
+                i += 1
+                values: set[str] = set()
+                is_value_enum = True
+                pending_rename: str | None = None
+                pending_untagged = False
+
+                while i < len(lines):
+                    line = lines[i].strip()
+                    if line == "}":
+                        break
+
+                    if line.startswith("#[serde("):
+                        m = _RE_RENAME.search(line)
+                        if m:
+                            pending_rename = m.group(1)
+                        if "untagged" in line:
+                            pending_untagged = True
+                    elif line and not line.startswith("#[") and not line.startswith("//"):
+                        m = re.match(r"[A-Za-z0-9_]+", line)
+                        if m:
+                            variant_name = m.group(0)
+                            is_unit = not line[len(variant_name):].rstrip(",").strip()
+
+                            if pending_untagged:
+                                pass  # catch-all variant — carries no spec value
+                            elif is_unit:
+                                values.add(pending_rename or variant_name)
+                            else:
+                                is_value_enum = False
+                            pending_rename = None
+                            pending_untagged = False
+
+                    i += 1
+
+                if is_value_enum and values:
+                    result[enum_name] = values
+        i += 1
+
+    return result
+
+
+def spec_enum_values(spec: dict) -> dict[tuple[str, str | None], set[str]]:
+    """Extract every string-valued `enum` in the spec, keyed by location: a
+    named enum schema is `(schemaName, None)`, an inline property enum is
+    `(schemaName, propertyName)`. Non-string values (numeric enums) are dropped
+    and locations left with no string values are omitted. Enums nested inside
+    `items`/`oneOf` are out of scope — models.rs represents those as plain
+    collections/unions, not value enums.
+    """
+    out: dict[tuple[str, str | None], set[str]] = {}
+    schemas = spec.get("components", {}).get("schemas", {})
+
+    for spec_name, schema in schemas.items():
+        values = _string_enum_values(schema)
+        if values:
+            out[(spec_name, None)] = values
+        props = schema.get("properties") or {}
+        for prop_name, prop in props.items():
+            if not isinstance(prop, dict):
+                continue
+            values = _string_enum_values(prop)
+            if values:
+                out[(spec_name, prop_name)] = values
+
+    return out
+
+
+def _string_enum_values(node: dict) -> set[str]:
+    """The string values of a schema/property's `enum` array, if it has any."""
+    enum = node.get("enum")
+    if not isinstance(enum, list):
+        return set()
+    return {v for v in enum if isinstance(v, str)}
+
+
+def resolve_enum_for_location(
+    spec_name: str,
+    prop_name: str | None,
+    model_fields: dict[str, dict[str, dict]],
+    value_enums: dict[str, set[str]],
+) -> tuple[str, str | None]:
+    """Resolve the Rust type that serializes a spec enum location.
+
+    Named enum schemas map by name (pascalize); inline property enums map via
+    the struct field's declared type — the actual serialization path — so the
+    mapping is structural and cannot rot the way a naming convention could.
+
+    Returns ("enum", RustEnumName) | ("not_enum", type_name) |
+    ("unmapped", None) — unmapped means the struct/field itself is missing,
+    which the schema/field coverage checks already report.
+    """
+    if prop_name is None:
+        type_name = pascalize(spec_name)
+    else:
+        fields = model_fields.get(pascalize(spec_name))
+        if fields is None:
+            return ("unmapped", None)
+        info = fields.get(prop_name)
+        if info is None:
+            return ("unmapped", None)
+        type_name = inner_type(info["type"])
+
+    if type_name in value_enums:
+        return ("enum", type_name)
+    return ("not_enum", type_name)
+
+
+def check_missing_enum_values(
+    spec: dict,
+    model_fields: dict[str, dict[str, dict]],
+    value_enums: dict[str, set[str]],
+) -> list[dict]:
+    """Find spec enum values that no Rust enum variant can represent.
+
+    Catches values added to a spec enum that never made it into models.rs
+    (responses fall into the untagged catch-all, and requests can't express
+    the value at all). Also flags spec enum locations whose Rust type is not a
+    value enum. Returns list of: [{enum, location, value}] (value is None for
+    the not-a-value-enum case).
+    """
+    missing = []
+
+    for (spec_name, prop_name), spec_values in spec_enum_values(spec).items():
+        location = f"{spec_name}.{prop_name}" if prop_name else spec_name
+        kind, type_name = resolve_enum_for_location(
+            spec_name, prop_name, model_fields, value_enums
+        )
+        if kind == "unmapped":
+            continue
+        if kind == "not_enum":
+            missing.append({"enum": type_name, "location": location, "value": None})
+            continue
+        for value in spec_values - value_enums[type_name]:
+            missing.append({"enum": type_name, "location": location, "value": value})
+
+    return missing
+
+
+def check_extra_enum_values(
+    spec: dict,
+    model_fields: dict[str, dict[str, dict]],
+    value_enums: dict[str, set[str]],
+    exemptions: set[tuple[str, str]] | None = None,
+) -> list[dict]:
+    """Find Rust enum variants that serialize a value absent from the spec enum.
+
+    The reverse of `check_missing_enum_values`: catches values removed from a
+    spec enum but left behind in `models.rs`, which the API rejects on requests.
+    Returns list of: [{enum, location, value}]
+    """
+    exemptions = exemptions or set()
+    extra = []
+
+    for (spec_name, prop_name), spec_values in spec_enum_values(spec).items():
+        location = f"{spec_name}.{prop_name}" if prop_name else spec_name
+        kind, type_name = resolve_enum_for_location(
+            spec_name, prop_name, model_fields, value_enums
+        )
+        if kind != "enum":
+            continue  # unmapped/mistyped locations are missing-enum-value findings
+        for value in value_enums[type_name] - spec_values:
+            if (type_name, value) in exemptions:
+                continue
+            extra.append({"enum": type_name, "location": location, "value": value})
 
     return extra
 
@@ -596,6 +827,8 @@ def build_issue_body(
     field_mismatches: list[dict] | None = None,
     missing_fields: list[dict] | None = None,
     extra_fields: list[dict] | None = None,
+    missing_enum_values: list[dict] | None = None,
+    extra_enum_values: list[dict] | None = None,
     snapshot_staleness: dict | None = None,
     beta_status_changes: dict | None = None,
     deprecation_changes: dict | None = None,
@@ -627,6 +860,8 @@ def build_issue_body(
         f"| Missing model types | {len(missing_types)} |",
         f"| Missing struct fields | {len(missing_fields or [])} |",
         f"| Extra struct fields (not in spec) | {len(extra_fields or [])} |",
+        f"| Missing enum values | {len(missing_enum_values or [])} |",
+        f"| Extra enum values (not in spec) | {len(extra_enum_values or [])} |",
         f"| Field optionality mismatches | {len(field_mismatches or [])} |",
         f"| Beta status changes | {beta_total} |",
         f"| Deprecated output field changes | {dep_total} |",
@@ -743,6 +978,43 @@ def build_issue_body(
         ]
         for m in sorted(extra_fields, key=lambda m: (m["schema"], m["field"])):
             lines.append(f"| `{m['schema']}` | `{m['field']}` |")
+        lines.append("")
+
+    # ---- Missing enum values ----
+    if missing_enum_values:
+        lines += [
+            "## Missing Enum Values",
+            "",
+            "These values exist in a spec `enum` but have no corresponding variant",
+            "in the mapped Rust enum. Responses carrying them fall into the untagged",
+            "`Unknown` catch-all, and requests cannot express them at all. Add the",
+            "variant (with a `#[serde(rename = ...)]` where the value isn't a valid",
+            "identifier) and its `Display` arm in `models.rs`.",
+            "",
+            "| Enum | Spec location | Value |",
+            "|------|---------------|-------|",
+        ]
+        for m in sorted(missing_enum_values, key=lambda m: (m["enum"], m["value"] or "")):
+            value = f"`{m['value']}`" if m["value"] else "*(type is not a value enum)*"
+            lines.append(f"| `{m['enum']}` | `{m['location']}` | {value} |")
+        lines.append("")
+
+    # ---- Extra enum values ----
+    if extra_enum_values:
+        lines += [
+            "## Extra Enum Values",
+            "",
+            "These Rust enum variants serialize a value the mapped spec `enum` no",
+            "longer (or never did) allow — the API rejects it on requests (the PubSub",
+            "`seekType`/`snapshot` failure mode from #275). Remove the variant and its",
+            "`Display` arm, or — if it is an intentional keeper — add it to",
+            "`EXTRA_ENUM_VALUE_EXEMPTIONS` in `spec_coverage_test.rs`.",
+            "",
+            "| Enum | Spec location | Value |",
+            "|------|---------------|-------|",
+        ]
+        for m in sorted(extra_enum_values, key=lambda m: (m["enum"], m["value"])):
+            lines.append(f"| `{m['enum']}` | `{m['location']}` | `{m['value']}` |")
         lines.append("")
 
     # ---- Field optionality mismatches ----
@@ -871,7 +1143,9 @@ def build_issue_body(
         "3. Add missing methods to `crates/clickhouse-cloud-api/src/client.rs`",
         "4. Fix any field optionality mismatches by hand-editing `models.rs`",
         "   (flip `T` ↔ `Option<T>` and the matching `skip_serializing_if` attribute).",
-        "5. Verify: `cargo test -p clickhouse-cloud-api`",
+        "5. Fix any enum value drift by adding/removing the variant and its",
+        "   `Display` arm in `models.rs`.",
+        "6. Verify: `cargo test -p clickhouse-cloud-api`",
         "",
     ]
 
@@ -933,6 +1207,14 @@ def main():
     extra_field_exemptions = parse_extra_field_exemptions()
     extra_fields = check_extra_fields(live_spec, model_fields, extra_field_exemptions)
 
+    # Compare enum values
+    value_enums = parse_enum_variant_values(models_source)
+    missing_enum_values = check_missing_enum_values(live_spec, model_fields, value_enums)
+    extra_enum_value_exemptions = parse_extra_enum_value_exemptions()
+    extra_enum_values = check_extra_enum_values(
+        live_spec, model_fields, value_enums, extra_enum_value_exemptions
+    )
+
     # Check committed snapshot staleness
     snapshot_staleness = check_snapshot_staleness(live_spec)
     snap_total = sum(len(v) for v in snapshot_staleness.values())
@@ -964,6 +1246,8 @@ def main():
         + len(field_mismatches)
         + len(missing_fields)
         + len(extra_fields)
+        + len(missing_enum_values)
+        + len(extra_enum_values)
         + beta_total
         + dep_total
         + snap_total
@@ -978,6 +1262,8 @@ def main():
     print(f"Missing types:   {len(missing_types)}", file=sys.stderr)
     print(f"Missing fields:  {len(missing_fields)}", file=sys.stderr)
     print(f"Extra fields:    {len(extra_fields)}", file=sys.stderr)
+    print(f"Missing enum vals: {len(missing_enum_values)}", file=sys.stderr)
+    print(f"Extra enum vals: {len(extra_enum_values)}", file=sys.stderr)
     print(f"Field mismatches:{len(field_mismatches)}", file=sys.stderr)
     print(f"Beta changes:    {beta_total}", file=sys.stderr)
     print(f"Deprecation chg: {dep_total}", file=sys.stderr)
@@ -995,6 +1281,8 @@ def main():
         field_mismatches,
         missing_fields,
         extra_fields,
+        missing_enum_values,
+        extra_enum_values,
         snapshot_staleness,
         beta_status_changes,
         deprecation_changes,

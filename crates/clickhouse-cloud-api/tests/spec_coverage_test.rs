@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use clickhouse_cloud_api::{BETA_OPERATIONS, DEPRECATED_FIELDS};
 use serde_json::Value;
@@ -778,6 +778,8 @@ fn is_field_nullable(prop: &Value) -> bool {
 
 struct FieldInfo {
     is_option: bool,
+    /// The field's declared Rust type, e.g. `Option<ServiceRegion>`.
+    rust_type: String,
     /// True if the field carries the `#[cfg(feature = "deprecated-fields")]`
     /// marker that removes it from the struct (and thus from output) unless the
     /// `deprecated-fields` feature is enabled.
@@ -845,6 +847,7 @@ fn parse_model_fields(source: &str) -> HashMap<String, HashMap<String, FieldInfo
                         spec_name,
                         FieldInfo {
                             is_option,
+                            rust_type: type_str.to_string(),
                             deprecated_marker: pending_deprecated_marker,
                         },
                     );
@@ -1066,4 +1069,323 @@ fn model_deprecated_marked_fields(source: &str) -> BTreeSet<(String, String)> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Enum value coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn enum_values_cover_every_spec_enum() {
+    assert_enum_value_coverage(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn enum_values_cover_every_live_spec_enum() {
+    let spec = load_live_spec().await;
+    assert_enum_value_coverage(&spec);
+}
+
+#[test]
+fn enum_values_have_no_extras_vs_spec() {
+    assert_no_extra_enum_values(&serde_json::from_str(SPEC_JSON).unwrap());
+}
+
+#[tokio::test]
+#[ignore = "hits the live published ClickHouse OpenAPI spec"]
+async fn enum_values_have_no_extras_vs_live_spec() {
+    let spec = load_live_spec().await;
+    assert_no_extra_enum_values(&spec);
+}
+
+/// Enum variants we deliberately keep in `models.rs` even though the mapped
+/// spec enum no longer (or never did) list the value. Analogous to
+/// `EXTRA_FIELD_EXEMPTIONS`. Each entry is `("RustEnumName", "wireValue")`
+/// with a comment explaining why the override exists.
+///
+/// Empty by design. The `enum_values_have_no_extras_vs_spec` test fails on a
+/// stale entry (one that no longer corresponds to an actual extra value) so
+/// this list can't rot.
+const EXTRA_ENUM_VALUE_EXEMPTIONS: &[(&str, &str)] = &[];
+
+/// Assert that every value in a spec `enum` is representable by the mapped
+/// Rust enum. Catches values added to a spec enum that never made it into
+/// models.rs (responses fall into the untagged catch-all, and requests can't
+/// express the value at all).
+fn assert_enum_value_coverage(spec: &Value) {
+    let model_fields = parse_model_fields(MODELS_RS);
+    let string_enums = parse_enum_variant_values(MODELS_RS);
+
+    let mut missing = Vec::new();
+
+    for ((schema, prop), spec_values) in spec_enum_values(spec) {
+        let location = enum_location_display(&schema, prop.as_deref());
+        match resolve_enum_for_location(&schema, prop.as_deref(), &model_fields, &string_enums) {
+            // Missing struct/field — reported by the schema/field coverage tests.
+            EnumResolution::Unmapped => continue,
+            EnumResolution::NotAStringEnum(type_name) => {
+                missing.push(format!(
+                    "{}: spec declares an enum but models.rs type `{}` is not a value enum",
+                    location, type_name
+                ));
+            }
+            EnumResolution::StringEnum(enum_name) => {
+                let variants = &string_enums[&enum_name];
+                for value in spec_values.difference(variants) {
+                    missing.push(format!("{} ({}): \"{}\"", enum_name, location, value));
+                }
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "Spec enum values missing from Rust enums ({} total):\n{}\n\
+         Add the variant (with a #[serde(rename = ...)] where the value isn't a \
+         valid identifier) and its Display arm in models.rs.",
+        missing.len(),
+        missing.join("\n")
+    );
+}
+
+/// Assert that no Rust enum variant serializes a value absent from its mapped
+/// spec enum. The mirror of `assert_enum_value_coverage`: that catches spec
+/// values missing from enums (spec → code); this catches values removed from a
+/// spec enum but left behind in `models.rs` (code → spec), which the API
+/// rejects on requests — the #273 PubSub `seekType`/`"snapshot"` incident.
+/// Intentional keepers are listed in `EXTRA_ENUM_VALUE_EXEMPTIONS`.
+fn assert_no_extra_enum_values(spec: &Value) {
+    let model_fields = parse_model_fields(MODELS_RS);
+    let string_enums = parse_enum_variant_values(MODELS_RS);
+
+    let exemptions: BTreeSet<(&str, &str)> = EXTRA_ENUM_VALUE_EXEMPTIONS.iter().copied().collect();
+    let mut exemptions_hit: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut extras = BTreeSet::new();
+
+    for ((schema, prop), spec_values) in spec_enum_values(spec) {
+        let EnumResolution::StringEnum(enum_name) =
+            resolve_enum_for_location(&schema, prop.as_deref(), &model_fields, &string_enums)
+        else {
+            // Unmapped/mistyped locations are assert_enum_value_coverage findings.
+            continue;
+        };
+
+        let location = enum_location_display(&schema, prop.as_deref());
+        for variant_value in string_enums[&enum_name].difference(&spec_values) {
+            if let Some(entry) = exemptions
+                .iter()
+                .find(|(e, v)| *e == enum_name && *v == variant_value.as_str())
+            {
+                exemptions_hit.insert(*entry);
+                eprintln!(
+                    "NOTE: {}: \"{}\" extra-enum-value exempted — see EXTRA_ENUM_VALUE_EXEMPTIONS",
+                    enum_name, variant_value
+                );
+                continue;
+            }
+            extras.insert(format!("{} ({}): \"{}\"", enum_name, location, variant_value));
+        }
+    }
+
+    // Detect stale exemptions — entries that no longer correspond to an extra.
+    let stale: Vec<_> = exemptions
+        .difference(&exemptions_hit)
+        .map(|(e, v)| format!("({}, {})", e, v))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "Stale EXTRA_ENUM_VALUE_EXEMPTIONS (enum value now matches the spec or was removed):\n{}",
+        stale.join("\n")
+    );
+
+    let extras: Vec<_> = extras.into_iter().collect();
+    assert!(
+        extras.is_empty(),
+        "Rust enum variants with no matching spec enum value ({} total):\n{}\n\
+         A variant listed here serializes a value its spec enum no longer (or \
+         never did) allow — the API will reject it. Remove the variant and its \
+         Display arm, or — if it's an intentional keeper — add it to \
+         EXTRA_ENUM_VALUE_EXEMPTIONS.",
+        extras.len(),
+        extras.join("\n")
+    );
+}
+
+/// How a spec enum location maps onto `models.rs`.
+enum EnumResolution {
+    /// Resolved to a value enum (data-free variants + untagged catch-all).
+    StringEnum(String),
+    /// The location resolves to a Rust type that is not a value enum
+    /// (e.g. a plain `String` field or a oneOf union enum).
+    NotAStringEnum(String),
+    /// The struct or field backing the location is missing from `models.rs`.
+    Unmapped,
+}
+
+/// Resolve the Rust type that serializes a spec enum location. Named enum
+/// schemas map by name (`pascalize_identifier`, as in the schema coverage
+/// test); inline property enums map via the struct field's declared type — the
+/// actual serialization path — so the mapping is structural and cannot rot the
+/// way a naming convention or doc comment could.
+fn resolve_enum_for_location(
+    schema: &str,
+    prop: Option<&str>,
+    model_fields: &HashMap<String, HashMap<String, FieldInfo>>,
+    string_enums: &HashMap<String, BTreeSet<String>>,
+) -> EnumResolution {
+    let type_name = match prop {
+        None => pascalize_identifier(schema),
+        Some(prop) => {
+            let Some(fields) = model_fields.get(&pascalize_identifier(schema)) else {
+                return EnumResolution::Unmapped;
+            };
+            let Some(field) = fields.get(prop) else {
+                return EnumResolution::Unmapped;
+            };
+            inner_type(&field.rust_type).to_string()
+        }
+    };
+
+    if string_enums.contains_key(&type_name) {
+        EnumResolution::StringEnum(type_name)
+    } else {
+        EnumResolution::NotAStringEnum(type_name)
+    }
+}
+
+fn enum_location_display(schema: &str, prop: Option<&str>) -> String {
+    match prop {
+        Some(prop) => format!("{}.{}", schema, prop),
+        None => schema.to_string(),
+    }
+}
+
+/// Strip `Option<`/`Vec<`/`Box<` wrappers down to the innermost type name.
+fn inner_type(mut ty: &str) -> &str {
+    ty = ty.trim();
+    'outer: loop {
+        for wrapper in ["Option<", "Vec<", "Box<"] {
+            if let Some(rest) = ty.strip_prefix(wrapper) {
+                ty = rest.strip_suffix('>').unwrap_or(rest);
+                continue 'outer;
+            }
+        }
+        return ty;
+    }
+}
+
+/// Extract every string-valued `enum` in the spec, keyed by location: a named
+/// enum schema is `(schemaName, None)`, an inline property enum is
+/// `(schemaName, Some(propertyName))`. Non-string values (numeric enums) are
+/// dropped and locations left with no string values are omitted. Enums nested
+/// inside `items`/`oneOf` are out of scope — models.rs represents those as
+/// plain collections/unions, not value enums.
+fn spec_enum_values(spec: &Value) -> BTreeMap<(String, Option<String>), BTreeSet<String>> {
+    let mut out = BTreeMap::new();
+    let schemas = spec["components"]["schemas"].as_object().unwrap();
+
+    for (spec_name, schema) in schemas {
+        if let Some(values) = string_enum_values(schema) {
+            out.insert((spec_name.clone(), None), values);
+        }
+        let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+            continue;
+        };
+        for (prop_name, prop) in props {
+            if let Some(values) = string_enum_values(prop) {
+                out.insert((spec_name.clone(), Some(prop_name.clone())), values);
+            }
+        }
+    }
+
+    out
+}
+
+/// The string values of a schema/property's `enum` array, if it has any.
+fn string_enum_values(node: &Value) -> Option<BTreeSet<String>> {
+    let values: BTreeSet<String> = node
+        .get("enum")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect();
+    (!values.is_empty()).then_some(values)
+}
+
+/// Parse models.rs to extract the wire values of every value enum: enums whose
+/// non-catch-all variants are all data-free. The wire value is the variant's
+/// `#[serde(rename = "...")]` if present, else the variant identifier itself.
+/// Variants marked `#[serde(untagged)]` (the `Unknown(String)`-style catch-all)
+/// carry no spec value and are skipped — identified by attribute, not by name,
+/// since one enum's catch-all is `Other(String)` and `Unknown` is a real spec
+/// value there. Enums with data-carrying variants that are not untagged model
+/// `oneOf` unions, not value enums, and are excluded entirely.
+///
+/// Returns: { RustEnumName: { wireValue } }
+fn parse_enum_variant_values(source: &str) -> HashMap<String, BTreeSet<String>> {
+    let mut result = HashMap::new();
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim_start();
+
+        if let Some(rest) = line.strip_prefix("pub enum ")
+            && let Some(enum_name) = identifier_prefix(rest)
+        {
+            let enum_name = enum_name.to_string();
+            i += 1;
+            let mut values = BTreeSet::new();
+            let mut is_value_enum = true;
+            let mut pending_rename: Option<String> = None;
+            let mut pending_untagged = false;
+
+            while i < lines.len() {
+                let line = lines[i].trim();
+
+                if line == "}" {
+                    break;
+                }
+
+                if line.starts_with("#[serde(") {
+                    if let Some(rename) = extract_serde_rename(line) {
+                        pending_rename = Some(rename.to_string());
+                    }
+                    if line.contains("untagged") {
+                        pending_untagged = true;
+                    }
+                } else if !line.starts_with("#[")
+                    && !line.starts_with("//")
+                    && !line.is_empty()
+                    && let Some(variant_name) = identifier_prefix(line)
+                {
+                    let is_unit = line[variant_name.len()..].trim_end_matches(',').trim().is_empty();
+
+                    if pending_untagged {
+                        // Catch-all variant — carries no spec value.
+                    } else if is_unit {
+                        values.insert(
+                            pending_rename.take().unwrap_or_else(|| variant_name.to_string()),
+                        );
+                    } else {
+                        is_value_enum = false;
+                    }
+                    pending_rename = None;
+                    pending_untagged = false;
+                }
+
+                i += 1;
+            }
+
+            if is_value_enum && !values.is_empty() {
+                result.insert(enum_name, values);
+            }
+        }
+
+        i += 1;
+    }
+
+    result
 }
