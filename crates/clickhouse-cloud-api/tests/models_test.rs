@@ -152,6 +152,28 @@ fn serialize_service_post_request() {
 }
 
 #[test]
+fn serialize_service_post_request_horizontal_autoscaling() {
+    let req = ServicePostRequest {
+        name: "horizontal-service".to_string(),
+        min_replicas: Some(1.0),
+        max_replicas: Some(5.0),
+        replica_memory_gb: Some(32.0),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["minReplicas"], 1.0);
+    assert_eq!(json["maxReplicas"], 5.0);
+    assert_eq!(json["replicaMemoryGb"], 32.0);
+
+    // Omitted entirely when unset — mutually exclusive with the vertical
+    // scaling fields, so they must not serialize as null/defaults.
+    let json = serde_json::to_value(ServicePostRequest::default()).unwrap();
+    assert!(json.get("minReplicas").is_none());
+    assert!(json.get("maxReplicas").is_none());
+    assert!(json.get("replicaMemoryGb").is_none());
+}
+
+#[test]
 fn deserialize_backup() {
     let json = r#"{
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -813,12 +835,14 @@ fn serialize_postgres_instance_config() {
     let config = PostgresInstanceConfig {
         pg_config: PgConfig {
             max_connections: Some(serde_json::json!(200)),
+            autovacuum_max_workers: Some(serde_json::json!(5)),
             ..Default::default()
         },
         pg_bouncer_config: PgBouncerConfig::default(),
     };
     let json = serde_json::to_value(&config).unwrap();
     assert_eq!(json["pgConfig"]["max_connections"], 200);
+    assert_eq!(json["pgConfig"]["autovacuum_max_workers"], 5);
     assert!(json.get("pgBouncerConfig").is_some());
 }
 
@@ -848,6 +872,54 @@ fn serialize_postgres_instance_config_always_includes_both_nested() {
         1,
         "PgConfig should only serialize the one set field, got {pg:?}"
     );
+}
+
+#[test]
+fn serialize_clickpipe_object_storage_ingestion_controls() {
+    let source = ClickPipePostObjectStorageSource {
+        url: "https://bucket.s3.amazonaws.com/events/*.json".to_string(),
+        skip_initial_load: Some(true),
+        start_after: Some("events/2026-06-01/".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&source).unwrap();
+    assert_eq!(json["skipInitialLoad"], true);
+    assert_eq!(json["startAfter"], "events/2026-06-01/");
+
+    // Omitted from the wire when unset.
+    let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
+    assert!(json.get("skipInitialLoad").is_none());
+    assert!(json.get("startAfter").is_none());
+}
+
+#[test]
+fn deserialize_scaling_schedule_entry_fixed_scaling_fields() {
+    let json = r#"{
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "name": "weekday-peak",
+        "weekdays": [1, 2, 3, 4, 5],
+        "startHourUtc": 8,
+        "endHourUtc": 18,
+        "isActiveNow": false,
+        "numReplicas": 3,
+        "replicaMemoryGb": 16
+    }"#;
+    let entry: ScalingScheduleEntry = serde_json::from_str(json).unwrap();
+    assert_eq!(entry.num_replicas, Some(3));
+    assert_eq!(entry.replica_memory_gb, Some(16.0));
+
+    let req = ScalingScheduleEntryRequest {
+        name: entry.name.clone(),
+        weekdays: entry.weekdays.clone(),
+        start_hour_utc: entry.start_hour_utc,
+        end_hour_utc: entry.end_hour_utc,
+        num_replicas: entry.num_replicas,
+        replica_memory_gb: entry.replica_memory_gb,
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["numReplicas"], 3);
+    assert_eq!(json["replicaMemoryGb"], 16.0);
 }
 
 #[test]
@@ -1206,7 +1278,10 @@ fn deserialize_postgres_instance_config_string_wrapped_numbers() {
         "pgConfig": {
             "max_connections": "100",
             "random_page_cost": "1.1",
-            "max_worker_processes": 8
+            "max_worker_processes": 8,
+            "autovacuum_naptime": "5s",
+            "autovacuum_vacuum_scale_factor": "0.2",
+            "autovacuum_max_workers": 3
         },
         "pgBouncerConfig": {}
     }"#;
@@ -1214,6 +1289,12 @@ fn deserialize_postgres_instance_config_string_wrapped_numbers() {
     assert_eq!(config.pg_config.max_connections, Some(serde_json::json!("100")));
     assert_eq!(config.pg_config.random_page_cost, Some(serde_json::json!("1.1")));
     assert_eq!(config.pg_config.max_worker_processes, Some(serde_json::json!(8)));
+    assert_eq!(config.pg_config.autovacuum_naptime, Some(serde_json::json!("5s")));
+    assert_eq!(
+        config.pg_config.autovacuum_vacuum_scale_factor,
+        Some(serde_json::json!("0.2"))
+    );
+    assert_eq!(config.pg_config.autovacuum_max_workers, Some(serde_json::json!(3)));
 }
 
 #[test]

@@ -230,8 +230,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                 .await?;
         }
 
-        // Round-trip a single pgConfig field: PATCH max_connections to a
-        // new value, poll-until GET reflects it, then PATCH back. GET
+        // Round-trip pgConfig fields: PATCH max_connections and
+        // autovacuum_max_workers to new values, poll-until GET reflects
+        // them, then PATCH back. GET
         // returns numeric pgConfig values wrapped in JSON strings (the spec
         // types them string-or-number), so extract via pg_config_value_as_i64
         // and compare tolerantly.
@@ -243,12 +244,21 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                 .and_then(pg_config_value_as_i64)
                 .unwrap_or(100);
             let target = baseline_max + 7;
+            // Postgres defaults autovacuum_max_workers to 3; the per-run
+            // service is deleted at the end, so drift on reset is harmless.
+            let baseline_autovacuum = baseline
+                .pg_config
+                .autovacuum_max_workers
+                .as_ref()
+                .and_then(pg_config_value_as_i64)
+                .unwrap_or(3);
+            let autovacuum_target = baseline_autovacuum + 1;
 
             failures
                 .run(
                     &ctx,
                     StepKind::NonBlocking,
-                    "patch pgConfig.max_connections",
+                    "patch pgConfig.max_connections/autovacuum_max_workers",
                     || {
                         let client = client.clone();
                         let org_id = ctx.org_id.clone();
@@ -257,6 +267,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                             let body = PostgresInstanceConfig {
                                 pg_config: PgConfig {
                                     max_connections: Some(serde_json::json!(target)),
+                                    autovacuum_max_workers: Some(serde_json::json!(
+                                        autovacuum_target
+                                    )),
                                     ..Default::default()
                                 },
                                 pg_bouncer_config: PgBouncerConfig::default(),
@@ -283,7 +296,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         let interval = ctx.poll_interval;
                         async move {
                             poll_until(
-                                "pg_config.max_connections == target",
+                                "pg_config.max_connections/autovacuum_max_workers == targets",
                                 timeout,
                                 interval,
                                 || {
@@ -294,12 +307,19 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                                         let resp = client
                                             .postgres_instance_config_get(&org_id, &postgres_id)
                                             .await?;
-                                        let observed = resp
-                                            .result
-                                            .and_then(|r| r.pg_config.max_connections)
+                                        let pg_config =
+                                            resp.result.map(|r| r.pg_config).unwrap_or_default();
+                                        let observed = pg_config
+                                            .max_connections
                                             .as_ref()
                                             .and_then(pg_config_value_as_i64);
-                                        if observed == Some(target) {
+                                        let observed_autovacuum = pg_config
+                                            .autovacuum_max_workers
+                                            .as_ref()
+                                            .and_then(pg_config_value_as_i64);
+                                        if observed == Some(target)
+                                            && observed_autovacuum == Some(autovacuum_target)
+                                        {
                                             Ok(Some(()))
                                         } else {
                                             Ok(None)
@@ -326,6 +346,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                             let body = PostgresInstanceConfig {
                                 pg_config: PgConfig {
                                     max_connections: Some(serde_json::json!(baseline_max)),
+                                    autovacuum_max_workers: Some(serde_json::json!(
+                                        baseline_autovacuum
+                                    )),
                                     ..Default::default()
                                 },
                                 pg_bouncer_config: PgBouncerConfig::default(),

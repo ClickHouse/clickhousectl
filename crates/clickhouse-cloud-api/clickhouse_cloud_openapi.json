@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-887333",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-897534",
       "email": "support@clickhouse.com"
     }
   },
@@ -13534,6 +13534,21 @@
             ],
             "example": "https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue"
           },
+          "skipInitialLoad": {
+            "description": "If set to true, skips the initial load and only ingests files delivered by queue notifications. Only applicable when queueUrl is provided.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "startAfter": {
+            "description": "Start continuous ingestion after this object key. Cannot be provided when skipInitialLoad is true.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "events/2026-06-01/"
+          },
           "authentication": {
             "description": "Authentication method. IAM_USER is for S3, GCS, and DigitalOcean Spaces. IAM_ROLE is for S3 only. SERVICE_ACCOUNT is for GCS only. CONNECTION_STRING is for Azure Blob Storage. PUBLIC uses no authentication.",
             "type": [
@@ -13656,6 +13671,21 @@
             ],
             "example": "https://sqs.us-east-1.amazonaws.com/123456789012/MyQueue"
           },
+          "skipInitialLoad": {
+            "description": "If set to true, skips the initial load and only ingests files delivered by queue notifications. Only applicable when queueUrl is provided.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "startAfter": {
+            "description": "Start continuous ingestion after this object key. Cannot be provided when skipInitialLoad is true.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "events/2026-06-01/"
+          },
           "authentication": {
             "description": "Authentication method. IAM_USER is for S3, GCS, and DigitalOcean Spaces. IAM_ROLE is for S3 only. SERVICE_ACCOUNT is for GCS only. CONNECTION_STRING is for Azure Blob Storage. PUBLIC uses no authentication.",
             "type": [
@@ -13722,6 +13752,21 @@
       },
       "ClickPipePatchObjectStorageSource": {
         "properties": {
+          "skipInitialLoad": {
+            "description": "If set to true, skips the initial load and only ingests files delivered by queue notifications. Only applicable when queueUrl is provided.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "startAfter": {
+            "description": "Start continuous ingestion after this object key. Cannot be provided when skipInitialLoad is true.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "events/2026-06-01/"
+          },
           "authentication": {
             "description": "Authentication method. IAM_USER is for S3, GCS, and DigitalOcean Spaces. IAM_ROLE is for S3 only. SERVICE_ACCOUNT is for GCS only. CONNECTION_STRING is for Azure Blob Storage. PUBLIC uses no authentication.",
             "type": [
@@ -14274,7 +14319,7 @@
             "example": "cdc"
           },
           "replicationMechanism": {
-            "description": "MySQL replication mechanism: \"GTID\" (Global Transaction Identifier) or \"FILE_POS\" (binary log file and position). Defaults to GTID if not specified.",
+            "description": "MySQL replication mechanism: \"GTID\" (Global Transaction Identifier) or \"FILE_POS\" (binary log file and position). Defaults to \"GTID\" if not specified. MariaDB supports \"GTID\" only. For \"FILE_POS\" on MySQL, contact support.",
             "type": "string",
             "enum": [
               "GTID",
@@ -16201,19 +16246,27 @@
             "maximum": 24
           },
           "minReplicaMemoryGb": {
-            "description": "Minimum memory per replica (Gb) during this window.",
+            "description": "Minimum memory per replica (Gb) during this window. Present only for vertical entries; horizontal entries use replicaMemoryGb instead.",
             "type": "number"
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum memory per replica (Gb) during this window.",
+            "description": "Maximum memory per replica (Gb) during this window. Present only for vertical entries; horizontal entries use replicaMemoryGb instead.",
             "type": "number"
           },
+          "replicaMemoryGb": {
+            "description": "Fixed memory per replica (Gb) during this window. Present only for horizontal entries; vertical entries use minReplicaMemoryGb/maxReplicaMemoryGb instead.",
+            "type": "number"
+          },
+          "numReplicas": {
+            "description": "Fixed replica count for a vertical entry. Responses express the fixed count as equal minReplicas and maxReplicas rather than numReplicas.",
+            "type": "integer"
+          },
           "minReplicas": {
-            "description": "Minimum number of replicas during this window. Must equal maxReplicas — schedule entries specify a fixed replica count per window.",
+            "description": "Number of replicas during this window. For a horizontal entry the replica count scales from minReplicas up to maxReplicas; for a vertical entry both equal the fixed count.",
             "type": "integer"
           },
           "maxReplicas": {
-            "description": "Maximum number of replicas during this window. Must equal minReplicas — schedule entries specify a fixed replica count per window.",
+            "description": "Maximum replicas during this window for a horizontal entry; equal to the fixed count for a vertical entry.",
             "type": "integer"
           },
           "idleScaling": {
@@ -16326,20 +16379,42 @@
             "example": 17
           },
           "minReplicaMemoryGb": {
-            "description": "Minimum memory per replica (Gb) during this window.",
-            "type": "number"
+            "description": "Minimum memory per replica (Gb) for a vertical entry. Mutually exclusive with replicaMemoryGb. The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum memory per replica (Gb) during this window.",
-            "type": "number"
+            "description": "Maximum memory per replica (Gb) for a vertical entry. Mutually exclusive with replicaMemoryGb. The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4
+          },
+          "replicaMemoryGb": {
+            "description": "Fixed memory per replica (Gb) for a horizontal entry. A horizontal entry requires both this field and a minReplicas/maxReplicas range. Mutually exclusive with minReplicaMemoryGb/maxReplicaMemoryGb and numReplicas. Requires horizontal autoscaling to be enabled for the organization. The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4,
+            "example": 16
+          },
+          "numReplicas": {
+            "description": "Fixed replica count for a vertical entry. Used for vertical autoscaling (fixed replica count, variable memory). Mutually exclusive with minReplicas/maxReplicas and replicaMemoryGb. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
+            "type": "integer",
+            "minimum": 1,
+            "example": 3
           },
           "minReplicas": {
-            "description": "Minimum number of replicas during this window.",
-            "type": "integer"
+            "description": "Minimum number of replicas for a horizontal entry, where the replica count scales between minReplicas and maxReplicas. Must be provided together with maxReplicas. Mutually exclusive with numReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
+            "type": "integer",
+            "minimum": 1
           },
           "maxReplicas": {
-            "description": "Maximum number of replicas during this window.",
-            "type": "integer"
+            "description": "Maximum number of replicas for a horizontal entry, where the replica count scales between minReplicas and maxReplicas. Must be provided together with minReplicas. Mutually exclusive with numReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
+            "type": "integer",
+            "minimum": 1
           },
           "idleScaling": {
             "description": "Whether idle scaling is enabled during this window.",
@@ -16589,21 +16664,21 @@
           },
           "numReplicas": {
             "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
           },
           "minReplicas": {
             "description": "Minimum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 1
           },
           "maxReplicas": {
             "description": "Maximum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 5
@@ -23923,6 +23998,102 @@
               "lz4",
               "zstd"
             ]
+          },
+          "autovacuum_max_workers": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Maximum number of autovacuum worker processes that can run at the same time. Workers share a single cost-limit budget, so raising this alone may not speed up vacuuming.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_max_workers/"
+            },
+            "example": 8,
+            "minimum": 1
+          },
+          "autovacuum_naptime": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Minimum delay between autovacuum runs. Lower values make autovacuum check for work more frequently.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_naptime/"
+            },
+            "example": "5s",
+            "minimum": 1
+          },
+          "autovacuum_work_mem": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Maximum memory each autovacuum worker uses to track dead tuples. Higher values reduce repeated index-vacuum passes on large tables. Use -1 to fall back to maintenance_work_mem.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_work_mem/"
+            },
+            "example": "64000kB",
+            "minimum": 1024
+          },
+          "autovacuum_vacuum_scale_factor": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "Fraction of a table's rows that must change before autovacuum runs. Lower values vacuum large tables more frequently.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_vacuum_scale_factor/"
+            },
+            "example": 0.2,
+            "minimum": 0
+          },
+          "autovacuum_analyze_scale_factor": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "Fraction of a table's rows that must change before autovacuum runs ANALYZE to refresh planner statistics.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_analyze_scale_factor/"
+            },
+            "example": 0.1,
+            "minimum": 0
+          },
+          "autovacuum_vacuum_insert_scale_factor": {
+            "type": [
+              "string",
+              "number"
+            ],
+            "description": "Fraction of a table's rows that must be inserted before autovacuum runs. Helps vacuum insert-heavy, rarely-updated tables.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_vacuum_insert_scale_factor/"
+            },
+            "example": 0.2,
+            "minimum": 0
+          },
+          "autovacuum_vacuum_cost_limit": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Cost-accounting limit shared across all autovacuum workers before they pause. Use -1 to inherit vacuum_cost_limit.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_vacuum_cost_limit/"
+            },
+            "example": "-1",
+            "minimum": 1
+          },
+          "autovacuum_vacuum_cost_delay": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Time autovacuum sleeps when the cost limit is reached. Lower values speed up vacuuming at the cost of more I/O.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_vacuum_cost_delay/"
+            },
+            "example": "2ms",
+            "minimum": 0
           }
         },
         "additionalProperties": false,
@@ -25054,10 +25225,32 @@
           },
           "numReplicas": {
             "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
+          },
+          "minReplicas": {
+            "description": "Minimum number of replicas for horizontal autoscaling. Must be provided together with maxReplicas and replicaMemoryGb. Mutually exclusive with numReplicas, minReplicaMemoryGb/maxReplicaMemoryGb, and minTotalMemoryGb/maxTotalMemoryGb. Requires horizontal autoscaling to be enabled for the organization.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 1
+          },
+          "maxReplicas": {
+            "description": "Maximum number of replicas for horizontal autoscaling. Must be provided together with minReplicas and replicaMemoryGb. Mutually exclusive with numReplicas, minReplicaMemoryGb/maxReplicaMemoryGb, and minTotalMemoryGb/maxTotalMemoryGb. Requires horizontal autoscaling to be enabled for the organization.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "example": 5
+          },
+          "replicaMemoryGb": {
+            "description": "Fixed memory per replica in Gb for horizontal autoscaling. Must be provided together with minReplicas/maxReplicas. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services. Mutually exclusive with minReplicaMemoryGb/maxReplicaMemoryGb and minTotalMemoryGb/maxTotalMemoryGb. Requires horizontal autoscaling to be enabled for the organization.",
+            "type": "number",
+            "minimum": 8,
+            "maximum": 356,
+            "multipleOf": 4,
+            "example": 32
           },
           "idleScaling": {
             "description": "When set to true the service is allowed to scale down to zero when idle. True by default.",
@@ -25236,7 +25429,7 @@
           },
           "numReplicas": {
             "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
@@ -25387,21 +25580,21 @@
           },
           "numReplicas": {
             "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
           },
           "minReplicas": {
             "description": "Minimum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 1
           },
           "maxReplicas": {
             "description": "Maximum number of replicas for horizontal autoscaling. Present only when the service uses horizontal autoscaling.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 5
@@ -25560,21 +25753,21 @@
           },
           "numReplicas": {
             "description": "Fixed replica count for vertical autoscaling. Mutually exclusive with minReplicas/maxReplicas. Please contact support to enable adjustment of numReplicas. When switching from horizontal autoscaling mode the existing replica memory is preserved as the new vertical min/max range; include minReplicaMemoryGb/maxReplicaMemoryGb in the same request to set an explicit range.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
           },
           "minReplicas": {
             "description": "Minimum number of replicas for horizontal autoscaling. Must be provided together with maxReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 1
           },
           "maxReplicas": {
             "description": "Maximum number of replicas for horizontal autoscaling. Must be provided together with minReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service.",
-            "type": "number",
+            "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 5

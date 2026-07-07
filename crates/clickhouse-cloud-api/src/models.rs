@@ -8391,6 +8391,10 @@ pub struct ClickPipeObjectStorageSource {
     pub path: Option<String>,
     #[serde(rename = "queueUrl", skip_serializing_if = "Option::is_none", default)]
     pub queue_url: Option<String>,
+    #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none", default)]
+    pub skip_initial_load: Option<bool>,
+    #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none", default)]
+    pub start_after: Option<String>,
     #[serde(default)]
     pub r#type: ClickPipeObjectStorageSourceType,
     #[serde(default)]
@@ -8546,6 +8550,10 @@ pub struct ClickPipePatchObjectStorageSource {
     pub path: Option<String>,
     #[serde(rename = "serviceAccountKey", skip_serializing_if = "Option::is_none", default)]
     pub service_account_key: Option<String>,
+    #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none", default)]
+    pub skip_initial_load: Option<bool>,
+    #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none", default)]
+    pub start_after: Option<String>,
 }
 
 /// `ClickPipePatchPostgresPipeRemoveTableMapping` from the ClickHouse Cloud API.
@@ -8726,6 +8734,10 @@ pub struct ClickPipePostObjectStorageSource {
     pub queue_url: Option<String>,
     #[serde(rename = "serviceAccountKey", skip_serializing_if = "Option::is_none", default)]
     pub service_account_key: Option<String>,
+    #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none", default)]
+    pub skip_initial_load: Option<bool>,
+    #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none", default)]
+    pub start_after: Option<String>,
     #[serde(default)]
     pub r#type: ClickPipePostObjectStorageSourceType,
     #[serde(default)]
@@ -10981,6 +10993,10 @@ pub struct ScalingScheduleEntry {
     pub min_replicas: Option<i64>,
     #[serde(default)]
     pub name: String,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub num_replicas: Option<i64>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub replica_memory_gb: Option<f64>,
     #[serde(rename = "startHourUtc", default)]
     pub start_hour_utc: i64,
     #[serde(default)]
@@ -11006,6 +11022,10 @@ pub struct ScalingScheduleEntryRequest {
     pub min_replicas: Option<i64>,
     #[serde(default)]
     pub name: String,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub num_replicas: Option<i64>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub replica_memory_gb: Option<f64>,
     #[serde(rename = "startHourUtc", default)]
     pub start_hour_utc: i64,
     #[serde(default)]
@@ -11873,11 +11893,15 @@ pub struct ServicePostRequest {
     pub is_readonly: Option<bool>,
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub max_total_memory_gb: Option<f64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none", default)]
+    pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none", default)]
     pub min_total_memory_gb: Option<f64>,
@@ -11898,6 +11922,8 @@ pub struct ServicePostRequest {
     pub region: ServicePostRequestRegion,
     #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none", default)]
     pub release_channel: Option<ServicePostRequestReleasechannel>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
+    pub replica_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<ResourceTagsV1>>,
     #[cfg(feature = "deprecated-fields")]
@@ -12150,6 +12176,22 @@ pub struct PgBouncerConfig {
 /// `pgConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PgConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_max_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_naptime: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_vacuum_cost_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_vacuum_cost_limit: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub autovacuum_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none", default)]

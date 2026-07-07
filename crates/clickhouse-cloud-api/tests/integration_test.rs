@@ -2032,6 +2032,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 max_replicas: Some(base_replicas as i64),
                 idle_scaling: Some(true),
                 idle_timeout_minutes: Some(5),
+                // Vertical entry expressed as equal min/max; the fixed-count
+                // and horizontal-autoscaling forms need org-level enablement.
+                num_replicas: None,
+                replica_memory_gb: None,
             };
 
             let upserted = failures
