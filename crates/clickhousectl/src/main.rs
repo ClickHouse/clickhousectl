@@ -122,7 +122,7 @@ async fn main() {
     // Consent is evaluated here, after the command ran, so `telemetry disable`
     // silences its own event and `telemetry enable` sends one.
     #[cfg(feature = "telemetry")]
-    telemetry::finalize(telemetry_invocation, exit_code == 0);
+    telemetry::finalize(telemetry_invocation, exit_code);
 
     std::process::exit(exit_code);
 }

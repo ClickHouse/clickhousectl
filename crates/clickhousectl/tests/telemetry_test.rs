@@ -161,7 +161,7 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     let event = &payloads[0];
     assert_eq!(event["command"], "local list");
     assert!(event["flags"].as_array().unwrap().is_empty());
-    assert_eq!(event["success"], true);
+    assert_eq!(event["exit_code"], 0);
     // Whether an agent is detected depends on the harness environment; pin
     // that the two fields exist and agree (one detection feeds both).
     assert!(event["is_agent"].is_boolean());
@@ -204,7 +204,9 @@ async fn failure_reported_and_positional_value_never_leaks() {
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
     assert_eq!(event["command"], "local remove");
-    assert_eq!(event["success"], false);
+    // The event carries the gh-style exit code the process exited with.
+    assert_eq!(event["exit_code"], 1);
+    assert_eq!(event["exit_code"], output.status.code().unwrap());
     let raw = serde_json::to_string(event).unwrap();
     assert!(
         !raw.contains("no-such-version-xyz"),

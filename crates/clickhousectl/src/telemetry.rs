@@ -127,7 +127,9 @@ fn env_truthy(value: Option<String>) -> bool {
 struct Payload {
     command: String,
     flags: Vec<String>,
-    success: bool,
+    /// gh-style exit code (`Error::exit_code`): 0 success, 1 error,
+    /// 2 cancelled, 4 auth required.
+    exit_code: i32,
     is_agent: bool,
     /// Canonical id of the detected coding agent (e.g. "claude-code");
     /// `null` for human invocations.
@@ -138,14 +140,14 @@ struct Payload {
     arch: &'static str,
 }
 
-fn build_payload(invocation: &Invocation, success: bool, env: EnvLookup<'_>) -> Payload {
+fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) -> Payload {
     let mut flags = invocation.flags.clone();
     flags.truncate(MAX_FLAGS);
     let detected = is_ai_agent::detect();
     Payload {
         command: invocation.command.clone(),
         flags,
-        success,
+        exit_code,
         is_agent: detected.is_some(),
         agent: detected.map(|a| a.id.as_str().to_string()),
         ci: env_truthy(env(CI_ENV)),
@@ -247,7 +249,7 @@ enum Action {
     Debug(String),
 }
 
-fn decide(path: &Path, invocation: &Invocation, success: bool, env: EnvLookup<'_>) -> Action {
+fn decide(path: &Path, invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) -> Action {
     if env_truthy(env(DNT_ENV)) {
         return Action::Silent;
     }
@@ -264,7 +266,7 @@ fn decide(path: &Path, invocation: &Invocation, success: bool, env: EnvLookup<'_
         }
         State::Disabled => Action::Silent,
         State::Enabled => {
-            let json = serde_json::to_string(&build_payload(invocation, success, env))
+            let json = serde_json::to_string(&build_payload(invocation, exit_code, env))
                 .expect("Payload serialization cannot fail");
             if env_truthy(env(DEBUG_ENV)) {
                 Action::Debug(json)
@@ -276,11 +278,12 @@ fn decide(path: &Path, invocation: &Invocation, success: bool, env: EnvLookup<'_
 }
 
 /// The telemetry hook, called once at the very end of `main` (after the
-/// command has run, so `telemetry disable` silences its own event). Never
-/// errors, never blocks beyond spawning a detached child.
-pub fn finalize(invocation: Invocation, success: bool) {
+/// command has run, so `telemetry disable` silences its own event), with the
+/// gh-style exit code the process is about to exit with. Never errors, never
+/// blocks beyond spawning a detached child.
+pub fn finalize(invocation: Invocation, exit_code: i32) {
     let Some(path) = state_path() else { return };
-    match decide(&path, &invocation, success, &real_env_lookup) {
+    match decide(&path, &invocation, exit_code, &real_env_lookup) {
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
         Action::Debug(json) => eprintln!("{json}"),
@@ -441,7 +444,7 @@ mod tests {
         // Even with an enabled state file present, DNT is fully silent.
         save_state_to(&path, false).unwrap();
         let env = env_of(&[("DO_NOT_TRACK", "1")]);
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
     }
 
     #[test]
@@ -449,7 +452,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         let env = env_of(&[("DO_NOT_TRACK", "1")]);
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
         assert!(!path.exists(), "DNT must not write the marker file");
     }
 
@@ -458,7 +461,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Notice);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Notice);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_eq!(contents, r#"{"disabled":false}"#);
     }
@@ -471,9 +474,9 @@ mod tests {
         std::fs::write(&blocker, "").unwrap();
         let path = blocker.join("telemetry.json");
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
         // And again: still silent, never a notice, never a send.
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
     }
 
     #[test]
@@ -482,7 +485,7 @@ mod tests {
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, true).unwrap();
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
     }
 
     #[test]
@@ -492,7 +495,7 @@ mod tests {
         std::fs::write(&path, "not json{{").unwrap();
         assert_eq!(load_state_from(&path), State::Disabled);
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), true, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
     }
 
     #[test]
@@ -501,13 +504,13 @@ mod tests {
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, false).unwrap();
         let env = env_of(&[("CI", "1")]);
-        let Action::Send(json) = decide(&path, &invocation(), false, &env) else {
+        let Action::Send(json) = decide(&path, &invocation(), 4, &env) else {
             panic!("expected Send");
         };
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["command"], "local list");
         assert_eq!(value["flags"], serde_json::json!(["json"]));
-        assert_eq!(value["success"], false);
+        assert_eq!(value["exit_code"], 4);
         assert_eq!(value["ci"], true);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["os"], std::env::consts::OS);
@@ -521,19 +524,19 @@ mod tests {
         save_state_to(&path, false).unwrap();
         let env = env_of(&[("CHCTL_TELEMETRY_DEBUG", "1")]);
         assert!(matches!(
-            decide(&path, &invocation(), true, &env),
+            decide(&path, &invocation(), 0, &env),
             Action::Debug(_)
         ));
     }
 
     #[test]
     fn payload_serializes_exactly_the_wire_fields() {
-        let payload = build_payload(&invocation(), true, &env_of(&[]));
+        let payload = build_payload(&invocation(), 0, &env_of(&[]));
         let value = serde_json::to_value(&payload).unwrap();
         let keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
         assert_eq!(
             keys,
-            ["command", "flags", "success", "is_agent", "agent", "ci", "version", "os", "arch"]
+            ["command", "flags", "exit_code", "is_agent", "agent", "ci", "version", "os", "arch"]
         );
         // The two agent fields are set from the same single detection and can
         // never disagree.
@@ -546,7 +549,7 @@ mod tests {
             command: "x".into(),
             flags: (0..100).map(|i| format!("flag-{i}")).collect(),
         };
-        let payload = build_payload(&inv, true, &env_of(&[]));
+        let payload = build_payload(&inv, 0, &env_of(&[]));
         assert_eq!(payload.flags.len(), MAX_FLAGS);
     }
 
@@ -572,7 +575,7 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service get");
         assert_eq!(inv.flags, ["json", "org-id"]);
-        let json = serde_json::to_string(&build_payload(&inv, true, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
     }
 
