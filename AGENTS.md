@@ -82,7 +82,7 @@ In `models.rs`, required non-nullable fields use bare types (`T`), optional/null
 **Tooling:**
 
 - `scripts/resolve-field-requirements.py` — resolves required/optional for every schema field, outputs a JSON manifest. Handles both conventions + PATCH + nullable.
-- `scripts/check-openapi-drift.py` — daily CI drift check; reports missing/extra methods, missing/extra struct fields, missing schemas, and field-level optionality mismatches against the live spec.
+- `scripts/check-openapi-drift.py` — daily CI drift check; reports missing/extra methods, missing/extra struct fields, missing/extra enum values, missing schemas, and field-level optionality mismatches against the live spec.
 - `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the snapshot.
 
 Field coverage is **bidirectional**, mirroring the missing/extra split used for client methods:
@@ -99,6 +99,17 @@ Sometimes the spec marks a field as required but the API rejects empty/default v
 **Extra-field exemptions:**
 
 A struct field that intentionally has no spec property (a code-only/computed field, or a standard attribute the upstream spec omits) goes in the `EXTRA_FIELD_EXEMPTIONS` constant in `spec_coverage_test.rs`, analogous to `OPTIONALITY_EXEMPTIONS` and to `NON_OPENAPI_CLIENT_METHODS` for methods. `struct_fields_have_no_extras_vs_spec` fails on a stale entry (one that no longer corresponds to an actual extra field), and `check-openapi-drift.py` parses the same list so the report and test stay in sync. The list is empty by default — only add an entry for a *deliberate* addition, not to silence a field that should be removed.
+
+##### Enum value coverage
+
+Enum **values** are checked bidirectionally too, mirroring the field checks:
+
+- `enum_values_cover_every_spec_enum` (spec → code) — every value in a spec `enum` array has a matching Rust variant; catches values *added* to the spec (responses would silently fall into the untagged catch-all, and requests couldn't express the value).
+- `enum_values_have_no_extras_vs_spec` (code → spec) — every Rust variant serializes a value the spec enum lists; catches values *removed* from the spec but left behind in `models.rs`, which the API rejects on requests. The drift script's "Extra Enum Values" section reports the same finding.
+
+The mapping from spec enum to Rust enum is **structural**, not name- or comment-based: an inline property enum (`Schema.property`) resolves through the struct field's declared type (the actual serialization path), and a named enum schema (e.g. `pgSize`) resolves by `pascalize_identifier`, like the schema coverage test. The `/// Inline enum for ...` doc comments are documentation only — nothing depends on them. Comparison uses each variant's `#[serde(rename = "...")]` wire value (falling back to the variant identifier); the untagged catch-all (`Unknown(String)`-style) is excluded by its `#[serde(untagged)]` attribute, never by name. Enums with non-untagged data-carrying variants model `oneOf` unions and are out of scope, as are enums nested inside `items`/`oneOf`. When a value is flagged, add/remove the variant *and its `Display` arm* in `models.rs`.
+
+An enum variant that intentionally diverges from the spec goes in the `EXTRA_ENUM_VALUE_EXEMPTIONS` constant in `spec_coverage_test.rs` as a `("RustEnumName", "wireValue")` entry with a comment. It behaves exactly like `EXTRA_FIELD_EXEMPTIONS`: empty by default, stale entries fail the test, and `check-openapi-drift.py` parses the same list.
 
 ##### Deprecated field hiding
 
