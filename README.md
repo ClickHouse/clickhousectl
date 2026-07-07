@@ -845,7 +845,8 @@ Each event contains exactly:
 - the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
 - whether the command succeeded
 - the CLI version, OS, and architecture
-- whether it ran in CI (`CI` env var) or under a detected coding agent
+- whether it ran in CI (`CI` env var)
+- whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
 

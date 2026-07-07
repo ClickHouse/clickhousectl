@@ -115,13 +115,23 @@ fn env_truthy(value: Option<String>) -> bool {
 // ---------------------------------------------------------------------------
 
 /// The wire payload. Field names match the ingest worker's contract exactly
-/// (the worker renames `agent`→`is_agent` and `ci`→`is_ci` server-side).
+/// (the worker renames `ci`→`is_ci` server-side).
+///
+/// Agent and version facts are set here, client-side, rather than derived in
+/// the worker from the User-Agent header: the CLI already holds both as
+/// structured values (`is_ai_agent::detect()`, `CARGO_PKG_VERSION`), so
+/// putting them in the payload avoids brittle string extraction on the
+/// ingest side. The User-Agent still carries the same facts as transport
+/// metadata for prefix-based request filtering.
 #[derive(Debug, serde::Serialize)]
 struct Payload {
     command: String,
     flags: Vec<String>,
     success: bool,
-    agent: bool,
+    is_agent: bool,
+    /// Canonical id of the detected coding agent (e.g. "claude-code");
+    /// `null` for human invocations.
+    agent: Option<String>,
     ci: bool,
     version: &'static str,
     os: &'static str,
@@ -131,11 +141,13 @@ struct Payload {
 fn build_payload(invocation: &Invocation, success: bool, env: EnvLookup<'_>) -> Payload {
     let mut flags = invocation.flags.clone();
     flags.truncate(MAX_FLAGS);
+    let detected = is_ai_agent::detect();
     Payload {
         command: invocation.command.clone(),
         flags,
         success,
-        agent: is_ai_agent::detect().is_some(),
+        is_agent: detected.is_some(),
+        agent: detected.map(|a| a.id.as_str().to_string()),
         ci: env_truthy(env(CI_ENV)),
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
@@ -521,8 +533,11 @@ mod tests {
         let keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
         assert_eq!(
             keys,
-            ["command", "flags", "success", "agent", "ci", "version", "os", "arch"]
+            ["command", "flags", "success", "is_agent", "agent", "ci", "version", "os", "arch"]
         );
+        // The two agent fields are set from the same single detection and can
+        // never disagree.
+        assert_eq!(value["is_agent"].as_bool().unwrap(), !value["agent"].is_null());
     }
 
     #[test]

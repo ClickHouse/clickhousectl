@@ -162,7 +162,14 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     assert_eq!(event["command"], "local list");
     assert!(event["flags"].as_array().unwrap().is_empty());
     assert_eq!(event["success"], true);
-    assert!(event["agent"].is_boolean());
+    // Whether an agent is detected depends on the harness environment; pin
+    // that the two fields exist and agree (one detection feeds both).
+    assert!(event["is_agent"].is_boolean());
+    assert_eq!(
+        event["is_agent"].as_bool().unwrap(),
+        event["agent"].is_string(),
+        "is_agent and agent must come from the same detection: {event}"
+    );
     assert_eq!(event["ci"], false);
     assert_eq!(event["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(event["os"], std::env::consts::OS);
