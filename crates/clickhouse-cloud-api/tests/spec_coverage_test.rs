@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use clickhouse_openapi_analyzer::config::clickhouse_cloud_config;
 use clickhouse_openapi_analyzer::{AnalysisInput, analyze};
 
@@ -9,15 +11,24 @@ const LIVE_SPEC_URL: &str = "https://api.clickhouse.cloud/v1";
 
 #[test]
 fn vendored_openapi_snapshot_matches_rust_api() {
-    let report = analyze_spec(SPEC_JSON);
+    let config = clickhouse_cloud_config();
+    let report = analyze_spec(SPEC_JSON, &config);
     assert!(!report.has_drift(), "{}", report.render_text());
-    assert_eq!(report.unsupported_enum_constraints.len(), 11);
     assert!(
         report
             .unsupported_enum_constraints
             .iter()
             .all(|constraint| constraint.acknowledged),
         "the vendored snapshot contains an unacknowledged unsupported enum constraint"
+    );
+    let reported_pointers = report
+        .unsupported_enum_constraints
+        .iter()
+        .map(|constraint| constraint.spec_pointer.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        reported_pointers, config.acknowledged_unsupported_enum_pointers,
+        "the snapshot's unsupported enum inventory must exactly match analyzer configuration"
     );
 }
 
@@ -35,11 +46,15 @@ async fn live_openapi_spec_matches_rust_api() {
         .error_for_status()
         .unwrap();
     let live_spec = response.text().await.unwrap();
-    let report = analyze_spec(&live_spec);
+    let config = clickhouse_cloud_config();
+    let report = analyze_spec(&live_spec, &config);
     assert!(!report.has_drift(), "{}", report.render_text());
 }
 
-fn analyze_spec(spec_json: &str) -> clickhouse_openapi_analyzer::report::DriftReport {
+fn analyze_spec(
+    spec_json: &str,
+    config: &clickhouse_openapi_analyzer::config::AnalyzerConfig,
+) -> clickhouse_openapi_analyzer::report::DriftReport {
     analyze(
         AnalysisInput {
             spec_json,
@@ -48,7 +63,7 @@ fn analyze_spec(spec_json: &str) -> clickhouse_openapi_analyzer::report::DriftRe
             models_rs: MODELS_RS,
             meta_rs: META_RS,
         },
-        &clickhouse_cloud_config(),
+        config,
     )
     .unwrap()
 }

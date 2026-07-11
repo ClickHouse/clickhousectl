@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::process::Command;
 
@@ -12,6 +13,7 @@ const META: &str = include_str!("../../clickhouse-cloud-api/src/meta.rs");
 
 #[test]
 fn executable_and_library_return_the_same_vendored_report() {
+    let config = clickhouse_cloud_config();
     let expected = analyze(
         AnalysisInput {
             spec_json: SPEC,
@@ -20,7 +22,7 @@ fn executable_and_library_return_the_same_vendored_report() {
             models_rs: MODELS,
             meta_rs: META,
         },
-        &clickhouse_cloud_config(),
+        &config,
     )
     .unwrap();
 
@@ -53,5 +55,13 @@ fn executable_and_library_return_the_same_vendored_report() {
 
     assert_eq!(actual, expected);
     assert!(!actual.has_drift(), "{}", actual.render_text());
-    assert_eq!(actual.unsupported_enum_constraints.len(), 11);
+    let reported_pointers = actual
+        .unsupported_enum_constraints
+        .iter()
+        .map(|constraint| constraint.spec_pointer.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        reported_pointers, config.acknowledged_unsupported_enum_pointers,
+        "the executable must report the exact configured unsupported enum inventory"
+    );
 }
