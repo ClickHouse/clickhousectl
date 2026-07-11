@@ -62,8 +62,9 @@ The API library can be updated independently of the CLI. When OpenAPI drifts, pr
 
 ClickHouse Cloud OpenAPI spec: https://api.clickhouse.cloud/v1
 
-- `.github/workflows/openapi-drift.yml` runs `scripts/check-openapi-drift.py` daily at 08:00 UTC (also triggerable via `workflow_dispatch`). The script opens a GitHub issue with the `openapi-drift` label whenever the live spec has operations, schemas, or field optionality the library doesn't cover.
-- The script fetches the live spec and compares it against both the library code (`client.rs`, `models.rs`) and the vendored snapshot at `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`. `spec_coverage_test.rs` runs against the snapshot in CI; the snapshot is refreshed as part of resolving drift.
+- `.github/workflows/openapi-drift.yml` runs `scripts/check-openapi-drift.py` daily at 08:00 UTC (also triggerable via `workflow_dispatch`). The script fetches the live spec, invokes the private `clickhouse-openapi-analyzer` workspace crate, and opens a GitHub issue with the `openapi-drift` label when its typed report contains actionable findings.
+- `crates/clickhouse-openapi-analyzer` is the single implementation of Rust-source parsing and code-vs-spec comparison semantics. It parses `client.rs`, `models.rs`, and `meta.rs` with `syn`, returns a versioned serializable `DriftReport`, and is a dev-only dependency of `clickhouse-cloud-api`; it must never become a normal dependency of either published crate.
+- `spec_coverage_test.rs` and the daily Python workflow are thin consumers of the same report. The former analyzes the vendored snapshot in CI; the latter analyzes the live spec while also comparing it with the snapshot. Python owns fetching, issue rendering, and GitHub orchestration only.
 - `--dry-run` prints the report without opening an issue.
 - When resolving drift: work from the auto-opened issue. Fix `clickhouse-cloud-api` first in its own PR: update `client.rs`, `models.rs`, and refresh the vendored snapshot. Then decide separately whether to expose the new surface in the CLI.
 
@@ -82,8 +83,11 @@ In `models.rs`, required non-nullable fields use bare types (`T`), optional/null
 **Tooling:**
 
 - `scripts/resolve-field-requirements.py` — resolves required/optional for every schema field, outputs a JSON manifest. Handles both conventions + PATCH + nullable.
-- `scripts/check-openapi-drift.py` — daily CI drift check; reports missing/extra methods, missing/extra struct fields, missing/extra enum values, missing schemas, and field-level optionality mismatches against the live spec.
-- `spec_coverage_test.rs::field_optionality_matches_spec` — asserts every field's `Option<T>` vs `T` matches the snapshot.
+- `crates/clickhouse-openapi-analyzer` — canonical Rust/OpenAPI inventories, mapping, comparison, exemptions, unsupported-enum acknowledgements, and typed report.
+- `scripts/check-openapi-drift.py` — fetches the live spec, invokes the analyzer executable, renders its JSON report, and creates the issue.
+- `spec_coverage_test.rs::vendored_openapi_snapshot_matches_rust_api` — asserts the shared report has no actionable findings for the snapshot.
+
+When adding a drift check, add its typed finding and pure comparison logic to the analyzer, cover it with a focused fixture, include it in the text/JSON report, and teach the Python renderer how to present it. Do not add comparison logic to `spec_coverage_test.rs` or Python.
 
 Field coverage is **bidirectional**, mirroring the missing/extra split used for client methods:
 
@@ -94,11 +98,11 @@ Field optionality is maintained by hand. When the drift check or test flags a mi
 
 **Optionality exemptions:**
 
-Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the `OPTIONALITY_EXEMPTIONS` constant in `spec_coverage_test.rs`. The test logs each exemption and fails if any become stale (spec was fixed upstream). When adding a new exemption, add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
+Sometimes the spec marks a field as required but the API rejects empty/default values, meaning the field is effectively optional. These fields are kept as `Option<T>` in `models.rs` and listed in the analyzer's ClickHouse configuration (`src/config.rs`). The analyzer emits a stale-exemption finding when the spec and model start agreeing. Add a `("RustStructName", "specFieldName")` entry with a comment explaining the API behavior.
 
 **Extra-field exemptions:**
 
-A struct field that intentionally has no spec property (a code-only/computed field, or a standard attribute the upstream spec omits) goes in the `EXTRA_FIELD_EXEMPTIONS` constant in `spec_coverage_test.rs`, analogous to `OPTIONALITY_EXEMPTIONS` and to `NON_OPENAPI_CLIENT_METHODS` for methods. `struct_fields_have_no_extras_vs_spec` fails on a stale entry (one that no longer corresponds to an actual extra field), and `check-openapi-drift.py` parses the same list so the report and test stay in sync. The list is empty by default — only add an entry for a *deliberate* addition, not to silence a field that should be removed.
+A struct field that intentionally has no spec property (a code-only/computed field, or a standard attribute the upstream spec omits) goes in `extra_field_exemptions` in the analyzer's ClickHouse configuration, analogous to its optionality and non-OpenAPI-method exemptions. The analyzer reports stale entries. The list is empty by default — only add an entry for a *deliberate* addition, not to silence a field that should be removed.
 
 ##### Enum value coverage
 
@@ -107,9 +111,9 @@ Enum **values** are checked bidirectionally too, mirroring the field checks:
 - `enum_values_cover_every_spec_enum` (spec → code) — every value in a spec `enum` array has a matching Rust variant; catches values *added* to the spec (responses would silently fall into the untagged catch-all, and requests couldn't express the value).
 - `enum_values_have_no_extras_vs_spec` (code → spec) — every Rust variant serializes a value the spec enum lists; catches values *removed* from the spec but left behind in `models.rs`, which the API rejects on requests. The drift script's "Extra Enum Values" section reports the same finding.
 
-The mapping from spec enum to Rust enum is **structural**, not name- or comment-based: an inline property enum (`Schema.property`) resolves through the struct field's declared type (the actual serialization path), and a named enum schema (e.g. `pgSize`) resolves by `pascalize_identifier`, like the schema coverage test. The `/// Inline enum for ...` doc comments are documentation only — nothing depends on them. Comparison uses each variant's `#[serde(rename = "...")]` wire value (falling back to the variant identifier); the untagged catch-all (`Unknown(String)`-style) is excluded by its `#[serde(untagged)]` attribute, never by name. Enums with non-untagged data-carrying variants model `oneOf` unions and are out of scope, as are enums nested inside `items`/`oneOf`. When a value is flagged, add/remove the variant *and its `Display` arm* in `models.rs`.
+The mapping from spec enum to Rust enum is **structural**, not name- or comment-based: named schemas resolve to model types; property, nested `items`, composition, and operation-parameter enums resolve through the actual Rust field/argument type. Comparison uses Serde container/variant renames and excludes catch-alls through `untagged`/`other` attributes, never names. Numeric, mixed, or scalar-backed enum constraints are serialized as explicit unsupported diagnostics. The current snapshot's known unsupported pointers are acknowledged in analyzer configuration; new locations are actionable and vanished acknowledgements are stale. When a value is flagged, add/remove the variant *and its `Display` arm* in `models.rs`.
 
-An enum variant that intentionally diverges from the spec goes in the `EXTRA_ENUM_VALUE_EXEMPTIONS` constant in `spec_coverage_test.rs` as a `("RustEnumName", "wireValue")` entry with a comment. It behaves exactly like `EXTRA_FIELD_EXEMPTIONS`: empty by default, stale entries fail the test, and `check-openapi-drift.py` parses the same list.
+An enum variant that intentionally diverges from the spec goes in `extra_enum_value_exemptions` in analyzer configuration as a `("RustEnumName", "wireValue")` entry with a comment. It behaves like the field exemptions and produces a stale finding when it is no longer needed.
 
 ##### Deprecated field hiding
 
@@ -117,9 +121,9 @@ Fields the spec marks `deprecated: true` — on both response schemas (e.g. `Ser
 
 Because the field is gone by default, table/list output built by direct field access (e.g. `member list`, `invitation list`) can no longer leak a deprecated field — the compiler rejects it. Where a deprecated field had a non-deprecated replacement (e.g. `Member.role` → `assignedRoles`), the list column was switched to the replacement. CLI request builders (`commands.rs`, `service_query.rs`) likewise drop the deprecated fields; where they still construct a struct under the feature, the inert assignment (`field: None`) carries its own `#[cfg(feature = "deprecated-fields")]` so both feature configs compile.
 
-A deprecated request field that the spec marks required (description heuristic, e.g. `InvitationPostRequest.role`, `OrganizationPrivateEndpointsPatch.add`) is modelled as `Option<T>` so it can be gated out and omitted — these carry an `OPTIONALITY_EXEMPTIONS` entry in `spec_coverage_test.rs`.
+A deprecated request field that the spec marks required (description heuristic, e.g. `InvitationPostRequest.role`, `OrganizationPrivateEndpointsPatch.add`) is modelled as `Option<T>` so it can be gated out and omitted — these carry an optionality exemption in analyzer configuration.
 
-The list is the `DEPRECATED_FIELDS` constant in `src/meta.rs`. `scripts/regenerate-deprecated-fields.py` regenerates it from the snapshot; `deprecated_fields_match_spec` (drift vs spec) and `deprecated_fields_hidden` (constant vs the `models.rs` markers) in `spec_coverage_test.rs` keep all three in lockstep. The daily `check-openapi-drift.py` reports deprecation changes too.
+The list is the `DEPRECATED_FIELDS` constant in `src/meta.rs`. `scripts/regenerate-deprecated-fields.py` regenerates it from the snapshot; the analyzer compares the spec, constant, and `models.rs` markers in one report consumed by both snapshot tests and the daily workflow.
 
 ## Tests
 
@@ -136,7 +140,7 @@ Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason t
 - `tests/common/support.rs` — generic test infra (polling, logging, env helpers, ClickHouse provisioning & cleanup, HTTP query helper). Used by every integration binary. Call `Client` directly from Rust.
 - `tests/integration_test.rs`, `tests/integration_postgres_test.rs` — cloud-service / Postgres-service CRUD lifecycle tests.
 - `tests/clickpipes/` — ClickPipes E2E suite, including external cloud services. Only Postgres CDC (uses ClickHouse & Postgres inside ClickHouse Cloud) is run in CI. Tests for third party services must be executed manually. CI also optionally runs `clickpipe_smoke_test` against a long-lived service when the `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID` repo variable is set (see `.github/workflows/cloud-integration.yml`); the step is skipped when the variable is unset.
-- `spec_coverage_test.rs`: compares to OpenAPI, every spec operation/field has a matching client method/model field.
+- `spec_coverage_test.rs`: runs the shared analyzer against the vendored OpenAPI snapshot and requires an actionable-drift-free report.
 
 ### clickhousectl CLI
 

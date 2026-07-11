@@ -967,6 +967,7 @@ dependencies = [
  "aws-sdk-s3",
  "base64",
  "chrono",
+ "clickhouse-openapi-analyzer",
  "rcgen",
  "reqwest",
  "rustls",
@@ -981,6 +982,19 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "clickhouse-openapi-analyzer"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -2717,9 +2731,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.45"
+version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
+checksum = "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368"
 dependencies = [
  "proc-macro2",
 ]
@@ -3423,9 +3437,9 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
-version = "2.0.117"
+version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
+checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
 dependencies = [
  "proc-macro2",
  "quote",

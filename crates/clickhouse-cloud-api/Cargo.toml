@@ -31,6 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 [dev-dependencies]
 aws-config = { version = "1.8.16", features = ["credentials-login"] }
 aws-credential-types = "1.2.14"
+clickhouse-openapi-analyzer = { path = "../clickhouse-openapi-analyzer" }
 # Disable default features on aws-sdk-* crates to drop the legacy `rustls` feature,
 # which pulls in vulnerable rustls 0.21 / rustls-webpki 0.101 (GHSA / RUSTSEC).
 # `default-https-client` gives us the modern rustls-aws-lc-based HTTP client.
