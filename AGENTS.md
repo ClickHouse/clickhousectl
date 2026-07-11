@@ -81,7 +81,7 @@ Work from the issue's typed findings. `spec_pointer` is an RFC 6901 location in 
    - Beta/deprecation findings: regenerate `BETA_OPERATIONS` with `python3 scripts/regenerate-beta-lists.py` and `DEPRECATED_FIELDS` with `python3 scripts/regenerate-deprecated-fields.py`; deprecated fields also need the matching `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`.
    - Stale exemption: remove or narrow the configuration entry. Do not change comparison logic to preserve a stale exception.
    - Unsupported enum constraint: prefer changing the Rust scalar to a concrete value enum. Acknowledgement is the fallback policy below, not a model-drift fix.
-4. Add focused library tests for changed models/methods. If the unsupported inventory changes, update the snapshot test's expected inventory as well.
+4. Add focused library tests for changed models/methods. If the unsupported inventory changes, update `acknowledged_unsupported_enum_pointers`; the snapshot test derives its exact expected inventory from that configuration.
 5. Verify with `cargo test -p clickhouse-cloud-api -p clickhouse-openapi-analyzer`, `cargo clippy -p clickhouse-cloud-api -p clickhouse-openapi-analyzer --all-targets -- -D warnings`, and `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`. If deprecated fields changed, also run `cargo check --workspace --all-features`. Re-run the dry run to check the live document.
 
 ##### Field optionality and the OpenAPI spec

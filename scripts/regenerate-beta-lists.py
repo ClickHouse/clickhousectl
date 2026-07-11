@@ -4,7 +4,7 @@ Print the BETA_OPERATIONS list for crates/clickhouse-cloud-api/src/meta.rs,
 sourced from `x-badges` entries in the committed OpenAPI snapshot.
 
 Run this whenever the snapshot is refreshed. Paste the output into meta.rs.
-The `beta_operations_match_spec` test will fail until the constant matches.
+The shared OpenAPI analyzer reports drift until the constant matches.
 
 Usage:
     python3 scripts/regenerate-beta-lists.py

@@ -14,8 +14,8 @@
 //! python3 scripts/regenerate-beta-lists.py
 //! ```
 //!
-//! The `beta_operations_match_spec` test in `tests/spec_coverage_test.rs` fails
-//! if this list drifts from the spec.
+//! The shared OpenAPI analyzer reports drift if this list differs from the
+//! snapshot or live spec.
 
 /// Snake-case operation IDs (matching [`crate::client::Client`] method names)
 /// that the OpenAPI spec marks Beta via `x-badges`.
@@ -95,9 +95,8 @@ pub fn is_beta_operation(name: &str) -> bool {
 /// python3 scripts/regenerate-deprecated-fields.py
 /// ```
 ///
-/// The `deprecated_fields_match_spec` test in `tests/spec_coverage_test.rs`
-/// fails if this list drifts from the spec, and `deprecated_fields_hidden`
-/// fails if a field here lacks the `#[cfg(feature = "deprecated-fields")]`
+/// The shared OpenAPI analyzer reports drift if this list differs from the
+/// spec or if a field here lacks the `#[cfg(feature = "deprecated-fields")]`
 /// marker in `models.rs` (or vice versa).
 pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[
     ("ApiKey", "roles"),
