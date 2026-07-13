@@ -56,9 +56,9 @@ def fetch_live_spec() -> dict | None:
 
 def run_analyzer(spec: dict) -> dict:
     """Run the canonical Rust analyzer and return its serialized DriftReport."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as spec_file:
-        json.dump(spec, spec_file)
-        spec_file.flush()
+    with tempfile.TemporaryDirectory() as spec_dir:
+        spec_path = Path(spec_dir) / "spec.json"
+        spec_path.write_text(json.dumps(spec))
         command = [
             "cargo",
             "run",
@@ -70,7 +70,7 @@ def run_analyzer(spec: dict) -> dict:
             "openapi-drift-analyzer",
             "--",
             "--spec",
-            spec_file.name,
+            str(spec_path),
             "--snapshot",
             str(SNAPSHOT_JSON),
             "--client",
