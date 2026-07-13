@@ -11,7 +11,6 @@ pub enum FindingKind {
     ExtraClientMethod,
     MissingModelType,
     MissingSchemaDefinition,
-    MissingReferencedModelType,
     MissingStructField,
     ExtraStructField,
     FieldOptionalityMismatch,

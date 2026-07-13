@@ -187,7 +187,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         "|--------|-------|",
         f"| Missing client methods | {counts['missing_client_method']} |",
         f"| Extra client methods | {counts['extra_client_method']} |",
-        f"| Missing model types | {total('missing_model_type', 'missing_referenced_model_type')} |",
+        f"| Missing model types | {counts['missing_model_type']} |",
         f"| Missing schema definitions | {counts['missing_schema_definition']} |",
         f"| Missing struct fields | {counts['missing_struct_field']} |",
         f"| Extra struct fields | {counts['extra_struct_field']} |",
@@ -234,7 +234,6 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
     simple_sections = [
         ("extra_client_method", "Extra Client Methods"),
         ("missing_schema_definition", "Missing Schema Definitions"),
-        ("missing_referenced_model_type", "Missing Referenced Model Types"),
         ("missing_struct_field", "Missing Struct Fields"),
         ("extra_struct_field", "Extra Struct Fields"),
         ("missing_enum_value", "Missing Enum Values"),

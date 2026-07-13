@@ -97,21 +97,9 @@ fn compare_models_and_refs(
                 .at_spec(reference_pointer)
                 .detail("schema", schema_name),
             );
-            continue;
         }
-        let rust_name = pascalize(schema_name);
-        if !rust.model_types.contains(&rust_name) {
-            report.findings.push(
-                Finding::new(
-                    FindingKind::MissingReferencedModelType,
-                    format!("referenced schema {schema_name} has no model type {rust_name}"),
-                )
-                .at_spec(reference_pointer)
-                .at_rust(format!("models.rs::{rust_name}"))
-                .detail("schema", schema_name)
-                .detail("rust_type", &rust_name),
-            );
-        }
+        // Referenced-and-defined schemas without a Rust model are already
+        // reported as MissingModelType by the loop over spec.schemas above.
     }
 }
 
@@ -963,7 +951,6 @@ mod tests {
             FindingKind::ExtraClientMethod,
             FindingKind::MissingModelType,
             FindingKind::MissingSchemaDefinition,
-            FindingKind::MissingReferencedModelType,
             FindingKind::MissingStructField,
             FindingKind::ExtraStructField,
             FindingKind::FieldOptionalityMismatch,
