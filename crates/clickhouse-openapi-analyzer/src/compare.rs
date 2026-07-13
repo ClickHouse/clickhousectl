@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::AnalyzerConfig;
-use crate::openapi::{EnumConstraint, EnumContext, EnumValues, OpenApiInventory, pascalize};
+use crate::openapi::{
+    EnumConstraint, EnumContext, EnumValues, OpenApiInventory, PropertyStep, pascalize,
+};
 use crate::report::{DriftReport, Finding, FindingKind, UnsupportedEnumConstraint};
 use crate::rust_inventory::RustInventory;
 
@@ -467,27 +469,17 @@ fn map_enum(rust: &RustInventory, constraint: &EnumConstraint) -> EnumMapping {
             }
             (Some(name.clone()), format!("models.rs::{name}"))
         }
-        EnumContext::Property {
-            schema,
-            property,
-            array_item,
-        } => {
-            let struct_name = pascalize(schema);
-            let Some(struct_info) = rust.structs.get(&struct_name) else {
-                return EnumMapping::Unmapped;
-            };
-            let Some(field) = struct_info.fields.get(property) else {
-                return EnumMapping::Unmapped;
-            };
-            let type_name = if *array_item {
-                rust.array_item_type(&field.rust_type)
-            } else {
-                rust.terminal_type(&field.rust_type)
-            };
-            (
-                type_name,
-                format!("models.rs::{struct_name}::{}", field.rust_name),
-            )
+        EnumContext::Property { schema, steps } => {
+            match resolve_property_chain(rust, schema, steps) {
+                ChainResolution::Unmapped => return EnumMapping::Unmapped,
+                ChainResolution::Unsupported { rust_item, reason } => {
+                    return EnumMapping::Unsupported { rust_item, reason };
+                }
+                ChainResolution::Mapped {
+                    type_name,
+                    rust_item,
+                } => (type_name, rust_item),
+            }
         }
         EnumContext::Parameter {
             operation_id,
@@ -534,6 +526,73 @@ fn map_enum(rust: &RustInventory, constraint: &EnumConstraint) -> EnumMapping {
         name: type_name,
         rust_item,
     }
+}
+
+/// Outcome of walking a property chain from a named schema to an enum position.
+enum ChainResolution {
+    /// The chain resolved end to end; `type_name` is the final field's candidate
+    /// enum type (or `None` when its shape is not a named type).
+    Mapped {
+        type_name: Option<String>,
+        rust_item: String,
+    },
+    /// A struct or field along the chain simply does not exist in the model, so
+    /// the enum has no counterpart to check — same semantics as a missing
+    /// top-level property.
+    Unmapped,
+    /// The chain exists but an intermediate hop cannot be followed to a struct,
+    /// so the enum cannot be mapped to a concrete value enum.
+    Unsupported {
+        rust_item: Option<String>,
+        reason: String,
+    },
+}
+
+/// Walks the property chain, resolving each step's Rust field type and stepping
+/// into the resulting struct for the next property, until the final step yields
+/// the candidate enum type. Intermediate hops must land on a named struct;
+/// otherwise the shape cannot be followed.
+fn resolve_property_chain(
+    rust: &RustInventory,
+    schema: &str,
+    steps: &[PropertyStep],
+) -> ChainResolution {
+    let mut current_struct = pascalize(schema);
+    for (index, step) in steps.iter().enumerate() {
+        let Some(struct_info) = rust.structs.get(&current_struct) else {
+            return ChainResolution::Unmapped;
+        };
+        let Some(field) = struct_info.fields.get(&step.property) else {
+            return ChainResolution::Unmapped;
+        };
+        let rust_item = format!("models.rs::{current_struct}::{}", field.rust_name);
+        let type_name = if step.array_item {
+            rust.array_item_type(&field.rust_type)
+        } else {
+            rust.terminal_type(&field.rust_type)
+        };
+        if index + 1 == steps.len() {
+            return ChainResolution::Mapped {
+                type_name,
+                rust_item,
+            };
+        }
+        let Some(type_name) = type_name else {
+            return ChainResolution::Unsupported {
+                rust_item: Some(rust_item),
+                reason: "intermediate property type shape is not a supported named type"
+                    .to_string(),
+            };
+        };
+        if !rust.structs.contains_key(&type_name) {
+            return ChainResolution::Unsupported {
+                rust_item: Some(rust_item),
+                reason: format!("intermediate property type {type_name} is not a struct"),
+            };
+        }
+        current_struct = type_name;
+    }
+    ChainResolution::Unmapped
 }
 
 fn record_unsupported(
@@ -780,6 +839,69 @@ mod tests {
         assert!(!report.has_drift(), "{}", report.render_text());
         assert_eq!(report.unsupported_enum_constraints.len(), 1);
         assert!(report.unsupported_enum_constraints[0].acknowledged);
+    }
+
+    #[test]
+    fn resolves_nested_property_chain_through_intermediate_struct() {
+        let report = analyze_fixture(
+            r#"
+                pub struct Widget { pub foo: FooType }
+                pub struct FooType { pub bar: BarMode }
+                pub enum BarMode {
+                    #[serde(rename = "a")] A,
+                    #[serde(rename = "c")] C,
+                }
+            "#,
+            serde_json::json!({
+                "required": ["foo"],
+                "properties": {
+                    "foo": {
+                        "required": ["bar"],
+                        "properties": {"bar": {"enum": ["a", "b"]}}
+                    }
+                }
+            }),
+            AnalyzerConfig::default(),
+        );
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::MissingEnumValue
+                && finding.details.get("enum").map(String::as_str) == Some("BarMode")
+                && finding.details.get("value").map(String::as_str) == Some("b")
+                && finding.rust_item.as_deref() == Some("models.rs::FooType::bar")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::ExtraEnumValue
+                && finding.details.get("enum").map(String::as_str) == Some("BarMode")
+                && finding.details.get("value").map(String::as_str) == Some("c")
+        }));
+    }
+
+    #[test]
+    fn nested_chain_through_non_struct_reports_unsupported() {
+        let report = analyze_fixture(
+            "pub struct Widget { pub foo: String }",
+            serde_json::json!({
+                "required": ["foo"],
+                "properties": {
+                    "foo": {"properties": {"bar": {"enum": ["a"]}}}
+                }
+            }),
+            AnalyzerConfig::default(),
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == FindingKind::UnsupportedEnumConstraint)
+        );
+        assert_eq!(report.unsupported_enum_constraints.len(), 1);
+        let unsupported = &report.unsupported_enum_constraints[0];
+        assert!(unsupported.reason.contains("is not a struct"));
+        assert_eq!(
+            unsupported.rust_item.as_deref(),
+            Some("models.rs::Widget::foo")
+        );
+        assert!(!unsupported.acknowledged);
     }
 
     #[test]

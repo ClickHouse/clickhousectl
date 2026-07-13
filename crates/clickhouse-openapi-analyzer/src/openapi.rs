@@ -23,6 +23,18 @@ pub(crate) struct PropertyInfo {
     pub(crate) required_non_nullable: bool,
 }
 
+/// One hop in a property chain from a named schema down to an enum position.
+///
+/// `property` is the spec property name entered at this step. `array_item` is
+/// set when an `items` traversal (array element) occurs after this property but
+/// before the next step or the terminal enum — mirroring how the Rust field's
+/// type must be unwrapped one array level to reach the next type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PropertyStep {
+    pub(crate) property: String,
+    pub(crate) array_item: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum EnumContext {
     NamedSchema {
@@ -30,8 +42,7 @@ pub(crate) enum EnumContext {
     },
     Property {
         schema: String,
-        property: String,
-        array_item: bool,
+        steps: Vec<PropertyStep>,
     },
     Parameter {
         operation_id: String,
@@ -415,8 +426,7 @@ fn enum_context(root: &Value, path: &[String]) -> EnumContext {
     {
         return EnumContext::Property {
             schema: path[2].clone(),
-            property: path[4].clone(),
-            array_item: path[5..].iter().any(|part| part == "items"),
+            steps: property_steps(&path[3..]),
         };
     }
     if path.len() > 3
@@ -452,6 +462,42 @@ fn enum_context(root: &Value, path: &[String]) -> EnumContext {
         }
     }
     EnumContext::Unknown
+}
+
+/// Derives the property chain from schema-relative pointer segments.
+///
+/// `segments` starts at the first `properties` keyword under the named schema
+/// (i.e. `path[3..]`). Each `properties/<name>` pair becomes a [`PropertyStep`];
+/// an `items` segment marks an array-element hop on the most recent step; and
+/// composition keywords (`oneOf`/`anyOf`/`allOf`/`not`), `additionalProperties`,
+/// and numeric indices are transparent so nested inline objects, arrays, and
+/// unions all collapse to the ordered list of properties actually traversed.
+fn property_steps(segments: &[String]) -> Vec<PropertyStep> {
+    let mut steps: Vec<PropertyStep> = Vec::new();
+    let mut index = 0;
+    while index < segments.len() {
+        match segments[index].as_str() {
+            "properties" => {
+                if let Some(name) = segments.get(index + 1) {
+                    steps.push(PropertyStep {
+                        property: name.clone(),
+                        array_item: false,
+                    });
+                    index += 2;
+                    continue;
+                }
+                index += 1;
+            }
+            "items" => {
+                if let Some(step) = steps.last_mut() {
+                    step.array_item = true;
+                }
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    steps
 }
 
 pub(crate) fn json_pointer(path: &[String]) -> String {
@@ -566,6 +612,112 @@ mod tests {
                 "/components/schemas/Widget/properties/mode/oneOf/0".to_string(),
             ])
         );
+    }
+
+    #[test]
+    fn attributes_nested_property_enums_to_the_full_chain() {
+        let spec = serde_json::json!({
+            "paths": {},
+            "components": {"schemas": {
+                "Widget": {"properties": {
+                    "foo": {"properties": {
+                        "bar": {"enum": ["on", "off"]}
+                    }},
+                    "rows": {"type": "array", "items": {"properties": {
+                        "cell": {"type": "array", "items": {"enum": ["ready"]}}
+                    }}}
+                }}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        let by_pointer: BTreeMap<String, EnumContext> = inventory
+            .enum_constraints
+            .iter()
+            .map(|constraint| (constraint.pointer.clone(), constraint.context.clone()))
+            .collect();
+
+        let nested = &by_pointer["/components/schemas/Widget/properties/foo/properties/bar"];
+        match nested {
+            EnumContext::Property { schema, steps } => {
+                assert_eq!(schema, "Widget");
+                assert_eq!(
+                    steps,
+                    &vec![
+                        PropertyStep {
+                            property: "foo".to_string(),
+                            array_item: false,
+                        },
+                        PropertyStep {
+                            property: "bar".to_string(),
+                            array_item: false,
+                        },
+                    ]
+                );
+            }
+            other => panic!("expected property context, got {other:?}"),
+        }
+
+        let under_items =
+            &by_pointer["/components/schemas/Widget/properties/rows/items/properties/cell/items"];
+        match under_items {
+            EnumContext::Property { schema, steps } => {
+                assert_eq!(schema, "Widget");
+                assert_eq!(
+                    steps,
+                    &vec![
+                        PropertyStep {
+                            property: "rows".to_string(),
+                            array_item: true,
+                        },
+                        PropertyStep {
+                            property: "cell".to_string(),
+                            array_item: true,
+                        },
+                    ]
+                );
+            }
+            other => panic!("expected property context, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keeps_single_property_chains_for_the_common_case() {
+        let spec = serde_json::json!({
+            "paths": {},
+            "components": {"schemas": {
+                "Widget": {"properties": {
+                    "status": {"enum": ["on"]},
+                    "states": {"type": "array", "items": {"enum": ["ready"]}}
+                }}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        let by_pointer: BTreeMap<String, EnumContext> = inventory
+            .enum_constraints
+            .iter()
+            .map(|constraint| (constraint.pointer.clone(), constraint.context.clone()))
+            .collect();
+
+        match &by_pointer["/components/schemas/Widget/properties/status"] {
+            EnumContext::Property { steps, .. } => assert_eq!(
+                steps,
+                &vec![PropertyStep {
+                    property: "status".to_string(),
+                    array_item: false,
+                }]
+            ),
+            other => panic!("expected property context, got {other:?}"),
+        }
+        match &by_pointer["/components/schemas/Widget/properties/states/items"] {
+            EnumContext::Property { steps, .. } => assert_eq!(
+                steps,
+                &vec![PropertyStep {
+                    property: "states".to_string(),
+                    array_item: true,
+                }]
+            ),
+            other => panic!("expected property context, got {other:?}"),
+        }
     }
 
     #[test]
