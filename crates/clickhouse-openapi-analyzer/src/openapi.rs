@@ -71,7 +71,7 @@ impl OpenApiInventory {
         inventory.collect_operations(spec)?;
         inventory.collect_schemas(spec, config)?;
         collect_refs(spec, &mut Vec::new(), &mut inventory.referenced_schemas);
-        collect_enums(spec, spec, &mut Vec::new(), &mut inventory.enum_constraints);
+        collect_enums(spec, &mut inventory.enum_constraints);
         inventory
             .enum_constraints
             .sort_by(|left, right| left.pointer.cmp(&right.pointer));
@@ -267,7 +267,35 @@ fn collect_refs(value: &Value, path: &mut Vec<String>, refs: &mut BTreeMap<Strin
     }
 }
 
-fn collect_enums(
+/// Discovers enum constraints, walking only genuine JSON Schema positions.
+///
+/// Traversal starts from schema roots (`/components/schemas/*` and every
+/// `schema` node under `paths`) and recurses only through schema-composing
+/// keywords. Non-schema content such as `example`, `examples`, `default`, or
+/// vendor extensions is never inspected, so an `enum` key that merely appears
+/// inside an example payload is not mistaken for an enum constraint.
+fn collect_enums(root: &Value, output: &mut Vec<EnumConstraint>) {
+    if let Some(schemas) = root.pointer("/components/schemas").and_then(Value::as_object) {
+        for (schema_name, schema) in schemas {
+            let mut path = vec![
+                "components".to_string(),
+                "schemas".to_string(),
+                schema_name.clone(),
+            ];
+            walk_schema(root, schema, &mut path, output);
+        }
+    }
+    if let Some(paths) = root.get("paths") {
+        let mut path = vec!["paths".to_string()];
+        collect_path_schemas(root, paths, &mut path, output);
+    }
+}
+
+/// Walks the `paths` subtree to find `schema` nodes (parameter schemas and
+/// request/response media-type schemas), treating each as a schema root. Once a
+/// `schema` node is entered, walking is delegated to [`walk_schema`], which only
+/// recurses through schema keywords — so nested non-schema content is skipped.
+fn collect_path_schemas(
     root: &Value,
     value: &Value,
     path: &mut Vec<String>,
@@ -275,40 +303,105 @@ fn collect_enums(
 ) {
     match value {
         Value::Object(object) => {
-            if let Some(values) = object.get("enum").and_then(Value::as_array) {
-                let enum_values = if values.iter().all(Value::is_string) {
-                    EnumValues::Strings(
-                        values
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_string)
-                            .collect(),
-                    )
-                } else if values.iter().all(Value::is_number) {
-                    EnumValues::Numeric
-                } else {
-                    EnumValues::Mixed
-                };
-                output.push(EnumConstraint {
-                    pointer: json_pointer(path),
-                    context: enum_context(root, path),
-                    values: enum_values,
-                });
-            }
             for (key, child) in object {
                 path.push(key.clone());
-                collect_enums(root, child, path, output);
+                if key == "schema" && child.is_object() {
+                    walk_schema(root, child, path, output);
+                } else {
+                    collect_path_schemas(root, child, path, output);
+                }
                 path.pop();
             }
         }
         Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
                 path.push(index.to_string());
-                collect_enums(root, child, path, output);
+                collect_path_schemas(root, child, path, output);
                 path.pop();
             }
         }
         _ => {}
+    }
+}
+
+/// Records an `enum` constraint at this schema position and recurses only
+/// through keywords whose value is itself a schema (or a map/array of schemas).
+fn walk_schema(
+    root: &Value,
+    schema: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(object) = schema.as_object() else {
+        return;
+    };
+    if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        let enum_values = if values.iter().all(Value::is_string) {
+            EnumValues::Strings(
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+            )
+        } else if values.iter().all(Value::is_number) {
+            EnumValues::Numeric
+        } else {
+            EnumValues::Mixed
+        };
+        output.push(EnumConstraint {
+            pointer: json_pointer(path),
+            context: enum_context(root, path),
+            values: enum_values,
+        });
+    }
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        path.push("properties".to_string());
+        for (property_name, property) in properties {
+            path.push(property_name.clone());
+            walk_schema(root, property, path, output);
+            path.pop();
+        }
+        path.pop();
+    }
+    if let Some(items) = object.get("items") {
+        path.push("items".to_string());
+        match items {
+            Value::Array(schemas) => {
+                for (index, child) in schemas.iter().enumerate() {
+                    path.push(index.to_string());
+                    walk_schema(root, child, path, output);
+                    path.pop();
+                }
+            }
+            _ => walk_schema(root, items, path, output),
+        }
+        path.pop();
+    }
+    if let Some(additional) = object.get("additionalProperties")
+        && additional.is_object()
+    {
+        path.push("additionalProperties".to_string());
+        walk_schema(root, additional, path, output);
+        path.pop();
+    }
+    for keyword in ["oneOf", "anyOf", "allOf"] {
+        if let Some(schemas) = object.get(keyword).and_then(Value::as_array) {
+            path.push(keyword.to_string());
+            for (index, child) in schemas.iter().enumerate() {
+                path.push(index.to_string());
+                walk_schema(root, child, path, output);
+                path.pop();
+            }
+            path.pop();
+        }
+    }
+    if let Some(not) = object.get("not")
+        && not.is_object()
+    {
+        path.push("not".to_string());
+        walk_schema(root, not, path, output);
+        path.pop();
     }
 }
 
@@ -443,5 +536,81 @@ mod tests {
             inventory.enum_constraints[1].context,
             EnumContext::Parameter { .. }
         ));
+    }
+
+    #[test]
+    fn inventories_schema_enums_across_composition_positions() {
+        let spec = serde_json::json!({
+            "paths": {},
+            "components": {"schemas": {
+                "Named": {"enum": ["a", "b"]},
+                "Widget": {"properties": {
+                    "status": {"enum": ["on", "off"]},
+                    "states": {"type": "array", "items": {"enum": ["ready"]}},
+                    "mode": {"oneOf": [{"enum": ["fast"]}, {"type": "null"}]}
+                }}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        let pointers: BTreeSet<String> = inventory
+            .enum_constraints
+            .iter()
+            .map(|constraint| constraint.pointer.clone())
+            .collect();
+        assert_eq!(
+            pointers,
+            BTreeSet::from([
+                "/components/schemas/Named".to_string(),
+                "/components/schemas/Widget/properties/status".to_string(),
+                "/components/schemas/Widget/properties/states/items".to_string(),
+                "/components/schemas/Widget/properties/mode/oneOf/0".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn ignores_enum_keys_outside_schema_positions() {
+        // `enum` keys buried inside example/default payloads or vendor
+        // extensions are ordinary JSON data, not schema constraints, and must
+        // not be inventoried.
+        let spec = serde_json::json!({
+            "paths": {
+                "/widgets": {"get": {
+                    "operationId": "listWidgets",
+                    "parameters": [{
+                        "name": "sortOrder",
+                        "example": {"enum": ["not-a-constraint"]},
+                        "schema": {"enum": ["asc", "desc"]}
+                    }]
+                }}
+            },
+            "components": {"schemas": {
+                "Widget": {
+                    "example": {"enum": ["example-value"]},
+                    "default": {"enum": ["default-value"]},
+                    "x-vendor": {"enum": ["extension-value"]},
+                    "properties": {
+                        "status": {
+                            "enum": ["on", "off"],
+                            "example": {"enum": ["example-only"]},
+                            "default": {"enum": ["default-only"]}
+                        }
+                    }
+                }
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        let pointers: BTreeSet<String> = inventory
+            .enum_constraints
+            .iter()
+            .map(|constraint| constraint.pointer.clone())
+            .collect();
+        assert_eq!(
+            pointers,
+            BTreeSet::from([
+                "/components/schemas/Widget/properties/status".to_string(),
+                "/paths/~1widgets/get/parameters/0/schema".to_string(),
+            ])
+        );
     }
 }
