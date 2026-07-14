@@ -28,7 +28,10 @@ pub enum AnalyzeError {
     SpecJson(#[source] serde_json::Error),
     #[error("failed to parse snapshot OpenAPI JSON: {0}")]
     SnapshotJson(#[source] serde_json::Error),
-    #[error("failed to parse Rust source with syn: {0}")]
+    // Covers both syn parse failures and analyzer policy rejections (e.g. a banned
+    // `rename_all`), which both surface as a `syn::Error`; the source message is
+    // self-explanatory, so the wrapper text stays neutral rather than claiming a parse failure.
+    #[error("invalid Rust source: {0}")]
     RustSource(#[source] syn::Error),
     #[error("invalid target OpenAPI document: {0}")]
     SpecInventory(String),
