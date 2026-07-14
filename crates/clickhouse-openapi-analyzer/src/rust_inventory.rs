@@ -191,7 +191,8 @@ impl RustInventory {
                 Item::Struct(item_struct) if matches!(item_struct.vis, Visibility::Public(_)) => {
                     let name = item_struct.ident.unraw().to_string();
                     self.model_types.insert(name.clone());
-                    let container = serde_options(&item_struct.attrs)?;
+                    // Rejects a banned `rename_all` on the struct container.
+                    serde_options(&item_struct.attrs)?;
                     let mut fields = BTreeMap::new();
                     if let Fields::Named(named) = &item_struct.fields {
                         for field in &named.named {
@@ -203,9 +204,7 @@ impl RustInventory {
                             };
                             let rust_name = ident.unraw().to_string();
                             let options = serde_options(&field.attrs)?;
-                            let spec_name = options.rename.unwrap_or_else(|| {
-                                apply_rename_rule(&rust_name, container.rename_all.as_deref())
-                            });
+                            let spec_name = options.rename.unwrap_or_else(|| rust_name.clone());
                             fields.insert(
                                 spec_name,
                                 FieldInfo {
@@ -234,9 +233,7 @@ impl RustInventory {
                             continue;
                         }
                         let rust_name = variant.ident.unraw().to_string();
-                        values.insert(options.rename.unwrap_or_else(|| {
-                            apply_rename_rule(&rust_name, container.rename_all.as_deref())
-                        }));
+                        values.insert(options.rename.unwrap_or(rust_name));
                     }
                     self.enums.insert(
                         name,
@@ -317,7 +314,6 @@ impl RustInventory {
 #[derive(Default)]
 struct SerdeOptions {
     rename: Option<String>,
-    rename_all: Option<String>,
     untagged: bool,
     other: bool,
 }
@@ -343,7 +339,11 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
                     })?;
                 }
             } else if meta.path.is_ident("rename_all") {
-                options.rename_all = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                return Err(meta.error(
+                    "rename_all is not allowed in models.rs: wire names must be explicit \
+                     #[serde(rename = \"...\")] literals so the drift analyzer can read them \
+                     verbatim (see AGENTS.md, OpenAPI drift section)",
+                ));
             } else if meta.path.is_ident("untagged") {
                 options.untagged = true;
             } else if meta.path.is_ident("other") {
@@ -381,61 +381,6 @@ fn has_deprecated_cfg(attributes: &[Attribute]) -> syn::Result<bool> {
         })?;
     }
     Ok(found)
-}
-
-fn apply_rename_rule(name: &str, rule: Option<&str>) -> String {
-    match rule {
-        None => name.to_string(),
-        Some("lowercase") => name.to_ascii_lowercase(),
-        Some("UPPERCASE") => name.to_ascii_uppercase(),
-        Some("snake_case") => words(name).join("_"),
-        Some("SCREAMING_SNAKE_CASE") => words(name).join("_").to_ascii_uppercase(),
-        Some("kebab-case") => words(name).join("-"),
-        Some("SCREAMING-KEBAB-CASE") => words(name).join("-").to_ascii_uppercase(),
-        Some("PascalCase") => words(name).into_iter().map(capitalize).collect(),
-        Some("camelCase") => {
-            let mut parts = words(name).into_iter();
-            let first = parts.next().unwrap_or_default();
-            first + &parts.map(capitalize).collect::<String>()
-        }
-        Some(_) => name.to_string(),
-    }
-}
-
-fn words(value: &str) -> Vec<String> {
-    let mut output = Vec::new();
-    let mut current = String::new();
-    for (index, character) in value.chars().enumerate() {
-        let boundary = character == '_' || character == '-';
-        let uppercase_boundary = character.is_ascii_uppercase()
-            && index > 0
-            && current
-                .chars()
-                .last()
-                .is_some_and(|last| last.is_ascii_lowercase());
-        if boundary || uppercase_boundary {
-            if !current.is_empty() {
-                output.push(current.to_ascii_lowercase());
-                current.clear();
-            }
-            if boundary {
-                continue;
-            }
-        }
-        current.push(character);
-    }
-    if !current.is_empty() {
-        output.push(current.to_ascii_lowercase());
-    }
-    output
-}
-
-fn capitalize(value: String) -> String {
-    let mut chars = value.chars();
-    match chars.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
-        None => String::new(),
-    }
 }
 
 fn dereference(expression: &Expr) -> &Expr {
@@ -500,7 +445,6 @@ mod tests {
             }
         "#;
         let models = r#"
-            #[serde(rename_all = "camelCase")]
             pub struct Widget {
                 pub r#type: Option<Vec<Box<WidgetType>>>,
                 #[serde(rename = "legacyName")]
@@ -555,6 +499,45 @@ mod tests {
         assert_eq!(
             inventory.enums["State"].values,
             BTreeSet::from(["Ready".to_string()])
+        );
+    }
+
+    #[test]
+    fn rejects_rename_all_on_struct() {
+        let models = r#"
+            #[serde(rename_all = "camelCase")]
+            pub struct Widget { pub some_field: String }
+        "#;
+        let error = RustInventory::parse("", models, "").unwrap_err();
+        assert!(
+            error.to_string().contains("rename_all"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_rename_all_on_enum() {
+        let models = r#"
+            #[serde(rename_all = "snake_case")]
+            pub enum State { ReadyNow, InProgress }
+        "#;
+        let error = RustInventory::parse("", models, "").unwrap_err();
+        assert!(
+            error.to_string().contains("rename_all"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn rejects_rename_all_serialize_form() {
+        let models = r#"
+            #[serde(rename_all(serialize = "kebab-case"))]
+            pub struct Widget { pub some_field: String }
+        "#;
+        let error = RustInventory::parse("", models, "").unwrap_err();
+        assert!(
+            error.to_string().contains("rename_all"),
+            "unexpected error: {error}"
         );
     }
 }
