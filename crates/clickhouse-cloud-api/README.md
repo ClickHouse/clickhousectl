@@ -12,7 +12,8 @@ Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/
 | `src/models.rs` | Request/response types matching the OpenAPI spec |
 | `src/error.rs` | Error types (`Http`, `Json`, `Api`) |
 | `clickhouse_cloud_openapi.json` | Checked-in copy of the spec (used by tests) |
-| `tests/spec_coverage_test.rs` | Validates client methods, model types, and field optionality match the spec |
+| `tests/spec_coverage_test.rs` | Thin snapshot/live-spec consumer of the shared drift analyzer |
+| `../clickhouse-openapi-analyzer` | Canonical Rust/OpenAPI parsing, comparison, report, and exemptions |
 
 ### Field optionality
 
@@ -20,6 +21,7 @@ The OpenAPI spec uses two conventions for marking fields required vs optional:
 
 - **Schemas with a `required` array** (newer/beta endpoints) use standard OpenAPI semantics.
 - **Schemas without `required`** (GA/legacy endpoints) treat fields whose description starts with `"Optional"` as optional. Everything else is implicitly required.
+- **Known partial `required` arrays** use the union of that array and the description heuristic, as configured by the analyzer.
 
 Additional rules:
 
@@ -41,6 +43,9 @@ python3 scripts/resolve-field-requirements.py
 # Regenerate the DEPRECATED_FIELDS constant from the snapshot
 python3 scripts/regenerate-deprecated-fields.py
 
+# Regenerate the BETA_OPERATIONS constant from the snapshot
+python3 scripts/regenerate-beta-lists.py
+
 # Check for drift between the live spec and the library (dry run)
 python3 scripts/check-openapi-drift.py --dry-run
 ```
@@ -51,9 +56,10 @@ Field optionality is maintained by hand — edit `models.rs` directly when the d
 
 ```bash
 cargo test -p clickhouse-cloud-api          # all tests
-cargo test --test spec_coverage_test        # spec coverage + field optionality only
-cargo test --test client_test               # wiremock-based client tests
-cargo test --test models_test               # serde round-trip tests
+cargo test -p clickhouse-openapi-analyzer   # analyzer fixtures + executable parity
+cargo test -p clickhouse-cloud-api --test spec_coverage_test # shared snapshot report
+cargo test -p clickhouse-cloud-api --test client_test        # wiremock client tests
+cargo test -p clickhouse-cloud-api --test models_test        # serde round trips
 ```
 
 Live-API lifecycle suites are `#[ignore]`d by default (they provision real resources):
@@ -79,17 +85,24 @@ cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # creat
 
 All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
 
-The `spec_coverage_test` suite checks three things against the checked-in spec:
-
-1. Every OpenAPI operation has a matching `pub async fn` in `client.rs`
-2. Every OpenAPI schema has a matching `pub struct`/`pub enum` in `models.rs`
-3. Every field's `Option<T>` vs `T` matches the spec's required/optional semantics
-4. `DEPRECATED_FIELDS` matches the spec's `deprecated: true` fields (request- and response-side), and each one carries the `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`
-
-There are also `#[ignore]`d variants that run the same checks against the live spec.
+`spec_coverage_test` sends the checked-in sources and snapshot through the
+private `clickhouse-openapi-analyzer` crate. That same analyzer powers the
+scheduled live-spec issue, so operation, model, field, optionality, beta,
+deprecation, enum, snapshot, and stale-exemption findings share one
+implementation. The single ignored test runs the same report against the live
+spec.
 
 ### Optionality exemptions
 
-Occasionally the spec marks a field as required but the API actually treats it as optional (e.g. sending an empty string triggers a `400 BAD_REQUEST`). In these cases we override the field to `Option<T>` in `models.rs` and add the field to the `OPTIONALITY_EXEMPTIONS` list in `spec_coverage_test.rs`.
+Occasionally the spec cannot be followed literally because verified API
+behavior differs. All such policy lives in
+`crates/clickhouse-openapi-analyzer/src/config.rs`, including optionality,
+extra-field, deprecated-field, extra-enum-value, non-OpenAPI-method, partial
+required-schema, and unsupported-enum configuration.
 
-The test prints a `NOTE:` line for every exemption that fires, and **fails** if an exemption becomes stale (i.e. the spec was corrected upstream and the override is no longer needed). To add a new exemption, add a `("RustStructName", "specFieldName")` entry to the constant with a comment explaining why.
+Add an exemption only for a deliberate runtime behavior and document why the
+spec cannot be followed. New unsupported-enum acknowledgements also require a
+tracking issue. The analyzer reports stale field/enum exemptions and vanished
+unsupported locations so obsolete entries are removed during normal drift
+remediation. See the repository `AGENTS.md` for exact key formats and the full
+remediation and verification procedure.

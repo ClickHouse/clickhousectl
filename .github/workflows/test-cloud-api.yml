@@ -5,6 +5,10 @@ on:
   pull_request:
     paths:
       - "crates/clickhouse-cloud-api/**"
+      - "crates/clickhouse-openapi-analyzer/**"
+      - "scripts/check-openapi-drift.py"
+      - "scripts/tests/**"
+      - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test-cloud-api.yml"
 
@@ -24,10 +28,13 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
 
       - name: Build
-        run: cargo build -p clickhouse-cloud-api
+        run: cargo build -p clickhouse-cloud-api -p clickhouse-openapi-analyzer
 
       - name: Clippy
-        run: cargo clippy -p clickhouse-cloud-api -- -D warnings
+        run: cargo clippy -p clickhouse-cloud-api -p clickhouse-openapi-analyzer --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test -p clickhouse-cloud-api
+        run: cargo test -p clickhouse-cloud-api -p clickhouse-openapi-analyzer
+
+      - name: Test drift report rendering
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
