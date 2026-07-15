@@ -850,7 +850,7 @@ Each event contains exactly:
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
 
-Nothing is ever sent before you have seen the notice: the first run prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
+Nothing is ever sent before you have seen the notice or explicitly enabled telemetry with `clickhousectl telemetry enable`: the first run prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run — or immediately if you opt in by running `telemetry enable`, which is explicit consent and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 
 Opt out any of these ways:
 

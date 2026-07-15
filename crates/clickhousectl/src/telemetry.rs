@@ -1,7 +1,10 @@
 //! Anonymous usage telemetry (issue #283).
 //!
 //! Consent model follows Homebrew: nothing is ever sent before the first-run
-//! notice has been shown. State lives in `~/.clickhouse/telemetry.json`
+//! notice has been shown — unless the user explicitly runs
+//! `clickhousectl telemetry enable`, which is itself consent (stronger than
+//! passively seeing a notice) and skips the notice. State lives in
+//! `~/.clickhouse/telemetry.json`
 //! (`{"disabled": false}`), which doubles as the first-run marker — the notice
 //! is only printed after the file has been written successfully, so an
 //! unwritable config dir fails open to disabled (no send, no error, no
