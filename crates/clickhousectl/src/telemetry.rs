@@ -420,7 +420,7 @@ fn print_status() {
     };
     match load_state_from(&path) {
         State::Missing => {
-            println!("Telemetry is not yet configured (first-run notice pending).");
+            println!("Telemetry is not yet configured; nothing has been sent.");
         }
         State::Disabled => {
             println!("Telemetry is disabled ({}).", path.display());
