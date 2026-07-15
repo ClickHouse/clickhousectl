@@ -702,6 +702,9 @@ fn build_create_service_request(
         enable_core_dumps: opts.enable_core_dumps,
         // Fields not exposed in CLI
         byoc_id: None,
+        min_replicas: None,
+        max_replicas: None,
+        replica_memory_gb: None,
         // Deprecated fields — only exist (and stay None) under the
         // `deprecated-fields` feature; gated out of the struct otherwise.
         #[cfg(feature = "deprecated-fields")]
@@ -1042,6 +1045,9 @@ pub async fn clickpipe_create_s3(
         azure_container_name: args.azure_container_name.clone(),
         path: args.path.clone(),
         service_account_key,
+        // Not exposed as CLI flags yet
+        skip_initial_load: None,
+        start_after: None,
     };
 
     let request = ClickPipePostRequest {

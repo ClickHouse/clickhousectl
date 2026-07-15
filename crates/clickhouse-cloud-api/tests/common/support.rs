@@ -914,6 +914,8 @@ pub fn scaling_schedule_entry_to_request(
         min_replica_memory_gb: entry.min_replica_memory_gb,
         min_replicas: entry.min_replicas,
         name: entry.name.clone(),
+        num_replicas: entry.num_replicas,
+        replica_memory_gb: entry.replica_memory_gb,
         start_hour_utc: entry.start_hour_utc,
         weekdays: entry.weekdays.clone(),
     }

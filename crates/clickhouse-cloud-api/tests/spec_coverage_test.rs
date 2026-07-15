@@ -323,6 +323,13 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ServicePostRequest", "minReplicaMemoryGb"),
     ("ServicePostRequest", "minTotalMemoryGb"),
     ("ServicePostRequest", "numReplicas"),
+    // Horizontal-autoscaling trio: mutually exclusive with numReplicas,
+    // min/maxReplicaMemoryGb, and min/maxTotalMemoryGb per the field
+    // descriptions, so they must be omittable despite the heuristic
+    // inferring required.
+    ("ServicePostRequest", "maxReplicas"),
+    ("ServicePostRequest", "minReplicas"),
+    ("ServicePostRequest", "replicaMemoryGb"),
     ("ServicePostRequest", "privateEndpointIds"),
     ("ServicePostRequest", "privatePreviewTermsChecked"),
     ("ServicePostRequest", "profile"),
@@ -420,6 +427,14 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // POST bodies (omitting either yields `BAD_REQUEST: ... 'undefined'`),
     // matching the spec's `required` listing. See #163 for the behaviour
     // matrix evidence.
+    ("PgConfig", "autovacuum_analyze_scale_factor"),
+    ("PgConfig", "autovacuum_max_workers"),
+    ("PgConfig", "autovacuum_naptime"),
+    ("PgConfig", "autovacuum_vacuum_cost_delay"),
+    ("PgConfig", "autovacuum_vacuum_cost_limit"),
+    ("PgConfig", "autovacuum_vacuum_insert_scale_factor"),
+    ("PgConfig", "autovacuum_vacuum_scale_factor"),
+    ("PgConfig", "autovacuum_work_mem"),
     ("PgConfig", "default_transaction_isolation"),
     ("PgConfig", "effective_cache_size"),
     ("PgConfig", "effective_io_concurrency"),
