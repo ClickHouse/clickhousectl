@@ -102,7 +102,13 @@ fn save_state_to(path: &Path, disabled: bool) -> std::io::Result<()> {
 type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 fn real_env_lookup(key: &str) -> Option<String> {
-    std::env::var(key).ok()
+    // `var_os` + lossy conversion, not `var`: `std::env::var` returns an error
+    // (read here as `None`) for a variable that is set but not valid UTF-8, so
+    // a non-UTF-8 `DO_NOT_TRACK` would look absent and telemetry would fail
+    // open. A set-but-non-UTF-8 value must still count as an opt-out; the
+    // lossy string is non-empty and not "0"/"false", so `env_truthy` sees it
+    // as set.
+    std::env::var_os(key).map(|v| v.to_string_lossy().into_owned())
 }
 
 /// donottrack.sh-style truthiness: set, and not `""`/`"0"`/`"false"`.

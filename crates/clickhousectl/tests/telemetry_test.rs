@@ -291,6 +291,35 @@ async fn do_not_track_is_fully_silent() {
     sandbox.assert_no_requests().await;
 }
 
+/// A `DO_NOT_TRACK` value that is set but not valid UTF-8 must still opt out.
+/// `std::env::var` errors on such values; if the lookup treated that as
+/// "unset" the opt-out would fail open (see `real_env_lookup`, which uses
+/// `var_os` + lossy conversion for exactly this reason).
+#[cfg(unix)]
+#[tokio::test]
+async fn non_utf8_do_not_track_is_fully_silent() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let sandbox = Sandbox::new().await;
+
+    let output = sandbox
+        .command(&["local", "list"])
+        .env(
+            "DO_NOT_TRACK",
+            std::ffi::OsString::from_vec(vec![0xff, 0xfe]),
+        )
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    assert!(
+        !sandbox.state_path().exists(),
+        "non-UTF-8 DO_NOT_TRACK must not write the marker file"
+    );
+    sandbox.assert_no_requests().await;
+}
+
 #[tokio::test]
 async fn disable_persists_and_silences() {
     let sandbox = Sandbox::new().await;
