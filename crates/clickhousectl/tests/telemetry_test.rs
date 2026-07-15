@@ -352,11 +352,47 @@ async fn enable_sends_an_event_for_itself() {
     let output = sandbox.run(&["telemetry", "enable"]);
     assert!(output.status.success());
     assert!(stdout_of(&output).contains("Telemetry enabled."));
+    // Without DO_NOT_TRACK there is nothing to warn about.
+    assert!(!stderr_of(&output).contains("DO_NOT_TRACK is set"));
 
     // Consent is evaluated after the command ran, so the enable run itself
     // is the first event.
     let payloads = sandbox.wait_for_requests(1).await;
     assert_eq!(payloads[0]["command"], "telemetry enable");
+}
+
+/// `telemetry enable` under `DO_NOT_TRACK` still records the preference (so
+/// it takes effect once DNT is lifted) but must tell the user that nothing
+/// will actually be sent — otherwise "Telemetry enabled." would be silently
+/// untrue.
+#[tokio::test]
+async fn enable_under_do_not_track_warns_that_telemetry_stays_silent() {
+    let sandbox = Sandbox::new().await;
+
+    let output = sandbox
+        .command(&["telemetry", "enable"])
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(0));
+
+    // stdout stays the clean confirmation; the note goes to stderr.
+    assert!(stdout_of(&output).contains("Telemetry enabled."));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("DO_NOT_TRACK") && stderr.contains("remain silent"),
+        "enable under DNT must warn on stderr, got: {stderr}"
+    );
+
+    // The preference is still written — writing under DNT is intentional.
+    assert_eq!(
+        std::fs::read_to_string(sandbox.state_path()).unwrap(),
+        r#"{"disabled":false}"#
+    );
+
+    // And DNT still wins: the enable run itself sent nothing.
+    sandbox.assert_no_requests().await;
 }
 
 #[tokio::test]

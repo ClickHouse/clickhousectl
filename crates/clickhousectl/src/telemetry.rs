@@ -376,6 +376,14 @@ pub fn run_command(cmd: crate::cli::TelemetryCommands) -> Result<()> {
         TelemetryCommands::Enable => {
             set_disabled(false)?;
             println!("Telemetry enabled.");
+            // The preference is recorded either way, but DNT overrides it
+            // (see `decide`): without this note the user would see success
+            // while telemetry stays fully silent.
+            if env_truthy(real_env_lookup(DNT_ENV)) {
+                eprintln!(
+                    "Note: the DO_NOT_TRACK environment variable is set; telemetry will remain silent while it is set."
+                );
+            }
             Ok(())
         }
         TelemetryCommands::Disable => {
