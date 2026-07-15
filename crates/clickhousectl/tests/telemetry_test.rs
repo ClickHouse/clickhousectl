@@ -175,10 +175,11 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     assert_eq!(event["os"], std::env::consts::OS);
     assert_eq!(event["arch"], std::env::consts::ARCH);
 
-    // The send goes through the canonical http::client_builder(), so it
-    // carries the same User-Agent as every other outbound request. The
-    // ingest worker relies on the `clickhousectl/<version>` prefix to
-    // reject non-CLI traffic (an ` (agent=...)` comment may follow).
+    // The send deliberately bypasses http::client_builder() (see
+    // no_agent_correlation_headers_on_the_wire) but keeps the same canonical
+    // User-Agent as every other outbound request. The ingest worker relies on
+    // the `clickhousectl/<version>` prefix to reject non-CLI traffic (an
+    // ` (agent=...)` comment may follow).
     let requests = sandbox.mock.received_requests().await.unwrap();
     let ua = requests[0]
         .headers
@@ -190,6 +191,46 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     assert!(
         ua == prefix || ua.starts_with(&format!("{prefix} (")),
         "unexpected User-Agent: {ua}"
+    );
+}
+
+#[tokio::test]
+async fn no_agent_correlation_headers_on_the_wire() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // Simulate running under Claude Code with a session id and an active
+    // trace: this is exactly the environment in which the shared
+    // http::client_builder() would attach `agent-session-id` and
+    // `traceparent`. Telemetry must not — a stable session identifier on an
+    // anonymous event would be fingerprinting. The agent facts travel in the
+    // payload (`is_agent`/`agent`) instead, by design.
+    let output = sandbox
+        .command(&["local", "list"])
+        .env_remove("AGENT")
+        .env("CLAUDECODE", "1")
+        .env("CLAUDE_CODE_SESSION_ID", "sess-should-never-hit-the-wire")
+        .env("TRACEPARENT", "00-11111111111111111111111111111111-2222222222222222-01")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    // Detection was positive: the payload says so...
+    assert_eq!(event["is_agent"], true);
+    assert_eq!(event["agent"], "claude-code");
+
+    // ...but no correlation headers accompany it.
+    let requests = sandbox.mock.received_requests().await.unwrap();
+    let headers = &requests[0].headers;
+    assert!(
+        headers.get("agent-session-id").is_none(),
+        "telemetry POST must not carry agent-session-id: {headers:?}"
+    );
+    assert!(
+        headers.get("traceparent").is_none(),
+        "telemetry POST must not carry traceparent: {headers:?}"
     );
 }
 

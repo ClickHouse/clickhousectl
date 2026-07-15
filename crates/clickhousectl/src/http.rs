@@ -5,6 +5,11 @@
 //! the `User-Agent` (built in `crate::user_agent`) and the agent
 //! session/trace correlation headers, and any future builder picks these up
 //! for free.
+//!
+//! Deliberate exception: the telemetry send child (`crate::telemetry`) builds
+//! its own client with only the User-Agent. Attaching the agent session/trace
+//! headers there would let the backend correlate anonymous telemetry events
+//! with an agent session.
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 

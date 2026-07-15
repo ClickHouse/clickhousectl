@@ -334,7 +334,18 @@ pub async fn run_child_send() {
         return;
     };
     let url = std::env::var(URL_ENV).unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
-    let Ok(client) = crate::http::client_builder().timeout(SEND_TIMEOUT).build() else {
+    // Deliberately not `crate::http::client_builder()`: the shared builder
+    // attaches the agent session/trace correlation headers (`agent-session-id`,
+    // `traceparent`), which would let the backend correlate telemetry events
+    // with an agent session — telemetry is anonymous, and the agent facts it
+    // needs already travel in the payload (`is_agent`/`agent`) by design. Only
+    // the canonical User-Agent is kept (the ingest worker filters on its
+    // `clickhousectl/<version>` prefix).
+    let Ok(client) = reqwest::Client::builder()
+        .user_agent(crate::user_agent::user_agent())
+        .timeout(SEND_TIMEOUT)
+        .build()
+    else {
         return;
     };
     let _ = client
