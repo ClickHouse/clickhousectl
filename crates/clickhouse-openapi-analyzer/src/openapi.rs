@@ -637,11 +637,17 @@ fn enum_context(root: &Value, path: &[String]) -> EnumContext {
             schema: path[2].clone(),
         };
     }
-    if path.len() >= 5 && path[0] == "components" && path[1] == "schemas" && path[3] == "properties"
+    if path.len() >= 5
+        && path[0] == "components"
+        && path[1] == "schemas"
+        && let Some(properties_index) = path[3..]
+            .iter()
+            .position(|part| part == "properties")
+            .map(|index| index + 3)
     {
         return EnumContext::Property {
             schema: path[2].clone(),
-            steps: property_steps(&path[3..]),
+            steps: property_steps(&path[properties_index..]),
         };
     }
     if path.len() > 3
@@ -893,6 +899,82 @@ mod tests {
             }
             other => panic!("expected property context, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn attributes_property_enums_beneath_top_level_compositions() {
+        let spec = serde_json::json!({
+            "paths": {},
+            "components": {"schemas": {
+                "AllOfWidget": {"allOf": [{"properties": {
+                    "status": {"enum": ["on"]}
+                }}]},
+                "OneOfWidget": {"oneOf": [{"properties": {
+                    "states": {"type": "array", "items": {"enum": ["ready"]}}
+                }}]},
+                "AnyOfWidget": {"anyOf": [{"properties": {
+                    "settings": {"properties": {
+                        "mode": {"enum": ["fast"]}
+                    }}
+                }}]},
+                "NamedChoice": {"allOf": [{"enum": ["a"]}]}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        let by_pointer: BTreeMap<String, EnumContext> = inventory
+            .enum_constraints
+            .iter()
+            .map(|constraint| (constraint.pointer.clone(), constraint.context.clone()))
+            .collect();
+
+        for (pointer, schema, steps) in [
+            (
+                "/components/schemas/AllOfWidget/allOf/0/properties/status",
+                "AllOfWidget",
+                vec![PropertyStep {
+                    property: "status".to_string(),
+                    array_item: false,
+                }],
+            ),
+            (
+                "/components/schemas/OneOfWidget/oneOf/0/properties/states/items",
+                "OneOfWidget",
+                vec![PropertyStep {
+                    property: "states".to_string(),
+                    array_item: true,
+                }],
+            ),
+            (
+                "/components/schemas/AnyOfWidget/anyOf/0/properties/settings/properties/mode",
+                "AnyOfWidget",
+                vec![
+                    PropertyStep {
+                        property: "settings".to_string(),
+                        array_item: false,
+                    },
+                    PropertyStep {
+                        property: "mode".to_string(),
+                        array_item: false,
+                    },
+                ],
+            ),
+        ] {
+            match &by_pointer[pointer] {
+                EnumContext::Property {
+                    schema: actual_schema,
+                    steps: actual_steps,
+                } => {
+                    assert_eq!(actual_schema, schema);
+                    assert_eq!(actual_steps, &steps);
+                }
+                other => panic!("expected property context for {pointer}, got {other:?}"),
+            }
+        }
+
+        assert!(matches!(
+            &by_pointer["/components/schemas/NamedChoice/allOf/0"],
+            EnumContext::NamedSchema { schema } if schema == "NamedChoice"
+        ));
     }
 
     #[test]

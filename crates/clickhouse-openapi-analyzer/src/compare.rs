@@ -865,6 +865,30 @@ mod tests {
     }
 
     #[test]
+    fn maps_property_enum_beneath_top_level_composition() {
+        let report = analyze_fixture(
+            r#"
+                pub struct Widget { pub status: Status }
+                pub enum Status { #[serde(rename = "on")] On }
+            "#,
+            serde_json::json!({
+                "allOf": [{
+                    "properties": {"status": {"enum": ["on", "off"]}}
+                }]
+            }),
+            AnalyzerConfig::default(),
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::MissingEnumValue
+                && finding.details.get("enum").map(String::as_str) == Some("Status")
+                && finding.details.get("value").map(String::as_str) == Some("off")
+                && finding.rust_item.as_deref() == Some("models.rs::Widget::status")
+        }));
+        assert!(report.unsupported_enum_constraints.is_empty());
+    }
+
+    #[test]
     fn nested_chain_through_non_struct_reports_unsupported() {
         let report = analyze_fixture(
             "pub struct Widget { pub foo: String }",
