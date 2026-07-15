@@ -281,12 +281,16 @@ fn collect_refs(value: &Value, path: &mut Vec<String>, refs: &mut BTreeMap<Strin
 /// Discovers enum constraints, walking only genuine JSON Schema positions.
 ///
 /// Traversal starts from schema roots (`/components/schemas/*` and every
-/// `schema` node under `paths`) and recurses only through schema-composing
-/// keywords. Non-schema content such as `example`, `examples`, `default`, or
-/// vendor extensions is never inspected, so an `enum` key that merely appears
-/// inside an example payload is not mistaken for an enum constraint.
+/// OpenAPI-defined schema position under `paths`) and recurses only through
+/// schema-composing keywords. Non-schema content such as `example`, `examples`,
+/// `default`, or vendor extensions is never inspected, so an `enum` key that
+/// merely appears inside an example payload is not mistaken for an enum
+/// constraint.
 fn collect_enums(root: &Value, output: &mut Vec<EnumConstraint>) {
-    if let Some(schemas) = root.pointer("/components/schemas").and_then(Value::as_object) {
+    if let Some(schemas) = root
+        .pointer("/components/schemas")
+        .and_then(Value::as_object)
+    {
         for (schema_name, schema) in schemas {
             let mut path = vec![
                 "components".to_string(),
@@ -302,36 +306,247 @@ fn collect_enums(root: &Value, output: &mut Vec<EnumConstraint>) {
     }
 }
 
-/// Walks the `paths` subtree to find `schema` nodes (parameter schemas and
-/// request/response media-type schemas), treating each as a schema root. Once a
-/// `schema` node is entered, walking is delegated to [`walk_schema`], which only
-/// recurses through schema keywords — so nested non-schema content is skipped.
+/// Walks the OpenAPI structure under `paths`, entering only fields that the
+/// specification defines as schema-bearing positions.
+///
+/// This must not be a recursive search for members named `schema`: example,
+/// default, and extension payloads are arbitrary JSON and may legitimately
+/// contain such a member without defining an OpenAPI schema.
 fn collect_path_schemas(
     root: &Value,
     value: &Value,
     path: &mut Vec<String>,
     output: &mut Vec<EnumConstraint>,
 ) {
-    match value {
-        Value::Object(object) => {
-            for (key, child) in object {
-                path.push(key.clone());
-                if key == "schema" && child.is_object() {
-                    walk_schema(root, child, path, output);
-                } else {
-                    collect_path_schemas(root, child, path, output);
-                }
-                path.pop();
-            }
+    let Some(paths) = value.as_object() else {
+        return;
+    };
+    for (path_name, path_item) in paths {
+        if path_name.starts_with("x-") {
+            continue;
         }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                path.push(index.to_string());
-                collect_path_schemas(root, child, path, output);
-                path.pop();
-            }
+        path.push(path_name.clone());
+        collect_path_item_schemas(root, path_item, path, output);
+        path.pop();
+    }
+}
+
+fn collect_path_item_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(path_item) = value.as_object() else {
+        return;
+    };
+    if let Some(parameters) = path_item.get("parameters") {
+        path.push("parameters".to_string());
+        collect_parameter_schemas(root, parameters, path, output);
+        path.pop();
+    }
+    for method in HTTP_METHODS {
+        if let Some(operation) = path_item.get(*method) {
+            path.push((*method).to_string());
+            collect_operation_schemas(root, operation, path, output);
+            path.pop();
         }
-        _ => {}
+    }
+}
+
+fn collect_operation_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(operation) = value.as_object() else {
+        return;
+    };
+    if let Some(parameters) = operation.get("parameters") {
+        path.push("parameters".to_string());
+        collect_parameter_schemas(root, parameters, path, output);
+        path.pop();
+    }
+    if let Some(request_body) = operation.get("requestBody") {
+        path.push("requestBody".to_string());
+        collect_content_owner_schemas(root, request_body, path, output);
+        path.pop();
+    }
+    if let Some(responses) = operation.get("responses").and_then(Value::as_object) {
+        path.push("responses".to_string());
+        for (status, response) in responses {
+            if status.starts_with("x-") {
+                continue;
+            }
+            path.push(status.clone());
+            collect_response_schemas(root, response, path, output);
+            path.pop();
+        }
+        path.pop();
+    }
+    if let Some(callbacks) = operation.get("callbacks").and_then(Value::as_object) {
+        path.push("callbacks".to_string());
+        for (callback_name, callback) in callbacks {
+            path.push(callback_name.clone());
+            collect_callback_schemas(root, callback, path, output);
+            path.pop();
+        }
+        path.pop();
+    }
+}
+
+fn collect_parameter_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(parameters) = value.as_array() else {
+        return;
+    };
+    for (index, parameter) in parameters.iter().enumerate() {
+        path.push(index.to_string());
+        collect_schema_or_content(root, parameter, path, output);
+        path.pop();
+    }
+}
+
+fn collect_schema_or_content(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    if let Some(schema) = object.get("schema") {
+        path.push("schema".to_string());
+        walk_schema(root, schema, path, output);
+        path.pop();
+    }
+    if let Some(content) = object.get("content") {
+        path.push("content".to_string());
+        collect_media_type_schemas(root, content, path, output);
+        path.pop();
+    }
+}
+
+fn collect_content_owner_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    if let Some(content) = object.get("content") {
+        path.push("content".to_string());
+        collect_media_type_schemas(root, content, path, output);
+        path.pop();
+    }
+}
+
+fn collect_response_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(response) = value.as_object() else {
+        return;
+    };
+    if let Some(headers) = response.get("headers") {
+        path.push("headers".to_string());
+        collect_header_schemas(root, headers, path, output);
+        path.pop();
+    }
+    collect_content_owner_schemas(root, value, path, output);
+}
+
+fn collect_header_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(headers) = value.as_object() else {
+        return;
+    };
+    for (header_name, header) in headers {
+        path.push(header_name.clone());
+        collect_schema_or_content(root, header, path, output);
+        path.pop();
+    }
+}
+
+fn collect_media_type_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(content) = value.as_object() else {
+        return;
+    };
+    for (media_type_name, media_type) in content {
+        if media_type_name.starts_with("x-") {
+            continue;
+        }
+        path.push(media_type_name.clone());
+        collect_media_type_schema(root, media_type, path, output);
+        path.pop();
+    }
+}
+
+fn collect_media_type_schema(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(media_type) = value.as_object() else {
+        return;
+    };
+    if let Some(schema) = media_type.get("schema") {
+        path.push("schema".to_string());
+        walk_schema(root, schema, path, output);
+        path.pop();
+    }
+    if let Some(encodings) = media_type.get("encoding").and_then(Value::as_object) {
+        path.push("encoding".to_string());
+        for (property_name, encoding) in encodings {
+            let Some(headers) = encoding.get("headers") else {
+                continue;
+            };
+            path.push(property_name.clone());
+            path.push("headers".to_string());
+            collect_header_schemas(root, headers, path, output);
+            path.pop();
+            path.pop();
+        }
+        path.pop();
+    }
+}
+
+fn collect_callback_schemas(
+    root: &Value,
+    value: &Value,
+    path: &mut Vec<String>,
+    output: &mut Vec<EnumConstraint>,
+) {
+    let Some(callback) = value.as_object() else {
+        return;
+    };
+    for (expression, path_item) in callback {
+        if expression == "$ref" || expression.starts_with("x-") {
+            continue;
+        }
+        path.push(expression.clone());
+        collect_path_item_schemas(root, path_item, path, output);
+        path.pop();
     }
 }
 
@@ -721,20 +936,87 @@ mod tests {
     }
 
     #[test]
-    fn ignores_enum_keys_outside_schema_positions() {
-        // `enum` keys buried inside example/default payloads or vendor
-        // extensions are ordinary JSON data, not schema constraints, and must
-        // not be inventoried.
+    fn inventories_only_openapi_schema_positions_under_paths() {
+        // Objects named `schema` inside example/default payloads or vendor
+        // extensions are ordinary JSON data, not schema constraints. Genuine
+        // path-level, parameter, request, response, and header schemas must
+        // still be inventoried.
         let spec = serde_json::json!({
             "paths": {
-                "/widgets": {"get": {
-                    "operationId": "listWidgets",
+                "x-vendor": {
+                    "schema": {"enum": ["extension-path"]}
+                },
+                "/widgets": {
                     "parameters": [{
-                        "name": "sortOrder",
-                        "example": {"enum": ["not-a-constraint"]},
-                        "schema": {"enum": ["asc", "desc"]}
-                    }]
-                }}
+                        "name": "apiVersion",
+                        "schema": {"enum": ["v1"]}
+                    }],
+                    "post": {
+                        "operationId": "createWidget",
+                        "parameters": [
+                            {
+                                "name": "sortOrder",
+                                "example": {
+                                    "schema": {"enum": ["example-schema"]}
+                                },
+                                "x-vendor": {
+                                    "schema": {"enum": ["extension-schema"]}
+                                },
+                                "schema": {
+                                    "enum": ["asc", "desc"],
+                                    "default": {
+                                        "schema": {"enum": ["default-schema"]}
+                                    }
+                                }
+                            },
+                            {
+                                "name": "filter",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"enum": ["active"]}
+                                    }
+                                }
+                            }
+                        ],
+                        "requestBody": {
+                            "x-vendor": {
+                                "schema": {"enum": ["extension-request"]}
+                            },
+                            "content": {
+                                "application/json": {
+                                    "example": {
+                                        "schema": {"enum": ["example-request"]}
+                                    },
+                                    "schema": {"enum": ["create"]}
+                                }
+                            }
+                        },
+                        "responses": {
+                            "200": {
+                                "headers": {
+                                    "X-Widget-Mode": {
+                                        "schema": {"enum": ["full", "compact"]}
+                                    }
+                                },
+                                "content": {
+                                    "application/json": {
+                                        "examples": {
+                                            "example": {"value": {
+                                                "schema": {"enum": ["example-response"]}
+                                            }}
+                                        },
+                                        "schema": {"enum": ["created"]}
+                                    }
+                                }
+                            },
+                            "x-vendor": {
+                                "content": {"application/json": {
+                                    "schema": {"enum": ["extension-response"]}
+                                }}
+                            }
+                        }
+                    }
+                }
             },
             "components": {"schemas": {
                 "Widget": {
@@ -761,7 +1043,12 @@ mod tests {
             pointers,
             BTreeSet::from([
                 "/components/schemas/Widget/properties/status".to_string(),
-                "/paths/~1widgets/get/parameters/0/schema".to_string(),
+                "/paths/~1widgets/parameters/0/schema".to_string(),
+                "/paths/~1widgets/post/parameters/0/schema".to_string(),
+                "/paths/~1widgets/post/parameters/1/content/application~1json/schema".to_string(),
+                "/paths/~1widgets/post/requestBody/content/application~1json/schema".to_string(),
+                "/paths/~1widgets/post/responses/200/content/application~1json/schema".to_string(),
+                "/paths/~1widgets/post/responses/200/headers/X-Widget-Mode/schema".to_string(),
             ])
         );
     }
