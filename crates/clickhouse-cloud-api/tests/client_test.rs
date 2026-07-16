@@ -1546,6 +1546,48 @@ async fn update_click_pipe_settings() {
 }
 
 // ===========================================================================
+// ClickPipes Schema Discovery (Beta)
+// ===========================================================================
+
+#[tokio::test]
+async fn click_pipe_schema_discovery_kafka() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/schemaDiscovery"))
+        .and(body_partial_json(serde_json::json!({
+            "source": {"kafka": {"brokers": "broker1:9092"}}
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "fields": [
+                {"name": "user_id", "type": "Int64", "optional": false},
+                {"name": "event", "type": "String", "optional": true}
+            ]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: Some(ClickPipePostKafkaSource {
+                brokers: "broker1:9092".to_string(),
+                ..Default::default()
+            }),
+            kinesis: None,
+        },
+    };
+    let resp = c
+        .click_pipe_schema_discovery("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let result = resp.result.unwrap();
+    assert_eq!(result.fields.len(), 2);
+    assert_eq!(result.fields[0].name, "user_id");
+    assert_eq!(result.fields[0].r#type, "Int64");
+    assert_eq!(result.fields[1].optional, Some(true));
+}
+
+// ===========================================================================
 // ClickPipes CDC Scaling
 // ===========================================================================
 

@@ -701,10 +701,10 @@ fn build_create_service_request(
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
         // Fields not exposed in CLI
+        autoscaling_mode: None,
         byoc_id: None,
         min_replicas: None,
         max_replicas: None,
-        replica_memory_gb: None,
         // Deprecated fields — only exist (and stay None) under the
         // `deprecated-fields` feature; gated out of the struct otherwise.
         #[cfg(feature = "deprecated-fields")]
@@ -1659,6 +1659,7 @@ pub async fn clickpipe_create_mysql(
         } else {
             None
         },
+        server_id: None,
         settings: ClickPipeMySQLPipeSettings {
             replication_mode: parse_enum(&args.replication_mode)?,
             replication_mechanism: Some(parse_enum(&args.replication_mechanism)?),
@@ -1961,10 +1962,10 @@ pub async fn service_scale(
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
         min_replicas: None,
         max_replicas: None,
-        replica_memory_gb: None,
         num_replicas: opts.num_replicas.map(f64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
+        ..Default::default()
     };
 
     let svc = client

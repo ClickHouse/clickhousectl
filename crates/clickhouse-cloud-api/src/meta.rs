@@ -24,6 +24,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "backup_bucket_delete",
     "backup_bucket_get",
     "backup_bucket_update",
+    "click_pipe_schema_discovery",
     "click_stack_create_alert",
     "click_stack_create_dashboard",
     "click_stack_delete_alert",

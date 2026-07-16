@@ -906,6 +906,7 @@ pub fn scaling_schedule_entry_to_request(
     entry: &ScalingScheduleEntry,
 ) -> ScalingScheduleEntryRequest {
     ScalingScheduleEntryRequest {
+        autoscaling_mode: Some(entry.autoscaling_mode.clone()),
         end_hour_utc: entry.end_hour_utc,
         idle_scaling: entry.idle_scaling,
         idle_timeout_minutes: entry.idle_timeout_minutes,
@@ -914,8 +915,7 @@ pub fn scaling_schedule_entry_to_request(
         min_replica_memory_gb: entry.min_replica_memory_gb,
         min_replicas: entry.min_replicas,
         name: entry.name.clone(),
-        num_replicas: entry.num_replicas,
-        replica_memory_gb: entry.replica_memory_gb,
+        num_replicas: None,
         start_hour_utc: entry.start_hour_utc,
         weekdays: entry.weekdays.clone(),
     }
