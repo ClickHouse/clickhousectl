@@ -250,31 +250,38 @@ impl RustInventory {
                     self.model_types.insert(name.clone());
                     self.aliases.insert(name, TypeNode::from_syn(&item_type.ty));
                 }
-                Item::Impl(item_impl) => {
-                    let Type::Path(self_type) = item_impl.self_ty.as_ref() else {
-                        continue;
-                    };
-                    let target = self_type
-                        .path
-                        .segments
-                        .last()
-                        .map(|segment| segment.ident.unraw().to_string());
-                    let Some(name) = target else {
-                        continue;
-                    };
-                    let Some(enum_info) = self.enums.get_mut(&name) else {
-                        continue;
-                    };
-                    for impl_item in &item_impl.items {
-                        let ImplItem::Const(const_item) = impl_item else {
-                            continue;
-                        };
-                        if const_item.ident.unraw() == "VALUES" {
-                            enum_info.values_const = Some(string_array(&const_item.expr));
-                        }
-                    }
-                }
                 _ => {}
+            }
+        }
+        // Second pass: impl blocks may lexically precede their enum declaration.
+        for item in &file.items {
+            let Item::Impl(item_impl) = item else {
+                continue;
+            };
+            if item_impl.trait_.is_some() {
+                continue;
+            }
+            let Type::Path(self_type) = item_impl.self_ty.as_ref() else {
+                continue;
+            };
+            let target = self_type
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.unraw().to_string());
+            let Some(name) = target else {
+                continue;
+            };
+            let Some(enum_info) = self.enums.get_mut(&name) else {
+                continue;
+            };
+            for impl_item in &item_impl.items {
+                let ImplItem::Const(const_item) = impl_item else {
+                    continue;
+                };
+                if const_item.ident.unraw() == "VALUES" {
+                    enum_info.values_const = Some(string_array(&const_item.expr));
+                }
             }
         }
         Ok(())
@@ -568,7 +575,47 @@ mod tests {
             }
         "#;
         let inventory = RustInventory::parse("", models, "").unwrap();
-        assert!(!inventory.structs.contains_key("Widget") || !inventory.enums.contains_key("Widget"));
+        assert!(inventory.structs.contains_key("Widget"));
+        assert!(inventory.enums.values().all(|e| e.values_const.is_none()));
+    }
+
+    #[test]
+    fn inventories_values_const_when_impl_precedes_enum() {
+        let models = r#"
+            impl Color {
+                pub const VALUES: &'static [&'static str] = &["red", "blue"];
+            }
+            pub enum Color {
+                #[serde(rename = "red")]
+                Red,
+                #[serde(rename = "blue")]
+                Blue,
+                #[serde(untagged)]
+                Unknown(String),
+            }
+        "#;
+        let inventory = RustInventory::parse("", models, "").unwrap();
+        assert_eq!(
+            inventory.enums["Color"].values_const,
+            Some(BTreeSet::from(["red".to_string(), "blue".to_string()]))
+        );
+    }
+
+    #[test]
+    fn values_const_in_trait_impl_is_ignored() {
+        let models = r#"
+            pub enum Color {
+                #[serde(rename = "red")]
+                Red,
+                #[serde(other)]
+                Unknown,
+            }
+            impl Palette for Color {
+                const VALUES: &'static [&'static str] = &["stale"];
+            }
+        "#;
+        let inventory = RustInventory::parse("", models, "").unwrap();
+        assert!(inventory.enums["Color"].values_const.is_none());
     }
 
     #[test]
