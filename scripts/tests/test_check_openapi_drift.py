@@ -16,7 +16,7 @@ SPEC.loader.exec_module(drift)
 class DriftScriptTests(unittest.TestCase):
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -30,7 +30,16 @@ class DriftScriptTests(unittest.TestCase):
                         "path": "/widgets",
                         "summary": "List widgets",
                     },
-                }
+                },
+                {
+                    "kind": "enum_values_mismatch",
+                    "message": "Color::VALUES does not match enum wire values: missing \"green\"",
+                    "rust_item": "models.rs::Color::VALUES",
+                    "details": {
+                        "enum": "Color",
+                        "missing": "green",
+                    },
+                },
             ],
             "unsupported_enum_constraints": [
                 {
@@ -57,6 +66,7 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Missing Client Methods", body)
         self.assertIn('"operationId": "listWidgets"', body)
         self.assertIn("## Acknowledged Unsupported Enum Constraints", body)
+        self.assertIn("## Enum VALUES Const Mismatches", body)
 
     @mock.patch.object(drift.subprocess, "run")
     def test_analyzer_subprocess_failure_is_fatal(self, run):
@@ -68,7 +78,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_report_schema_is_validated(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 2}),
+            stdout=json.dumps({"schema_version": 3}),
             stderr="",
         )
         with self.assertRaisesRegex(RuntimeError, "schema version"):

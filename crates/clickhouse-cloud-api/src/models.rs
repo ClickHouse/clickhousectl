@@ -30,6 +30,11 @@ impl std::fmt::Display for PgHaType {
     }
 }
 
+impl PgHaType {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["none", "async", "sync"];
+}
+
 /// `pgProvider` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgProvider {
@@ -48,6 +53,11 @@ impl std::fmt::Display for PgProvider {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl PgProvider {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["aws"];
 }
 
 /// `pgSize` enum from the ClickHouse Cloud API.
@@ -378,6 +388,11 @@ impl std::fmt::Display for PgVersion {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl PgVersion {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["18", "17"];
 }
 
 /// Inline enum for `Activity.actorType`.
@@ -6324,6 +6339,11 @@ impl std::fmt::Display for ServicePatchRequestReleasechannel {
     }
 }
 
+impl ServicePatchRequestReleasechannel {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["slow", "default", "fast"];
+}
+
 /// Inline enum for `ServicePostRequest.complianceType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ServicePostRequestCompliancetype {
@@ -6345,6 +6365,11 @@ impl std::fmt::Display for ServicePostRequestCompliancetype {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl ServicePostRequestCompliancetype {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["hipaa", "pci"];
 }
 
 /// Inline enum for `ServicePostRequest.profile`.
@@ -6382,6 +6407,18 @@ impl std::fmt::Display for ServicePostRequestProfile {
     }
 }
 
+impl ServicePostRequestProfile {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &[
+        "v1-default",
+        "v1-highmem-xs",
+        "v1-highmem-s",
+        "v1-highmem-m",
+        "v1-highmem-l",
+        "v1-highmem-xl",
+    ];
+}
+
 /// Inline enum for `ServicePostRequest.provider`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ServicePostRequestProvider {
@@ -6406,6 +6443,11 @@ impl std::fmt::Display for ServicePostRequestProvider {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl ServicePostRequestProvider {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["aws", "gcp", "azure"];
 }
 
 /// Inline enum for `ServicePostRequest.region`.
@@ -6497,6 +6539,36 @@ impl std::fmt::Display for ServicePostRequestRegion {
     }
 }
 
+impl ServicePostRequestRegion {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &[
+        "ap-northeast-1",
+        "ap-northeast-2",
+        "ap-south-1",
+        "ap-southeast-1",
+        "ap-southeast-2",
+        "ca-central-1",
+        "eu-central-1",
+        "eu-west-1",
+        "eu-west-2",
+        "il-central-1",
+        "us-east-1",
+        "us-east-2",
+        "us-west-2",
+        "us-east1",
+        "us-central1",
+        "europe-west2",
+        "europe-west4",
+        "asia-southeast1",
+        "asia-northeast1",
+        "eastus",
+        "eastus2",
+        "westus3",
+        "germanywestcentral",
+        "centralus",
+    ];
+}
+
 /// Inline enum for `ServicePostRequest.releaseChannel`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ServicePostRequestReleasechannel {
@@ -6521,6 +6593,11 @@ impl std::fmt::Display for ServicePostRequestReleasechannel {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl ServicePostRequestReleasechannel {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["slow", "default", "fast"];
 }
 
 /// Inline enum for `ServicePostRequest.tier`.

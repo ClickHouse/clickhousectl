@@ -13,10 +13,6 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use tabled::{Table, Tabled, settings::Style};
 
-const KNOWN_PG_PROVIDERS: &[&str] = &["aws"];
-const KNOWN_PG_VERSIONS: &[&str] = &["18", "17"];
-const KNOWN_PG_HA_TYPES: &[&str] = &["none", "async", "sync"];
-
 #[derive(Subcommand)]
 pub enum PostgresCommands {
     /// List Postgres services in the organization
@@ -50,10 +46,10 @@ pub enum PostgresCommands {
         #[arg(long, default_value = "aws")]
         provider: String,
         /// Postgres major version
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_VERSIONS))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgVersion::VALUES))]
         pg_version: Option<String>,
         /// High-availability type
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_HA_TYPES))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
         /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
@@ -73,7 +69,7 @@ pub enum PostgresCommands {
         postgres_id: String,
         #[arg(long)]
         size: Option<String>,
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_HA_TYPES))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
         /// Add a tag (repeatable), e.g. --add-tag env=prod
         #[arg(long)]
@@ -554,15 +550,15 @@ pub async fn postgres_create(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, opts.org_id).await?;
 
-    let provider: PgProvider = parse_serde_enum(opts.provider, "provider", KNOWN_PG_PROVIDERS)?;
+    let provider: PgProvider = parse_serde_enum(opts.provider, "provider", PgProvider::VALUES)?;
     let size = parse_pg_size(opts.size)?;
     let pg_version: Option<PgVersion> = opts
         .pg_version
-        .map(|v| parse_serde_enum(v, "pg-version", KNOWN_PG_VERSIONS))
+        .map(|v| parse_serde_enum(v, "pg-version", PgVersion::VALUES))
         .transpose()?;
     let ha_type: Option<PgHaType> = opts
         .ha_type
-        .map(|v| parse_serde_enum(v, "ha-type", KNOWN_PG_HA_TYPES))
+        .map(|v| parse_serde_enum(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
     let tags = parse_tags(opts.tags)?;
     let pg_config = opts
@@ -621,7 +617,7 @@ pub async fn postgres_update(
     let size = opts.size.map(parse_pg_size).transpose()?;
     let ha_type = opts
         .ha_type
-        .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", KNOWN_PG_HA_TYPES))
+        .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
 
     // Merge tag add/remove against current tags if any tag changes requested.
