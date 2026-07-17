@@ -106,6 +106,10 @@ Add an exemption only for intentional, verified runtime behavior, with a nearby 
 
 Enum values and struct fields are checked bidirectionally. Enum mapping is structural: named schemas resolve to model types; properties, array items, compositions, and operation parameters resolve through their Rust field/argument type. Serde container/variant renames determine wire values. Catch-alls are recognized through `untagged`/`other` attributes, never variant names; a genuine unit variant named `Unknown` remains a value. Numeric, mixed, and scalar-backed enum constraints are reported explicitly as unsupported rather than silently skipped.
 
+##### `VALUES` const checking
+
+Enums that the CLI validates against declare `pub const VALUES: &'static [&'static str]` in an `impl` block — a hand-written literal slice of the enum's non-catch-all wire values. The analyzer verifies that any enum with a `VALUES` const has it exactly equal (as a set) to its variant wire values; a mismatch produces `FindingKind::EnumValuesMismatch`. This is opt-in: enums without a `VALUES` const are not checked. When adding a new enum value to a `VALUES`-bearing enum, update both the variant and the const or CI will fail.
+
 ##### Deprecated field hiding
 
 Every spec-deprecated request or response field belongs in `meta.rs::DEPRECATED_FIELDS` and carries `#[cfg(feature = "deprecated-fields")]` on the `models.rs` field. It is therefore absent from the public model by default. Request fields that must be gated out but resolve as required are `Option<T>` with a documented optionality exemption. Update CLI code that directly accesses or constructs an affected model so both feature configurations compile.

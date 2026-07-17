@@ -5,13 +5,53 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-897534",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-909980",
       "email": "support@clickhouse.com"
     }
   },
   "servers": [
     {
       "url": "https://api.clickhouse.cloud"
+    }
+  ],
+  "security": [
+    {
+      "basicAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Organization"
+    },
+    {
+      "name": "User management"
+    },
+    {
+      "name": "Billing"
+    },
+    {
+      "name": "Role Management"
+    },
+    {
+      "name": "Service"
+    },
+    {
+      "name": "Backup"
+    },
+    {
+      "name": "OpenAPI"
+    },
+    {
+      "name": "Prometheus"
+    },
+    {
+      "name": "ClickPipes"
+    },
+    {
+      "name": "ClickStack"
+    },
+    {
+      "name": "Postgres"
     }
   ],
   "paths": {
@@ -2212,7 +2252,7 @@
     "/v1/organizations/{organizationId}/services/{serviceId}/replicaScaling": {
       "patch": {
         "summary": "Update service auto scaling settings",
-        "description": "Updates minimum and maximum memory limits per replica and idle mode scaling behavior for the service. Supports both vertical autoscaling (fixed replica count, variable memory) and horizontal autoscaling (variable replica count, fixed memory). The memory settings are available only for \"production\" services and must be a multiple of 4 starting from 8GB. For vertical autoscaling, please contact support to enable adjustment of numReplicas. For horizontal autoscaling (minReplicas/maxReplicas/replicaMemoryGb), contact support to enable the feature for your organization.",
+        "description": "Updates minimum and maximum memory limits per replica and idle mode scaling behavior for the service. Supports both vertical autoscaling (fixed replica count, variable memory) and horizontal autoscaling (variable replica count, fixed memory). The memory settings are available only for \"production\" services and must be a multiple of 4 starting from 8GB. For vertical autoscaling, please contact support to enable adjustment of numReplicas. For horizontal autoscaling (autoscalingMode \"horizontal\" with minReplicas/maxReplicas), contact support to enable the feature for your organization.",
         "operationId": "instanceReplicaScalingUpdate",
         "parameters": [
           {
@@ -7535,6 +7575,132 @@
         },
         "tags": [
           "ClickPipes"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/clickpipes/schemaDiscovery": {
+      "post": {
+        "summary": "Discover ClickPipe source schema",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Infers the schema (field names and ClickHouse data types) of a streaming ClickPipe source without creating a pipe. Supported for Kafka and Kinesis sources.",
+        "operationId": "clickPipeSchemaDiscovery",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service to run schema discovery against.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClickPipeSchemaDiscoveryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/ClickPipeSchemaDiscoveryResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "ClickPipes"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
         ]
       }
     },
@@ -14580,6 +14746,13 @@
             "type": "boolean",
             "example": false
           },
+          "serverId": {
+            "description": "Optional MySQL server_id the pipe declares itself as in the MySQL replication topology. Must be unique across replicas connected to the source. If omitted, one is assigned automatically.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "example": 4242
+          },
           "settings": {
             "$ref": "#/components/schemas/ClickPipeMySQLPipeSettings"
           },
@@ -14666,6 +14839,13 @@
             "description": "Skip TLS certificate verification for the MySQL connection. Use with caution in production environments.",
             "type": "boolean",
             "example": false
+          },
+          "serverId": {
+            "description": "Optional MySQL server_id the pipe declares itself as in the MySQL replication topology. Must be unique across replicas connected to the source. If omitted, one is assigned automatically.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "example": 4242
           },
           "tableMappings": {
             "type": "array",
@@ -14757,6 +14937,16 @@
               "null"
             ],
             "example": false
+          },
+          "serverId": {
+            "description": "Optional MySQL server_id the pipe declares itself as in the MySQL replication topology. Must be unique across replicas connected to the source. If omitted, one is assigned automatically.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 4294967295,
+            "example": 4242
           },
           "settings": {
             "$ref": "#/components/schemas/ClickPipePatchMySQLPipeSettings"
@@ -16245,28 +16435,28 @@
             "minimum": 1,
             "maximum": 24
           },
+          "autoscalingMode": {
+            "description": "Autoscaling mode for this entry. \"vertical\" runs a fixed replica count while memory scales; \"horizontal\" scales the replica count at a fixed per-replica memory. Defaults to \"vertical\" for entries persisted before the mode was exposed.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ]
+          },
           "minReplicaMemoryGb": {
-            "description": "Minimum memory per replica (Gb) during this window. Present only for vertical entries; horizontal entries use replicaMemoryGb instead.",
+            "description": "Minimum memory per replica (Gb) during this window. A range in vertical; in horizontal it equals maxReplicaMemoryGb (memory is fixed while the replica count scales).",
             "type": "number"
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum memory per replica (Gb) during this window. Present only for vertical entries; horizontal entries use replicaMemoryGb instead.",
+            "description": "Maximum memory per replica (Gb) during this window. A range in vertical; in horizontal it equals minReplicaMemoryGb (memory is fixed while the replica count scales).",
             "type": "number"
-          },
-          "replicaMemoryGb": {
-            "description": "Fixed memory per replica (Gb) during this window. Present only for horizontal entries; vertical entries use minReplicaMemoryGb/maxReplicaMemoryGb instead.",
-            "type": "number"
-          },
-          "numReplicas": {
-            "description": "Fixed replica count for a vertical entry. Responses express the fixed count as equal minReplicas and maxReplicas rather than numReplicas.",
-            "type": "integer"
           },
           "minReplicas": {
-            "description": "Number of replicas during this window. For a horizontal entry the replica count scales from minReplicas up to maxReplicas; for a vertical entry both equal the fixed count.",
+            "description": "Minimum number of replicas during this window. For a horizontal entry the replica count scales between minReplicas and maxReplicas; for a vertical entry minReplicas and maxReplicas are equal and report the fixed replica count (both omitted when the entry stored no count).",
             "type": "integer"
           },
           "maxReplicas": {
-            "description": "Maximum replicas during this window for a horizontal entry; equal to the fixed count for a vertical entry.",
+            "description": "Maximum number of replicas during this window. For a horizontal entry the replica count scales between minReplicas and maxReplicas; for a vertical entry minReplicas and maxReplicas are equal and report the fixed replica count (both omitted when the entry stored no count).",
             "type": "integer"
           },
           "idleScaling": {
@@ -16288,11 +16478,20 @@
           "weekdays",
           "startHourUtc",
           "endHourUtc",
+          "autoscalingMode",
           "isActiveNow"
         ]
       },
       "ScalingScheduleBaseConfig": {
         "properties": {
+          "autoscalingMode": {
+            "description": "Autoscaling mode applied when no schedule entry is active. \"vertical\" runs a fixed replica count while memory scales; \"horizontal\" scales the replica count at a fixed per-replica memory.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ]
+          },
           "minReplicaMemoryGb": {
             "description": "Minimum memory per replica (Gb) when no schedule entry is active.",
             "type": "number"
@@ -16378,22 +16577,25 @@
             "maximum": 24,
             "example": 17
           },
+          "autoscalingMode": {
+            "description": "Autoscaling mode for this entry. \"vertical\" (the default when omitted) runs a fixed replica count while memory scales between minReplicaMemoryGb and maxReplicaMemoryGb; \"horizontal\" scales the replica count between minReplicas and maxReplicas at a fixed per-replica memory (minReplicaMemoryGb equal to maxReplicaMemoryGb). Horizontal requires the feature to be enabled for the organization.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "example": "vertical"
+          },
           "minReplicaMemoryGb": {
-            "description": "Minimum memory per replica (Gb) for a vertical entry. Mutually exclusive with replicaMemoryGb. The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "description": "Minimum memory per replica (Gb). Optional for vertical entries — provide both bounds for a memory range, or omit both to inherit memory from the base scaling config. Required for horizontal (both bounds, equal to maxReplicaMemoryGb — memory is fixed while the replica count scales). The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
-            "multipleOf": 4
+            "multipleOf": 4,
+            "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum memory per replica (Gb) for a vertical entry. Mutually exclusive with replicaMemoryGb. The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
-            "type": "number",
-            "minimum": 8,
-            "maximum": 356,
-            "multipleOf": 4
-          },
-          "replicaMemoryGb": {
-            "description": "Fixed memory per replica (Gb) for a horizontal entry. A horizontal entry requires both this field and a minReplicas/maxReplicas range. Mutually exclusive with minReplicaMemoryGb/maxReplicaMemoryGb and numReplicas. Requires horizontal autoscaling to be enabled for the organization. The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
+            "description": "Maximum memory per replica (Gb). Optional for vertical entries — provide both bounds for a memory range, or omit both to inherit memory from the base scaling config. Required for horizontal (both bounds, equal to minReplicaMemoryGb — memory is fixed while the replica count scales). The upper bound is tier-dependent (lower for non-paid organizations) and enforced when the entry is applied.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -16401,20 +16603,22 @@
             "example": 16
           },
           "numReplicas": {
-            "description": "Fixed replica count for a vertical entry. Used for vertical autoscaling (fixed replica count, variable memory). Mutually exclusive with minReplicas/maxReplicas and replicaMemoryGb. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
+            "description": "Fixed replica count for a vertical entry (autoscalingMode \"vertical\" or omitted). Mutually exclusive with minReplicas/maxReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
             "type": "integer",
             "minimum": 1,
             "example": 3
           },
           "minReplicas": {
-            "description": "Minimum number of replicas for a horizontal entry, where the replica count scales between minReplicas and maxReplicas. Must be provided together with maxReplicas. Mutually exclusive with numReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
+            "description": "Minimum number of replicas. A minReplicas/maxReplicas band scales the replica count in a horizontal entry (autoscalingMode \"horizontal\"); when autoscalingMode is omitted or \"vertical\", an equal band (minReplicas === maxReplicas) is instead an accepted vertical fixed count and needs no horizontal entitlement. Must be provided together with maxReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "example": 2
           },
           "maxReplicas": {
-            "description": "Maximum number of replicas for a horizontal entry, where the replica count scales between minReplicas and maxReplicas. Must be provided together with minReplicas. Mutually exclusive with numReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
+            "description": "Maximum number of replicas. A minReplicas/maxReplicas band scales the replica count in a horizontal entry (autoscalingMode \"horizontal\"); when autoscalingMode is omitted or \"vertical\", an equal band (minReplicas === maxReplicas) is instead an accepted vertical fixed count and needs no horizontal entitlement. Must be provided together with minReplicas. The per-service replica maximum is variable (tier-dependent, configurable per service) and enforced when the entry is applied, not at request time.",
             "type": "integer",
-            "minimum": 1
+            "minimum": 1,
+            "example": 3
           },
           "idleScaling": {
             "description": "Whether idle scaling is enabled during this window.",
@@ -16461,11 +16665,11 @@
             "type": "number"
           },
           "effectiveMaxReplicaMemoryGb": {
-            "description": "Maximum memory per replica (Gb) currently applied to the running service. May diverge from the top-level `maxReplicaMemoryGb` baseline while a schedule entry is active. In horizontal autoscaling mode equals `effectiveMinReplicaMemoryGb`.",
+            "description": "Maximum memory per replica (Gb) currently applied to the running service. May diverge from the top-level `maxReplicaMemoryGb` baseline while a schedule entry is active. Reflects the stored value: normally equal to `effectiveMinReplicaMemoryGb` in horizontal mode, but a legacy service stored with an unequal memory range reports the stored bounds as-is.",
             "type": "number"
           },
           "effectiveMinReplicas": {
-            "description": "Minimum number of replicas currently applied to the running service. May diverge from the baseline while a schedule entry is active. In vertical autoscaling mode equals `effectiveMaxReplicas` (vertical mode runs a fixed replica count).",
+            "description": "Minimum number of replicas currently applied to the running service. May diverge from the baseline while a schedule entry is active. Reflects the stored value: normally equal to `effectiveMaxReplicas` in vertical mode (a fixed replica count), but a legacy service stored with an unequal replica range reports the stored bounds as-is.",
             "type": "integer"
           },
           "effectiveMaxReplicas": {
@@ -16559,6 +16763,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -16647,7 +16852,7 @@
             "deprecated": true
           },
           "minReplicaMemoryGb": {
-            "description": "Minimum total memory of each replica during auto-scaling in Gb. Must be a multiple of 4 and greater than or equal to 8.",
+            "description": "Minimum total memory of each replica during auto-scaling in Gb. A range in vertical autoscaling; equal to maxReplicaMemoryGb in horizontal (memory is fixed while the replica count scales). Must be a multiple of 4 and greater than or equal to 8.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -16655,7 +16860,7 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum total memory of each replica during auto-scaling in Gb.  Must be a multiple of 4 and lower than or equal to 120* for non paid services or 356* for paid services.* - maximum replica size subject to cloud provider hardware availability in your selected region. ",
+            "description": "Maximum total memory of each replica during auto-scaling in Gb. A range in vertical autoscaling; equal to minReplicaMemoryGb in horizontal (memory is fixed while the replica count scales). Must be a multiple of 4 and lower than or equal to 120* for non paid services or 356* for paid services.* - maximum replica size subject to cloud provider hardware availability in your selected region. ",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -16682,6 +16887,15 @@
             "minimum": 1,
             "maximum": 20,
             "example": 5
+          },
+          "autoscalingMode": {
+            "description": "Configured autoscaling mode. \"vertical\" runs a fixed replica count while memory scales between minReplicaMemoryGb and maxReplicaMemoryGb; \"horizontal\" scales the replica count between minReplicas and maxReplicas at a fixed per-replica memory. This is the baseline configuration; the mode currently applied (which may differ while a schedule entry is active) is currentScaling.effectiveAutoscalingMode.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "example": "vertical"
           },
           "replicaMemoryGb": {
             "description": "Fixed memory per replica in Gb for horizontal autoscaling. Present only when the service uses horizontal autoscaling. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services.",
@@ -16814,6 +17028,7 @@
           }
         },
         "required": [
+          "autoscalingMode",
           "currentScaling"
         ]
       },
@@ -16959,6 +17174,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -17119,6 +17335,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -17169,6 +17386,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -17276,6 +17494,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -17515,7 +17734,7 @@
       "CustomPrivateDnsMapping": {
         "properties": {
           "privateDnsName": {
-            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nGenerally available for Google Private Service Connect (PSC). For AWS PrivateLink (VPC endpoint service and VPC resource), available in Private Preview; contact ClickHouse support to enable it for your service. Not supported for MSK multi-VPC.\nSupports exact names and leading wildcard names such as *.example.com",
             "type": "string",
             "example": "*.my-service.example.com"
           }
@@ -17593,7 +17812,7 @@
           },
           "customPrivateDnsMappings": {
             "type": "array",
-            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nGenerally available for Google Private Service Connect (PSC). For AWS PrivateLink (VPC endpoint service and VPC resource), available in Private Preview; contact ClickHouse support to enable it for your service. Not supported for MSK multi-VPC.\nSupports exact names and leading wildcard names such as *.example.com",
             "items": {
               "$ref": "#/components/schemas/CustomPrivateDnsMapping"
             },
@@ -17612,7 +17831,7 @@
         "properties": {
           "customPrivateDnsMappings": {
             "type": "array",
-            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nGenerally available for Google Private Service Connect (PSC). For AWS PrivateLink (VPC endpoint service and VPC resource), available in Private Preview; contact ClickHouse support to enable it for your service. Not supported for MSK multi-VPC.\nSupports exact names and leading wildcard names such as *.example.com",
             "items": {
               "$ref": "#/components/schemas/CustomPrivateDnsMapping"
             },
@@ -17699,7 +17918,7 @@
           },
           "customPrivateDnsMappings": {
             "type": "array",
-            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nCurrently, available in Private Preview for Google Private Service Connect (PSC) forwarding rules.\nSupports exact names and leading wildcard names such as *.example.com",
+            "description": "Optional private DNS names for Reverse Private Endpoint. Can be used as data source destination address. Must be unique across the ClickHouse service.\nGenerally available for Google Private Service Connect (PSC). For AWS PrivateLink (VPC endpoint service and VPC resource), available in Private Preview; contact ClickHouse support to enable it for your service. Not supported for MSK multi-VPC.\nSupports exact names and leading wildcard names such as *.example.com",
             "items": {
               "$ref": "#/components/schemas/CustomPrivateDnsMapping"
             },
@@ -17763,6 +17982,62 @@
               "Expired"
             ],
             "example": "Ready"
+          }
+        }
+      },
+      "ClickPipeSchemaDiscoverySource": {
+        "properties": {
+          "kafka": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickPipePostKafkaSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kinesis": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClickPipePostKinesisSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ClickPipeSchemaDiscoveryField": {
+        "properties": {
+          "name": {
+            "description": "Name of the inferred field.",
+            "type": "string",
+            "example": "user_id"
+          },
+          "type": {
+            "description": "Inferred ClickHouse data type of the field.",
+            "type": "string",
+            "example": "Int64"
+          },
+          "optional": {
+            "description": "Whether the field is optional (nullable) in the source.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "ClickPipeSchemaDiscoveryResponse": {
+        "properties": {
+          "fields": {
+            "type": "array",
+            "description": "Inferred schema fields with their ClickHouse data types.",
+            "items": {
+              "$ref": "#/components/schemas/ClickPipeSchemaDiscoveryField"
+            }
           }
         }
       },
@@ -24274,6 +24549,7 @@
           "restoring_backup",
           "finalizing_restore",
           "unavailable",
+          "stopped",
           "deleting"
         ]
       },
@@ -25144,6 +25420,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -25207,8 +25484,17 @@
             "example": 360,
             "deprecated": true
           },
+          "autoscalingMode": {
+            "description": "Autoscaling mode. \"vertical\" (the default when omitted) runs a fixed replica count while memory scales between minReplicaMemoryGb and maxReplicaMemoryGb; \"horizontal\" scales the replica count between minReplicas and maxReplicas at a fixed per-replica memory (minReplicaMemoryGb equal to maxReplicaMemoryGb). Horizontal requires the feature to be enabled for the organization.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "example": "vertical"
+          },
           "minReplicaMemoryGb": {
-            "description": "Minimum total memory of each replica during auto-scaling in Gb. Must be a multiple of 4 and greater than or equal to 8.",
+            "description": "Minimum total memory of each replica during auto-scaling in Gb. A range in vertical autoscaling; equal to maxReplicaMemoryGb in horizontal (memory is fixed while the replica count scales). Must be a multiple of 4 and greater than or equal to 8.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -25216,7 +25502,7 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum total memory of each replica during auto-scaling in Gb.  Must be a multiple of 4 and lower than or equal to 120* for non paid services or 356* for paid services.* - maximum replica size subject to cloud provider hardware availability in your selected region. ",
+            "description": "Maximum total memory of each replica during auto-scaling in Gb. A range in vertical autoscaling; equal to minReplicaMemoryGb in horizontal (memory is fixed while the replica count scales). Must be a multiple of 4 and lower than or equal to 120* for non paid services or 356* for paid services.* - maximum replica size subject to cloud provider hardware availability in your selected region. ",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -25224,33 +25510,25 @@
             "example": 120
           },
           "numReplicas": {
-            "description": "Number of replicas for the service. The number of replicas must be between 2 and 20 for the first service in a warehouse. Services that are created in an existing warehouse can have a number of replicas as low as 1. Further restrictions may apply based on your organization's tier. It defaults to 1 for the BASIC tier and 3 for the SCALE and ENTERPRISE tiers. Present only when the service uses vertical autoscaling. For horizontal autoscaling, use minReplicas and maxReplicas instead.",
+            "description": "Fixed replica count for vertical autoscaling (autoscalingMode \"vertical\" or omitted). Mutually exclusive with minReplicas/maxReplicas.",
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
           },
           "minReplicas": {
-            "description": "Minimum number of replicas for horizontal autoscaling. Must be provided together with maxReplicas and replicaMemoryGb. Mutually exclusive with numReplicas, minReplicaMemoryGb/maxReplicaMemoryGb, and minTotalMemoryGb/maxTotalMemoryGb. Requires horizontal autoscaling to be enabled for the organization.",
+            "description": "Minimum number of replicas. A minReplicas/maxReplicas band scales the replica count in horizontal autoscaling (autoscalingMode \"horizontal\"). Must be provided together with maxReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the organization, unless autoscalingMode is omitted or \"vertical\" and minReplicas equals maxReplicas (an equal band is then an accepted vertical fixed count and needs no horizontal entitlement).",
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 1
           },
           "maxReplicas": {
-            "description": "Maximum number of replicas for horizontal autoscaling. Must be provided together with minReplicas and replicaMemoryGb. Mutually exclusive with numReplicas, minReplicaMemoryGb/maxReplicaMemoryGb, and minTotalMemoryGb/maxTotalMemoryGb. Requires horizontal autoscaling to be enabled for the organization.",
+            "description": "Maximum number of replicas. A minReplicas/maxReplicas band scales the replica count in horizontal autoscaling (autoscalingMode \"horizontal\"). Must be provided together with minReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the organization, unless autoscalingMode is omitted or \"vertical\" and minReplicas equals maxReplicas (an equal band is then an accepted vertical fixed count and needs no horizontal entitlement).",
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 5
-          },
-          "replicaMemoryGb": {
-            "description": "Fixed memory per replica in Gb for horizontal autoscaling. Must be provided together with minReplicas/maxReplicas. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services. Mutually exclusive with minReplicaMemoryGb/maxReplicaMemoryGb and minTotalMemoryGb/maxTotalMemoryGb. Requires horizontal autoscaling to be enabled for the organization.",
-            "type": "number",
-            "minimum": 8,
-            "maximum": 356,
-            "multipleOf": 4,
-            "example": 32
           },
           "idleScaling": {
             "description": "When set to true the service is allowed to scale down to zero when idle. True by default.",
@@ -25475,6 +25753,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -25563,7 +25842,7 @@
             "deprecated": true
           },
           "minReplicaMemoryGb": {
-            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8. Present only when the service uses vertical autoscaling.",
+            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8. A range in vertical autoscaling; equal to maxReplicaMemoryGb in horizontal (memory is fixed while the replica count scales).",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -25571,7 +25850,7 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services. Present only when the service uses vertical autoscaling.",
+            "description": "Maximum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services. A range in vertical autoscaling; equal to minReplicaMemoryGb in horizontal (memory is fixed while the replica count scales).",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -25598,6 +25877,15 @@
             "minimum": 1,
             "maximum": 20,
             "example": 5
+          },
+          "autoscalingMode": {
+            "description": "Configured autoscaling mode. \"vertical\" runs a fixed replica count while memory scales between minReplicaMemoryGb and maxReplicaMemoryGb; \"horizontal\" scales the replica count between minReplicas and maxReplicas at a fixed per-replica memory. This is the baseline configuration; the mode currently applied (which may differ while a schedule entry is active) is currentScaling.effectiveAutoscalingMode.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "example": "vertical"
           },
           "replicaMemoryGb": {
             "description": "Fixed memory per replica in Gb for horizontal autoscaling. Present only when the service uses horizontal autoscaling. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services.",
@@ -25730,13 +26018,14 @@
           }
         },
         "required": [
+          "autoscalingMode",
           "currentScaling"
         ]
       },
       "ServiceReplicaScalingPatchRequest": {
         "properties": {
           "minReplicaMemoryGb": {
-            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8. Used for vertical autoscaling. Mutually exclusive with replicaMemoryGb.",
+            "description": "Minimum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and greater than or equal to 8. A range in vertical autoscaling; equal to maxReplicaMemoryGb in horizontal.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
@@ -25744,41 +26033,42 @@
             "example": 16
           },
           "maxReplicaMemoryGb": {
-            "description": "Maximum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services. Used for vertical autoscaling. Mutually exclusive with replicaMemoryGb.",
+            "description": "Maximum auto-scaling memory in Gb for a single replica. Available only for 'production' services. Must be a multiple of 4 and lower than or equal to 120 for non paid services or 356 for paid services. A range in vertical autoscaling; equal to minReplicaMemoryGb in horizontal.",
             "type": "number",
             "minimum": 8,
             "maximum": 356,
             "multipleOf": 4,
             "example": 120
           },
+          "autoscalingMode": {
+            "description": "Target autoscaling mode. Omit to keep the service on its current mode. \"vertical\" runs a fixed replica count while memory scales between minReplicaMemoryGb and maxReplicaMemoryGb; \"horizontal\" scales the replica count between minReplicas and maxReplicas at a fixed per-replica memory (minReplicaMemoryGb equal to maxReplicaMemoryGb). Switching to horizontal requires the feature to be enabled for the organization.",
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "example": "vertical"
+          },
           "numReplicas": {
-            "description": "Fixed replica count for vertical autoscaling. Mutually exclusive with minReplicas/maxReplicas. Please contact support to enable adjustment of numReplicas. When switching from horizontal autoscaling mode the existing replica memory is preserved as the new vertical min/max range; include minReplicaMemoryGb/maxReplicaMemoryGb in the same request to set an explicit range.",
+            "description": "Fixed replica count for vertical autoscaling (autoscalingMode \"vertical\"). Mutually exclusive with minReplicas/maxReplicas. When switching to vertical (autoscalingMode \"vertical\") with numReplicas and no memory, the service's stored baseline per-replica memory is kept as the new vertical range. Please contact support to enable adjustment of numReplicas.",
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 3
           },
           "minReplicas": {
-            "description": "Minimum number of replicas for horizontal autoscaling. Must be provided together with maxReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service.",
+            "description": "Minimum number of replicas. A minReplicas/maxReplicas band scales the replica count in horizontal autoscaling (autoscalingMode \"horizontal\"). Must be provided together with maxReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service, unless autoscalingMode is omitted or \"vertical\" and minReplicas equals maxReplicas (an equal band is then an accepted vertical fixed count and needs no horizontal entitlement).",
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 1
           },
           "maxReplicas": {
-            "description": "Maximum number of replicas for horizontal autoscaling. Must be provided together with minReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service.",
+            "description": "Maximum number of replicas. A minReplicas/maxReplicas band scales the replica count in horizontal autoscaling (autoscalingMode \"horizontal\"). Must be provided together with minReplicas. Mutually exclusive with numReplicas. Requires horizontal autoscaling to be enabled for the service, unless autoscalingMode is omitted or \"vertical\" and minReplicas equals maxReplicas (an equal band is then an accepted vertical fixed count and needs no horizontal entitlement).",
             "type": "integer",
             "minimum": 1,
             "maximum": 20,
             "example": 5
-          },
-          "replicaMemoryGb": {
-            "description": "Fixed memory per replica in Gb for horizontal autoscaling. Must be a multiple of 4, at least 8 Gb, and at most 120 Gb for non paid services or 356 Gb for paid services. Mutually exclusive with minReplicaMemoryGb/maxReplicaMemoryGb. Requires horizontal autoscaling to be enabled for the service.",
-            "type": "number",
-            "minimum": 8,
-            "maximum": 356,
-            "multipleOf": 4,
-            "example": 32
           },
           "idleScaling": {
             "description": "When set to true the service is allowed to scale down to zero when idle. True by default.",
@@ -26044,6 +26334,13 @@
           }
         }
       },
+      "ClickPipeSchemaDiscoveryRequest": {
+        "properties": {
+          "source": {
+            "$ref": "#/components/schemas/ClickPipeSchemaDiscoverySource"
+          }
+        }
+      },
       "ClickPipePatchRequest": {
         "properties": {
           "name": {
@@ -26177,6 +26474,7 @@
               "ap-south-1",
               "ap-southeast-1",
               "ap-southeast-2",
+              "ca-central-1",
               "eu-central-1",
               "eu-west-1",
               "eu-west-2",
@@ -26243,46 +26541,6 @@
       }
     }
   },
-  "security": [
-    {
-      "basicAuth": []
-    }
-  ],
-  "tags": [
-    {
-      "name": "Organization"
-    },
-    {
-      "name": "User management"
-    },
-    {
-      "name": "Billing"
-    },
-    {
-      "name": "Role Management"
-    },
-    {
-      "name": "Service"
-    },
-    {
-      "name": "Backup"
-    },
-    {
-      "name": "OpenAPI"
-    },
-    {
-      "name": "Prometheus"
-    },
-    {
-      "name": "ClickPipes"
-    },
-    {
-      "name": "ClickStack"
-    },
-    {
-      "name": "Postgres"
-    }
-  ],
   "x-tagGroups": [
     {
       "name": "Organization",

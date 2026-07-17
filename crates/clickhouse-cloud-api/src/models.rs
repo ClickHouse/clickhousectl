@@ -30,6 +30,11 @@ impl std::fmt::Display for PgHaType {
     }
 }
 
+impl PgHaType {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["none", "async", "sync"];
+}
+
 /// `pgProvider` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgProvider {
@@ -48,6 +53,11 @@ impl std::fmt::Display for PgProvider {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl PgProvider {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["aws"];
 }
 
 /// `pgSize` enum from the ClickHouse Cloud API.
@@ -331,6 +341,8 @@ pub enum PgStateProperty {
     Finalizing_restore,
     #[serde(rename = "unavailable")]
     Unavailable,
+    #[serde(rename = "stopped")]
+    Stopped,
     #[serde(rename = "deleting")]
     Deleting,
     /// Catch-all for unknown or newly-added values.
@@ -348,6 +360,7 @@ impl std::fmt::Display for PgStateProperty {
             Self::Restoring_backup => write!(f, "restoring_backup"),
             Self::Finalizing_restore => write!(f, "finalizing_restore"),
             Self::Unavailable => write!(f, "unavailable"),
+            Self::Stopped => write!(f, "stopped"),
             Self::Deleting => write!(f, "deleting"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -375,6 +388,11 @@ impl std::fmt::Display for PgVersion {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl PgVersion {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["18", "17"];
 }
 
 /// Inline enum for `Activity.actorType`.
@@ -953,6 +971,8 @@ pub enum ByocConfigRegionid {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -1002,6 +1022,7 @@ impl std::fmt::Display for ByocConfigRegionid {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -1065,6 +1086,8 @@ pub enum ByocInfrastructurePostRequestRegionid {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -1114,6 +1137,7 @@ impl std::fmt::Display for ByocInfrastructurePostRequestRegionid {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -5153,6 +5177,33 @@ impl std::fmt::Display for CreateReversePrivateEndpointType {
     }
 }
 
+/// `autoscalingMode` enum from the ClickHouse Cloud API.
+///
+/// Used by `Service`, `ServicePostRequest`, `ServiceReplicaScalingPatchRequest`,
+/// `ServiceScalingPatchResponse`, `ScalingScheduleBaseConfig`,
+/// `ScalingScheduleEntry`, and `ScalingScheduleEntryRequest`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum AutoscalingMode {
+    #[serde(rename = "vertical")]
+    #[default]
+    Vertical,
+    #[serde(rename = "horizontal")]
+    Horizontal,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for AutoscalingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Vertical => write!(f, "vertical"),
+            Self::Horizontal => write!(f, "horizontal"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `CurrentScaling.effectiveAutoscalingMode`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CurrentScalingEffectiveautoscalingmode {
@@ -5292,6 +5343,8 @@ pub enum InstancePrivateEndpointRegion {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -5341,6 +5394,7 @@ impl std::fmt::Display for InstancePrivateEndpointRegion {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -5496,6 +5550,8 @@ pub enum OrganizationPatchPrivateEndpointRegion {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -5545,6 +5601,7 @@ impl std::fmt::Display for OrganizationPatchPrivateEndpointRegion {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -5608,6 +5665,8 @@ pub enum OrganizationPrivateEndpointRegion {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -5657,6 +5716,7 @@ impl std::fmt::Display for OrganizationPrivateEndpointRegion {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -5997,6 +6057,8 @@ pub enum ServiceRegion {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -6046,6 +6108,7 @@ impl std::fmt::Display for ServiceRegion {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -6276,6 +6339,11 @@ impl std::fmt::Display for ServicePatchRequestReleasechannel {
     }
 }
 
+impl ServicePatchRequestReleasechannel {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["slow", "default", "fast"];
+}
+
 /// Inline enum for `ServicePostRequest.complianceType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ServicePostRequestCompliancetype {
@@ -6297,6 +6365,11 @@ impl std::fmt::Display for ServicePostRequestCompliancetype {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl ServicePostRequestCompliancetype {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["hipaa", "pci"];
 }
 
 /// Inline enum for `ServicePostRequest.profile`.
@@ -6334,6 +6407,18 @@ impl std::fmt::Display for ServicePostRequestProfile {
     }
 }
 
+impl ServicePostRequestProfile {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &[
+        "v1-default",
+        "v1-highmem-xs",
+        "v1-highmem-s",
+        "v1-highmem-m",
+        "v1-highmem-l",
+        "v1-highmem-xl",
+    ];
+}
+
 /// Inline enum for `ServicePostRequest.provider`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ServicePostRequestProvider {
@@ -6360,6 +6445,11 @@ impl std::fmt::Display for ServicePostRequestProvider {
     }
 }
 
+impl ServicePostRequestProvider {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["aws", "gcp", "azure"];
+}
+
 /// Inline enum for `ServicePostRequest.region`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ServicePostRequestRegion {
@@ -6374,6 +6464,8 @@ pub enum ServicePostRequestRegion {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -6423,6 +6515,7 @@ impl std::fmt::Display for ServicePostRequestRegion {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -6444,6 +6537,36 @@ impl std::fmt::Display for ServicePostRequestRegion {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl ServicePostRequestRegion {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &[
+        "ap-northeast-1",
+        "ap-northeast-2",
+        "ap-south-1",
+        "ap-southeast-1",
+        "ap-southeast-2",
+        "ca-central-1",
+        "eu-central-1",
+        "eu-west-1",
+        "eu-west-2",
+        "il-central-1",
+        "us-east-1",
+        "us-east-2",
+        "us-west-2",
+        "us-east1",
+        "us-central1",
+        "europe-west2",
+        "europe-west4",
+        "asia-southeast1",
+        "asia-northeast1",
+        "eastus",
+        "eastus2",
+        "westus3",
+        "germanywestcentral",
+        "centralus",
+    ];
 }
 
 /// Inline enum for `ServicePostRequest.releaseChannel`.
@@ -6470,6 +6593,11 @@ impl std::fmt::Display for ServicePostRequestReleasechannel {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl ServicePostRequestReleasechannel {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["slow", "default", "fast"];
 }
 
 /// Inline enum for `ServicePostRequest.tier`.
@@ -6620,6 +6748,8 @@ pub enum ServiceScalingPatchResponseRegion {
     Ap_southeast_1,
     #[serde(rename = "ap-southeast-2")]
     Ap_southeast_2,
+    #[serde(rename = "ca-central-1")]
+    Ca_central_1,
     #[serde(rename = "eu-central-1")]
     Eu_central_1,
     #[serde(rename = "eu-west-1")]
@@ -6669,6 +6799,7 @@ impl std::fmt::Display for ServiceScalingPatchResponseRegion {
             Self::Ap_south_1 => write!(f, "ap-south-1"),
             Self::Ap_southeast_1 => write!(f, "ap-southeast-1"),
             Self::Ap_southeast_2 => write!(f, "ap-southeast-2"),
+            Self::Ca_central_1 => write!(f, "ca-central-1"),
             Self::Eu_central_1 => write!(f, "eu-central-1"),
             Self::Eu_west_1 => write!(f, "eu-west-1"),
             Self::Eu_west_2 => write!(f, "eu-west-2"),
@@ -8135,6 +8266,8 @@ pub struct ClickPipeMutateMySQLSource {
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
     pub iam_role: Option<String>,
     pub port: i64,
+    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none", default)]
+    pub server_id: Option<i64>,
     pub settings: ClickPipeMySQLPipeSettings,
     #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
     pub skip_cert_verification: Option<bool>,
@@ -8244,6 +8377,8 @@ pub struct ClickPipeMySQLSource {
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
     pub iam_role: Option<String>,
     pub port: i64,
+    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none", default)]
+    pub server_id: Option<i64>,
     pub settings: ClickPipeMySQLPipeSettings,
     #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
     pub skip_cert_verification: Option<bool>,
@@ -8408,6 +8543,8 @@ pub struct ClickPipePatchMySQLSource {
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
     pub iam_role: Option<String>,
     pub port: Option<i64>,
+    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none", default)]
+    pub server_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub settings: Option<ClickPipePatchMySQLPipeSettings>,
     #[serde(rename = "skipCertVerification", skip_serializing_if = "Option::is_none", default)]
@@ -8592,6 +8729,40 @@ pub struct ClickPipePostKinesisSource {
     pub timestamp: Option<i64>,
     #[serde(rename = "useEnhancedFanOut", skip_serializing_if = "Option::is_none", default)]
     pub use_enhanced_fan_out: Option<bool>,
+}
+
+/// `ClickPipeSchemaDiscoveryField` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeSchemaDiscoveryField {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub optional: Option<bool>,
+}
+
+/// `ClickPipeSchemaDiscoveryRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeSchemaDiscoveryRequest {
+    #[serde(default)]
+    pub source: ClickPipeSchemaDiscoverySource,
+}
+
+/// `ClickPipeSchemaDiscoveryResponse` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeSchemaDiscoveryResponse {
+    #[serde(default)]
+    pub fields: Vec<ClickPipeSchemaDiscoveryField>,
+}
+
+/// `ClickPipeSchemaDiscoverySource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeSchemaDiscoverySource {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub kafka: Option<ClickPipePostKafkaSource>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub kinesis: Option<ClickPipePostKinesisSource>,
 }
 
 /// `ClickPipePostObjectStorageSource` from the ClickHouse Cloud API.
@@ -10843,6 +11014,8 @@ pub struct ScalingSchedule {
 /// `ScalingScheduleBaseConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleBaseConfig {
+    #[serde(rename = "autoscalingMode", default)]
+    pub autoscaling_mode: AutoscalingMode,
     #[serde(rename = "idleScaling", default)]
     pub idle_scaling: bool,
     #[serde(rename = "idleTimeoutMinutes", default)]
@@ -10860,6 +11033,8 @@ pub struct ScalingScheduleBaseConfig {
 /// `ScalingScheduleEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleEntry {
+    #[serde(rename = "autoscalingMode", default)]
+    pub autoscaling_mode: AutoscalingMode,
     #[serde(rename = "endHourUtc", default)]
     pub end_hour_utc: i64,
     #[serde(default)]
@@ -10880,10 +11055,6 @@ pub struct ScalingScheduleEntry {
     pub min_replicas: Option<i64>,
     #[serde(default)]
     pub name: String,
-    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
-    pub num_replicas: Option<i64>,
-    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
-    pub replica_memory_gb: Option<f64>,
     #[serde(rename = "startHourUtc", default)]
     pub start_hour_utc: i64,
     #[serde(default)]
@@ -10893,6 +11064,8 @@ pub struct ScalingScheduleEntry {
 /// `ScalingScheduleEntryRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleEntryRequest {
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none", default)]
+    pub autoscaling_mode: Option<AutoscalingMode>,
     #[serde(rename = "endHourUtc", default)]
     pub end_hour_utc: i64,
     #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none", default)]
@@ -10911,8 +11084,6 @@ pub struct ScalingScheduleEntryRequest {
     pub name: String,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
     pub num_replicas: Option<i64>,
-    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
-    pub replica_memory_gb: Option<f64>,
     #[serde(rename = "startHourUtc", default)]
     pub start_hour_utc: i64,
     #[serde(default)]
@@ -11535,6 +11706,8 @@ pub struct ServicPrivateEndpointePostRequest {
 pub struct Service {
     #[serde(rename = "availablePrivateEndpointIds", default)]
     pub available_private_endpoint_ids: Vec<String>,
+    #[serde(rename = "autoscalingMode", default)]
+    pub autoscaling_mode: AutoscalingMode,
     #[serde(rename = "byocId", default)]
     pub byoc_id: String,
     #[serde(rename = "clickhouseVersion", default)]
@@ -11752,6 +11925,8 @@ pub struct ServicePatchRequest {
 /// `ServicePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostRequest {
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none", default)]
+    pub autoscaling_mode: Option<AutoscalingMode>,
     #[serde(rename = "backupId", skip_serializing_if = "Option::is_none", default)]
     pub backup_id: Option<uuid::Uuid>,
     #[serde(rename = "byocId", skip_serializing_if = "Option::is_none", default)]
@@ -11809,8 +11984,6 @@ pub struct ServicePostRequest {
     pub region: ServicePostRequestRegion,
     #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none", default)]
     pub release_channel: Option<ServicePostRequestReleasechannel>,
-    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
-    pub replica_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<ResourceTagsV1>>,
     #[cfg(feature = "deprecated-fields")]
@@ -11843,6 +12016,8 @@ pub struct ServiceQueryAPIEndpoint {
 /// `ServiceReplicaScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceReplicaScalingPatchRequest {
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none", default)]
+    pub autoscaling_mode: Option<AutoscalingMode>,
     #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none", default)]
     pub idle_scaling: Option<bool>,
     #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none", default)]
@@ -11857,8 +12032,6 @@ pub struct ServiceReplicaScalingPatchRequest {
     pub min_replicas: Option<f64>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none", default)]
     pub num_replicas: Option<f64>,
-    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none", default)]
-    pub replica_memory_gb: Option<f64>,
 }
 
 /// `ServiceScalingPatchRequest` from the ClickHouse Cloud API.
@@ -11883,6 +12056,8 @@ pub struct ServiceScalingPatchRequest {
 pub struct ServiceScalingPatchResponse {
     #[serde(rename = "availablePrivateEndpointIds", default)]
     pub available_private_endpoint_ids: Vec<String>,
+    #[serde(rename = "autoscalingMode", default)]
+    pub autoscaling_mode: AutoscalingMode,
     #[serde(rename = "byocId", default)]
     pub byoc_id: String,
     #[serde(rename = "clickhouseVersion", default)]

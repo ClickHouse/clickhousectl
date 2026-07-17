@@ -2035,7 +2035,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 // Vertical entry expressed as equal min/max; the fixed-count
                 // and horizontal-autoscaling forms need org-level enablement.
                 num_replicas: None,
-                replica_memory_gb: None,
+                ..Default::default()
             };
 
             let upserted = failures

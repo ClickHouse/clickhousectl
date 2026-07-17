@@ -155,22 +155,22 @@ fn serialize_service_post_request() {
 fn serialize_service_post_request_horizontal_autoscaling() {
     let req = ServicePostRequest {
         name: "horizontal-service".to_string(),
+        autoscaling_mode: Some(AutoscalingMode::Horizontal),
         min_replicas: Some(1.0),
         max_replicas: Some(5.0),
-        replica_memory_gb: Some(32.0),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["autoscalingMode"], "horizontal");
     assert_eq!(json["minReplicas"], 1.0);
     assert_eq!(json["maxReplicas"], 5.0);
-    assert_eq!(json["replicaMemoryGb"], 32.0);
 
     // Omitted entirely when unset — mutually exclusive with the vertical
     // scaling fields, so they must not serialize as null/defaults.
     let json = serde_json::to_value(ServicePostRequest::default()).unwrap();
     assert!(json.get("minReplicas").is_none());
     assert!(json.get("maxReplicas").is_none());
-    assert!(json.get("replicaMemoryGb").is_none());
+    assert!(json.get("autoscalingMode").is_none());
 }
 
 #[test]
@@ -576,9 +576,9 @@ fn serialize_service_replica_scaling_patch_request() {
         max_replicas: None,
         min_replica_memory_gb: Some(16.0),
         max_replica_memory_gb: Some(64.0),
-        replica_memory_gb: None,
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(10.0),
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["numReplicas"], 5.0);
@@ -901,25 +901,29 @@ fn deserialize_scaling_schedule_entry_fixed_scaling_fields() {
         "startHourUtc": 8,
         "endHourUtc": 18,
         "isActiveNow": false,
-        "numReplicas": 3,
-        "replicaMemoryGb": 16
+        "autoscalingMode": "vertical",
+        "minReplicaMemoryGb": 16,
+        "maxReplicaMemoryGb": 32
     }"#;
     let entry: ScalingScheduleEntry = serde_json::from_str(json).unwrap();
-    assert_eq!(entry.num_replicas, Some(3));
-    assert_eq!(entry.replica_memory_gb, Some(16.0));
+    assert_eq!(entry.autoscaling_mode, AutoscalingMode::Vertical);
+    assert_eq!(entry.min_replica_memory_gb, Some(16.0));
+    assert_eq!(entry.max_replica_memory_gb, Some(32.0));
 
     let req = ScalingScheduleEntryRequest {
         name: entry.name.clone(),
         weekdays: entry.weekdays.clone(),
         start_hour_utc: entry.start_hour_utc,
         end_hour_utc: entry.end_hour_utc,
-        num_replicas: entry.num_replicas,
-        replica_memory_gb: entry.replica_memory_gb,
+        autoscaling_mode: Some(entry.autoscaling_mode.clone()),
+        min_replica_memory_gb: entry.min_replica_memory_gb,
+        max_replica_memory_gb: entry.max_replica_memory_gb,
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["numReplicas"], 3);
-    assert_eq!(json["replicaMemoryGb"], 16.0);
+    assert_eq!(json["autoscalingMode"], "vertical");
+    assert_eq!(json["minReplicaMemoryGb"], 16.0);
+    assert_eq!(json["maxReplicaMemoryGb"], 32.0);
 }
 
 #[test]
@@ -1614,4 +1618,128 @@ fn deserialize_clickstack_alert_with_note() {
     // its skip_serializing_if=None gate must let Some(_) through).
     let v = serde_json::to_value(&alert).unwrap();
     assert_eq!(v["note"], "investigate runaway queries");
+}
+
+#[test]
+fn autoscaling_mode_round_trip() {
+    let v = serde_json::to_value(AutoscalingMode::Vertical).unwrap();
+    assert_eq!(v, "vertical");
+    let v = serde_json::to_value(AutoscalingMode::Horizontal).unwrap();
+    assert_eq!(v, "horizontal");
+    let parsed: AutoscalingMode = serde_json::from_str("\"vertical\"").unwrap();
+    assert_eq!(parsed, AutoscalingMode::Vertical);
+    let parsed: AutoscalingMode = serde_json::from_str("\"horizontal\"").unwrap();
+    assert_eq!(parsed, AutoscalingMode::Horizontal);
+    assert_eq!(AutoscalingMode::default(), AutoscalingMode::Vertical);
+    assert_eq!(AutoscalingMode::Vertical.to_string(), "vertical");
+    assert_eq!(AutoscalingMode::Horizontal.to_string(), "horizontal");
+}
+
+#[test]
+fn autoscaling_mode_unknown_catch_all() {
+    let parsed: AutoscalingMode = serde_json::from_str("\"crystal\"").unwrap();
+    assert_eq!(parsed, AutoscalingMode::Unknown("crystal".to_string()));
+    assert_eq!(parsed.to_string(), "crystal");
+}
+
+#[test]
+fn pg_state_property_stopped() {
+    let parsed: PgStateProperty = serde_json::from_str("\"stopped\"").unwrap();
+    assert_eq!(parsed, PgStateProperty::Stopped);
+    assert_eq!(parsed.to_string(), "stopped");
+}
+
+#[test]
+fn service_region_ca_central_1() {
+    let parsed: ServiceRegion = serde_json::from_str("\"ca-central-1\"").unwrap();
+    assert_eq!(parsed, ServiceRegion::Ca_central_1);
+    assert_eq!(parsed.to_string(), "ca-central-1");
+}
+
+#[test]
+fn byoc_config_regionid_ca_central_1() {
+    let parsed: ByocConfigRegionid = serde_json::from_str("\"ca-central-1\"").unwrap();
+    assert_eq!(parsed, ByocConfigRegionid::Ca_central_1);
+    assert_eq!(parsed.to_string(), "ca-central-1");
+}
+
+#[test]
+fn click_pipe_schema_discovery_response_round_trip() {
+    let json = r#"{
+        "fields": [
+            {"name": "user_id", "type": "Int64", "optional": false},
+            {"name": "event", "type": "String", "optional": true}
+        ]
+    }"#;
+    let resp: ClickPipeSchemaDiscoveryResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.fields.len(), 2);
+    assert_eq!(resp.fields[0].name, "user_id");
+    assert_eq!(resp.fields[0].r#type, "Int64");
+    assert_eq!(resp.fields[0].optional, Some(false));
+    assert_eq!(resp.fields[1].optional, Some(true));
+
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["fields"][0]["name"], "user_id");
+    assert_eq!(v["fields"][0]["type"], "Int64");
+    assert_eq!(v["fields"][1]["optional"], true);
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_kafka_source() {
+    let req = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: Some(ClickPipePostKafkaSource::default()),
+            kinesis: None,
+        },
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert!(v["source"]["kafka"].is_object());
+    assert!(v["source"].get("kinesis").is_none());
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_default_omits_sources() {
+    let v = serde_json::to_value(ClickPipeSchemaDiscoveryRequest::default()).unwrap();
+    assert!(v["source"].get("kafka").is_none());
+    assert!(v["source"].get("kinesis").is_none());
+}
+
+#[test]
+fn click_pipe_schema_discovery_field_nullable_optional() {
+    let json = r#"{"name": "col", "type": "Nullable(String)", "optional": null}"#;
+    let field: ClickPipeSchemaDiscoveryField = serde_json::from_str(json).unwrap();
+    assert_eq!(field.optional, None);
+    let v = serde_json::to_value(&field).unwrap();
+    assert!(v.get("optional").is_none());
+}
+
+#[test]
+fn mysql_source_server_id_optional() {
+    let json = r#"{"host": "h", "port": 3306, "settings": {"replicationMode": "gtid"}, "tableMappings": [], "serverId": 4242}"#;
+    let src: ClickPipeMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, Some(4242));
+
+    let json = r#"{"host": "h", "port": 3306, "settings": {"replicationMode": "gtid"}, "tableMappings": []}"#;
+    let src: ClickPipeMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, None);
+
+    let v = serde_json::to_value(ClickPipeMySQLSource {
+        server_id: Some(99),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(v["serverId"], 99);
+    let v = serde_json::to_value(ClickPipeMySQLSource::default()).unwrap();
+    assert!(v.get("serverId").is_none());
+}
+
+#[test]
+fn mysql_patch_source_server_id_nullable() {
+    let json = r#"{"serverId": null}"#;
+    let src: ClickPipePatchMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, None);
+
+    let json = r#"{"serverId": 100}"#;
+    let src: ClickPipePatchMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, Some(100));
 }

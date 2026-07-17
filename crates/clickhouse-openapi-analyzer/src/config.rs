@@ -38,6 +38,7 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // The legacy service-create schema marks almost every property required,
     // but the API requires only name/provider/region and rejects many defaults.
+    ("ServicePostRequest", "autoscalingMode"),
     ("ServicePostRequest", "byocId"),
     ("ServicePostRequest", "complianceType"),
     ("ServicePostRequest", "dataWarehouseId"),
@@ -54,7 +55,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ServicePostRequest", "numReplicas"),
     ("ServicePostRequest", "maxReplicas"),
     ("ServicePostRequest", "minReplicas"),
-    ("ServicePostRequest", "replicaMemoryGb"),
     ("ServicePostRequest", "privateEndpointIds"),
     ("ServicePostRequest", "privatePreviewTermsChecked"),
     ("ServicePostRequest", "profile"),

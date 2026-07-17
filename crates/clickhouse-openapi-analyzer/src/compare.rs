@@ -438,6 +438,71 @@ fn compare_enums(
             .detail("key", pointer),
         );
     }
+
+    compare_enum_values_consts(rust, report);
+}
+
+fn compare_enum_values_consts(rust: &RustInventory, report: &mut DriftReport) {
+    for (name, info) in &rust.enums {
+        let Some(values_const) = &info.values_const else {
+            continue;
+        };
+        let rust_values = &info.values;
+        let missing: Vec<&String> = rust_values.difference(values_const).collect();
+        let extra: Vec<&String> = values_const.difference(rust_values).collect();
+        if missing.is_empty() && extra.is_empty() {
+            continue;
+        }
+        let mut parts = Vec::new();
+        if !missing.is_empty() {
+            let list = missing
+                .iter()
+                .map(|v| format!("{v:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("missing {list}"));
+        }
+        if !extra.is_empty() {
+            let list = extra
+                .iter()
+                .map(|v| format!("{v:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            parts.push(format!("extra {list}"));
+        }
+        let rust_item = format!("models.rs::{name}::VALUES");
+        let finding = Finding::new(
+            FindingKind::EnumValuesMismatch,
+            format!("{name}::VALUES does not match enum wire values: {}", parts.join("; ")),
+        )
+        .at_rust(&rust_item)
+        .detail("enum", name);
+        let finding = if !missing.is_empty() {
+            finding.detail(
+                "missing",
+                missing
+                    .iter()
+                    .map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        } else {
+            finding
+        };
+        let finding = if !extra.is_empty() {
+            finding.detail(
+                "extra",
+                extra
+                    .iter()
+                    .map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        } else {
+            finding
+        };
+        report.findings.push(finding);
+    }
 }
 
 fn mapping_rust_item(mapping: &EnumMapping) -> Option<String> {
@@ -993,5 +1058,125 @@ mod tests {
                 "missing fixture coverage for {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn enum_values_const_matching_produces_no_finding() {
+        let models = r#"
+            pub enum Color {
+                #[serde(rename = "red")]
+                Red,
+                #[serde(rename = "blue")]
+                Blue,
+                #[serde(untagged)]
+                Unknown(String),
+            }
+            impl Color {
+                pub const VALUES: &'static [&'static str] = &["red", "blue"];
+            }
+        "#;
+        let report = analyze_fixture(
+            models,
+            serde_json::json!({"type": "string", "enum": ["red", "blue"]}),
+            AnalyzerConfig::default(),
+        );
+        let mismatch = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::EnumValuesMismatch);
+        assert!(
+            mismatch.is_none(),
+            "unexpected EnumValuesMismatch: {:?}",
+            mismatch
+        );
+    }
+
+    #[test]
+    fn enum_values_const_missing_value_reports_mismatch() {
+        let models = r#"
+            pub enum Color {
+                #[serde(rename = "red")]
+                Red,
+                #[serde(rename = "blue")]
+                Blue,
+                #[serde(rename = "green")]
+                Green,
+                #[serde(untagged)]
+                Unknown(String),
+            }
+            impl Color {
+                pub const VALUES: &'static [&'static str] = &["red", "blue"];
+            }
+        "#;
+        let report = analyze_fixture(
+            models,
+            serde_json::json!({"type": "string", "enum": ["red", "blue", "green"]}),
+            AnalyzerConfig::default(),
+        );
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::EnumValuesMismatch)
+            .expect("expected EnumValuesMismatch finding");
+        assert_eq!(finding.details.get("enum"), Some(&"Color".to_string()));
+        assert_eq!(finding.details.get("missing"), Some(&"green".to_string()));
+        assert!(
+            finding.rust_item.as_deref() == Some("models.rs::Color::VALUES"),
+            "unexpected rust_item: {:?}",
+            finding.rust_item
+        );
+    }
+
+    #[test]
+    fn enum_values_const_extra_value_reports_mismatch() {
+        let models = r#"
+            pub enum Color {
+                #[serde(rename = "red")]
+                Red,
+                #[serde(rename = "blue")]
+                Blue,
+                #[serde(untagged)]
+                Unknown(String),
+            }
+            impl Color {
+                pub const VALUES: &'static [&'static str] = &["red", "blue", "green"];
+            }
+        "#;
+        let report = analyze_fixture(
+            models,
+            serde_json::json!({"type": "string", "enum": ["red", "blue"]}),
+            AnalyzerConfig::default(),
+        );
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::EnumValuesMismatch)
+            .expect("expected EnumValuesMismatch finding");
+        assert_eq!(finding.details.get("enum"), Some(&"Color".to_string()));
+        assert_eq!(finding.details.get("extra"), Some(&"green".to_string()));
+    }
+
+    #[test]
+    fn enum_without_values_const_produces_no_mismatch_finding() {
+        let models = r#"
+            pub enum Color {
+                #[serde(rename = "red")]
+                Red,
+                #[serde(rename = "blue")]
+                Blue,
+                #[serde(untagged)]
+                Unknown(String),
+            }
+        "#;
+        let report = analyze_fixture(
+            models,
+            serde_json::json!({"type": "string", "enum": ["red", "blue"]}),
+            AnalyzerConfig::default(),
+        );
+        let mismatch = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::EnumValuesMismatch);
+        assert!(mismatch.is_none());
     }
 }
