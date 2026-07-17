@@ -355,6 +355,7 @@ impl CloudCommands {
                 ClickPipeCommands::Stop { .. } => true,
                 ClickPipeCommands::Resync { .. } => true,
                 ClickPipeCommands::Scale { .. } => true,
+                ClickPipeCommands::SchemaDiscover { .. } => false,
                 ClickPipeCommands::Create { .. } => true,
                 ClickPipeCommands::Settings { command } => match command {
                     ClickPipeSettingsCommands::Get { .. } => false,
@@ -492,17 +493,41 @@ CONTEXT FOR AGENTS:
         #[arg(long, default_value = "us-east-1")]
         region: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4)
-        #[arg(long)]
+        /// Minimum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4)
-        #[arg(long)]
+        /// Maximum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20)
-        #[arg(long)]
+        /// Number of replicas (1-20). Vertical autoscaling.
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
         num_replicas: Option<u32>,
+
+        /// Minimum number of replicas for horizontal autoscaling (requires the
+        /// horizontal autoscaling org feature). Mutually exclusive with the
+        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
+        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        min_replicas: Option<u32>,
+
+        /// Maximum number of replicas for horizontal autoscaling (requires the
+        /// horizontal autoscaling org feature). Mutually exclusive with the
+        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
+        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        max_replicas: Option<u32>,
+
+        /// Autoscaling mode: vertical (default) or horizontal. Horizontal uses fixed
+        /// memory per replica with a variable replica count (--min-replicas/--max-replicas);
+        /// vertical uses fixed replica count with variable memory (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
+        #[arg(
+            long,
+            value_parser = PossibleValuesParser::new(
+                clickhouse_cloud_api::models::AutoscalingMode::VALUES
+            ),
+            conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"]
+        )]
+        autoscaling_mode: Option<String>,
 
         /// Allow scale to zero when idle (default: true)
         #[arg(long)]
@@ -691,17 +716,39 @@ CONTEXT FOR AGENTS:
         /// Service ID
         service_id: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4)
-        #[arg(long)]
+        /// Minimum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4)
-        #[arg(long)]
+        /// Maximum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20)
-        #[arg(long)]
+        /// Number of replicas (1-20). Vertical autoscaling.
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
         num_replicas: Option<u32>,
+
+        /// Minimum number of replicas for horizontal autoscaling (requires the
+        /// horizontal autoscaling org feature). Mutually exclusive with the
+        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
+        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        min_replicas: Option<u32>,
+
+        /// Maximum number of replicas for horizontal autoscaling (requires the
+        /// horizontal autoscaling org feature). Mutually exclusive with the
+        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
+        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        max_replicas: Option<u32>,
+
+        /// Autoscaling mode: vertical (default) or horizontal. See `service create --autoscaling-mode`.
+        #[arg(
+            long,
+            value_parser = PossibleValuesParser::new(
+                clickhouse_cloud_api::models::AutoscalingMode::VALUES
+            ),
+            conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"]
+        )]
+        autoscaling_mode: Option<String>,
 
         /// Allow scale to zero when idle
         #[arg(long)]
@@ -1040,11 +1087,39 @@ pub enum ClickPipeCommands {
         command: ClickPipeSettingsCommands,
     },
 
+    /// Discover a source schema without creating a pipe (beta)
+    #[command(after_help = "\\
+CONTEXT FOR AGENTS:
+  Infers the schema (column name + ClickHouse type) for a Kafka or Kinesis source
+  without creating a ClickPipe. Useful for filling in --column on `clickpipe create`.
+  Read-only (safe under OAuth/Bearer auth). Add --json for machine-readable output.
+  Related: `clickhousectl cloud clickpipe create kafka|kinesis` to create a pipe with the discovered columns.")]
+    SchemaDiscover {
+        /// Service ID
+        service_id: String,
+
+        #[command(subcommand)]
+        command: ClickPipeSchemaDiscoverCommands,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
     /// Create a ClickPipe
     Create {
         #[command(subcommand)]
         command: ClickPipeCreateCommands,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeSchemaDiscoverCommands {
+    /// Discover schema from a Kafka or Kafka-compatible source
+    Kafka(Box<KafkaSourceFields>),
+
+    /// Discover schema from an Amazon Kinesis stream
+    Kinesis(Box<KinesisSourceFields>),
 }
 
 #[derive(Subcommand)]
@@ -1193,6 +1268,16 @@ pub struct ObjectStorageCreateArgs {
     #[arg(long)]
     pub queue_url: Option<String>,
 
+    /// Skip the initial load of existing objects and ingest only queue-notification
+    /// files. Only applicable when --queue-url is provided.
+    #[arg(long, requires = "queue_url")]
+    pub skip_initial_load: bool,
+
+    /// Object key to start continuous ingestion after. Mutually exclusive with
+    /// --skip-initial-load (the API rejects both being set).
+    #[arg(long, conflicts_with = "skip_initial_load")]
+    pub start_after: Option<String>,
+
     /// CSV delimiter character (e.g., ",")
     #[arg(long)]
     pub delimiter: Option<String>,
@@ -1230,15 +1315,11 @@ pub struct ObjectStorageCreateArgs {
     pub org_id: Option<String>,
 }
 
+/// Source-connection fields for a Kafka / Kafka-compatible ClickPipe source.
+/// Flattened into both `KafkaCreateArgs` (pipe creation) and the schema-discover
+/// Kafka subcommand so the source field set has a single definition.
 #[derive(Args, Debug)]
-pub struct KafkaCreateArgs {
-    /// Service ID
-    pub service_id: String,
-
-    /// ClickPipe name
-    #[arg(long)]
-    pub name: String,
-
+pub struct KafkaSourceFields {
     /// Kafka broker(s) (e.g., "broker1:9092,broker2:9092")
     #[arg(long)]
     pub brokers: String,
@@ -1250,18 +1331,6 @@ pub struct KafkaCreateArgs {
     /// Data format
     #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_FORMATS))]
     pub format: String,
-
-    /// Destination database
-    #[arg(long)]
-    pub database: String,
-
-    /// Destination table
-    #[arg(long)]
-    pub table: String,
-
-    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column")]
-    pub columns: Vec<String>,
 
     /// Kafka type
     #[arg(
@@ -1342,14 +1411,10 @@ pub struct KafkaCreateArgs {
     /// Reverse private endpoint IDs (repeatable)
     #[arg(long = "reverse-private-endpoint-id")]
     pub reverse_private_endpoint_ids: Vec<String>,
-
-    /// Organization ID (auto-detected if not specified)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
-pub struct KinesisCreateArgs {
+pub struct KafkaCreateArgs {
     /// Service ID
     pub service_id: String,
 
@@ -1357,17 +1422,8 @@ pub struct KinesisCreateArgs {
     #[arg(long)]
     pub name: String,
 
-    /// Kinesis stream name
-    #[arg(long)]
-    pub stream_name: String,
-
-    /// AWS region (e.g., us-east-1)
-    #[arg(long)]
-    pub region: String,
-
-    /// Data format
-    #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
-    pub format: String,
+    #[command(flatten)]
+    pub source: KafkaSourceFields,
 
     /// Destination database
     #[arg(long)]
@@ -1380,6 +1436,28 @@ pub struct KinesisCreateArgs {
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
     #[arg(long = "column")]
     pub columns: Vec<String>,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
+/// Source-connection fields for an Amazon Kinesis ClickPipe source.
+/// Flattened into both `KinesisCreateArgs` (pipe creation) and the schema-discover
+/// Kinesis subcommand so the source field set has a single definition.
+#[derive(Args, Debug)]
+pub struct KinesisSourceFields {
+    /// Kinesis stream name
+    #[arg(long)]
+    pub stream_name: String,
+
+    /// AWS region (e.g., us-east-1)
+    #[arg(long)]
+    pub region: String,
+
+    /// Data format
+    #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
+    pub format: String,
 
     /// Authentication
     #[arg(
@@ -1416,6 +1494,31 @@ pub struct KinesisCreateArgs {
     /// Enable enhanced fan-out
     #[arg(long)]
     pub enhanced_fan_out: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct KinesisCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub source: KinesisSourceFields,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column")]
+    pub columns: Vec<String>,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
@@ -1584,6 +1687,12 @@ pub struct MySqlCreateArgs {
     /// Skip certificate verification
     #[arg(long)]
     pub skip_cert_verification: bool,
+
+    /// Optional MySQL server_id the pipe declares itself as in the MySQL
+    /// replication topology (1-4294967295). Must be unique across replicas
+    /// connected to the source. If omitted, one is assigned automatically.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=4294967295))]
+    pub server_id: Option<u64>,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
@@ -1989,6 +2098,371 @@ mod tests {
         assert_eq!(enable_endpoint, vec!["mysql"]);
         assert_eq!(add_tag, vec!["env=prod"]);
         assert_eq!(enable_core_dumps, Some(true));
+    }
+
+    #[test]
+    fn parses_service_create_horizontal_autoscaling_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--min-replicas",
+            "2",
+            "--max-replicas",
+            "8",
+            "--autoscaling-mode",
+            "horizontal",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Create {
+            min_replicas,
+            max_replicas,
+            autoscaling_mode,
+            num_replicas,
+            min_replica_memory_gb,
+            max_replica_memory_gb,
+            ..
+        } = command
+        else {
+            panic!("expected service create");
+        };
+        assert_eq!(min_replicas, Some(2));
+        assert_eq!(max_replicas, Some(8));
+        assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
+        assert!(num_replicas.is_none());
+        assert!(min_replica_memory_gb.is_none());
+        assert!(max_replica_memory_gb.is_none());
+    }
+
+    #[test]
+    fn rejects_service_create_horizontal_vertical_mix() {
+        // --min-replicas conflicts with the vertical flags
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--min-replicas",
+            "2",
+            "--max-replicas",
+            "8",
+            "--num-replicas",
+            "3",
+        ]);
+        assert!(result.is_err());
+
+        // --autoscaling-mode conflicts with the vertical flags
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--autoscaling-mode",
+            "horizontal",
+            "--num-replicas",
+            "3",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_service_create_invalid_autoscaling_mode() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "s",
+            "--min-replicas",
+            "2",
+            "--max-replicas",
+            "8",
+            "--autoscaling-mode",
+            "turbo",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_service_scale_horizontal_autoscaling_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scale",
+            "svc-1",
+            "--min-replicas",
+            "2",
+            "--max-replicas",
+            "8",
+            "--autoscaling-mode",
+            "horizontal",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Scale {
+            service_id,
+            min_replicas,
+            max_replicas,
+            autoscaling_mode,
+            num_replicas,
+            ..
+        } = command
+        else {
+            panic!("expected service scale");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(min_replicas, Some(2));
+        assert_eq!(max_replicas, Some(8));
+        assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
+        assert!(num_replicas.is_none());
+    }
+
+    #[test]
+    fn parses_clickpipe_object_storage_ingestion_control_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "t",
+            "--source-url",
+            "https://b.s3.us-east-1.amazonaws.com/d/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "d",
+            "--table",
+            "t",
+            "--column",
+            "id:Int64",
+            "--queue-url",
+            "https://sqs.us-east-1.amazonaws.com/123/q",
+            "--start-after",
+            "key1",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::ClickPipe { command } = args.command else {
+            panic!("expected clickpipe command");
+        };
+        let ClickPipeCommands::Create { command } = *command else {
+            panic!("expected create");
+        };
+        let ClickPipeCreateCommands::ObjectStorage(args) = command else {
+            panic!("expected object-storage");
+        };
+        assert!(!args.skip_initial_load);
+        assert_eq!(args.start_after.as_deref(), Some("key1"));
+        assert_eq!(
+            args.queue_url.as_deref(),
+            Some("https://sqs.us-east-1.amazonaws.com/123/q")
+        );
+    }
+
+    #[test]
+    fn rejects_skip_initial_load_without_queue_url() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "t",
+            "--source-url",
+            "https://b.s3.us-east-1.amazonaws.com/d/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "d",
+            "--table",
+            "t",
+            "--column",
+            "id:Int64",
+            "--skip-initial-load",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_skip_initial_load_with_start_after() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "t",
+            "--source-url",
+            "https://b.s3.us-east-1.amazonaws.com/d/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "d",
+            "--table",
+            "t",
+            "--column",
+            "id:Int64",
+            "--queue-url",
+            "https://sqs.us-east-1.amazonaws.com/123/q",
+            "--skip-initial-load",
+            "--start-after",
+            "key1",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_clickpipe_mysql_server_id() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "t",
+            "--host",
+            "h",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "db.t:t",
+            "--server-id",
+            "4242",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::ClickPipe { command } = args.command else {
+            panic!("expected clickpipe command");
+        };
+        let ClickPipeCommands::Create { command } = *command else {
+            panic!("expected create");
+        };
+        let ClickPipeCreateCommands::MySQL(args) = command else {
+            panic!("expected mysql");
+        };
+        assert_eq!(args.server_id, Some(4242));
+    }
+
+    #[test]
+    fn rejects_clickpipe_mysql_server_id_out_of_range() {
+        // 0 is below the minimum (1)
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "t",
+            "--host",
+            "h",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "db.t:t",
+            "--server-id",
+            "0",
+        ]);
+        assert!(result.is_err());
+
+        // 4294967296 is above the maximum (4294967295)
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "t",
+            "--host",
+            "h",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "db.t:t",
+            "--server-id",
+            "4294967296",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_clickpipe_schema_discover_kafka() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "schema-discover",
+            "svc-1",
+            "kafka",
+            "--brokers",
+            "b:9092",
+            "--topics",
+            "t",
+            "--format",
+            "JSONEachRow",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::ClickPipe { command } = args.command else {
+            panic!("expected clickpipe command");
+        };
+        let ClickPipeCommands::SchemaDiscover {
+            service_id,
+            command,
+            ..
+        } = *command
+        else {
+            panic!("expected schema-discover");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert!(matches!(
+            command,
+            ClickPipeSchemaDiscoverCommands::Kafka(_)
+        ));
     }
 
     #[test]
@@ -2479,6 +2953,25 @@ mod tests {
         assert_write(&["clickhousectl", "cloud", "postgres", "get", "pg-1"], false);
         assert_write(&["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"], false);
         assert_write(&["clickhousectl", "cloud", "postgres", "config", "get", "pg-1"], false);
+
+        // ClickPipe schema discovery is a read-only POST (side-effect-free)
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "schema-discover",
+                "svc-1",
+                "kafka",
+                "--brokers",
+                "b:9092",
+                "--topics",
+                "t",
+                "--format",
+                "JSONEachRow",
+            ],
+            false,
+        );
     }
 
     #[test]

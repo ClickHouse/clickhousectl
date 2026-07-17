@@ -469,6 +469,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 min_replica_memory_gb,
                 max_replica_memory_gb,
                 num_replicas,
+                min_replicas,
+                max_replicas,
+                autoscaling_mode,
                 idle_scaling,
                 idle_timeout_minutes,
                 ip_allow,
@@ -495,6 +498,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     min_replica_memory_gb,
                     max_replica_memory_gb,
                     num_replicas,
+                    min_replicas,
+                    max_replicas,
+                    autoscaling_mode,
                     idle_scaling,
                     idle_timeout_minutes,
                     ip_allow,
@@ -574,6 +580,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 min_replica_memory_gb,
                 max_replica_memory_gb,
                 num_replicas,
+                min_replicas,
+                max_replicas,
+                autoscaling_mode,
                 idle_scaling,
                 idle_timeout_minutes,
                 org_id,
@@ -585,6 +594,9 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         min_replica_memory_gb,
                         max_replica_memory_gb,
                         num_replicas,
+                        min_replicas,
+                        max_replicas,
+                        autoscaling_mode,
                         idle_scaling,
                         idle_timeout_minutes,
                         org_id,
@@ -1023,6 +1035,20 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     .await
                 }
             },
+            ClickPipeCommands::SchemaDiscover {
+                service_id,
+                command,
+                org_id,
+            } => {
+                cloud::commands::clickpipe_schema_discover(
+                    &client,
+                    &service_id,
+                    &command,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
             ClickPipeCommands::Create { command } => match command {
                 ClickPipeCreateCommands::ObjectStorage(args) => {
                     cloud::commands::clickpipe_create_s3(&client, &args, json).await

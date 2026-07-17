@@ -429,13 +429,20 @@ clickhousectl cloud service update <service-id> \
   --transparent-data-encryption-key-id tde-key-1 \
   --enable-core-dumps false
 
-# Update replica scaling
+# Update replica scaling (vertical autoscaling — fixed replica count, variable memory)
 clickhousectl cloud service scale <service-id> \
   --min-replica-memory-gb 24 \
   --max-replica-memory-gb 48 \
   --num-replicas 3 \
   --idle-scaling true \
   --idle-timeout-minutes 10
+
+# Horizontal autoscaling — fixed memory per replica, variable replica count
+# (requires the horizontal autoscaling org feature)
+clickhousectl cloud service create --name my-service \
+  --min-replicas 2 --max-replicas 8 --autoscaling-mode horizontal
+clickhousectl cloud service scale <service-id> \
+  --min-replicas 2 --max-replicas 8 --autoscaling-mode horizontal
 
 # Reset password with generated credentials
 clickhousectl cloud service reset-password <service-id>
@@ -480,9 +487,12 @@ clickhousectl cloud service delete <service-id> --force
 | `--name` | Service name (required) |
 | `--provider` | Cloud provider: aws, gcp, azure (default: aws) |
 | `--region` | Region (default: us-east-1) |
-| `--min-replica-memory-gb` | Min memory per replica in GB (8-356, multiple of 4) |
-| `--max-replica-memory-gb` | Max memory per replica in GB (8-356, multiple of 4) |
-| `--num-replicas` | Number of replicas (1-20) |
+| `--min-replica-memory-gb` | Min memory per replica in GB (8-356, multiple of 4) (vertical autoscaling) |
+| `--max-replica-memory-gb` | Max memory per replica in GB (8-356, multiple of 4) (vertical autoscaling) |
+| `--num-replicas` | Number of replicas (1-20) (vertical autoscaling) |
+| `--min-replicas` | Min number of replicas for horizontal autoscaling (mutually exclusive with the vertical flags) |
+| `--max-replicas` | Max number of replicas for horizontal autoscaling (mutually exclusive with the vertical flags) |
+| `--autoscaling-mode` | Autoscaling mode: `vertical` (default) or `horizontal`. Horizontal uses fixed memory per replica with a variable replica count (`--min-replicas`/`--max-replicas`); vertical uses fixed replica count with variable memory (`--num-replicas`/`--min-replica-memory-gb`/`--max-replica-memory-gb`) |
 | `--idle-scaling` | Allow scale to zero (default: true) |
 | `--idle-timeout-minutes` | Min idle timeout in minutes (>= 5) |
 | `--ip-allow` | IP CIDR to allow (repeatable, default: 0.0.0.0/0) |
@@ -628,11 +638,24 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
 Each source type has its own subcommand under `clickpipe create`:
 
 ```bash
-# From S3 / object storage
+# From S3 / object storage (one-shot snapshot)
 clickhousectl cloud clickpipe create object-storage <service-id> \
   --name my-s3-pipe \
   --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/**' \
   --format JSONEachRow \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
+# From S3 with continuous ingestion (SQS queue) and ingestion control
+# --skip-initial-load: skip the initial snapshot load, only ingest new objects
+# --start-after: resume ingestion after a specific object key (conflicts with --skip-initial-load)
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-s3-continuous-pipe \
+  --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/**' \
+  --format JSONEachRow \
+  --continuous \
+  --queue-url 'https://sqs.us-east-1.amazonaws.com/123/my-queue' \
+  --start-after obj-key-001 \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
@@ -675,11 +698,14 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --table-mapping "public.orders:public_orders"
 
 # From MySQL (CDC)
+# --server-id sets the replication server ID (useful when multiple pipes read
+# from the same MySQL instance, or to avoid colliding with existing replicas)
 clickhousectl cloud clickpipe create mysql <service-id> \
   --name my-mysql-pipe \
   --host mysql.example.com \
   --username root --password pass \
-  --table-mapping "mydb.users:mydb_users"
+  --table-mapping "mydb.users:mydb_users" \
+  --server-id 4242
 
 # From MongoDB (CDC)
 clickhousectl cloud clickpipe create mongodb <service-id> \
@@ -697,6 +723,28 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
 ```
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
+
+#### Discovering a source schema (beta)
+
+`clickpipe schema-discover` probes a Kafka or Kinesis source and returns the
+inferred fields/types without creating a pipe. It takes the same source
+connection flags as the corresponding `create` subcommand (minus the
+destination `--name`/`--database`/`--table`/`--column` options):
+
+```bash
+# Discover schema from Kafka
+clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+  --brokers 'broker:9092' --topics events \
+  --format JSONEachRow \
+  --auth SCRAM-SHA-256 --username user --password pass
+
+# Discover schema from Kinesis
+clickhousectl cloud clickpipe schema-discover <service-id> kinesis \
+  --stream-name events --region us-east-1 \
+  --format JSONEachRow
+```
+
+Add `--json` (or run as a coding agent) for machine-readable output.
 
 ### Members
 

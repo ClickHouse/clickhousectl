@@ -5204,6 +5204,11 @@ impl std::fmt::Display for AutoscalingMode {
     }
 }
 
+impl AutoscalingMode {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["vertical", "horizontal"];
+}
+
 /// Inline enum for `CurrentScaling.effectiveAutoscalingMode`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CurrentScalingEffectiveautoscalingmode {
