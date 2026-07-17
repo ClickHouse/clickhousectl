@@ -18,51 +18,6 @@ use clickhouse_cloud_api::models::{
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
 
-/// Known provider values for client-side validation (from OpenAPI spec).
-const KNOWN_PROVIDERS: &[&str] = &["aws", "gcp", "azure"];
-
-/// Known region values for client-side validation (from OpenAPI spec).
-const KNOWN_REGIONS: &[&str] = &[
-    "ap-northeast-1",
-    "ap-northeast-2",
-    "ap-south-1",
-    "ap-southeast-1",
-    "ap-southeast-2",
-    "eu-central-1",
-    "eu-west-1",
-    "eu-west-2",
-    "il-central-1",
-    "us-east-1",
-    "us-east-2",
-    "us-west-2",
-    "us-east1",
-    "us-central1",
-    "europe-west4",
-    "asia-southeast1",
-    "asia-northeast1",
-    "eastus",
-    "eastus2",
-    "westus3",
-    "germanywestcentral",
-    "centralus",
-];
-
-/// Known release channel values for client-side validation (from OpenAPI spec).
-const KNOWN_RELEASE_CHANNELS: &[&str] = &["slow", "default", "fast"];
-
-/// Known compliance type values for client-side validation (from OpenAPI spec).
-const KNOWN_COMPLIANCE_TYPES: &[&str] = &["hipaa", "pci"];
-
-/// Known service profile values for client-side validation (from OpenAPI spec).
-const KNOWN_PROFILES: &[&str] = &[
-    "v1-default",
-    "v1-highmem-xs",
-    "v1-highmem-s",
-    "v1-highmem-m",
-    "v1-highmem-l",
-    "v1-highmem-xl",
-];
-
 /// Resolve org ID from explicit arg or auto-detect
 pub(super) async fn resolve_org_id(
     client: &CloudClient,
@@ -644,12 +599,12 @@ fn build_create_service_request(
         provider: parse_serde_enum::<ServicePostRequestProvider>(
             &opts.provider,
             "provider",
-            KNOWN_PROVIDERS,
+            ServicePostRequestProvider::VALUES,
         )?,
         region: parse_serde_enum::<ServicePostRequestRegion>(
             &opts.region,
             "region",
-            KNOWN_REGIONS,
+            ServicePostRequestRegion::VALUES,
         )?,
         ip_access_list,
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
@@ -667,7 +622,7 @@ fn build_create_service_request(
             Some(value) => Some(parse_serde_enum::<ServicePostRequestReleasechannel>(
                 value,
                 "release_channel",
-                KNOWN_RELEASE_CHANNELS,
+                ServicePostRequestReleasechannel::VALUES,
             )?),
             None => None,
         },
@@ -681,7 +636,7 @@ fn build_create_service_request(
             Some(value) => Some(parse_serde_enum::<ServicePostRequestCompliancetype>(
                 value,
                 "compliance_type",
-                KNOWN_COMPLIANCE_TYPES,
+                ServicePostRequestCompliancetype::VALUES,
             )?),
             None => None,
         },
@@ -689,7 +644,7 @@ fn build_create_service_request(
             Some(value) => Some(parse_serde_enum::<ServicePostRequestProfile>(
                 value,
                 "profile",
-                KNOWN_PROFILES,
+                ServicePostRequestProfile::VALUES,
             )?),
             None => None,
         },
@@ -735,7 +690,7 @@ fn build_update_service_request(
                 parse_serde_enum::<ServicePatchRequestReleasechannel>(
                     value,
                     "release_channel",
-                    KNOWN_RELEASE_CHANNELS,
+                    ServicePatchRequestReleasechannel::VALUES,
                 )
             })
             .transpose()?,

@@ -93,7 +93,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 1:
+    if report.get("schema_version") != 2:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -193,6 +193,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Extra struct fields | {counts['extra_struct_field']} |",
         f"| Missing enum values | {counts['missing_enum_value']} |",
         f"| Extra enum values | {counts['extra_enum_value']} |",
+        f"| Enum VALUES const mismatches | {counts['enum_values_mismatch']} |",
         f"| Field optionality mismatches | {counts['field_optionality_mismatch']} |",
         f"| Beta status changes | {total('newly_beta_operation', 'graduated_beta_operation')} |",
         f"| Deprecated-field changes | {total('newly_deprecated_field', 'undeprecated_field', 'missing_deprecated_marker', 'stray_deprecated_marker')} |",
@@ -238,6 +239,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         ("extra_struct_field", "Extra Struct Fields"),
         ("missing_enum_value", "Missing Enum Values"),
         ("extra_enum_value", "Extra Enum Values"),
+        ("enum_values_mismatch", "Enum VALUES Const Mismatches"),
         ("field_optionality_mismatch", "Field Optionality Mismatches"),
         ("newly_beta_operation", "Newly Beta Operations"),
         ("graduated_beta_operation", "Graduated Beta Operations"),
