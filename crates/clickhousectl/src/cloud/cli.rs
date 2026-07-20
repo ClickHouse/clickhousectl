@@ -355,7 +355,11 @@ impl CloudCommands {
                 ClickPipeCommands::Stop { .. } => true,
                 ClickPipeCommands::Resync { .. } => true,
                 ClickPipeCommands::Scale { .. } => true,
-                ClickPipeCommands::SchemaDiscover { .. } => false,
+                // Side-effect-free, but the API gateway rejects OAuth/JWT on
+                // POST /clickpipes/schemaDiscovery ("This endpoint is not
+                // available for JWT authentication"), so classify it as a
+                // write to fail fast with the API-key guidance.
+                ClickPipeCommands::SchemaDiscover { .. } => true,
                 ClickPipeCommands::Create { .. } => true,
                 ClickPipeCommands::Settings { command } => match command {
                     ClickPipeSettingsCommands::Get { .. } => false,
@@ -2954,7 +2958,12 @@ mod tests {
         assert_write(&["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"], false);
         assert_write(&["clickhousectl", "cloud", "postgres", "config", "get", "pg-1"], false);
 
-        // ClickPipe schema discovery is a read-only POST (side-effect-free)
+    }
+
+    #[test]
+    fn is_write_command_destructive_commands() {
+        // ClickPipe schema discovery is side-effect-free, but the API gateway
+        // rejects OAuth/JWT on the endpoint, so it requires API-key auth.
         assert_write(
             &[
                 "clickhousectl",
@@ -2970,12 +2979,9 @@ mod tests {
                 "--format",
                 "JSONEachRow",
             ],
-            false,
+            true,
         );
-    }
 
-    #[test]
-    fn is_write_command_destructive_commands() {
         // Org write
         assert_write(
             &[
