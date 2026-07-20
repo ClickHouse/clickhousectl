@@ -595,58 +595,34 @@ struct HorizontalAutoscaling {
 /// Resolve the horizontal-autoscaling fields shared by `service create` and
 /// `service scale`.
 ///
-/// Rules:
-/// - An explicit `--autoscaling-mode` flag wins.
-/// - Otherwise, when the horizontal pair (`--min-replicas`/`--max-replicas`) is
-///   present, infer `Horizontal`.
-/// - Otherwise leave the mode `None` (server default is `vertical`).
-/// - Reject `--min-replicas` without `--max-replicas` (and vice versa) with a
-///   clear error before any network call.
+/// The mode is sent only when `--autoscaling-mode` is given explicitly. The
+/// API resolves an omitted mode itself, and a min/max band with the mode
+/// omitted and min == max is accepted as a vertical fixed replica count that
+/// needs no horizontal entitlement — inferring `horizontal` here would change
+/// those semantics.
 ///
-/// clap's `conflicts_with_all` already rejects mixing the horizontal pair with
-/// the vertical flags (`--num-replicas`/`--min-replica-memory-gb`/
-/// `--max-replica-memory-gb`), so this helper only needs to guard the
-/// min-without-max case.
+/// Rejects `--min-replicas` without `--max-replicas` (and vice versa) with a
+/// clear error before any network call. clap's `conflicts_with_all` already
+/// rejects mixing the horizontal pair with the vertical flags
+/// (`--num-replicas`/`--min-replica-memory-gb`/`--max-replica-memory-gb`).
 fn resolve_horizontal_autoscaling(
     autoscaling_mode: Option<&str>,
     min_replicas: Option<u32>,
     max_replicas: Option<u32>,
 ) -> Result<HorizontalAutoscaling, Box<dyn std::error::Error>> {
-    match (min_replicas, max_replicas) {
-        (Some(min), Some(max)) => {
-            let autoscaling_mode = match autoscaling_mode {
-                Some(value) => Some(parse_serde_enum::<AutoscalingMode>(
-                    value,
-                    "autoscaling_mode",
-                    AutoscalingMode::VALUES,
-                )?),
-                None => Some(AutoscalingMode::Horizontal),
-            };
-            Ok(HorizontalAutoscaling {
-                autoscaling_mode,
-                min_replicas: Some(f64::from(min)),
-                max_replicas: Some(f64::from(max)),
-            })
-        }
-        (Some(_), None) | (None, Some(_)) => Err(
-            "--min-replicas and --max-replicas must be specified together".into(),
-        ),
-        (None, None) => {
-            let autoscaling_mode = match autoscaling_mode {
-                Some(value) => Some(parse_serde_enum::<AutoscalingMode>(
-                    value,
-                    "autoscaling_mode",
-                    AutoscalingMode::VALUES,
-                )?),
-                None => None,
-            };
-            Ok(HorizontalAutoscaling {
-                autoscaling_mode,
-                min_replicas: None,
-                max_replicas: None,
-            })
-        }
+    if min_replicas.is_some() != max_replicas.is_some() {
+        return Err("--min-replicas and --max-replicas must be specified together".into());
     }
+    let autoscaling_mode = autoscaling_mode
+        .map(|value| {
+            parse_serde_enum::<AutoscalingMode>(value, "autoscaling_mode", AutoscalingMode::VALUES)
+        })
+        .transpose()?;
+    Ok(HorizontalAutoscaling {
+        autoscaling_mode,
+        min_replicas: min_replicas.map(f64::from),
+        max_replicas: max_replicas.map(f64::from),
+    })
 }
 
 fn build_create_service_request(
@@ -1250,7 +1226,13 @@ fn build_kinesis_source(
         access_key,
         use_enhanced_fan_out: if args.enhanced_fan_out { Some(true) } else { None },
         iterator_type: parse_enum(&args.iterator_type)?,
-        timestamp: args.iterator_timestamp.map(|t| t as i64),
+        timestamp: args
+            .iterator_timestamp
+            .map(|t| {
+                i64::try_from(t)
+                    .map_err(|_| format!("--iterator-timestamp {t} is out of range"))
+            })
+            .transpose()?,
     })
 }
 
@@ -2106,9 +2088,16 @@ pub async fn service_scale(
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
         println!("Service {} scaling updated", svc.name);
-        println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
-        println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
-        println!("  Replicas: {}", svc.num_replicas);
+        println!("  Autoscaling Mode: {}", svc.autoscaling_mode);
+        if svc.autoscaling_mode == AutoscalingMode::Horizontal {
+            println!("  Min Replicas: {}", svc.min_replicas);
+            println!("  Max Replicas: {}", svc.max_replicas);
+            println!("  Memory/Replica: {} GB", svc.replica_memory_gb);
+        } else {
+            println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
+            println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
+            println!("  Replicas: {}", svc.num_replicas);
+        }
     }
     Ok(())
 }
@@ -3371,9 +3360,11 @@ mod tests {
     }
 
     #[test]
-    fn build_create_service_request_infers_horizontal_from_replica_pair() {
-        // No explicit --autoscaling-mode, but the horizontal pair is present →
-        // infer Horizontal.
+    fn build_create_service_request_replica_pair_without_mode_omits_mode() {
+        // No explicit --autoscaling-mode: the replica pair passes through with
+        // the mode absent. The API resolves an omitted mode itself — an equal
+        // band is accepted as a vertical fixed replica count without the
+        // horizontal entitlement, so the CLI must not inject "horizontal".
         let opts = CreateServiceOptions {
             name: "svc".to_string(),
             provider: "aws".to_string(),
@@ -3384,7 +3375,7 @@ mod tests {
         };
         let request = build_create_service_request(&opts).unwrap();
         let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["autoscalingMode"], "horizontal");
+        assert!(json.get("autoscalingMode").is_none());
         assert_eq!(json["minReplicas"], 1.0);
         assert_eq!(json["maxReplicas"], 4.0);
     }
@@ -3500,6 +3491,35 @@ mod tests {
             "error should guide the user: {}",
             err
         );
+    }
+
+    #[test]
+    fn build_kinesis_source_rejects_out_of_range_iterator_timestamp() {
+        let args = crate::cloud::cli::KinesisSourceFields {
+            stream_name: "stream".to_string(),
+            region: "us-east-1".to_string(),
+            format: "JSONEachRow".to_string(),
+            auth: "IAM_ROLE".to_string(),
+            iam_role: None,
+            access_key_id: None,
+            secret_key: None,
+            iterator_type: "AT_TIMESTAMP".to_string(),
+            iterator_timestamp: Some(u64::MAX),
+            enhanced_fan_out: false,
+        };
+        let err = build_kinesis_source(&args).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "error should mention the range: {}",
+            err
+        );
+
+        let args = crate::cloud::cli::KinesisSourceFields {
+            iterator_timestamp: Some(1_750_000_000),
+            ..args
+        };
+        let source = build_kinesis_source(&args).unwrap();
+        assert_eq!(source.timestamp, Some(1_750_000_000));
     }
 
     #[test]
