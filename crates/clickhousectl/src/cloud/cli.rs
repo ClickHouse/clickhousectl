@@ -497,39 +497,40 @@ CONTEXT FOR AGENTS:
         #[arg(long, default_value = "us-east-1")]
         region: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
-        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
+        /// Minimum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// autoscaling requires it equal to --max-replica-memory-gb.
+        #[arg(long)]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
-        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
+        /// Maximum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// autoscaling requires it equal to --min-replica-memory-gb.
+        #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20). Vertical autoscaling.
-        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
+        /// Number of replicas (1-20). Vertical autoscaling; mutually exclusive
+        /// with the horizontal band (--min-replicas/--max-replicas).
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
         /// Minimum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with the
-        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
-        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
         /// Maximum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with the
-        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
-        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
         /// Autoscaling mode: vertical (default) or horizontal. Horizontal uses fixed
-        /// memory per replica with a variable replica count (--min-replicas/--max-replicas);
-        /// vertical uses fixed replica count with variable memory (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
+        /// memory per replica (--min-replica-memory-gb equal to --max-replica-memory-gb)
+        /// with a variable replica count (--min-replicas/--max-replicas); vertical uses
+        /// a fixed replica count (--num-replicas) with variable memory.
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
                 clickhouse_cloud_api::models::AutoscalingMode::VALUES
-            ),
-            conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"]
+            )
         )]
         autoscaling_mode: Option<String>,
 
@@ -720,37 +721,38 @@ CONTEXT FOR AGENTS:
         /// Service ID
         service_id: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
-        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
+        /// Minimum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// autoscaling requires it equal to --max-replica-memory-gb.
+        #[arg(long)]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4). Vertical autoscaling.
-        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
+        /// Maximum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// autoscaling requires it equal to --min-replica-memory-gb.
+        #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20). Vertical autoscaling.
-        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas", "autoscaling_mode"])]
+        /// Number of replicas (1-20). Vertical autoscaling; mutually exclusive
+        /// with the horizontal band (--min-replicas/--max-replicas).
+        #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
         /// Minimum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with the
-        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
-        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
         /// Maximum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with the
-        /// vertical flags (--num-replicas/--min-replica-memory-gb/--max-replica-memory-gb).
-        #[arg(long, conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"])]
+        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
-        /// Autoscaling mode: vertical (default) or horizontal. See `service create --autoscaling-mode`.
+        /// Autoscaling mode: vertical (default) or horizontal. Omit to keep the
+        /// service's current mode. See `service create --autoscaling-mode`.
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
                 clickhouse_cloud_api::models::AutoscalingMode::VALUES
-            ),
-            conflicts_with_all = ["num_replicas", "min_replica_memory_gb", "max_replica_memory_gb"]
+            )
         )]
         autoscaling_mode: Option<String>,
 
@@ -2165,9 +2167,13 @@ mod tests {
             "3",
         ]);
         assert!(result.is_err());
+    }
 
-        // --autoscaling-mode conflicts with the vertical flags
-        let result = Cli::try_parse_from([
+    #[test]
+    fn parses_service_create_horizontal_mode_with_memory_bounds() {
+        // Horizontal requires equal memory bounds, so the memory flags must
+        // combine with the mode and the replica band in one invocation.
+        let cli = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
             "service",
@@ -2176,10 +2182,38 @@ mod tests {
             "s",
             "--autoscaling-mode",
             "horizontal",
-            "--num-replicas",
-            "3",
-        ]);
-        assert!(result.is_err());
+            "--min-replicas",
+            "2",
+            "--max-replicas",
+            "8",
+            "--min-replica-memory-gb",
+            "16",
+            "--max-replica-memory-gb",
+            "16",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Create {
+            min_replicas,
+            max_replicas,
+            autoscaling_mode,
+            min_replica_memory_gb,
+            max_replica_memory_gb,
+            ..
+        } = command
+        else {
+            panic!("expected service create");
+        };
+        assert_eq!(min_replicas, Some(2));
+        assert_eq!(max_replicas, Some(8));
+        assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
+        assert_eq!(min_replica_memory_gb, Some(16));
+        assert_eq!(max_replica_memory_gb, Some(16));
     }
 
     #[test]
@@ -2239,6 +2273,70 @@ mod tests {
         assert_eq!(max_replicas, Some(8));
         assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
         assert!(num_replicas.is_none());
+    }
+
+    #[test]
+    fn parses_service_scale_switch_to_vertical_in_one_call() {
+        // Switching a horizontal service back to vertical sends the mode and
+        // the target replica count in a single request.
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scale",
+            "svc-1",
+            "--autoscaling-mode",
+            "vertical",
+            "--num-replicas",
+            "3",
+            "--min-replica-memory-gb",
+            "8",
+            "--max-replica-memory-gb",
+            "32",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Scale {
+            autoscaling_mode,
+            num_replicas,
+            min_replica_memory_gb,
+            max_replica_memory_gb,
+            min_replicas,
+            max_replicas,
+            ..
+        } = command
+        else {
+            panic!("expected service scale");
+        };
+        assert_eq!(autoscaling_mode.as_deref(), Some("vertical"));
+        assert_eq!(num_replicas, Some(3));
+        assert_eq!(min_replica_memory_gb, Some(8));
+        assert_eq!(max_replica_memory_gb, Some(32));
+        assert!(min_replicas.is_none());
+        assert!(max_replicas.is_none());
+    }
+
+    #[test]
+    fn rejects_service_scale_num_replicas_with_replica_band() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scale",
+            "svc-1",
+            "--num-replicas",
+            "3",
+            "--min-replicas",
+            "2",
+            "--max-replicas",
+            "8",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

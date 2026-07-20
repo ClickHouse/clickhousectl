@@ -602,9 +602,13 @@ struct HorizontalAutoscaling {
 /// those semantics.
 ///
 /// Rejects `--min-replicas` without `--max-replicas` (and vice versa) with a
-/// clear error before any network call. clap's `conflicts_with_all` already
-/// rejects mixing the horizontal pair with the vertical flags
-/// (`--num-replicas`/`--min-replica-memory-gb`/`--max-replica-memory-gb`).
+/// clear error before any network call. clap already rejects mixing the
+/// horizontal pair with `--num-replicas`; the memory flags and
+/// `--autoscaling-mode` combine freely with either set because a single
+/// request can switch modes (e.g. `--autoscaling-mode vertical
+/// --num-replicas 3`, or `--autoscaling-mode horizontal` with the equal
+/// memory bounds horizontal requires). Remaining combination rules are the
+/// API's to enforce.
 fn resolve_horizontal_autoscaling(
     autoscaling_mode: Option<&str>,
     min_replicas: Option<u32>,
@@ -2089,14 +2093,19 @@ pub async fn service_scale(
     } else {
         println!("Service {} scaling updated", svc.name);
         println!("  Autoscaling Mode: {}", svc.autoscaling_mode);
-        if svc.autoscaling_mode == AutoscalingMode::Horizontal {
-            println!("  Min Replicas: {}", svc.min_replicas);
-            println!("  Max Replicas: {}", svc.max_replicas);
-            println!("  Memory/Replica: {} GB", svc.replica_memory_gb);
-        } else {
-            println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
-            println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
-            println!("  Replicas: {}", svc.num_replicas);
+        match svc.autoscaling_mode {
+            AutoscalingMode::Horizontal => {
+                println!("  Min Replicas: {}", svc.min_replicas);
+                println!("  Max Replicas: {}", svc.max_replicas);
+                println!("  Memory/Replica: {} GB", svc.replica_memory_gb);
+            }
+            AutoscalingMode::Vertical => {
+                println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
+                println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
+                println!("  Replicas: {}", svc.num_replicas);
+            }
+            // A mode this CLI version doesn't know; don't guess which fields apply.
+            _ => {}
         }
     }
     Ok(())
@@ -3477,6 +3486,49 @@ mod tests {
         assert!(json.get("numReplicas").is_none());
         assert!(json.get("minReplicaMemoryGb").is_none());
         assert!(json.get("maxReplicaMemoryGb").is_none());
+    }
+
+    #[test]
+    fn build_service_scale_request_switch_to_vertical_on_wire() {
+        // Switching a horizontal service back to vertical sends the mode and
+        // the vertical fields in one request.
+        let opts = ServiceScaleOptions {
+            autoscaling_mode: Some("vertical".to_string()),
+            num_replicas: Some(3),
+            min_replica_memory_gb: Some(8),
+            max_replica_memory_gb: Some(32),
+            ..Default::default()
+        };
+        let request = build_service_scale_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["autoscalingMode"], "vertical");
+        assert_eq!(json["numReplicas"], 3.0);
+        assert_eq!(json["minReplicaMemoryGb"], 8.0);
+        assert_eq!(json["maxReplicaMemoryGb"], 32.0);
+        assert!(json.get("minReplicas").is_none());
+        assert!(json.get("maxReplicas").is_none());
+    }
+
+    #[test]
+    fn build_service_scale_request_switch_to_horizontal_with_memory_on_wire() {
+        // Switching to horizontal pins the equal per-replica memory the mode
+        // requires in the same request.
+        let opts = ServiceScaleOptions {
+            autoscaling_mode: Some("horizontal".to_string()),
+            min_replicas: Some(2),
+            max_replicas: Some(8),
+            min_replica_memory_gb: Some(16),
+            max_replica_memory_gb: Some(16),
+            ..Default::default()
+        };
+        let request = build_service_scale_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["autoscalingMode"], "horizontal");
+        assert_eq!(json["minReplicas"], 2.0);
+        assert_eq!(json["maxReplicas"], 8.0);
+        assert_eq!(json["minReplicaMemoryGb"], 16.0);
+        assert_eq!(json["maxReplicaMemoryGb"], 16.0);
+        assert!(json.get("numReplicas").is_none());
     }
 
     #[test]

@@ -487,12 +487,12 @@ clickhousectl cloud service delete <service-id> --force
 | `--name` | Service name (required) |
 | `--provider` | Cloud provider: aws, gcp, azure (default: aws) |
 | `--region` | Region (default: us-east-1) |
-| `--min-replica-memory-gb` | Min memory per replica in GB (8-356, multiple of 4) (vertical autoscaling) |
-| `--max-replica-memory-gb` | Max memory per replica in GB (8-356, multiple of 4) (vertical autoscaling) |
-| `--num-replicas` | Number of replicas (1-20) (vertical autoscaling) |
-| `--min-replicas` | Min number of replicas for horizontal autoscaling (mutually exclusive with the vertical flags) |
-| `--max-replicas` | Max number of replicas for horizontal autoscaling (mutually exclusive with the vertical flags) |
-| `--autoscaling-mode` | Autoscaling mode: `vertical` (default) or `horizontal`. Horizontal uses fixed memory per replica with a variable replica count (`--min-replicas`/`--max-replicas`); vertical uses fixed replica count with variable memory (`--num-replicas`/`--min-replica-memory-gb`/`--max-replica-memory-gb`) |
+| `--min-replica-memory-gb` | Min memory per replica in GB (8-356, multiple of 4). Horizontal autoscaling requires it equal to `--max-replica-memory-gb` |
+| `--max-replica-memory-gb` | Max memory per replica in GB (8-356, multiple of 4). Horizontal autoscaling requires it equal to `--min-replica-memory-gb` |
+| `--num-replicas` | Number of replicas (1-20) (vertical autoscaling; mutually exclusive with `--min-replicas`/`--max-replicas`) |
+| `--min-replicas` | Min number of replicas for horizontal autoscaling (mutually exclusive with `--num-replicas`) |
+| `--max-replicas` | Max number of replicas for horizontal autoscaling (mutually exclusive with `--num-replicas`) |
+| `--autoscaling-mode` | Autoscaling mode: `vertical` (default) or `horizontal`. Horizontal uses fixed memory per replica (`--min-replica-memory-gb` equal to `--max-replica-memory-gb`) with a variable replica count (`--min-replicas`/`--max-replicas`); vertical uses a fixed replica count (`--num-replicas`) with variable memory. On `service scale`, combine with the target mode's flags to switch modes in one call |
 | `--idle-scaling` | Allow scale to zero (default: true) |
 | `--idle-timeout-minutes` | Min idle timeout in minutes (>= 5) |
 | `--ip-allow` | IP CIDR to allow (repeatable, default: 0.0.0.0/0) |
