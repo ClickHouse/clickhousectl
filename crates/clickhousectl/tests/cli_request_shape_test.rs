@@ -84,7 +84,11 @@ async fn invoke_cli_capture_body(mock: &MockServer, cli_args: &[&str]) -> Value 
     full_args.push("--json");
     full_args.extend(cli_args);
 
+    // DO_NOT_TRACK (here and on every other spawn in this file) keeps the
+    // binary's telemetry fully silent: no `~/.clickhouse/telemetry.json` write
+    // in the developer's real home, no POST to the production endpoint.
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args(&full_args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
@@ -1220,6 +1224,7 @@ async fn dotenv_creds_produce_basic_auth_request() {
 
     let url = mock.uri();
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .current_dir(dir.path())
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
@@ -1319,6 +1324,7 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args([
             "cloud",
             "--url",
@@ -1408,6 +1414,7 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args([
             "cloud",
             "--url",
@@ -1516,6 +1523,7 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args([
             "cloud",
             "--url",
@@ -1580,6 +1588,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args([
             "cloud",
             "--url",
@@ -1646,6 +1655,7 @@ async fn shell_env_overrides_dotenv_creds_in_request() {
 
     let url = mock.uri();
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .current_dir(dir.path())
         .env("CLICKHOUSE_CLOUD_API_KEY", "shell-key")
@@ -1702,6 +1712,7 @@ async fn agent_session_and_trace_headers_are_forwarded() {
     let url = mock.uri();
     let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
     let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
         .args(["cloud", "--url", &url, "--json", "org", "list"])
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
