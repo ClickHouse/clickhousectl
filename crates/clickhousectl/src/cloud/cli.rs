@@ -1098,7 +1098,6 @@ pub enum ClickPipeCommands {
 CONTEXT FOR AGENTS:
   Infers the schema (column name + ClickHouse type) for a Kafka or Kinesis source
   without creating a ClickPipe. Useful for filling in --column on `clickpipe create`.
-  Read-only (safe under OAuth/Bearer auth). Add --json for machine-readable output.
   Related: `clickhousectl cloud clickpipe create kafka|kinesis` to create a pipe with the discovered columns.")]
     SchemaDiscover {
         /// Service ID

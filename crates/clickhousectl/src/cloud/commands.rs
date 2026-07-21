@@ -1122,7 +1122,7 @@ fn build_kafka_credentials(
 /// Build a `ClickPipePostKafkaSource` from the CLI args, performing all
 /// authentication/credential/schema-registry/CA validation up front so bad
 /// invocations fail fast before any network call. Shared by the
-/// `clickpipe create kafka` and `clickpipe schema-discover --source kafka`
+/// `clickpipe create kafka` and `clickpipe schema-discover <SERVICE_ID> kafka`
 /// handlers.
 fn build_kafka_source(
     args: &crate::cloud::cli::KafkaSourceFields,
@@ -1206,7 +1206,7 @@ fn build_kafka_source(
 }
 
 /// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
-/// `clickpipe create kinesis` and `clickpipe schema-discover --source kinesis`
+/// `clickpipe create kinesis` and `clickpipe schema-discover <SERVICE_ID> kinesis`
 /// handlers.
 fn build_kinesis_source(
     args: &crate::cloud::cli::KinesisSourceFields,
@@ -1299,7 +1299,9 @@ pub async fn clickpipe_create_kinesis(
 }
 
 /// Discover the inferred schema for a Kafka or Kinesis source without creating
-/// a ClickPipe (Beta). Read-only — safe under OAuth/Bearer auth.
+/// a ClickPipe (Beta). Side-effect-free, but the API gateway rejects
+/// OAuth/Bearer on this POST endpoint, so it is classified as a write command
+/// and requires API key auth.
 pub async fn clickpipe_schema_discover(
     client: &CloudClient,
     service_id: &str,
