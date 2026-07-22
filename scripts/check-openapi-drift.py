@@ -27,6 +27,13 @@ LIVE_SPEC_URL = os.environ.get(
     "CLICKHOUSE_OPENAPI_SPEC_URL", "https://api.clickhouse.cloud/v1"
 )
 ISSUE_LABEL = "openapi-drift"
+# GitHub rejects issue bodies over 65,536 characters.
+MAX_ISSUE_BODY_CHARS = 65536
+TRUNCATION_NOTICE = (
+    "\n---\n\n"
+    "**Report truncated to fit GitHub's issue body limit.** "
+    "Run `python3 scripts/check-openapi-drift.py --dry-run` locally for the full report.\n"
+)
 
 
 def fetch_live_spec() -> dict | None:
@@ -156,9 +163,41 @@ def open_drift_issues() -> list[dict]:
     return json.loads(result.stdout)
 
 
+def truncate_issue_body(body: str) -> str:
+    """Cut an oversized body at a line boundary, keeping the markdown well-formed."""
+    if len(body) <= MAX_ISSUE_BODY_CHARS:
+        return body
+    closers = "```\n</details>\n"
+    budget = MAX_ISSUE_BODY_CHARS - len(TRUNCATION_NOTICE) - len(closers)
+    kept = []
+    used = 0
+    in_fence = False
+    in_details = False
+    for line in body.splitlines():
+        if used + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        used += len(line) + 1
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+        elif stripped == "<details>":
+            in_details = True
+        elif stripped == "</details>":
+            in_details = False
+    if in_fence:
+        kept.append("```")
+    if in_details:
+        kept.append("</details>")
+    return "\n".join(kept) + TRUNCATION_NOTICE
+
+
 def create_issue(title: str, body: str):
+    # The body can exceed the kernel's per-argument size limit; feed it via stdin.
     subprocess.run(
-        ["gh", "issue", "create", "--title", title, "--body", body, "--label", ISSUE_LABEL],
+        ["gh", "issue", "create", "--title", title, "--body-file", "-", "--label", ISSUE_LABEL],
+        input=truncate_issue_body(body),
+        text=True,
         check=True,
     )
 

@@ -68,6 +68,39 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Acknowledged Unsupported Enum Constraints", body)
         self.assertIn("## Enum VALUES Const Mismatches", body)
 
+    def test_truncate_issue_body_keeps_short_bodies_intact(self):
+        body = "short body"
+        self.assertEqual(drift.truncate_issue_body(body), body)
+
+    def test_truncate_issue_body_fits_github_limit_and_closes_markdown(self):
+        lines = ["<details>", "```json"]
+        lines += ['{"filler": %d}' % i for i in range(10_000)]
+        lines += ["```", "</details>"]
+        body = "\n".join(lines)
+        self.assertGreater(len(body), drift.MAX_ISSUE_BODY_CHARS)
+
+        truncated = drift.truncate_issue_body(body)
+        self.assertLessEqual(len(truncated), drift.MAX_ISSUE_BODY_CHARS)
+        self.assertTrue(truncated.endswith(drift.TRUNCATION_NOTICE))
+        # The cut lands inside the fenced block; both must be re-closed.
+        before_notice = truncated[: -len(drift.TRUNCATION_NOTICE)]
+        self.assertTrue(before_notice.endswith("```\n</details>"))
+
+    @mock.patch.object(drift.subprocess, "run")
+    def test_create_issue_streams_body_over_stdin(self, run):
+        body = "x" * (drift.MAX_ISSUE_BODY_CHARS * 3)
+        drift.create_issue("title", body)
+
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        command = args[0]
+        self.assertIn("--body-file", command)
+        self.assertIn("-", command)
+        self.assertNotIn("--body", command)
+        self.assertNotIn(body, command)
+        self.assertLessEqual(len(kwargs["input"]), drift.MAX_ISSUE_BODY_CHARS)
+        self.assertTrue(kwargs["input"].endswith(drift.TRUNCATION_NOTICE))
+
     @mock.patch.object(drift.subprocess, "run")
     def test_analyzer_subprocess_failure_is_fatal(self, run):
         run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="bad source")
