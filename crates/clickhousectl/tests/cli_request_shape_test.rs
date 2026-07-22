@@ -1751,3 +1751,269 @@ async fn agent_session_and_trace_headers_are_forwarded() {
         traceparent,
     );
 }
+
+// ── ClickPipe object-storage ingestion-control flags (#289) ─────────────────
+//
+// `--skip-initial-load` and `--start-after` must serialize to
+// `skipInitialLoad` / `startAfter` on the object-storage source body when
+// passed, and stay absent when omitted. `--skip-initial-load` requires
+// `--queue-url`; `--start-after` conflicts with `--skip-initial-load`.
+
+#[tokio::test]
+async fn s3_skip_initial_load_serializes_when_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "t",
+            "--source-url",
+            "https://bucket.s3.us-east-1.amazonaws.com/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "d",
+            "--table",
+            "t",
+            "--column",
+            "id:Int64",
+            "--continuous",
+            "--queue-url",
+            "https://sqs.us-east-1.amazonaws.com/123/q",
+            "--skip-initial-load",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+    let s3 = &body["source"]["objectStorage"];
+    assert_eq!(s3["skipInitialLoad"], true);
+    assert_eq!(s3["queueUrl"], "https://sqs.us-east-1.amazonaws.com/123/q");
+    // startAfter is absent when --start-after not passed.
+    assert!(
+        s3.get("startAfter").is_none(),
+        "startAfter leaked when --start-after not passed: {s3}",
+    );
+}
+
+#[tokio::test]
+async fn s3_start_after_serializes_when_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "t",
+            "--source-url",
+            "https://bucket.s3.us-east-1.amazonaws.com/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "d",
+            "--table",
+            "t",
+            "--column",
+            "id:Int64",
+            "--continuous",
+            "--queue-url",
+            "https://sqs.us-east-1.amazonaws.com/123/q",
+            "--start-after",
+            "obj-key-001",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+    let s3 = &body["source"]["objectStorage"];
+    assert_eq!(s3["startAfter"], "obj-key-001");
+    // skipInitialLoad is absent when --skip-initial-load not passed.
+    assert!(
+        s3.get("skipInitialLoad").is_none(),
+        "skipInitialLoad leaked when --skip-initial-load not passed: {s3}",
+    );
+}
+
+// ── ClickPipe MySQL --server-id (#289) ─────────────────────────────────────
+//
+// `--server-id` must serialize to `serverId` on the MySQL source body when
+// passed, and stay absent when omitted.
+
+#[tokio::test]
+async fn mysql_server_id_serializes_when_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "t",
+            "--host",
+            "mysql",
+            "--port",
+            "3306",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "mydb.t:t",
+            "--replication-mode",
+            "cdc",
+            "--server-id",
+            "4242",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+    let mysql = &body["source"]["mysql"];
+    assert_eq!(mysql["serverId"], 4242);
+}
+
+#[tokio::test]
+async fn mysql_server_id_absent_when_not_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "t",
+            "--host",
+            "mysql",
+            "--port",
+            "3306",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "mydb.t:t",
+            "--replication-mode",
+            "cdc",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+    let mysql = &body["source"]["mysql"];
+    assert!(
+        mysql.get("serverId").is_none(),
+        "serverId leaked when --server-id not passed: {mysql}",
+    );
+}
+
+// ── ClickPipe schema discovery (#289, beta) ────────────────────────────────
+//
+// `clickpipe schema-discover` POSTs to .../clickpipes/schemaDiscovery with a
+// `source` containing the kafka/kinesis source built from the CLI args. The
+// request body shape is asserted; the stubbed response is rendered as a table
+// (or JSON with --json).
+
+/// Start a wiremock server that accepts a schema-discovery POST and records
+/// the request body. Returns inferred fields the CLI renders.
+async fn start_mock_schema_discovery_api() -> MockServer {
+    let mock = MockServer::start().await;
+    let stub_response = serde_json::json!({
+        "result": {
+            "fields": [
+                { "name": "id", "type": "Int64", "optional": false },
+                { "name": "event", "type": "String", "optional": true },
+            ],
+        },
+        "status": 200,
+        "requestId": "stub-schema-discovery",
+    });
+    Mock::given(method("POST"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/schemaDiscovery$",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_response))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+#[tokio::test]
+async fn schema_discover_kafka_posts_source_body() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "kafka",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:aws:iam::123:role/x",
+        ],
+    )
+    .await;
+    let kafka = &body["source"]["kafka"];
+    assert_eq!(kafka["brokers"], "broker:9092");
+    assert_eq!(kafka["topics"], "topic");
+    assert_eq!(kafka["format"], "JSONEachRow");
+    // Kinesis is absent for a Kafka discovery request.
+    assert!(
+        body["source"].get("kinesis").is_none(),
+        "kinesis leaked into kafka schema-discovery body: {}",
+        body["source"],
+    );
+}
+
+#[tokio::test]
+async fn schema_discover_kinesis_posts_source_body() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "kinesis",
+            "--stream-name",
+            "mystream",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+        ],
+    )
+    .await;
+    let kinesis = &body["source"]["kinesis"];
+    assert_eq!(kinesis["streamName"], "mystream");
+    assert_eq!(kinesis["region"], "us-east-1");
+    assert_eq!(kinesis["format"], "JSONEachRow");
+    // Kafka is absent for a Kinesis discovery request.
+    assert!(
+        body["source"].get("kafka").is_none(),
+        "kafka leaked into kinesis schema-discovery body: {}",
+        body["source"],
+    );
+}

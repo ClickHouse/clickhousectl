@@ -13,7 +13,7 @@ use clickhouse_cloud_api::models::{
     ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
     ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
     ServiceReplicaScalingPatchRequest,
-    ServiceStatePatchRequestCommand, ServicPrivateEndpointePostRequest,
+    ServiceStatePatchRequestCommand, ServicPrivateEndpointePostRequest, AutoscalingMode,
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
@@ -492,6 +492,9 @@ pub struct CreateServiceOptions {
     pub min_replica_memory_gb: Option<u32>,
     pub max_replica_memory_gb: Option<u32>,
     pub num_replicas: Option<u32>,
+    pub min_replicas: Option<u32>,
+    pub max_replicas: Option<u32>,
+    pub autoscaling_mode: Option<String>,
     pub idle_scaling: Option<bool>,
     pub idle_timeout_minutes: Option<u32>,
     pub ip_allow: Vec<String>,
@@ -582,6 +585,50 @@ pub struct BackupConfigUpdateOptions {
     pub org_id: Option<String>,
 }
 
+/// Resolved horizontal-autoscaling fields for a service create/scale request.
+struct HorizontalAutoscaling {
+    autoscaling_mode: Option<AutoscalingMode>,
+    min_replicas: Option<f64>,
+    max_replicas: Option<f64>,
+}
+
+/// Resolve the horizontal-autoscaling fields shared by `service create` and
+/// `service scale`.
+///
+/// The mode is sent only when `--autoscaling-mode` is given explicitly. The
+/// API resolves an omitted mode itself, and a min/max band with the mode
+/// omitted and min == max is accepted as a vertical fixed replica count that
+/// needs no horizontal entitlement — inferring `horizontal` here would change
+/// those semantics.
+///
+/// Rejects `--min-replicas` without `--max-replicas` (and vice versa) with a
+/// clear error before any network call. clap already rejects mixing the
+/// horizontal pair with `--num-replicas`; the memory flags and
+/// `--autoscaling-mode` combine freely with either set because a single
+/// request can switch modes (e.g. `--autoscaling-mode vertical
+/// --num-replicas 3`, or `--autoscaling-mode horizontal` with the equal
+/// memory bounds horizontal requires). Remaining combination rules are the
+/// API's to enforce.
+fn resolve_horizontal_autoscaling(
+    autoscaling_mode: Option<&str>,
+    min_replicas: Option<u32>,
+    max_replicas: Option<u32>,
+) -> Result<HorizontalAutoscaling, Box<dyn std::error::Error>> {
+    if min_replicas.is_some() != max_replicas.is_some() {
+        return Err("--min-replicas and --max-replicas must be specified together".into());
+    }
+    let autoscaling_mode = autoscaling_mode
+        .map(|value| {
+            parse_serde_enum::<AutoscalingMode>(value, "autoscaling_mode", AutoscalingMode::VALUES)
+        })
+        .transpose()?;
+    Ok(HorizontalAutoscaling {
+        autoscaling_mode,
+        min_replicas: min_replicas.map(f64::from),
+        max_replicas: max_replicas.map(f64::from),
+    })
+}
+
 fn build_create_service_request(
     opts: &CreateServiceOptions,
 ) -> Result<ServicePostRequest, Box<dyn std::error::Error>> {
@@ -593,6 +640,12 @@ fn build_create_service_request(
     } else {
         parse_ip_access_entries(&opts.ip_allow).unwrap_or_default()
     };
+
+    let horizontal = resolve_horizontal_autoscaling(
+        opts.autoscaling_mode.as_deref(),
+        opts.min_replicas,
+        opts.max_replicas,
+    )?;
 
     Ok(ServicePostRequest {
         name: opts.name.clone(),
@@ -656,10 +709,10 @@ fn build_create_service_request(
         endpoints: parse_service_endpoint_changes(&opts.enable_endpoints, &opts.disable_endpoints)?,
         enable_core_dumps: opts.enable_core_dumps,
         // Fields not exposed in CLI
-        autoscaling_mode: None,
+        autoscaling_mode: horizontal.autoscaling_mode,
         byoc_id: None,
-        min_replicas: None,
-        max_replicas: None,
+        min_replicas: horizontal.min_replicas,
+        max_replicas: horizontal.max_replicas,
         // Deprecated fields — only exist (and stay None) under the
         // `deprecated-fields` feature; gated out of the struct otherwise.
         #[cfg(feature = "deprecated-fields")]
@@ -1000,9 +1053,8 @@ pub async fn clickpipe_create_s3(
         azure_container_name: args.azure_container_name.clone(),
         path: args.path.clone(),
         service_account_key,
-        // Not exposed as CLI flags yet
-        skip_initial_load: None,
-        start_after: None,
+        skip_initial_load: if args.skip_initial_load { Some(true) } else { None },
+        start_after: args.start_after.clone(),
     };
 
     let request = ClickPipePostRequest {
@@ -1032,7 +1084,7 @@ pub async fn clickpipe_create_s3(
 /// stays pure and testable.
 fn build_kafka_credentials(
     authentication: &clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication,
-    args: &crate::cloud::cli::KafkaCreateArgs,
+    args: &crate::cloud::cli::KafkaSourceFields,
     mtls_contents: Option<(String, String)>,
 ) -> Result<serde_json::Value, String> {
     use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
@@ -1067,20 +1119,19 @@ fn build_kafka_credentials(
     }
 }
 
-pub async fn clickpipe_create_kafka(
-    client: &CloudClient,
-    args: &crate::cloud::cli::KafkaCreateArgs,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Build a `ClickPipePostKafkaSource` from the CLI args, performing all
+/// authentication/credential/schema-registry/CA validation up front so bad
+/// invocations fail fast before any network call. Shared by the
+/// `clickpipe create kafka` and `clickpipe schema-discover <SERVICE_ID> kafka`
+/// handlers.
+fn build_kafka_source(
+    args: &crate::cloud::cli::KafkaSourceFields,
+) -> Result<clickhouse_cloud_api::models::ClickPipePostKafkaSource, Box<dyn std::error::Error>> {
     use clickhouse_cloud_api::models::{
         ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
         ClickPipeMutateKafkaSchemaRegistry, ClickPipePostKafkaSource,
-        ClickPipePostKafkaSourceAuthentication, ClickPipePostRequest, ClickPipePostSource,
+        ClickPipePostKafkaSourceAuthentication,
     };
-
-    // Validate args and build credentials before any network call so bad
-    // invocations fail fast.
-    let parsed_columns = parse_columns(&args.columns)?;
 
     let authentication: ClickPipePostKafkaSourceAuthentication = match args.auth.as_deref() {
         Some(a) => parse_enum(a)?,
@@ -1134,7 +1185,7 @@ pub async fn clickpipe_create_kafka(
         None => None,
     };
 
-    let source = ClickPipePostKafkaSource {
+    Ok(ClickPipePostKafkaSource {
         r#type: parse_enum(&args.kafka_type)?,
         format: parse_enum(&args.format)?,
         brokers: args.brokers.clone(),
@@ -1151,7 +1202,55 @@ pub async fn clickpipe_create_kafka(
         schema_registry,
         ca_certificate: ca_cert_contents,
         reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
+    })
+}
+
+/// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
+/// `clickpipe create kinesis` and `clickpipe schema-discover <SERVICE_ID> kinesis`
+/// handlers.
+fn build_kinesis_source(
+    args: &crate::cloud::cli::KinesisSourceFields,
+) -> Result<clickhouse_cloud_api::models::ClickPipePostKinesisSource, Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
+
+    let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
+        (Some(k), Some(s)) => Some(MskIamUser {
+            access_key_id: k.to_string(),
+            secret_key: s.to_string(),
+        }),
+        _ => None,
     };
+
+    Ok(ClickPipePostKinesisSource {
+        format: parse_enum(&args.format)?,
+        stream_name: args.stream_name.clone(),
+        region: args.region.clone(),
+        authentication: parse_enum(&args.auth)?,
+        iam_role: args.iam_role.clone(),
+        access_key,
+        use_enhanced_fan_out: if args.enhanced_fan_out { Some(true) } else { None },
+        iterator_type: parse_enum(&args.iterator_type)?,
+        timestamp: args
+            .iterator_timestamp
+            .map(|t| {
+                i64::try_from(t)
+                    .map_err(|_| format!("--iterator-timestamp {t} is out of range"))
+            })
+            .transpose()?,
+    })
+}
+
+pub async fn clickpipe_create_kafka(
+    client: &CloudClient,
+    args: &crate::cloud::cli::KafkaCreateArgs,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    // Validate args and build the source before any network call so bad
+    // invocations fail fast.
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_kafka_source(&args.source)?;
 
     let request = ClickPipePostRequest {
         name: args.name.clone(),
@@ -1176,32 +1275,11 @@ pub async fn clickpipe_create_kinesis(
     args: &crate::cloud::cli::KinesisCreateArgs,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use clickhouse_cloud_api::models::{
-        ClickPipePostKinesisSource, ClickPipePostRequest, ClickPipePostSource, MskIamUser,
-    };
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let parsed_columns = parse_columns(&args.columns)?;
-
-    let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
-        (Some(k), Some(s)) => Some(MskIamUser {
-            access_key_id: k.to_string(),
-            secret_key: s.to_string(),
-        }),
-        _ => None,
-    };
-
-    let source = ClickPipePostKinesisSource {
-        format: parse_enum(&args.format)?,
-        stream_name: args.stream_name.clone(),
-        region: args.region.clone(),
-        authentication: parse_enum(&args.auth)?,
-        iam_role: args.iam_role.clone(),
-        access_key,
-        use_enhanced_fan_out: if args.enhanced_fan_out { Some(true) } else { None },
-        iterator_type: parse_enum(&args.iterator_type)?,
-        timestamp: args.iterator_timestamp.map(|t| t as i64),
-    };
+    let source = build_kinesis_source(&args.source)?;
 
     let request = ClickPipePostRequest {
         name: args.name.clone(),
@@ -1217,6 +1295,76 @@ pub async fn clickpipe_create_kinesis(
         .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
     print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+/// Discover the inferred schema for a Kafka or Kinesis source without creating
+/// a ClickPipe (Beta). Side-effect-free, but the API gateway rejects
+/// OAuth/Bearer on this POST endpoint, so it is classified as a write command
+/// and requires API key auth.
+pub async fn clickpipe_schema_discover(
+    client: &CloudClient,
+    service_id: &str,
+    command: &crate::cloud::cli::ClickPipeSchemaDiscoverCommands,
+    org_id: Option<&str>,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
+    };
+
+    let source = match command {
+        crate::cloud::cli::ClickPipeSchemaDiscoverCommands::Kafka(args) => {
+            ClickPipeSchemaDiscoverySource {
+                kafka: Some(build_kafka_source(args)?),
+                kinesis: None,
+            }
+        }
+        crate::cloud::cli::ClickPipeSchemaDiscoverCommands::Kinesis(args) => {
+            ClickPipeSchemaDiscoverySource {
+                kafka: None,
+                kinesis: Some(build_kinesis_source(args)?),
+            }
+        }
+    };
+
+    let request = ClickPipeSchemaDiscoveryRequest { source };
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client
+        .click_pipe_schema_discovery(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "Type")]
+            r#type: String,
+            #[tabled(rename = "Optional")]
+            optional: String,
+        }
+        let rows: Vec<Row> = response
+            .fields
+            .into_iter()
+            .map(|f| Row {
+                name: f.name,
+                r#type: f.r#type,
+                optional: match f.optional {
+                    Some(true) => "true".to_string(),
+                    Some(false) => "false".to_string(),
+                    None => "".to_string(),
+                },
+            })
+            .collect();
+        if rows.is_empty() {
+            println!("No fields discovered");
+        } else {
+            println!("{}", Table::new(rows).with(Style::markdown()));
+        }
+    }
     Ok(())
 }
 
@@ -1614,7 +1762,7 @@ pub async fn clickpipe_create_mysql(
         } else {
             None
         },
-        server_id: None,
+        server_id: args.server_id.map(|v| v as i64),
         settings: ClickPipeMySQLPipeSettings {
             replication_mode: parse_enum(&args.replication_mode)?,
             replication_mechanism: Some(parse_enum(&args.replication_mechanism)?),
@@ -1895,13 +2043,38 @@ pub async fn service_update(
     Ok(())
 }
 
+#[derive(Default)]
 pub struct ServiceScaleOptions {
     pub min_replica_memory_gb: Option<u32>,
     pub max_replica_memory_gb: Option<u32>,
     pub num_replicas: Option<u32>,
+    pub min_replicas: Option<u32>,
+    pub max_replicas: Option<u32>,
+    pub autoscaling_mode: Option<String>,
     pub idle_scaling: Option<bool>,
     pub idle_timeout_minutes: Option<u32>,
     pub org_id: Option<String>,
+}
+
+fn build_service_scale_request(
+    opts: &ServiceScaleOptions,
+) -> Result<ServiceReplicaScalingPatchRequest, Box<dyn std::error::Error>> {
+    let horizontal = resolve_horizontal_autoscaling(
+        opts.autoscaling_mode.as_deref(),
+        opts.min_replicas,
+        opts.max_replicas,
+    )?;
+
+    Ok(ServiceReplicaScalingPatchRequest {
+        autoscaling_mode: horizontal.autoscaling_mode,
+        min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
+        max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
+        min_replicas: horizontal.min_replicas,
+        max_replicas: horizontal.max_replicas,
+        num_replicas: opts.num_replicas.map(f64::from),
+        idle_scaling: opts.idle_scaling,
+        idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
+    })
 }
 
 pub async fn service_scale(
@@ -1910,18 +2083,8 @@ pub async fn service_scale(
     opts: ServiceScaleOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let request = build_service_scale_request(&opts)?;
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
-
-    let request = ServiceReplicaScalingPatchRequest {
-        min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
-        max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
-        min_replicas: None,
-        max_replicas: None,
-        num_replicas: opts.num_replicas.map(f64::from),
-        idle_scaling: opts.idle_scaling,
-        idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
-        ..Default::default()
-    };
 
     let svc = client
         .update_replica_scaling(&org_id, service_id, &request)
@@ -1931,9 +2094,21 @@ pub async fn service_scale(
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
         println!("Service {} scaling updated", svc.name);
-        println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
-        println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
-        println!("  Replicas: {}", svc.num_replicas);
+        println!("  Autoscaling Mode: {}", svc.autoscaling_mode);
+        match svc.autoscaling_mode {
+            AutoscalingMode::Horizontal => {
+                println!("  Min Replicas: {}", svc.min_replicas);
+                println!("  Max Replicas: {}", svc.max_replicas);
+                println!("  Memory/Replica: {} GB", svc.replica_memory_gb);
+            }
+            AutoscalingMode::Vertical => {
+                println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
+                println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
+                println!("  Replicas: {}", svc.num_replicas);
+            }
+            // A mode this CLI version doesn't know; don't guess which fields apply.
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -2856,6 +3031,9 @@ mod tests {
             min_replica_memory_gb: Some(24),
             max_replica_memory_gb: Some(48),
             num_replicas: Some(3),
+            min_replicas: None,
+            max_replicas: None,
+            autoscaling_mode: None,
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(10),
             ip_allow: vec!["10.0.0.0/8".to_string()],
@@ -2895,6 +3073,9 @@ mod tests {
             min_replica_memory_gb: None,
             max_replica_memory_gb: None,
             num_replicas: None,
+            min_replicas: None,
+            max_replicas: None,
+            autoscaling_mode: None,
             idle_scaling: None,
             idle_timeout_minutes: None,
             ip_allow: vec![],
@@ -2930,6 +3111,9 @@ mod tests {
             min_replica_memory_gb: None,
             max_replica_memory_gb: None,
             num_replicas: None,
+            min_replicas: None,
+            max_replicas: None,
+            autoscaling_mode: None,
             idle_scaling: None,
             idle_timeout_minutes: None,
             ip_allow: vec![],
@@ -3164,6 +3348,235 @@ mod tests {
     }
 
     #[test]
+    fn build_create_service_request_horizontal_autoscaling_on_wire() {
+        // Maximal: explicit --autoscaling-mode horizontal + min/max replicas.
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replicas: Some(2),
+            max_replicas: Some(8),
+            autoscaling_mode: Some("horizontal".to_string()),
+            ..Default::default()
+        };
+        let request = build_create_service_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["autoscalingMode"], "horizontal");
+        assert_eq!(json["minReplicas"], 2.0);
+        assert_eq!(json["maxReplicas"], 8.0);
+        // Vertical fields stay absent.
+        assert!(json.get("numReplicas").is_none());
+        assert!(json.get("minReplicaMemoryGb").is_none());
+        assert!(json.get("maxReplicaMemoryGb").is_none());
+    }
+
+    #[test]
+    fn build_create_service_request_replica_pair_without_mode_omits_mode() {
+        // No explicit --autoscaling-mode: the replica pair passes through with
+        // the mode absent. The API resolves an omitted mode itself — an equal
+        // band is accepted as a vertical fixed replica count without the
+        // horizontal entitlement, so the CLI must not inject "horizontal".
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replicas: Some(1),
+            max_replicas: Some(4),
+            ..Default::default()
+        };
+        let request = build_create_service_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("autoscalingMode").is_none());
+        assert_eq!(json["minReplicas"], 1.0);
+        assert_eq!(json["maxReplicas"], 4.0);
+    }
+
+    #[test]
+    fn build_create_service_request_vertical_omits_horizontal_fields() {
+        // Minimal: vertical-only usage leaves autoscalingMode/replicas absent.
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            num_replicas: Some(3),
+            min_replica_memory_gb: Some(24),
+            max_replica_memory_gb: Some(48),
+            ..Default::default()
+        };
+        let request = build_create_service_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json.get("autoscalingMode").is_none());
+        assert!(json.get("minReplicas").is_none());
+        assert!(json.get("maxReplicas").is_none());
+        assert_eq!(json["numReplicas"], 3.0);
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_min_without_max_replicas() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replicas: Some(2),
+            ..Default::default()
+        };
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("--min-replicas"),
+            "error should guide the user: {}",
+            err
+        );
+
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            max_replicas: Some(8),
+            ..Default::default()
+        };
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("--min-replicas"),
+            "error should guide the user: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_rejects_invalid_autoscaling_mode() {
+        let opts = CreateServiceOptions {
+            name: "svc".to_string(),
+            provider: "aws".to_string(),
+            region: "us-east-1".to_string(),
+            min_replicas: Some(2),
+            max_replicas: Some(8),
+            autoscaling_mode: Some("turbo".to_string()),
+            ..Default::default()
+        };
+        let err = build_create_service_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("turbo"),
+            "error should mention the bad value: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn resolve_horizontal_autoscaling_explicit_vertical_with_no_replicas() {
+        // Explicit --autoscaling-mode vertical with no replica pair → mode set,
+        // replicas absent (lets the server apply vertical defaults).
+        let resolved =
+            resolve_horizontal_autoscaling(Some("vertical"), None, None).unwrap();
+        assert_eq!(resolved.autoscaling_mode, Some(AutoscalingMode::Vertical));
+        assert!(resolved.min_replicas.is_none());
+        assert!(resolved.max_replicas.is_none());
+    }
+
+    #[test]
+    fn build_service_scale_request_horizontal_autoscaling_on_wire() {
+        let opts = ServiceScaleOptions {
+            min_replicas: Some(2),
+            max_replicas: Some(8),
+            autoscaling_mode: Some("horizontal".to_string()),
+            ..Default::default()
+        };
+        let request = build_service_scale_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["autoscalingMode"], "horizontal");
+        assert_eq!(json["minReplicas"], 2.0);
+        assert_eq!(json["maxReplicas"], 8.0);
+        assert!(json.get("numReplicas").is_none());
+        assert!(json.get("minReplicaMemoryGb").is_none());
+        assert!(json.get("maxReplicaMemoryGb").is_none());
+    }
+
+    #[test]
+    fn build_service_scale_request_switch_to_vertical_on_wire() {
+        // Switching a horizontal service back to vertical sends the mode and
+        // the vertical fields in one request.
+        let opts = ServiceScaleOptions {
+            autoscaling_mode: Some("vertical".to_string()),
+            num_replicas: Some(3),
+            min_replica_memory_gb: Some(8),
+            max_replica_memory_gb: Some(32),
+            ..Default::default()
+        };
+        let request = build_service_scale_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["autoscalingMode"], "vertical");
+        assert_eq!(json["numReplicas"], 3.0);
+        assert_eq!(json["minReplicaMemoryGb"], 8.0);
+        assert_eq!(json["maxReplicaMemoryGb"], 32.0);
+        assert!(json.get("minReplicas").is_none());
+        assert!(json.get("maxReplicas").is_none());
+    }
+
+    #[test]
+    fn build_service_scale_request_switch_to_horizontal_with_memory_on_wire() {
+        // Switching to horizontal pins the equal per-replica memory the mode
+        // requires in the same request.
+        let opts = ServiceScaleOptions {
+            autoscaling_mode: Some("horizontal".to_string()),
+            min_replicas: Some(2),
+            max_replicas: Some(8),
+            min_replica_memory_gb: Some(16),
+            max_replica_memory_gb: Some(16),
+            ..Default::default()
+        };
+        let request = build_service_scale_request(&opts).unwrap();
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["autoscalingMode"], "horizontal");
+        assert_eq!(json["minReplicas"], 2.0);
+        assert_eq!(json["maxReplicas"], 8.0);
+        assert_eq!(json["minReplicaMemoryGb"], 16.0);
+        assert_eq!(json["maxReplicaMemoryGb"], 16.0);
+        assert!(json.get("numReplicas").is_none());
+    }
+
+    #[test]
+    fn build_service_scale_request_rejects_min_without_max_replicas() {
+        let opts = ServiceScaleOptions {
+            max_replicas: Some(8),
+            ..Default::default()
+        };
+        let err = build_service_scale_request(&opts).unwrap_err();
+        assert!(
+            err.to_string().contains("--min-replicas"),
+            "error should guide the user: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn build_kinesis_source_rejects_out_of_range_iterator_timestamp() {
+        let args = crate::cloud::cli::KinesisSourceFields {
+            stream_name: "stream".to_string(),
+            region: "us-east-1".to_string(),
+            format: "JSONEachRow".to_string(),
+            auth: "IAM_ROLE".to_string(),
+            iam_role: None,
+            access_key_id: None,
+            secret_key: None,
+            iterator_type: "AT_TIMESTAMP".to_string(),
+            iterator_timestamp: Some(u64::MAX),
+            enhanced_fan_out: false,
+        };
+        let err = build_kinesis_source(&args).unwrap_err();
+        assert!(
+            err.to_string().contains("out of range"),
+            "error should mention the range: {}",
+            err
+        );
+
+        let args = crate::cloud::cli::KinesisSourceFields {
+            iterator_timestamp: Some(1_750_000_000),
+            ..args
+        };
+        let source = build_kinesis_source(&args).unwrap();
+        assert_eq!(source.timestamp, Some(1_750_000_000));
+    }
+
+    #[test]
     fn build_update_service_request_rejects_invalid_release_channel() {
         let opts = ServiceUpdateOptions {
             release_channel: Some("turbo".to_string()),
@@ -3351,30 +3764,32 @@ mod tests {
         crate::cloud::cli::KafkaCreateArgs {
             service_id: "svc".into(),
             name: "pipe".into(),
-            brokers: "b:9092".into(),
-            topics: "t".into(),
-            format: "JSONEachRow".into(),
+            source: crate::cloud::cli::KafkaSourceFields {
+                brokers: "b:9092".into(),
+                topics: "t".into(),
+                format: "JSONEachRow".into(),
+                kafka_type: "kafka".into(),
+                consumer_group: None,
+                auth: None,
+                username: None,
+                password: None,
+                iam_role: None,
+                access_key_id: None,
+                secret_key: None,
+                offset: "from_beginning".into(),
+                offset_timestamp: None,
+                schema_registry_url: None,
+                schema_registry_username: None,
+                schema_registry_password: None,
+                ca_certificate: None,
+                client_certificate: None,
+                client_key: None,
+                schema_registry_ca_certificate: None,
+                reverse_private_endpoint_ids: vec![],
+            },
             database: "d".into(),
             table: "t".into(),
             columns: vec![],
-            kafka_type: "kafka".into(),
-            consumer_group: None,
-            auth: None,
-            username: None,
-            password: None,
-            iam_role: None,
-            access_key_id: None,
-            secret_key: None,
-            offset: "from_beginning".into(),
-            offset_timestamp: None,
-            schema_registry_url: None,
-            schema_registry_username: None,
-            schema_registry_password: None,
-            ca_certificate: None,
-            client_certificate: None,
-            client_key: None,
-            schema_registry_ca_certificate: None,
-            reverse_private_endpoint_ids: vec![],
             org_id: None,
         }
     }
@@ -3383,10 +3798,10 @@ mod tests {
     fn kafka_credentials_plain_shape() {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let mut args = kafka_args();
-        args.auth = Some("PLAIN".into());
-        args.username = Some("u".into());
-        args.password = Some("p".into());
-        let creds = super::build_kafka_credentials(&Auth::PLAIN, &args, None).unwrap();
+        args.source.auth = Some("PLAIN".into());
+        args.source.username = Some("u".into());
+        args.source.password = Some("p".into());
+        let creds = super::build_kafka_credentials(&Auth::PLAIN, &args.source, None).unwrap();
         assert_eq!(creds["username"], "u");
         assert_eq!(creds["password"], "p");
     }
@@ -3395,10 +3810,10 @@ mod tests {
     fn kafka_credentials_iam_user_shape() {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let mut args = kafka_args();
-        args.auth = Some("IAM_USER".into());
-        args.access_key_id = Some("AKIA".into());
-        args.secret_key = Some("secret".into());
-        let creds = super::build_kafka_credentials(&Auth::IAM_USER, &args, None).unwrap();
+        args.source.auth = Some("IAM_USER".into());
+        args.source.access_key_id = Some("AKIA".into());
+        args.source.secret_key = Some("secret".into());
+        let creds = super::build_kafka_credentials(&Auth::IAM_USER, &args.source, None).unwrap();
         // MskIamUser wire shape is {accessKeyId, secretKey} — NOT snake_case.
         assert_eq!(creds["accessKeyId"], "AKIA");
         assert_eq!(creds["secretKey"], "secret");
@@ -3409,11 +3824,11 @@ mod tests {
     fn kafka_credentials_iam_role_is_null() {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let mut args = kafka_args();
-        args.auth = Some("IAM_ROLE".into());
-        args.iam_role = Some("arn:aws:iam::123:role/Foo".into());
+        args.source.auth = Some("IAM_ROLE".into());
+        args.source.iam_role = Some("arn:aws:iam::123:role/Foo".into());
         // IAM_ROLE sends credentials=null; the role ARN flows through the
         // top-level `iamRole` field on the Kafka source, not credentials.
-        let creds = super::build_kafka_credentials(&Auth::IAM_ROLE, &args, None).unwrap();
+        let creds = super::build_kafka_credentials(&Auth::IAM_ROLE, &args.source, None).unwrap();
         assert!(creds.is_null());
     }
 
@@ -3422,7 +3837,7 @@ mod tests {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let args = kafka_args();
         let contents = Some(("CERT_PEM".into(), "KEY_PEM".into()));
-        let creds = super::build_kafka_credentials(&Auth::MUTUAL_TLS, &args, contents).unwrap();
+        let creds = super::build_kafka_credentials(&Auth::MUTUAL_TLS, &args.source, contents).unwrap();
         assert_eq!(creds["certificate"], "CERT_PEM");
         assert_eq!(creds["privateKey"], "KEY_PEM");
     }
@@ -3431,7 +3846,7 @@ mod tests {
     fn kafka_credentials_iam_user_missing_args_errors() {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let args = kafka_args();
-        let err = super::build_kafka_credentials(&Auth::IAM_USER, &args, None).unwrap_err();
+        let err = super::build_kafka_credentials(&Auth::IAM_USER, &args.source, None).unwrap_err();
         assert!(err.contains("--access-key-id"));
     }
 
@@ -3439,8 +3854,8 @@ mod tests {
     fn kafka_credentials_iam_role_missing_arn_errors() {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let mut args = kafka_args();
-        args.auth = Some("IAM_ROLE".into());
-        let err = super::build_kafka_credentials(&Auth::IAM_ROLE, &args, None).unwrap_err();
+        args.source.auth = Some("IAM_ROLE".into());
+        let err = super::build_kafka_credentials(&Auth::IAM_ROLE, &args.source, None).unwrap_err();
         assert!(err.contains("--iam-role"));
     }
 }

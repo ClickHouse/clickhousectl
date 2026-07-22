@@ -1065,6 +1065,20 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn click_pipe_schema_discovery(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest,
+    ) -> Result<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse> {
+        let response = self
+            .api()
+            .click_pipe_schema_discovery(org_id, service_id, request)
+            .await
+            .map_err(|e| self.convert_error(e))?;
+        Self::unwrap_response(response)
+    }
+
     // Helper to get the default organization
     pub async fn get_default_org_id(&self) -> Result<String> {
         let orgs = self.list_organizations().await?;
