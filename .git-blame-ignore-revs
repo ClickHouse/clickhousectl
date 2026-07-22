@@ -1,0 +1,6 @@
+# Bulk formatting commits, skipped by git blame.
+# Enable locally with: git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub's blame view picks this file up automatically.)
+
+# Format entire workspace with cargo fmt
+d78a6d2aa40a70d9e1093f09ae987ca1b26e3e41

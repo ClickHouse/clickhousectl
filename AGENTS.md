@@ -124,6 +124,8 @@ Test coverage is non-negotiable.
 
 CI enforces clippy, ensure you fix all warnings.
 
+CI enforces rustfmt (`cargo fmt --all --check`); run `cargo fmt` before committing. Bulk formatting commits are listed in `.git-blame-ignore-revs`.
+
 Use cargo build, cargo test, cargo clippy, locally.
 
 ### clickhouse-cloud-api library
