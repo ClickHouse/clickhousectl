@@ -152,6 +152,23 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             .result
             .ok_or("postgres create returned no result")?;
         let postgres_id = pg_created.id.to_string();
+        // The create response is the only API surface guaranteed to return
+        // credentials: from July 31, 2026 the get endpoint stops echoing
+        // `password` and `connectionString`, so capture everything
+        // credential-derived here rather than from the polled get below.
+        let pg_username = pg_created.username.clone();
+        let pg_password = pg_created.password.clone();
+        let pg_port = parse_pg_port(&pg_created.connection_string).unwrap_or(5432);
+        let pg_database = parse_pg_database(&pg_created.connection_string)
+            .unwrap_or_else(|| "postgres".to_string());
+        assert!(
+            !pg_username.is_empty(),
+            "postgres create returned empty username"
+        );
+        assert!(
+            !pg_password.is_empty(),
+            "postgres create returned empty password"
+        );
         cleanup.register_postgres(postgres_id.clone());
         eprintln!("  provisioned postgres id <redacted>");
 
@@ -206,10 +223,6 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         );
         let (pg_ready, ch_ready) = tokio::try_join!(pg_ready_fut, ch_ready_fut)?;
 
-        assert!(
-            !pg_ready.connection_string.is_empty(),
-            "empty pg connection string"
-        );
         assert!(!pg_ready.hostname.is_empty(), "empty pg hostname");
         let ch_endpoint = ch_ready
             .endpoints
@@ -230,14 +243,21 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             .postgres_service_certs_get(&ctx.org_id, &postgres_id)
             .await
             .ok();
-        let pg_client = connect_postgres(&pg_ready.connection_string, pg_ca_pem.as_deref()).await?;
+        let pg_client = connect_postgres(
+            &pg_ready.hostname,
+            pg_port,
+            &pg_database,
+            &pg_username,
+            &pg_password,
+            pg_ca_pem.as_deref(),
+        )
+        .await?;
         configure_pg_for_cdc(&pg_client).await?;
 
         // ── Create ClickPipe ────────────────────────────────────────
 
         log_phase("Create ClickPipe");
 
-        let pg_port = parse_pg_port(&pg_ready.connection_string).unwrap_or(5432);
         let pipe_request = ClickPipePostRequest {
             name: format!("cdc-{}", ctx.run_id),
             destination: ClickPipeMutateDestination {
@@ -252,11 +272,10 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                     authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
                     ca_certificate: pg_ca_pem.clone(),
                     credentials: PLAIN {
-                        username: pg_ready.username.clone(),
-                        password: pg_ready.password.clone(),
+                        username: pg_username.clone(),
+                        password: pg_password.clone(),
                     },
-                    database: parse_pg_database(&pg_ready.connection_string)
-                        .unwrap_or_else(|| "postgres".to_string()),
+                    database: pg_database.clone(),
                     host: pg_ready.hostname.clone(),
                     port: pg_port as i64,
                     settings: ClickPipePostgresPipeSettings {
@@ -461,8 +480,15 @@ fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
     })
 }
 
+// Takes discrete connection parts rather than a connection string: the get
+// endpoint stops echoing `connectionString` on July 31, 2026, so callers
+// assemble host/port/database/credentials from the create response + get.
 async fn connect_postgres(
-    connection_string: &str,
+    host: &str,
+    port: u16,
+    database: &str,
+    username: &str,
+    password: &str,
     extra_ca_pem: Option<&str>,
 ) -> TestResult<tokio_postgres::Client> {
     let mut roots = RootCertStore::empty();
@@ -481,8 +507,14 @@ async fn connect_postgres(
         .with_no_client_auth();
     let tls = MakeRustlsConnect::new(client_config);
 
-    let mut config = tokio_postgres::Config::from_str(connection_string)?;
-    // Connection strings returned by Cloud may not specify SSL mode; force require.
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(host)
+        .port(port)
+        .dbname(database)
+        .user(username)
+        .password(password);
+    // Cloud Postgres requires TLS; force require.
     config.ssl_mode(tokio_postgres::config::SslMode::Require);
     // tokio-postgres-rustls doesn't expose the TLS exporter material that
     // SCRAM-SHA-256-PLUS needs, so disable channel binding even if the Cloud

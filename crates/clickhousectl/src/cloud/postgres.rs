@@ -537,10 +537,10 @@ pub async fn postgres_get(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
+        // No connection string here: the get endpoint stops returning
+        // credentials on July 31, 2026 — they are only available from
+        // `postgres create` and `postgres reset-password`.
         render_postgres_service(&svc);
-        if !svc.connection_string.is_empty() {
-            println!("  Connection string: {}", svc.connection_string);
-        }
     }
     Ok(())
 }
