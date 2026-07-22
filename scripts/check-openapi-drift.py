@@ -205,16 +205,29 @@ def split_issue_body(body: str) -> list[str]:
         if clean_cut is not None and clean_cut > start:
             kept = lines[start:clean_cut]
             start = clean_cut
-        else:
+        elif end > start:
             # A single block exceeds the budget; cut mid-block and re-close.
-            end = max(end, start + 1)
             kept = lines[start:end]
             if in_fence:
                 kept.append("```")
             if in_details:
                 kept.append("</details>")
             start = end
-        chunks.append(header + "\n".join(kept) + CONTINUATION_NOTICE)
+        else:
+            # A single line alone exceeds the budget; hard-truncate it so the
+            # emitted chunk is guaranteed to fit, leaving a visible marker.
+            marker = "… [line truncated]"
+            cut = max(budget - len(marker) - len(closers), 0)
+            kept = [lines[start][:cut] + marker]
+            if in_fence:
+                kept.append("```")
+            if in_details:
+                kept.append("</details>")
+            start += 1
+        # Only advertise a continuation when more lines actually remain; the
+        # forced branches above can consume the final line of the body.
+        notice = CONTINUATION_NOTICE if start < len(lines) else ""
+        chunks.append(header + "\n".join(kept) + notice)
     return chunks
 
 
@@ -231,12 +244,47 @@ def create_issue(title: str, body: str):
     issue_url = result.stdout.strip().splitlines()[-1]
     print(issue_url, file=sys.stderr)
     for chunk in chunks[1:]:
-        subprocess.run(
-            ["gh", "issue", "comment", issue_url, "--body-file", "-"],
-            input=chunk,
-            text=True,
-            check=True,
-        )
+        try:
+            subprocess.run(
+                ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                input=chunk,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            # Retry once; transient GitHub failures are common.
+            try:
+                subprocess.run(
+                    ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                    input=chunk,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                # A comment failed twice. Never leave an issue that silently
+                # looks complete: best-effort flag it as truncated, then fail
+                # loudly so the CI run still reports the problem.
+                fallback = (
+                    "**This drift report is incomplete.** A continuation comment "
+                    "failed to post after a retry; check the workflow logs and "
+                    "re-run the drift check to regenerate the full report.\n"
+                )
+                try:
+                    subprocess.run(
+                        ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                        input=fallback,
+                        text=True,
+                        check=False,
+                        capture_output=True,
+                    )
+                except Exception:  # noqa: BLE001 - the fallback must never mask the failure
+                    pass
+                print(
+                    f"ERROR: failed to post a continuation comment to {issue_url}; "
+                    "the drift report is incomplete.",
+                    file=sys.stderr,
+                )
+                raise
 
 
 def build_issue_body(report: dict, live_spec: dict) -> str:
