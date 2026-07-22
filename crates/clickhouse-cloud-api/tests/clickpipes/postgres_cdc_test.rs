@@ -158,6 +158,10 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         // credential-derived here rather than from the polled get below.
         let pg_username = pg_created.username.clone();
         let pg_password = pg_created.password.clone();
+        assert!(
+            !pg_created.connection_string.is_empty(),
+            "postgres create returned empty connection string"
+        );
         let pg_port = parse_pg_port(&pg_created.connection_string).unwrap_or(5432);
         let pg_database = parse_pg_database(&pg_created.connection_string)
             .unwrap_or_else(|| "postgres".to_string());
