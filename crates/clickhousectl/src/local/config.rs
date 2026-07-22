@@ -249,10 +249,7 @@ mod tests {
         std::fs::create_dir(&configs).unwrap();
 
         let err = resolve_config_in(&configs, "../outside").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
@@ -264,10 +261,7 @@ mod tests {
         std::fs::create_dir(&configs).unwrap();
 
         let err = resolve_config_in(&configs, "../outside.xml").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
@@ -277,20 +271,14 @@ mod tests {
         // Absolute path would make `dir.join` discard the configs dir entirely.
         let abs = tmp.path().join("dev.xml");
         let err = resolve_config_in(tmp.path(), abs.to_str().unwrap()).unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
     fn rejects_dotdot() {
         let tmp = tempfile::tempdir().unwrap();
         let err = resolve_config_in(tmp.path(), "..").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
@@ -338,7 +326,12 @@ mod tests {
 
         apply_config_overlay(&data_dir, Some(&src)).unwrap();
 
-        assert!(data_dir.join("config.d").join("chctl-config.yaml").is_file());
+        assert!(
+            data_dir
+                .join("config.d")
+                .join("chctl-config.yaml")
+                .is_file()
+        );
     }
 
     #[test]

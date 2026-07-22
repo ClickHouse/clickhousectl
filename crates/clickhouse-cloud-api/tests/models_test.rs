@@ -382,8 +382,7 @@ fn service_state_enum_roundtrip() {
         ("idle", ServiceState::Idle),
     ];
     for (json_val, expected) in states {
-        let parsed: ServiceState =
-            serde_json::from_str(&format!(r#""{json_val}""#)).unwrap();
+        let parsed: ServiceState = serde_json::from_str(&format!(r#""{json_val}""#)).unwrap();
         assert_eq!(parsed, expected);
 
         let serialized = serde_json::to_string(&expected).unwrap();
@@ -410,8 +409,7 @@ fn clickpipe_state_all_variants() {
         "Resync",
     ];
     for s in states {
-        let parsed: ClickPipeState =
-            serde_json::from_str(&format!(r#""{s}""#)).unwrap();
+        let parsed: ClickPipeState = serde_json::from_str(&format!(r#""{s}""#)).unwrap();
         let serialized = serde_json::to_string(&parsed).unwrap();
         assert_eq!(serialized, format!(r#""{s}""#));
     }
@@ -455,7 +453,10 @@ fn unknown_enum_variant_deserializes() {
     // An unknown service state from the API should deserialize into Unknown(String)
     let json = r#"{"state": "brand-new-state"}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.state, ServiceState::Unknown("brand-new-state".to_string()));
+    assert_eq!(
+        svc.state,
+        ServiceState::Unknown("brand-new-state".to_string())
+    );
 }
 
 #[test]
@@ -477,7 +478,10 @@ fn known_enum_variant_still_deserializes() {
 #[test]
 fn unknown_enum_display() {
     assert_eq!(ServiceState::Running.to_string(), "running");
-    assert_eq!(ServiceState::Unknown("brand-new".to_string()).to_string(), "brand-new");
+    assert_eq!(
+        ServiceState::Unknown("brand-new".to_string()).to_string(),
+        "brand-new"
+    );
 }
 
 // ===========================================================================
@@ -762,19 +766,18 @@ fn deprecated_request_fields_absent_by_default() {
     let member = MemberPatchRequest {
         assigned_role_ids: Some(vec!["admin".to_string()]),
     };
-    assert!(serde_json::to_value(&member)
-        .unwrap()
-        .get("role")
-        .is_none());
+    assert!(serde_json::to_value(&member).unwrap().get("role").is_none());
 
     let invitation = InvitationPostRequest {
         email: "alice@example.com".to_string(),
         assigned_role_ids: vec!["admin".to_string()],
     };
-    assert!(serde_json::to_value(&invitation)
-        .unwrap()
-        .get("role")
-        .is_none());
+    assert!(
+        serde_json::to_value(&invitation)
+            .unwrap()
+            .get("role")
+            .is_none()
+    );
 
     let scaling = ServiceScalingPatchRequest {
         num_replicas: Some(3.0),
@@ -930,7 +933,10 @@ fn deserialize_scaling_schedule_entry_fixed_scaling_fields() {
 fn serialize_postgres_instance_config_default_envelope() {
     // Default envelope serializes to the minimal accepted body shape.
     let json = serde_json::to_value(PostgresInstanceConfig::default()).unwrap();
-    assert_eq!(json, serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} }));
+    assert_eq!(
+        json,
+        serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
+    );
 }
 
 // ===========================================================================
@@ -1121,7 +1127,8 @@ fn clickpipe_minimal_response() {
 
 #[test]
 fn postgres_service_minimal_response() {
-    let pg: PostgresService = serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
+    let pg: PostgresService =
+        serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
     assert_eq!(pg.name, "");
     assert_eq!(pg.state, PgStateProperty::default());
 }
@@ -1269,7 +1276,10 @@ fn deserialize_postgres_instance_config() {
         "pgBouncerConfig": {}
     }"#;
     let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(serde_json::json!(200)));
+    assert_eq!(
+        config.pg_config.max_connections,
+        Some(serde_json::json!(200))
+    );
 }
 
 #[test]
@@ -1290,15 +1300,30 @@ fn deserialize_postgres_instance_config_string_wrapped_numbers() {
         "pgBouncerConfig": {}
     }"#;
     let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(serde_json::json!("100")));
-    assert_eq!(config.pg_config.random_page_cost, Some(serde_json::json!("1.1")));
-    assert_eq!(config.pg_config.max_worker_processes, Some(serde_json::json!(8)));
-    assert_eq!(config.pg_config.autovacuum_naptime, Some(serde_json::json!("5s")));
+    assert_eq!(
+        config.pg_config.max_connections,
+        Some(serde_json::json!("100"))
+    );
+    assert_eq!(
+        config.pg_config.random_page_cost,
+        Some(serde_json::json!("1.1"))
+    );
+    assert_eq!(
+        config.pg_config.max_worker_processes,
+        Some(serde_json::json!(8))
+    );
+    assert_eq!(
+        config.pg_config.autovacuum_naptime,
+        Some(serde_json::json!("5s"))
+    );
     assert_eq!(
         config.pg_config.autovacuum_vacuum_scale_factor,
         Some(serde_json::json!("0.2"))
     );
-    assert_eq!(config.pg_config.autovacuum_max_workers, Some(serde_json::json!(3)));
+    assert_eq!(
+        config.pg_config.autovacuum_max_workers,
+        Some(serde_json::json!(3))
+    );
 }
 
 #[test]
@@ -1310,7 +1335,10 @@ fn deserialize_reverse_private_endpoint() {
     }"#;
     let rpe: ReversePrivateEndpoint = serde_json::from_str(json).unwrap();
     assert_eq!(rpe.description, "MSK endpoint");
-    assert_eq!(rpe.status, ReversePrivateEndpointStatus::Other("available".to_string()));
+    assert_eq!(
+        rpe.status,
+        ReversePrivateEndpointStatus::Other("available".to_string())
+    );
 }
 
 #[test]
@@ -1409,7 +1437,10 @@ fn deserialize_clickpipe_pubsub_source() {
     let src: ClickPipePubSubSource = serde_json::from_str(json).unwrap();
     assert_eq!(src.topic, "projects/p/topics/t");
     assert_eq!(src.project_id, "my-project");
-    assert_eq!(src.authentication, ClickPipePubSubSourceAuthentication::ServiceAccount);
+    assert_eq!(
+        src.authentication,
+        ClickPipePubSubSourceAuthentication::ServiceAccount
+    );
     assert_eq!(src.format, ClickPipePubSubSourceFormat::JSONEachRow);
     assert_eq!(src.seek_type, ClickPipePubSubSourceSeektype::Latest);
     assert_eq!(src.ack_deadline, Some(60));
@@ -1431,7 +1462,10 @@ fn deserialize_clickpipe_post_pubsub_source_required_fields() {
     let src: ClickPipePostPubSubSource = serde_json::from_str(json).unwrap();
     assert_eq!(src.topic, "projects/p/topics/t");
     assert_eq!(src.seek_type, ClickPipePostPubSubSourceSeektype::Earliest);
-    assert_eq!(src.service_account_key.service_account_file, "/path/to/key.json");
+    assert_eq!(
+        src.service_account_key.service_account_file,
+        "/path/to/key.json"
+    );
 }
 
 #[test]
@@ -1506,7 +1540,10 @@ fn deserialize_clickstack_tile_config_heatmap_variant() {
     match cfg {
         ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
             assert_eq!(h.source_id, "src-1");
-            assert_eq!(h.display_type, ClickStackHeatmapChartConfigDisplaytype::Heatmap);
+            assert_eq!(
+                h.display_type,
+                ClickStackHeatmapChartConfigDisplaytype::Heatmap
+            );
             assert_eq!(h.select.len(), 1);
             assert_eq!(h.select[0].value_expression, "latency_ms");
         }

@@ -13,7 +13,6 @@ pub use crate::common::support::*;
 
 use std::time::Duration;
 
-
 // ── AWS Cleanup Registry ─────────────────────────────────────────────
 //
 // Tracks AWS-side resources (S3 buckets, IAM roles) created by E2E tests
@@ -62,14 +61,16 @@ impl AwsCleanupRegistry {
         region: impl Into<String>,
         stream_name: impl Into<String>,
     ) {
-        self.kinesis_streams.push((region.into(), stream_name.into()));
+        self.kinesis_streams
+            .push((region.into(), stream_name.into()));
     }
 
     pub fn merge_from(&mut self, mut other: AwsCleanupRegistry) {
         self.s3_buckets.append(&mut other.s3_buckets);
         self.iam_roles.append(&mut other.iam_roles);
         self.ec2_instances.append(&mut other.ec2_instances);
-        self.ec2_security_groups.append(&mut other.ec2_security_groups);
+        self.ec2_security_groups
+            .append(&mut other.ec2_security_groups);
         self.ec2_elastic_ips.append(&mut other.ec2_elastic_ips);
         self.kinesis_streams.append(&mut other.kinesis_streams);
     }
@@ -108,7 +109,12 @@ impl AwsCleanupRegistry {
         }
 
         while let Some(sg_id) = self.ec2_security_groups.pop() {
-            if let Err(error) = ec2_client.delete_security_group().group_id(&sg_id).send().await {
+            if let Err(error) = ec2_client
+                .delete_security_group()
+                .group_id(&sg_id)
+                .send()
+                .await
+            {
                 let msg = error.to_string();
                 if !msg.contains("InvalidGroup.NotFound") {
                     failures.push(format!("ec2 sg {sg_id}: {msg}"));
@@ -152,10 +158,7 @@ impl AwsCleanupRegistry {
     }
 }
 
-async fn empty_and_delete_bucket(
-    s3: &aws_sdk_s3::Client,
-    bucket: &str,
-) -> TestResult<()> {
+async fn empty_and_delete_bucket(s3: &aws_sdk_s3::Client, bucket: &str) -> TestResult<()> {
     eprintln!("  cleanup: emptying s3 bucket");
 
     let mut continuation: Option<String> = None;
@@ -210,10 +213,7 @@ async fn empty_and_delete_bucket(
     }
 }
 
-async fn delete_iam_role(
-    iam: &aws_sdk_iam::Client,
-    role_name: &str,
-) -> TestResult<()> {
+async fn delete_iam_role(iam: &aws_sdk_iam::Client, role_name: &str) -> TestResult<()> {
     eprintln!("  cleanup: detaching inline policies on iam role");
 
     // Inline policies first.
@@ -232,7 +232,12 @@ async fn delete_iam_role(
     }
 
     // Managed policy attachments — none expected for our tests, but be defensive.
-    if let Ok(resp) = iam.list_attached_role_policies().role_name(role_name).send().await {
+    if let Ok(resp) = iam
+        .list_attached_role_policies()
+        .role_name(role_name)
+        .send()
+        .await
+    {
         for p in resp.attached_policies() {
             if let Some(arn) = p.policy_arn() {
                 let _ = iam
@@ -264,12 +269,14 @@ pub async fn create_private_bucket(
     tags: &[(String, String)],
 ) -> TestResult<()> {
     use aws_sdk_s3::types::{
-        BucketCannedAcl, BucketLocationConstraint, CreateBucketConfiguration,
-        ObjectOwnership, OwnershipControls, OwnershipControlsRule, PublicAccessBlockConfiguration,
-        Tag, Tagging,
+        BucketCannedAcl, BucketLocationConstraint, CreateBucketConfiguration, ObjectOwnership,
+        OwnershipControls, OwnershipControlsRule, PublicAccessBlockConfiguration, Tag, Tagging,
     };
 
-    let mut req = s3.create_bucket().bucket(bucket).acl(BucketCannedAcl::Private);
+    let mut req = s3
+        .create_bucket()
+        .bucket(bucket)
+        .acl(BucketCannedAcl::Private);
     // us-east-1 must NOT have a LocationConstraint; every other region must.
     if region != "us-east-1" {
         let cfg = CreateBucketConfiguration::builder()
@@ -366,9 +373,7 @@ pub fn generate_redpanda_certs_with_dns_sans(
     client_cn: &str,
     extra_dns_sans: &[&str],
 ) -> TestResult<RedpandaCerts> {
-    use rcgen::{
-        BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType,
-    };
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, SanType};
 
     let parsed_ip: std::net::IpAddr = broker_ip
         .parse()
@@ -398,9 +403,7 @@ pub fn generate_redpanda_certs_with_dns_sans(
         let ia5 = (*dns)
             .try_into()
             .map_err(|e| format!("invalid DNS SAN {dns}: {e}"))?;
-        server_params
-            .subject_alt_names
-            .push(SanType::DnsName(ia5));
+        server_params.subject_alt_names.push(SanType::DnsName(ia5));
     }
     server_params
         .distinguished_name
@@ -444,10 +447,7 @@ pub async fn default_vpc_id(ec2: &aws_sdk_ec2::Client) -> TestResult<String> {
         .ok_or_else(|| "no default VPC found in region".into())
 }
 
-pub async fn first_subnet_in_vpc(
-    ec2: &aws_sdk_ec2::Client,
-    vpc_id: &str,
-) -> TestResult<String> {
+pub async fn first_subnet_in_vpc(ec2: &aws_sdk_ec2::Client, vpc_id: &str) -> TestResult<String> {
     use aws_sdk_ec2::types::Filter;
 
     let resp = ec2
@@ -462,9 +462,7 @@ pub async fn first_subnet_in_vpc(
 }
 
 /// Find the most recent Canonical-published Ubuntu 24.04 LTS amd64 AMI.
-pub async fn latest_ubuntu_noble_amd64_ami(
-    ec2: &aws_sdk_ec2::Client,
-) -> TestResult<String> {
+pub async fn latest_ubuntu_noble_amd64_ami(ec2: &aws_sdk_ec2::Client) -> TestResult<String> {
     use aws_sdk_ec2::types::Filter;
 
     let resp = ec2
@@ -525,7 +523,10 @@ pub async fn create_open_security_group(
         .tag_specifications(tag_spec)
         .send()
         .await?;
-    let sg_id = sg.group_id().ok_or("CreateSecurityGroup returned no id")?.to_string();
+    let sg_id = sg
+        .group_id()
+        .ok_or("CreateSecurityGroup returned no id")?
+        .to_string();
 
     let permissions: Vec<IpPermission> = ingress_ports
         .iter()
@@ -562,11 +563,11 @@ pub async fn launch_ec2_instance(
     name_tag: &str,
 ) -> TestResult<(String, String)> {
     use aws_sdk_ec2::types::{
-        BlockDeviceMapping, EbsBlockDevice, InstanceNetworkInterfaceSpecification,
-        InstanceType, ResourceType, Tag, TagSpecification, VolumeType,
+        BlockDeviceMapping, EbsBlockDevice, InstanceNetworkInterfaceSpecification, InstanceType,
+        ResourceType, Tag, TagSpecification, VolumeType,
     };
-    use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
 
     let ud_b64 = STANDARD.encode(user_data.as_bytes());
 
@@ -690,9 +691,7 @@ pub async fn launch_ec2_instance(
 /// Allocate an Elastic IP. Returns `(public_ip, allocation_id)`. Caller is
 /// responsible for `register_ec2_elastic_ip(allocation_id)` and for calling
 /// `associate_elastic_ip` once an instance exists.
-pub async fn allocate_elastic_ip(
-    ec2: &aws_sdk_ec2::Client,
-) -> TestResult<(String, String)> {
+pub async fn allocate_elastic_ip(ec2: &aws_sdk_ec2::Client) -> TestResult<(String, String)> {
     use aws_sdk_ec2::types::{DomainType, ResourceType, Tag, TagSpecification};
 
     // Tag at creation so the IAM policy gating these tests can scope
@@ -714,7 +713,10 @@ pub async fn allocate_elastic_ip(
         .tag_specifications(tag_spec)
         .send()
         .await?;
-    let ip = resp.public_ip().ok_or("AllocateAddress returned no public_ip")?.to_string();
+    let ip = resp
+        .public_ip()
+        .ok_or("AllocateAddress returned no public_ip")?
+        .to_string();
     let alloc = resp
         .allocation_id()
         .ok_or("AllocateAddress returned no allocation_id")?
@@ -807,9 +809,7 @@ pub async fn wait_for_stable_tcp_port(
                 .await
                 {
                     Ok(Ok(_)) => {
-                        let n = consecutive
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                            + 1;
+                        let n = consecutive.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         if n >= required_consecutive {
                             Ok(Some(()))
                         } else {
@@ -853,10 +853,7 @@ pub async fn wait_for_tcp_port(host: &str, port: u16, timeout: Duration) -> Test
     .await
 }
 
-async fn terminate_and_wait(
-    ec2: &aws_sdk_ec2::Client,
-    instance_ids: &[String],
-) -> TestResult<()> {
+async fn terminate_and_wait(ec2: &aws_sdk_ec2::Client, instance_ids: &[String]) -> TestResult<()> {
     if instance_ids.is_empty() {
         return Ok(());
     }
@@ -881,17 +878,21 @@ async fn terminate_and_wait(
                     .set_instance_ids(Some(ids))
                     .send()
                     .await?;
-                let all_terminated = resp
-                    .reservations()
-                    .iter()
-                    .flat_map(|r| r.instances())
-                    .all(|i| {
-                        i.state()
-                            .and_then(|s| s.name())
-                            .map(|n| n.as_str() == "terminated")
-                            .unwrap_or(false)
-                    });
-                if all_terminated { Ok(Some(())) } else { Ok(None) }
+                let all_terminated =
+                    resp.reservations()
+                        .iter()
+                        .flat_map(|r| r.instances())
+                        .all(|i| {
+                            i.state()
+                                .and_then(|s| s.name())
+                                .map(|n| n.as_str() == "terminated")
+                                .unwrap_or(false)
+                        });
+                if all_terminated {
+                    Ok(Some(()))
+                } else {
+                    Ok(None)
+                }
             }
         },
     )

@@ -4,10 +4,20 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SymlinkOutcome {
-    Created { path: PathBuf, target: PathBuf },
-    Updated { path: PathBuf, target: PathBuf },
-    Unchanged { path: PathBuf },
-    SkippedRegularFile { path: PathBuf },
+    Created {
+        path: PathBuf,
+        target: PathBuf,
+    },
+    Updated {
+        path: PathBuf,
+        target: PathBuf,
+    },
+    Unchanged {
+        path: PathBuf,
+    },
+    SkippedRegularFile {
+        path: PathBuf,
+    },
     #[allow(dead_code)] // only constructed on non-unix
     SkippedNonUnix,
 }
@@ -42,11 +52,7 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
     use std::os::unix::fs::symlink;
 
     if let Err(e) = std::fs::create_dir_all(bin_dir) {
-        eprintln!(
-            "warning: could not create {}: {}",
-            bin_dir.display(),
-            e
-        );
+        eprintln!("warning: could not create {}: {}", bin_dir.display(), e);
         return Ok(SymlinkOutcome::Unchanged {
             path: link.to_path_buf(),
         });
@@ -63,21 +69,13 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
                 });
             }
             if let Err(e) = std::fs::remove_file(link) {
-                eprintln!(
-                    "warning: could not update {}: {}",
-                    link.display(),
-                    e
-                );
+                eprintln!("warning: could not update {}: {}", link.display(), e);
                 return Ok(SymlinkOutcome::Unchanged {
                     path: link.to_path_buf(),
                 });
             }
             if let Err(e) = symlink(target, link) {
-                eprintln!(
-                    "warning: could not update {}: {}",
-                    link.display(),
-                    e
-                );
+                eprintln!("warning: could not update {}: {}", link.display(), e);
                 return Ok(SymlinkOutcome::Unchanged {
                     path: link.to_path_buf(),
                 });
@@ -100,11 +98,7 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Err(e) = symlink(target, link) {
-                eprintln!(
-                    "warning: could not create {}: {}",
-                    link.display(),
-                    e
-                );
+                eprintln!("warning: could not create {}: {}", link.display(), e);
                 return Ok(SymlinkOutcome::Unchanged {
                     path: link.to_path_buf(),
                 });
@@ -116,11 +110,7 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
             })
         }
         Err(e) => {
-            eprintln!(
-                "warning: could not stat {}: {}",
-                link.display(),
-                e
-            );
+            eprintln!("warning: could not stat {}: {}", link.display(), e);
             Ok(SymlinkOutcome::Unchanged {
                 path: link.to_path_buf(),
             })

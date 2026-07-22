@@ -38,9 +38,7 @@ impl Sandbox {
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/telemetry"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&mock)
             .await;
         Sandbox {
@@ -210,7 +208,10 @@ async fn no_agent_correlation_headers_on_the_wire() {
         .env_remove("AGENT")
         .env("CLAUDECODE", "1")
         .env("CLAUDE_CODE_SESSION_ID", "sess-should-never-hit-the-wire")
-        .env("TRACEPARENT", "00-11111111111111111111111111111111-2222222222222222-01")
+        .env(
+            "TRACEPARENT",
+            "00-11111111111111111111111111111111-2222222222222222-01",
+        )
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -454,7 +455,10 @@ async fn parent_never_waits_for_a_slow_endpoint() {
     let started = Instant::now();
     let output = sandbox
         .command(&["local", "list"])
-        .env("CHCTL_TELEMETRY_URL", format!("{}/v1/telemetry", mock.uri()))
+        .env(
+            "CHCTL_TELEMETRY_URL",
+            format!("{}/v1/telemetry", mock.uri()),
+        )
         .output()
         .unwrap();
     let elapsed = started.elapsed();
@@ -481,5 +485,8 @@ async fn marker_lives_in_dot_clickhouse_telemetry_json() {
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
-    assert!(entries.contains(&"telemetry.json".to_string()), "{entries:?}");
+    assert!(
+        entries.contains(&"telemetry.json".to_string()),
+        "{entries:?}"
+    );
 }

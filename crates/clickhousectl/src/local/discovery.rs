@@ -137,9 +137,10 @@ pub fn parse_server_cwd(cwd: &str) -> Option<(String, String)> {
 /// Parse a port value from command-line flags like `--http_port=8123`.
 pub fn parse_port_flag(cmdline: &str, flag: &str) -> Option<u16> {
     let prefix = format!("{}=", flag);
-    cmdline
-        .split_whitespace()
-        .find_map(|arg| arg.strip_prefix(&prefix).and_then(|v| v.parse::<u16>().ok()))
+    cmdline.split_whitespace().find_map(|arg| {
+        arg.strip_prefix(&prefix)
+            .and_then(|v| v.parse::<u16>().ok())
+    })
 }
 
 /// Extract the ClickHouse version from the binary path in the command line.
@@ -222,15 +223,13 @@ mod tests {
 
     #[test]
     fn parse_http_port() {
-        let cmdline =
-            "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8123 --tcp_port=9000";
+        let cmdline = "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8123 --tcp_port=9000";
         assert_eq!(parse_port_flag(cmdline, "--http_port"), Some(8123));
     }
 
     #[test]
     fn parse_tcp_port() {
-        let cmdline =
-            "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8124 --tcp_port=9001";
+        let cmdline = "/home/user/.clickhouse/versions/25.12.5.44/clickhouse server --http_port=8124 --tcp_port=9001";
         assert_eq!(parse_port_flag(cmdline, "--tcp_port"), Some(9001));
     }
 

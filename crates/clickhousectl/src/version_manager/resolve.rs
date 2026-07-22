@@ -1,5 +1,7 @@
 use crate::error::{Error, Result};
-use crate::version_manager::list::{Channel, VersionEntry, list_available_versions, list_installed_versions};
+use crate::version_manager::list::{
+    Channel, VersionEntry, list_available_versions, list_installed_versions,
+};
 use crate::version_manager::platform::{DownloadSource, Platform, builds_probe_url};
 use crate::version_manager::spec::VersionSpec;
 use serde::Deserialize;
@@ -187,8 +189,7 @@ async fn find_exact_channel(version: &str) -> Result<Channel> {
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}-",
         version
     );
-    let client = crate::http::client_builder()
-        .build()?;
+    let client = crate::http::client_builder().build()?;
 
     let response = client
         .get(&url)
@@ -247,9 +248,7 @@ fn fallback_source(version: &str, channel: Channel, platform: &Platform) -> Reso
 /// Probe builds.clickhouse.com with a HEAD request to check if a version exists
 async fn probe_builds(version_path: &str, platform: &Platform) -> bool {
     let url = builds_probe_url(version_path, platform);
-    let client = match crate::http::client_builder()
-        .build()
-    {
+    let client = match crate::http::client_builder().build() {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -274,8 +273,7 @@ async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
         prefix
     );
-    let client = crate::http::client_builder()
-        .build()?;
+    let client = crate::http::client_builder().build()?;
 
     let response = client
         .get(&url)
@@ -305,9 +303,7 @@ fn parse_version_refs(refs: &[GitRef], prefix: &str) -> Result<VersionEntry> {
             let version = &tag[..dash_pos];
             let suffix = &tag[dash_pos + 1..];
             let is_higher = |current: &Option<VersionEntry>| match current {
-                Some(existing) => {
-                    compare_versions(version, &existing.version) == Ordering::Greater
-                }
+                Some(existing) => compare_versions(version, &existing.version) == Ordering::Greater,
                 None => true,
             };
             if let Some(channel) = Channel::from_tag_suffix(suffix) {
@@ -435,10 +431,7 @@ mod tests {
 
     #[test]
     fn test_parse_version_refs_no_matching_tags() {
-        let refs = vec![
-            make_ref("refs/heads/main"),
-            make_ref("something/else"),
-        ];
+        let refs = vec![make_ref("refs/heads/main"), make_ref("something/else")];
         assert!(parse_version_refs(&refs, "25.12").is_err());
     }
 

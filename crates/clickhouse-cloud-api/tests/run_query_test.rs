@@ -49,7 +49,12 @@ async fn run_query_sends_basic_auth_with_query_key() {
 
     // Basic auth must use the per-service Query API key, not the client's
     // primary (org-level) credentials.
-    let auth = request.headers.get("authorization").unwrap().to_str().unwrap();
+    let auth = request
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
     let expected = format!(
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode("query-key:query-secret")
@@ -94,7 +99,12 @@ async fn run_query_bearer_sends_bearer_token() {
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
 
-    let auth = request.headers.get("authorization").unwrap().to_str().unwrap();
+    let auth = request
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(auth, "Bearer oauth-token");
 
     // `auth-provider: custom` marks a custom Query API key; it must not be

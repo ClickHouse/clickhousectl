@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -20,10 +20,8 @@ use super::{
 const KAFKA_SCRAM_TLS_TARGET_TABLE: &str = "redpanda_scram_tls_users";
 const KAFKA_MTLS_TARGET_TABLE: &str = "redpanda_mtls_users";
 const KAFKA_SEED_ROW_COUNT: i64 = 3;
-const REDPANDA_SCRAM_TLS_USER_DATA: &str =
-    include_str!("redpanda_user_data_scram_tls.sh.template");
-const REDPANDA_MTLS_USER_DATA: &str =
-    include_str!("redpanda_user_data_mtls.sh.template");
+const REDPANDA_SCRAM_TLS_USER_DATA: &str = include_str!("redpanda_user_data_scram_tls.sh.template");
+const REDPANDA_MTLS_USER_DATA: &str = include_str!("redpanda_user_data_mtls.sh.template");
 
 const REDPANDA_INSTANCE_TYPE: &str = "t3.medium";
 const REDPANDA_BOOT_TIMEOUT_SECS: u64 = 600;
@@ -41,7 +39,9 @@ async fn launch_redpanda(
     user_data_with_ip: impl FnOnce(&str, &RedpandaCerts) -> String,
     client_cn: &str,
 ) -> TestResult<(String, RedpandaCerts)> {
-    log_phase(&format!("Kafka stage ({variant_tag}): allocate EIP + generate certs"));
+    log_phase(&format!(
+        "Kafka stage ({variant_tag}): allocate EIP + generate certs"
+    ));
 
     let (eip_address, allocation_id) = allocate_elastic_ip(ec2).await?;
     aws_cleanup.register_ec2_elastic_ip(allocation_id.clone());
@@ -94,7 +94,11 @@ pub async fn run_kafka_scram_tls_stage(sctx: StageCtx<'_>) -> StageOutcome {
         mut aws_cleanup,
     } = sctx;
     let result = run_scram_tls_inner(client, ctx, ch, ec2, &mut cleanup, &mut aws_cleanup).await;
-    StageOutcome { result, cleanup, aws_cleanup }
+    StageOutcome {
+        result,
+        cleanup,
+        aws_cleanup,
+    }
 }
 
 async fn run_scram_tls_inner(
@@ -133,18 +137,25 @@ async fn run_scram_tls_inner(
             .replace("__CA_PEM_B64__", &b64(&certs.ca_pem))
     };
 
-    let (broker_ip, certs) =
-        launch_redpanda(ec2, ctx, aws_cleanup, "scram-tls", render_ud, "scram-tls-unused").await?;
-
-    log_phase("Kafka stage (scram-tls): wait for Redpanda to be reachable");
-    wait_for_tcp_port(&broker_ip, 9092, Duration::from_secs(REDPANDA_BOOT_TIMEOUT_SECS)).await?;
-    wait_for_redpanda_scram_user(
-        &broker_ip,
-        9644,
-        &clickpipe_user,
-        Duration::from_secs(180),
+    let (broker_ip, certs) = launch_redpanda(
+        ec2,
+        ctx,
+        aws_cleanup,
+        "scram-tls",
+        render_ud,
+        "scram-tls-unused",
     )
     .await?;
+
+    log_phase("Kafka stage (scram-tls): wait for Redpanda to be reachable");
+    wait_for_tcp_port(
+        &broker_ip,
+        9092,
+        Duration::from_secs(REDPANDA_BOOT_TIMEOUT_SECS),
+    )
+    .await?;
+    wait_for_redpanda_scram_user(&broker_ip, 9644, &clickpipe_user, Duration::from_secs(180))
+        .await?;
     // Tiny buffer after user appears: topic creation + ACL grants happen
     // right after, and ClickPipes can't consume without those.
     tokio::time::sleep(Duration::from_secs(15)).await;
@@ -221,7 +232,11 @@ pub async fn run_kafka_mtls_stage(sctx: StageCtx<'_>) -> StageOutcome {
         mut aws_cleanup,
     } = sctx;
     let result = run_mtls_inner(client, ctx, ch, ec2, &mut cleanup, &mut aws_cleanup).await;
-    StageOutcome { result, cleanup, aws_cleanup }
+    StageOutcome {
+        result,
+        cleanup,
+        aws_cleanup,
+    }
 }
 
 async fn run_mtls_inner(
@@ -260,7 +275,12 @@ async fn run_mtls_inner(
         launch_redpanda(ec2, ctx, aws_cleanup, "mtls", render_ud, &client_cn).await?;
 
     log_phase("Kafka stage (mtls): wait for Redpanda to be reachable");
-    wait_for_tcp_port(&broker_ip, 9092, Duration::from_secs(REDPANDA_BOOT_TIMEOUT_SECS)).await?;
+    wait_for_tcp_port(
+        &broker_ip,
+        9092,
+        Duration::from_secs(REDPANDA_BOOT_TIMEOUT_SECS),
+    )
+    .await?;
     tokio::time::sleep(Duration::from_secs(60)).await;
 
     log_phase("Kafka stage (mtls): create ClickPipe");

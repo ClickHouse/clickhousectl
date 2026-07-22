@@ -123,7 +123,9 @@ pub fn servers_dir_join(child: &str) -> PathBuf {
 
 /// Data directory for a Postgres instance.
 pub fn pg_data_dir(name: &str, major: &str) -> PathBuf {
-    servers_dir().join(pg_instance_key(name, major)).join("data")
+    servers_dir()
+        .join(pg_instance_key(name, major))
+        .join("data")
 }
 
 /// Ensure project-local servers dir + .gitignore exist. Idempotent.
@@ -605,8 +607,14 @@ mod tests {
 
     #[test]
     fn engine_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&Engine::Clickhouse).unwrap(), "\"clickhouse\"");
-        assert_eq!(serde_json::to_string(&Engine::Postgres).unwrap(), "\"postgres\"");
+        assert_eq!(
+            serde_json::to_string(&Engine::Clickhouse).unwrap(),
+            "\"clickhouse\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Engine::Postgres).unwrap(),
+            "\"postgres\""
+        );
     }
 
     #[test]

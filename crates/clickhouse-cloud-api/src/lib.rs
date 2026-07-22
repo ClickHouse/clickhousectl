@@ -25,5 +25,5 @@ pub mod serde_helpers;
 
 pub use client::Client;
 pub use error::Error;
-pub use meta::{is_beta_operation, is_deprecated_field, BETA_OPERATIONS, DEPRECATED_FIELDS};
+pub use meta::{BETA_OPERATIONS, DEPRECATED_FIELDS, is_beta_operation, is_deprecated_field};
 pub use models::*;

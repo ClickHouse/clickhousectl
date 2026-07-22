@@ -867,7 +867,13 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval, None)
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
         .await;
 
     match (test_result, cleanup_result) {
@@ -918,7 +924,10 @@ fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
 /// unrelated validation 400s that should fail the test, not retry.
 fn is_no_backups_yet_error(error: &clickhouse_cloud_api::Error) -> bool {
     match error {
-        clickhouse_cloud_api::Error::Api { status: 400, message } => {
+        clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message,
+        } => {
             let lower = message.to_ascii_lowercase();
             lower.contains("no backups") || lower.contains("not ready for read replicas")
         }
@@ -984,7 +993,11 @@ async fn run_pg_config_probe(org_id: &str, postgres_id: &str) -> TestResult<()> 
                 .map_err(|e| format!("{method} {label}: {e}"))?;
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            let snippet: String = text.chars().take(180).collect::<String>().replace('\n', " ");
+            let snippet: String = text
+                .chars()
+                .take(180)
+                .collect::<String>()
+                .replace('\n', " ");
             rows.push((method.to_string(), label.to_string(), status, snippet));
         }
     }

@@ -16,9 +16,7 @@ pub async fn install_local_first(
     platform: &Platform,
     force: bool,
 ) -> Result<String> {
-    if !force
-        && let Some(local) = try_resolve_local(spec)
-    {
+    if !force && let Some(local) = try_resolve_local(spec) {
         if matches!(spec, VersionSpec::Exact(_)) {
             return Err(Error::VersionAlreadyInstalled(local));
         }
@@ -66,8 +64,7 @@ pub async fn install_resolved(
     let mut master_head = None;
     if is_master {
         master_head = master::head_info(platform).await;
-        if !force
-            && let Some(version) = master::reuse_if_unchanged(platform, master_head.as_ref())
+        if !force && let Some(version) = master::reuse_if_unchanged(platform, master_head.as_ref())
         {
             eprintln!(
                 "latest is up to date (master build unchanged); using {}",
@@ -349,5 +346,4 @@ mod tests {
     fn test_parse_version_output_empty() {
         assert!(parse_version_output("").is_err());
     }
-
 }

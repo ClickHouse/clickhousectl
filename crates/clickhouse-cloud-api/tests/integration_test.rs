@@ -1,7 +1,7 @@
 mod common;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 use common::support::*;
 
 #[tokio::test]
@@ -2484,7 +2484,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval, None)
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
         .await;
 
     match (test_result, cleanup_result) {
@@ -2611,9 +2617,10 @@ fn synthetic_private_endpoint_id(ctx: &TestContext) -> String {
         // pick a 19-digit value seeded by the run id hash so different runs
         // collide neither with each other nor with real PSC endpoints.
         "gcp" => {
-            let hash: u64 = ctx.run_id.bytes().fold(0u64, |acc, b| {
-                acc.wrapping_mul(31).wrapping_add(b as u64)
-            });
+            let hash: u64 = ctx
+                .run_id
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
             format!("{:019}", hash % 10u64.pow(19))
         }
         // Azure private endpoint resource ids are GUIDs. Synthesize one

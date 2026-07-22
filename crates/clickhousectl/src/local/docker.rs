@@ -52,7 +52,9 @@ pub async fn connect() -> Result<Docker> {
 pub async fn pull_image(docker: &Docker, tag: &str) -> Result<()> {
     use bollard::query_parameters::CreateImageOptionsBuilder;
     let from = format!("postgres:{}", tag);
-    let opts = CreateImageOptionsBuilder::default().from_image(&from).build();
+    let opts = CreateImageOptionsBuilder::default()
+        .from_image(&from)
+        .build();
     let mut stream = docker.create_image(Some(opts), None, None);
     while let Some(item) = stream.next().await {
         let info = item.map_err(|e| Error::DockerError(e.to_string()))?;
@@ -69,7 +71,9 @@ pub async fn image_exists(docker: &Docker, tag: &str) -> Result<bool> {
     let name = format!("postgres:{}", tag);
     match docker.inspect_image(&name).await {
         Ok(_) => Ok(true),
-        Err(BErr::DockerResponseServerError { status_code: 404, .. }) => Ok(false),
+        Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(false),
         Err(e) => Err(Error::DockerError(e.to_string())),
     }
 }
@@ -194,7 +198,9 @@ pub async fn ensure_name_free(
             let _ = stop_container(docker, &id).await;
             remove_container(docker, &id).await
         }
-        Err(BErr::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+        Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
         Err(e) => Err(Error::DockerError(e.to_string())),
     }
 }
@@ -451,7 +457,7 @@ pub async fn exec_psql_in_container(
 
     #[cfg(unix)]
     let resize_task = {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let docker_clone = docker.clone();
         let exec_id_clone = exec_id.clone();
         tokio::spawn(async move {
@@ -596,8 +602,9 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         let docker = connect().await?;
 
         // Pull alpine on first use.
-        if let Err(BErr::DockerResponseServerError { status_code: 404, .. }) =
-            docker.inspect_image("alpine:latest").await
+        if let Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) = docker.inspect_image("alpine:latest").await
         {
             let mut s = docker.create_image(
                 Some(
@@ -626,10 +633,7 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
             ..Default::default()
         };
         let created = docker
-            .create_container(
-                Some(CreateContainerOptionsBuilder::default().build()),
-                cfg,
-            )
+            .create_container(Some(CreateContainerOptionsBuilder::default().build()), cfg)
             .await
             .map_err(|e| Error::DockerError(e.to_string()))?;
         docker
@@ -682,8 +686,8 @@ pub fn start_existing_blocking(id: &str) -> Result<()> {
 /// timeout) and we return silently.
 pub fn recover_project_postgres_blocking(project_cwd: &str) {
     use crate::local::server::{
-        ensure_pg_data_dir, pg_instance_key, save_server_info,
-        server_meta_path_for_recovery, Engine, ServerInfo,
+        Engine, ServerInfo, ensure_pg_data_dir, pg_instance_key, save_server_info,
+        server_meta_path_for_recovery,
     };
     let cwd_owned = project_cwd.to_string();
     let _ = block_on(async move {

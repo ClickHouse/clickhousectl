@@ -64,9 +64,11 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             queries_file,
             args,
         } => client(name, version, host, port, query, queries_file, args).await,
-        PostgresCommands::Dotenv { name, version, local } => {
-            dotenv(name.as_deref(), version.as_deref(), local, json)
-        }
+        PostgresCommands::Dotenv {
+            name,
+            version,
+            local,
+        } => dotenv(name.as_deref(), version.as_deref(), local, json),
     }
 }
 
@@ -106,10 +108,16 @@ async fn start(
         None => {
             let existing = server::find_pg_instances(&user_name);
             match existing.len() {
-                0 => (DEFAULT_PG_TAG.to_string(), pg_major_from_tag(DEFAULT_PG_TAG)),
+                0 => (
+                    DEFAULT_PG_TAG.to_string(),
+                    pg_major_from_tag(DEFAULT_PG_TAG),
+                ),
                 1 => {
                     let info = &existing[0];
-                    let stored_tag = info.version.strip_prefix("postgres:").unwrap_or(&info.version);
+                    let stored_tag = info
+                        .version
+                        .strip_prefix("postgres:")
+                        .unwrap_or(&info.version);
                     (stored_tag.to_string(), pg_major_from_tag(stored_tag))
                 }
                 _ => {
@@ -254,13 +262,12 @@ async fn start(
 /// Default user-facing name when `--name` is omitted: `"default"` if no
 /// postgres "default" is running, otherwise a random adjective-noun.
 fn default_pg_name() -> String {
-    let any_default_running = server::find_pg_instances("default")
-        .iter()
-        .any(|i| i
-            .container_id
+    let any_default_running = server::find_pg_instances("default").iter().any(|i| {
+        i.container_id
             .as_deref()
             .map(docker::is_container_running_blocking)
-            .unwrap_or(false));
+            .unwrap_or(false)
+    });
     if any_default_running {
         // Fall back to the existing random-name generator, which checks
         // metadata file uniqueness across engines.
@@ -273,10 +280,7 @@ fn default_pg_name() -> String {
 /// Resolve `--name <X> [--version <V>]` to a single Postgres instance on disk.
 /// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
 /// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
-fn resolve_pg_target(
-    user_name: &str,
-    version: Option<&str>,
-) -> Result<server::ServerInfo> {
+fn resolve_pg_target(user_name: &str, version: Option<&str>) -> Result<server::ServerInfo> {
     if let Some(v) = version {
         validate_pg_tag(v)?;
         let major = pg_major_from_tag(v);
@@ -303,11 +307,7 @@ fn resolve_pg_target(
 /// Resume an existing stopped Postgres container. Reads credentials from the
 /// container's persisted env (the source of truth — PGDATA was initialized
 /// for them) and refreshes the metadata.
-async fn resume_existing(
-    docker: &bollard::Docker,
-    prior: ServerInfo,
-    json: bool,
-) -> Result<()> {
+async fn resume_existing(docker: &bollard::Docker, prior: ServerInfo, json: bool) -> Result<()> {
     let container_id = prior.container_id.clone().expect("checked by caller");
     let display_name = user_name_from_key(&prior.name).to_string();
 
@@ -384,7 +384,9 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(p);
         }
     }
-    Err(Error::Exec("could not find a free TCP port for Postgres".into()))
+    Err(Error::Exec(
+        "could not find a free TCP port for Postgres".into(),
+    ))
 }
 
 fn generate_password() -> String {
@@ -398,11 +400,7 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::recover_current_project_servers();
     let target = resolve_pg_target(name, version)?;
     if !json {
-        let display = format!(
-            "{} ({})",
-            user_name_from_key(&target.name),
-            target.version
-        );
+        let display = format!("{} ({})", user_name_from_key(&target.name), target.version);
         println!("Stopping Postgres {}...", display);
     }
     server::kill_server(&target.name)?;
@@ -504,7 +502,16 @@ async fn client(
         // Direct connect — no server lookup; require host psql.
         let h = host.unwrap_or_else(|| "127.0.0.1".to_string());
         let p = port.unwrap_or(DEFAULT_PG_PORT);
-        return exec_host_psql(&h, p, DEFAULT_USER, None, DEFAULT_DATABASE, query, queries_file, extra_args);
+        return exec_host_psql(
+            &h,
+            p,
+            DEFAULT_USER,
+            None,
+            DEFAULT_DATABASE,
+            query,
+            queries_file,
+            extra_args,
+        );
     }
 
     server::recover_current_project_servers();
@@ -536,10 +543,7 @@ async fn client(
     }
 
     let one_shot = query.is_some() || queries_file.is_some();
-    let mut psql_args: Vec<String> = vec![
-        "-U".into(), user,
-        "-d".into(), database,
-    ];
+    let mut psql_args: Vec<String> = vec!["-U".into(), user, "-d".into(), database];
     if let Some(q) = query {
         psql_args.push("-c".into());
         psql_args.push(q);
@@ -601,10 +605,14 @@ fn exec_host_psql(
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
     let mut cmd = Command::new("psql");
-    cmd.arg("-h").arg(host)
-        .arg("-p").arg(port.to_string())
-        .arg("-U").arg(user)
-        .arg("-d").arg(database);
+    cmd.arg("-h")
+        .arg(host)
+        .arg("-p")
+        .arg(port.to_string())
+        .arg("-U")
+        .arg(user)
+        .arg("-d")
+        .arg(database);
     if let Some(p) = password {
         cmd.env("PGPASSWORD", p);
     }
@@ -619,12 +627,7 @@ fn exec_host_psql(
     Err(Error::Exec(err.to_string()))
 }
 
-fn dotenv(
-    name: Option<&str>,
-    version: Option<&str>,
-    use_local: bool,
-    json: bool,
-) -> Result<()> {
+fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
     server::recover_current_project_servers();
     let server_name = name.unwrap_or("default");
     let info = resolve_pg_target(server_name, version)?;
@@ -704,15 +707,39 @@ mod tests {
 
     #[test]
     fn validate_pg_tag_accepts_supported_majors() {
-        for tag in ["17", "18", "17-alpine", "17.0", "18-bookworm", "18.1-alpine3.20"] {
-            assert!(validate_pg_tag(tag).is_ok(), "expected `{}` to be accepted", tag);
+        for tag in [
+            "17",
+            "18",
+            "17-alpine",
+            "17.0",
+            "18-bookworm",
+            "18.1-alpine3.20",
+        ] {
+            assert!(
+                validate_pg_tag(tag).is_ok(),
+                "expected `{}` to be accepted",
+                tag
+            );
         }
     }
 
     #[test]
     fn validate_pg_tag_rejects_unsupported() {
-        for tag in ["latest", "15", "16", "16-alpine", "19", "14-alpine", "alpine", ""] {
-            assert!(validate_pg_tag(tag).is_err(), "expected `{}` to be rejected", tag);
+        for tag in [
+            "latest",
+            "15",
+            "16",
+            "16-alpine",
+            "19",
+            "14-alpine",
+            "alpine",
+            "",
+        ] {
+            assert!(
+                validate_pg_tag(tag).is_err(),
+                "expected `{}` to be rejected",
+                tag
+            );
         }
     }
 

@@ -58,10 +58,11 @@ fn is_newer(current: &str, latest: &str) -> bool {
 
 /// Fetch the latest release info from GitHub with configurable timeout.
 async fn fetch_latest_release(timeout: std::time::Duration) -> Result<GitHubRelease> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-    let client = crate::http::client_builder()
-        .timeout(timeout)
-        .build()?;
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+    let client = crate::http::client_builder().timeout(timeout).build()?;
 
     let response = client
         .get(&url)
@@ -400,8 +401,7 @@ mod tests {
     #[test]
     fn extracts_clickhousectl_binary_from_release_archive() {
         let payload = b"\x7fELF fake binary contents".as_slice();
-        let archive =
-            build_release_archive("clickhousectl-aarch64-apple-darwin-v0.0.1", payload);
+        let archive = build_release_archive("clickhousectl-aarch64-apple-darwin-v0.0.1", payload);
 
         let extracted = extract_binary_from_archive(&archive).unwrap();
         assert_eq!(extracted, payload);

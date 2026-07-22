@@ -140,7 +140,10 @@ pub async fn head_info(platform: &Platform) -> Option<HeadInfo> {
     };
     let etag = header(reqwest::header::ETAG)?;
     let last_modified = header(reqwest::header::LAST_MODIFIED);
-    Some(HeadInfo { etag, last_modified })
+    Some(HeadInfo {
+        etag,
+        last_modified,
+    })
 }
 
 /// Pure reuse decision: reuse the recorded build only when we have a record,
@@ -255,7 +258,11 @@ mod tests {
         sidecar
             .builds
             .insert("macos-aarch64".to_string(), rec("\"x-1\"", "26.5.1.1"));
-        assert!(clear_version_from(&mut sidecar, "macos-aarch64", "26.5.1.1"));
+        assert!(clear_version_from(
+            &mut sidecar,
+            "macos-aarch64",
+            "26.5.1.1"
+        ));
         assert!(!sidecar.builds.contains_key("macos-aarch64"));
     }
 
@@ -267,7 +274,11 @@ mod tests {
         sidecar
             .builds
             .insert("macos-aarch64".to_string(), rec("\"x-1\"", "26.5.1.1"));
-        assert!(!clear_version_from(&mut sidecar, "macos-aarch64", "25.12.9.61"));
+        assert!(!clear_version_from(
+            &mut sidecar,
+            "macos-aarch64",
+            "25.12.9.61"
+        ));
         assert!(sidecar.builds.contains_key("macos-aarch64"));
     }
 
@@ -280,13 +291,21 @@ mod tests {
         sidecar
             .builds
             .insert("macos-aarch64".to_string(), rec("\"y-2\"", "26.5.1.1"));
-        assert!(clear_version_from(&mut sidecar, "macos-aarch64", "26.5.1.1"));
+        assert!(clear_version_from(
+            &mut sidecar,
+            "macos-aarch64",
+            "26.5.1.1"
+        ));
         assert!(sidecar.builds.contains_key("amd64"));
     }
 
     #[test]
     fn clear_version_no_record_is_noop() {
         let mut sidecar = Sidecar::default();
-        assert!(!clear_version_from(&mut sidecar, "macos-aarch64", "26.5.1.1"));
+        assert!(!clear_version_from(
+            &mut sidecar,
+            "macos-aarch64",
+            "26.5.1.1"
+        ));
     }
 }

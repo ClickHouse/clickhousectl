@@ -53,7 +53,8 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
 /// the tag. The CLI accepts both `@` (more shell-friendly, no need to quote)
 /// and `:` (matches Docker image syntax).
 fn parse_postgres_install_spec(spec: &str) -> Option<&str> {
-    spec.strip_prefix("postgres@").or_else(|| spec.strip_prefix("postgres:"))
+    spec.strip_prefix("postgres@")
+        .or_else(|| spec.strip_prefix("postgres:"))
 }
 
 async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
@@ -160,8 +161,7 @@ async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<
     let spec = version_manager::parse_version_spec(version_spec)?;
     let platform = version_manager::platform::Platform::detect()?;
 
-    let version =
-        version_manager::install::ensure_installed_local_first(&spec, &platform).await?;
+    let version = version_manager::install::ensure_installed_local_first(&spec, &platform).await?;
 
     version_manager::set_default_version(&version)?;
 
@@ -794,7 +794,11 @@ fn list_servers_local(json: bool) -> Result<()> {
                     match e.info {
                         Some(info) => {
                             let is_ch = info.engine == server::Engine::Clickhouse;
-                            let pid = if is_ch && running { Some(info.pid) } else { None };
+                            let pid = if is_ch && running {
+                                Some(info.pid)
+                            } else {
+                                None
+                            };
                             let http_port = if is_ch { Some(info.http_port) } else { None };
                             // For Postgres the disk key is `<name>-pg<major>`;
                             // show users the friendly name without the suffix.
@@ -892,10 +896,7 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
 
     let entry = matches[0];
     if !json {
-        println!(
-            "Stopping server '{}' in {}...",
-            entry.name, entry.project
-        );
+        println!("Stopping server '{}' in {}...", entry.name, entry.project);
     }
     server::kill_server_by_pid(entry.pid)?;
     let out = output::ServerStopOutput {
@@ -1024,7 +1025,10 @@ mod tests {
     #[test]
     fn parse_postgres_install_spec_recognizes_at_and_colon() {
         assert_eq!(parse_postgres_install_spec("postgres@17"), Some("17"));
-        assert_eq!(parse_postgres_install_spec("postgres:17-alpine"), Some("17-alpine"));
+        assert_eq!(
+            parse_postgres_install_spec("postgres:17-alpine"),
+            Some("17-alpine")
+        );
         assert_eq!(parse_postgres_install_spec("25.12"), None);
         assert_eq!(parse_postgres_install_spec("stable"), None);
     }
@@ -1064,7 +1068,8 @@ mod tests {
 
     #[test]
     fn update_dotenv_replaces_existing_vars() {
-        let existing = "CLICKHOUSE_HOST=oldhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_PORT=1234\n";
+        let existing =
+            "CLICKHOUSE_HOST=oldhost\nDATABASE_URL=postgres://...\nCLICKHOUSE_PORT=1234\n";
         let vars = vec![
             ("CLICKHOUSE_HOST", "localhost".to_string()),
             ("CLICKHOUSE_PORT", "9000".to_string()),
@@ -1144,17 +1149,26 @@ mod tests {
 
     #[test]
     fn extract_dotenv_key_simple() {
-        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(
+            extract_dotenv_key("CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"),
+            Some("CLICKHOUSE_HOST")
+        );
     }
 
     #[test]
     fn extract_dotenv_key_with_export() {
-        assert_eq!(extract_dotenv_key("export CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(
+            extract_dotenv_key("export CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"),
+            Some("CLICKHOUSE_HOST")
+        );
     }
 
     #[test]
     fn extract_dotenv_key_with_spaces() {
-        assert_eq!(extract_dotenv_key("CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"), Some("CLICKHOUSE_HOST"));
+        assert_eq!(
+            extract_dotenv_key("CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"),
+            Some("CLICKHOUSE_HOST")
+        );
         assert_eq!(
             extract_dotenv_key("export CLICKHOUSE_HOST = localhost", "CLICKHOUSE_"),
             Some("CLICKHOUSE_HOST")
@@ -1163,13 +1177,19 @@ mod tests {
 
     #[test]
     fn extract_dotenv_key_non_clickhouse() {
-        assert_eq!(extract_dotenv_key("DATABASE_URL=postgres://...", "CLICKHOUSE_"), None);
+        assert_eq!(
+            extract_dotenv_key("DATABASE_URL=postgres://...", "CLICKHOUSE_"),
+            None
+        );
         assert_eq!(extract_dotenv_key("export FOO=bar", "CLICKHOUSE_"), None);
     }
 
     #[test]
     fn extract_dotenv_key_comment_and_blank() {
-        assert_eq!(extract_dotenv_key("# CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"), None);
+        assert_eq!(
+            extract_dotenv_key("# CLICKHOUSE_HOST=localhost", "CLICKHOUSE_"),
+            None
+        );
         assert_eq!(extract_dotenv_key("", "CLICKHOUSE_"), None);
     }
 
@@ -1180,7 +1200,10 @@ mod tests {
 
     #[test]
     fn format_dotenv_line_with_prefix() {
-        assert_eq!(format_dotenv_line("export ", "KEY", "value"), "export KEY=value");
+        assert_eq!(
+            format_dotenv_line("export ", "KEY", "value"),
+            "export KEY=value"
+        );
     }
 
     #[test]

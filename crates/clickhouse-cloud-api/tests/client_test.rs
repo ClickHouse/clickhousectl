@@ -1,5 +1,5 @@
 use chrono::Utc;
-use clickhouse_cloud_api::{models::*, Client};
+use clickhouse_cloud_api::{Client, models::*};
 use wiremock::matchers::{basic_auth, bearer_token, body_partial_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -90,7 +90,9 @@ async fn update_organization() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1"))
-        .and(body_partial_json(serde_json::json!({"name": "Renamed Org"})))
+        .and(body_partial_json(
+            serde_json::json!({"name": "Renamed Org"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "name": "Renamed Org"
@@ -257,7 +259,9 @@ async fn create_byoc_infrastructure() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/byocInfrastructure"))
-        .and(body_partial_json(serde_json::json!({"accountId": "123456789012", "displayName": "My BYOC"})))
+        .and(body_partial_json(
+            serde_json::json!({"accountId": "123456789012", "displayName": "My BYOC"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "byoc-1",
             "cloudProvider": "aws",
@@ -285,7 +289,9 @@ async fn update_byoc_infrastructure() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
-        .and(body_partial_json(serde_json::json!({"displayName": "Renamed BYOC"})))
+        .and(body_partial_json(
+            serde_json::json!({"displayName": "Renamed BYOC"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "byoc-1",
             "displayName": "Renamed BYOC"
@@ -353,7 +359,9 @@ async fn create_invitation() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/invitations"))
-        .and(body_partial_json(serde_json::json!({"email": "newuser@example.com"})))
+        .and(body_partial_json(
+            serde_json::json!({"email": "newuser@example.com"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": 200,
             "result": {
@@ -500,7 +508,9 @@ async fn update_api_key() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/keys/key-1"))
-        .and(body_partial_json(serde_json::json!({"name": "Renamed Key"})))
+        .and(body_partial_json(
+            serde_json::json!({"name": "Renamed Key"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "Renamed Key",
@@ -677,7 +687,9 @@ async fn create_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-123/services"))
-        .and(body_partial_json(serde_json::json!({"name": "new-service", "provider": "aws", "region": "us-east-1"})))
+        .and(body_partial_json(
+            serde_json::json!({"name": "new-service", "provider": "aws", "region": "us-east-1"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "status": 200,
             "result": {
@@ -751,7 +763,9 @@ async fn update_service() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/services/svc-1"))
-        .and(body_partial_json(serde_json::json!({"name": "renamed-svc"})))
+        .and(body_partial_json(
+            serde_json::json!({"name": "renamed-svc"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "11111111-2222-3333-4444-555555555555",
             "name": "renamed-svc",
@@ -913,8 +927,12 @@ async fn create_private_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services/svc-1/privateEndpoint"))
-        .and(body_partial_json(serde_json::json!({"id": "vpce-abc", "description": "My PE"})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"id": "vpce-abc", "description": "My PE"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "pe-1",
             "description": "My PE"
@@ -939,7 +957,9 @@ async fn get_private_endpoint_config_for_service() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/privateEndpointConfig"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/privateEndpointConfig",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "endpointServiceId": "vpce-svc-abc",
             "privateDnsHostname": "svc-1.private.clickhouse.cloud"
@@ -966,8 +986,7 @@ async fn get_service_prometheus_metrics() {
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/services/svc-1/prometheus"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("# HELP svc_metric\nsvc_metric 100\n"),
+            ResponseTemplate::new(200).set_body_string("# HELP svc_metric\nsvc_metric 100\n"),
         )
         .mount(&s)
         .await;
@@ -986,10 +1005,7 @@ async fn get_service_prometheus_with_filter() {
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/services/svc-1/prometheus"))
         .and(query_param("filtered_metrics", "cpu,memory"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("cpu 42\nmemory 1024\n"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("cpu 42\nmemory 1024\n"))
         .mount(&s)
         .await;
 
@@ -1005,7 +1021,9 @@ async fn get_query_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "qe-1",
             "allowedOrigins": "*",
@@ -1028,8 +1046,12 @@ async fn upsert_query_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint"))
-        .and(body_partial_json(serde_json::json!({"allowedOrigins": "https://example.com", "roles": ["reader"]})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"allowedOrigins": "https://example.com", "roles": ["reader"]}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "qe-1",
             "allowedOrigins": "https://example.com",
@@ -1048,10 +1070,7 @@ async fn upsert_query_endpoint() {
         .await
         .unwrap();
     let qe = resp.result.unwrap();
-    assert_eq!(
-        qe.allowed_origins,
-        "https://example.com"
-    );
+    assert_eq!(qe.allowed_origins, "https://example.com");
 }
 
 #[tokio::test]
@@ -1059,7 +1078,9 @@ async fn delete_query_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
+        ))
         .respond_with(ok_empty())
         .mount(&s)
         .await;
@@ -1133,7 +1154,9 @@ async fn get_backup_configuration() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/backupConfiguration"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/backupConfiguration",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "backupPeriodInHours": 24,
             "backupRetentionPeriodInHours": 168,
@@ -1142,10 +1165,7 @@ async fn get_backup_configuration() {
         .mount(&s)
         .await;
 
-    let resp = c
-        .backup_configuration_get("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.backup_configuration_get("org-1", "svc-1").await.unwrap();
     let config = resp.result.unwrap();
     assert_eq!(config.backup_period_in_hours, 24.0);
     assert_eq!(config.backup_start_time, "02:00");
@@ -1214,7 +1234,9 @@ async fn create_backup_bucket() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/services/svc-1/backupBucket"))
-        .and(body_partial_json(serde_json::json!({"bucketPath": "s3://new-bucket"})))
+        .and(body_partial_json(
+            serde_json::json!({"bucketPath": "s3://new-bucket"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "bucketPath": "s3://new-bucket",
             "bucketProvider": "aws_s3",
@@ -1223,12 +1245,11 @@ async fn create_backup_bucket() {
         .mount(&s)
         .await;
 
-    let body = BackupBucketPostRequest::AwsBackupBucketPostRequestV1(
-        AwsBackupBucketPostRequestV1 {
+    let body =
+        BackupBucketPostRequest::AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1 {
             bucket_path: "s3://new-bucket".to_string(),
             ..Default::default()
-        },
-    );
+        });
     let resp = c
         .backup_bucket_create("org-1", "svc-1", &body)
         .await
@@ -1242,7 +1263,9 @@ async fn update_backup_bucket() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/services/svc-1/backupBucket"))
-        .and(body_partial_json(serde_json::json!({"bucketPath": "s3://updated-bucket"})))
+        .and(body_partial_json(
+            serde_json::json!({"bucketPath": "s3://updated-bucket"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "bucketPath": "s3://updated-bucket",
             "bucketProvider": "aws_s3",
@@ -1251,12 +1274,11 @@ async fn update_backup_bucket() {
         .mount(&s)
         .await;
 
-    let body = BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1(
-        AwsBackupBucketPatchRequestV1 {
+    let body =
+        BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1(AwsBackupBucketPatchRequestV1 {
             bucket_path: "s3://updated-bucket".to_string(),
             ..Default::default()
-        },
-    );
+        });
     let resp = c
         .backup_bucket_update("org-1", "svc-1", &body)
         .await
@@ -1359,7 +1381,11 @@ async fn list_click_pipes_with_null_array_fields() {
     let pipes = resp.result.unwrap();
     assert_eq!(pipes.len(), 1);
     assert_eq!(pipes[0].name, "kafka-pipe");
-    let kafka = pipes[0].source.kafka.as_ref().expect("kafka source present");
+    let kafka = pipes[0]
+        .source
+        .kafka
+        .as_ref()
+        .expect("kafka source present");
     assert!(kafka.reverse_private_endpoint_ids.is_empty());
 }
 
@@ -1382,10 +1408,7 @@ async fn create_click_pipe() {
         name: "new-pipe".to_string(),
         ..Default::default()
     };
-    let resp = c
-        .click_pipe_create("org-1", "svc-1", &body)
-        .await
-        .unwrap();
+    let resp = c.click_pipe_create("org-1", "svc-1", &body).await.unwrap();
     let pipe = resp.result.unwrap();
     assert_eq!(pipe.name, "new-pipe");
 }
@@ -1395,7 +1418,9 @@ async fn get_click_pipe() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "my-pipe",
@@ -1404,10 +1429,7 @@ async fn get_click_pipe() {
         .mount(&s)
         .await;
 
-    let resp = c
-        .click_pipe_get("org-1", "svc-1", "pipe-1")
-        .await
-        .unwrap();
+    let resp = c.click_pipe_get("org-1", "svc-1", "pipe-1").await.unwrap();
     let pipe = resp.result.unwrap();
     assert_eq!(pipe.name, "my-pipe");
 }
@@ -1417,8 +1439,12 @@ async fn update_click_pipe() {
     let (s, c) = setup().await;
 
     Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1"))
-        .and(body_partial_json(serde_json::json!({"name": "renamed-pipe"})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "renamed-pipe"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "renamed-pipe",
@@ -1444,7 +1470,9 @@ async fn delete_click_pipe() {
     let (s, c) = setup().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1",
+        ))
         .respond_with(ok_empty())
         .mount(&s)
         .await;
@@ -1461,7 +1489,9 @@ async fn update_click_pipe_state() {
     let (s, c) = setup().await;
 
     Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/state"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/state",
+        ))
         .and(body_partial_json(serde_json::json!({"command": "stop"})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -1487,7 +1517,9 @@ async fn update_click_pipe_scaling() {
     let (s, c) = setup().await;
 
     Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/scaling"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/scaling",
+        ))
         .and(body_partial_json(serde_json::json!({})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -1512,7 +1544,9 @@ async fn get_click_pipe_settings() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/settings"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/settings",
+        ))
         .respond_with(ok_json(serde_json::json!({})))
         .mount(&s)
         .await;
@@ -1529,7 +1563,9 @@ async fn update_click_pipe_settings() {
     let (s, c) = setup().await;
 
     Mock::given(method("PUT"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/settings"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/settings",
+        ))
         .and(body_partial_json(serde_json::json!({})))
         .respond_with(ok_json(serde_json::json!({})))
         .mount(&s)
@@ -1554,7 +1590,9 @@ async fn click_pipe_schema_discovery_kafka() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes/schemaDiscovery"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/schemaDiscovery",
+        ))
         .and(body_partial_json(serde_json::json!({
             "source": {"kafka": {"brokers": "broker1:9092"}}
         })))
@@ -1596,7 +1634,9 @@ async fn get_cdc_scaling() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "replicaCpuMillicores": 2000,
             "replicaMemoryGb": 8.0
@@ -1618,8 +1658,12 @@ async fn update_cdc_scaling() {
     let (s, c) = setup().await;
 
     Mock::given(method("PATCH"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling"))
-        .and(body_partial_json(serde_json::json!({"replicaCpuMillicores": 4000, "replicaMemoryGb": 16.0})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"replicaCpuMillicores": 4000, "replicaMemoryGb": 16.0}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "replicaCpuMillicores": 4000,
             "replicaMemoryGb": 16.0
@@ -1648,7 +1692,9 @@ async fn list_reverse_private_endpoints() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints",
+        ))
         .respond_with(ok_json(serde_json::json!([
             {
                 "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -1673,8 +1719,12 @@ async fn create_reverse_private_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints"))
-        .and(body_partial_json(serde_json::json!({"description": "New RPE"})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"description": "New RPE"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "description": "New RPE",
@@ -1700,7 +1750,9 @@ async fn get_reverse_private_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints/rpe-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints/rpe-1",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "description": "My RPE",
@@ -1722,7 +1774,9 @@ async fn delete_reverse_private_endpoint() {
     let (s, c) = setup().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints/rpe-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints/rpe-1",
+        ))
         .respond_with(ok_empty())
         .mount(&s)
         .await;
@@ -1743,7 +1797,9 @@ async fn list_alerts() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/alerts"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
+        ))
         .respond_with(ok_json(serde_json::json!([
             {
                 "id": "alert-1",
@@ -1753,10 +1809,7 @@ async fn list_alerts() {
         .mount(&s)
         .await;
 
-    let resp = c
-        .click_stack_list_alerts("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.click_stack_list_alerts("org-1", "svc-1").await.unwrap();
     let alerts = resp.result.unwrap();
     assert_eq!(alerts.len(), 1);
 }
@@ -1766,7 +1819,9 @@ async fn create_alert() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/alerts"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts",
+        ))
         .and(body_partial_json(serde_json::json!({"name": "New Alert"})))
         .respond_with(ok_json(serde_json::json!({
             "id": "alert-1",
@@ -1791,7 +1846,9 @@ async fn get_alert() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "alert-1",
             "name": "My Alert"
@@ -1811,8 +1868,12 @@ async fn update_alert() {
     let (s, c) = setup().await;
 
     Mock::given(method("PUT"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1"))
-        .and(body_partial_json(serde_json::json!({"name": "Updated Alert"})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "Updated Alert"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "alert-1",
             "name": "Updated Alert"
@@ -1836,7 +1897,9 @@ async fn delete_alert() {
     let (s, c) = setup().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/alerts/alert-1",
+        ))
         .respond_with(ok_empty())
         .mount(&s)
         .await;
@@ -1857,7 +1920,9 @@ async fn list_dashboards() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/dashboards"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards",
+        ))
         .respond_with(ok_json(serde_json::json!([
             {
                 "id": "dash-1",
@@ -1880,8 +1945,12 @@ async fn create_dashboard() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/dashboards"))
-        .and(body_partial_json(serde_json::json!({"name": "New Dashboard", "tiles": []})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "New Dashboard", "tiles": []}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "dash-new",
             "name": "New Dashboard"
@@ -1906,7 +1975,9 @@ async fn get_dashboard() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/dashboards/dash-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/dash-1",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "dash-1",
             "name": "My Dashboard"
@@ -1926,8 +1997,12 @@ async fn update_dashboard() {
     let (s, c) = setup().await;
 
     Mock::given(method("PUT"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/dashboards/dash-1"))
-        .and(body_partial_json(serde_json::json!({"name": "Updated Dashboard", "tiles": []})))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/dash-1",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "Updated Dashboard", "tiles": []}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "dash-1",
             "name": "Updated Dashboard"
@@ -1952,7 +2027,9 @@ async fn delete_dashboard() {
     let (s, c) = setup().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/dashboards/dash-1"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/dash-1",
+        ))
         .respond_with(ok_empty())
         .mount(&s)
         .await;
@@ -1973,15 +2050,14 @@ async fn list_sources() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/sources"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources",
+        ))
         .respond_with(ok_json(serde_json::json!([])))
         .mount(&s)
         .await;
 
-    let resp = c
-        .click_stack_list_sources("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.click_stack_list_sources("org-1", "svc-1").await.unwrap();
     let sources = resp.result.unwrap();
     assert_eq!(sources.len(), 0);
 }
@@ -1991,15 +2067,14 @@ async fn list_webhooks() {
     let (s, c) = setup().await;
 
     Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1/services/svc-1/clickstack/webhooks"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks",
+        ))
         .respond_with(ok_json(serde_json::json!([])))
         .mount(&s)
         .await;
 
-    let resp = c
-        .click_stack_list_webhooks("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.click_stack_list_webhooks("org-1", "svc-1").await.unwrap();
     let webhooks = resp.result.unwrap();
     assert_eq!(webhooks.len(), 0);
 }
@@ -2033,10 +2108,7 @@ async fn create_postgres_service() {
         size: PgSize::C6gd_large,
         ..Default::default()
     };
-    let resp = c
-        .postgres_service_create("org-1", &body)
-        .await
-        .unwrap();
+    let resp = c.postgres_service_create("org-1", &body).await.unwrap();
     let pg = resp.result.unwrap();
     assert_eq!(pg.name, "pg-svc");
     assert_eq!(pg.password, "generated-pw");
@@ -2082,10 +2154,7 @@ async fn get_postgres_service() {
     let resp = c.postgres_service_get("org-1", "pg-1").await.unwrap();
     let pg = resp.result.unwrap();
     assert_eq!(pg.name, "pg-1");
-    assert_eq!(
-        pg.connection_string,
-        "postgres://user@host/db"
-    );
+    assert_eq!(pg.connection_string, "postgres://user@host/db");
 }
 
 #[tokio::test]
@@ -2160,7 +2229,9 @@ async fn set_postgres_password() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/password"))
-        .and(body_partial_json(serde_json::json!({"password": "new-pg-password"})))
+        .and(body_partial_json(
+            serde_json::json!({"password": "new-pg-password"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "password": "new-pg-password"
         })))
@@ -2185,16 +2256,14 @@ async fn get_postgres_certs() {
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/caCertificates"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----\n"),
+            ResponseTemplate::new(200).set_body_string(
+                "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----\n",
+            ),
         )
         .mount(&s)
         .await;
 
-    let resp = c
-        .postgres_service_certs_get("org-1", "pg-1")
-        .await
-        .unwrap();
+    let resp = c.postgres_service_certs_get("org-1", "pg-1").await.unwrap();
     assert!(resp.contains("BEGIN CERTIFICATE"));
 }
 
@@ -2218,7 +2287,10 @@ async fn get_postgres_config() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.pg_config.max_connections, Some(serde_json::json!(100)));
+    assert_eq!(
+        config.pg_config.max_connections,
+        Some(serde_json::json!(100))
+    );
 }
 
 #[tokio::test]
@@ -2251,7 +2323,10 @@ async fn replace_postgres_config() {
         .unwrap();
     let result = resp.result.unwrap();
     assert_eq!(result.message, Some("Configuration updated".to_string()));
-    assert_eq!(result.pg_config.max_connections, Some(serde_json::json!(200)));
+    assert_eq!(
+        result.pg_config.max_connections,
+        Some(serde_json::json!(200))
+    );
 }
 
 #[tokio::test]
@@ -2283,7 +2358,10 @@ async fn patch_postgres_config() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.pg_config.max_connections, Some(serde_json::json!(150)));
+    assert_eq!(
+        result.pg_config.max_connections,
+        Some(serde_json::json!(150))
+    );
 }
 
 #[tokio::test]
@@ -2292,7 +2370,9 @@ async fn create_postgres_read_replica() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/readReplica"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-1-replica"})))
+        .and(body_partial_json(
+            serde_json::json!({"name": "pg-1-replica"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
             "name": "pg-1-replica",
@@ -2318,8 +2398,12 @@ async fn restore_postgres_service() {
     let (s, c) = setup().await;
 
     Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/postgres/pg-1/restoredService"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-1-restored"})))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/restoredService",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "pg-1-restored"}),
+        ))
         .respond_with(ok_json(serde_json::json!({
             "id": "cccccccc-dddd-eeee-ffff-000000000000",
             "name": "pg-1-restored",
@@ -2403,8 +2487,7 @@ async fn with_http_client_basic_auth() {
         .await;
 
     let http = reqwest::Client::new();
-    let client =
-        Client::with_http_client(http, mock_server.uri(), "custom-key", "custom-secret");
+    let client = Client::with_http_client(http, mock_server.uri(), "custom-key", "custom-secret");
     let resp = client.organization_get_list().await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);
 }
@@ -2505,10 +2588,7 @@ async fn api_error_404_not_found() {
         .mount(&s)
         .await;
 
-    let err = c
-        .instance_get("org-1", "nonexistent")
-        .await
-        .unwrap_err();
+    let err = c.instance_get("org-1", "nonexistent").await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Api { status, message } => {
             assert_eq!(status, 404);
@@ -2547,9 +2627,7 @@ async fn api_error_non_json_body() {
 
     Mock::given(method("GET"))
         .and(path("/v1/organizations"))
-        .respond_with(
-            ResponseTemplate::new(502).set_body_string("Bad Gateway"),
-        )
+        .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
         .mount(&s)
         .await;
 
@@ -2570,12 +2648,10 @@ async fn api_error_on_prometheus_endpoint() {
 
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/prometheus"))
-        .respond_with(
-            ResponseTemplate::new(403).set_body_json(serde_json::json!({
-                "status": 403,
-                "error": "Metrics access denied"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "Metrics access denied"
+        })))
         .mount(&s)
         .await;
 
@@ -2644,9 +2720,7 @@ async fn truncated_json_success_response() {
 
     Mock::given(method("GET"))
         .and(path("/v1/organizations"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(r#"{"status": 200, "result":"#),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"status": 200, "result":"#))
         .mount(&s)
         .await;
 
@@ -2839,10 +2913,7 @@ async fn organization_prometheus_with_filtered_metrics() {
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/prometheus"))
         .and(query_param("filtered_metrics", "cpu,memory"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("cpu 42\nmemory 1024\n"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("cpu 42\nmemory 1024\n"))
         .mount(&s)
         .await;
 
@@ -2859,17 +2930,11 @@ async fn organization_prometheus_without_filter() {
 
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/prometheus"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("# HELP metric\nmetric 1\n"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("# HELP metric\nmetric 1\n"))
         .mount(&s)
         .await;
 
-    let resp = c
-        .organization_prometheus_get("org-1", None)
-        .await
-        .unwrap();
+    let resp = c.organization_prometheus_get("org-1", None).await.unwrap();
     assert!(resp.contains("metric"));
 }
 
@@ -2879,10 +2944,7 @@ async fn postgres_instance_prometheus_get_returns_metrics() {
 
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/prometheus"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("# HELP pg_metric\npg_metric 7\n"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("# HELP pg_metric\npg_metric 7\n"))
         .mount(&s)
         .await;
 
@@ -2900,16 +2962,12 @@ async fn postgres_org_prometheus_get_returns_metrics() {
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/prometheus"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("# HELP pg_org_metric\npg_org_metric 3\n"),
+            ResponseTemplate::new(200).set_body_string("# HELP pg_org_metric\npg_org_metric 3\n"),
         )
         .mount(&s)
         .await;
 
-    let resp = c
-        .postgres_org_prometheus_get("org-1")
-        .await
-        .unwrap();
+    let resp = c.postgres_org_prometheus_get("org-1").await.unwrap();
     assert!(resp.contains("pg_org_metric"));
 }
 
@@ -2918,7 +2976,9 @@ async fn scaling_schedule_delete_succeeds() {
     let (s, c) = setup().await;
 
     Mock::given(method("DELETE"))
-        .and(path("/v1/organizations/org-1/services/svc-1/scalingSchedule"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/scalingSchedule",
+        ))
         .respond_with(ok_json(serde_json::json!({
             "status": 200,
             "requestId": "00000000-0000-0000-0000-000000000000"
@@ -2926,10 +2986,7 @@ async fn scaling_schedule_delete_succeeds() {
         .mount(&s)
         .await;
 
-    let resp = c
-        .scaling_schedule_delete("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.scaling_schedule_delete("org-1", "svc-1").await.unwrap();
     assert_eq!(resp.status, Some(200.0));
 }
 
@@ -2951,10 +3008,7 @@ async fn upgrade_window_get_returns_window() {
         .mount(&s)
         .await;
 
-    let resp = c
-        .upgrade_window_get("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.upgrade_window_get("org-1", "svc-1").await.unwrap();
     let window = resp.result.unwrap();
     assert_eq!(window.weekday, 2);
     assert_eq!(window.start_hour_utc, 6);
@@ -3002,10 +3056,7 @@ async fn upgrade_window_delete_succeeds() {
         .mount(&s)
         .await;
 
-    let resp = c
-        .upgrade_window_delete("org-1", "svc-1")
-        .await
-        .unwrap();
+    let resp = c.upgrade_window_delete("org-1", "svc-1").await.unwrap();
     assert_eq!(resp.status, Some(200.0));
 }
 

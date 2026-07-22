@@ -160,10 +160,7 @@ mod tests {
     #[test]
     fn renders_flat_object() {
         let v = json!({"name": "svc", "port": 9000, "secure": true});
-        assert_eq!(
-            render_to_string(&v),
-            "name: svc\nport: 9000\nsecure: true"
-        );
+        assert_eq!(render_to_string(&v), "name: svc\nport: 9000\nsecure: true");
     }
 
     #[test]
@@ -248,7 +245,10 @@ mod tests {
         let rendered = render_to_string(&serde_json::to_value(&svc).unwrap());
         assert!(rendered.contains("name: analytics"));
         assert!(rendered.contains("numReplicas: 3"));
-        assert!(!rendered.contains("tier"), "deprecated tier leaked: {rendered}");
+        assert!(
+            !rendered.contains("tier"),
+            "deprecated tier leaked: {rendered}"
+        );
         assert!(!rendered.contains("minTotalMemoryGb"));
         assert!(!rendered.contains("maxTotalMemoryGb"));
     }

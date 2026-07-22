@@ -24,10 +24,7 @@ async fn cloud_clickpipe_kafka() -> TestResult<()> {
     );
 
     let mut failures = Vec::new();
-    for (name, outcome) in [
-        ("kafka-scram-tls", scram_out),
-        ("kafka-mtls", mtls_out),
-    ] {
+    for (name, outcome) in [("kafka-scram-tls", scram_out), ("kafka-mtls", mtls_out)] {
         harness.collect(name, outcome, &mut failures);
     }
 

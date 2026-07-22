@@ -561,14 +561,32 @@ mod tests {
     fn payload_serializes_exactly_the_wire_fields() {
         let payload = build_payload(&invocation(), 0, &env_of(&[]));
         let value = serde_json::to_value(&payload).unwrap();
-        let keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
         assert_eq!(
             keys,
-            ["command", "flags", "exit_code", "is_agent", "agent", "ci", "version", "os", "arch"]
+            [
+                "command",
+                "flags",
+                "exit_code",
+                "is_agent",
+                "agent",
+                "ci",
+                "version",
+                "os",
+                "arch"
+            ]
         );
         // The two agent fields are set from the same single detection and can
         // never disagree.
-        assert_eq!(value["is_agent"].as_bool().unwrap(), !value["agent"].is_null());
+        assert_eq!(
+            value["is_agent"].as_bool().unwrap(),
+            !value["agent"].is_null()
+        );
     }
 
     #[test]
@@ -620,7 +638,11 @@ mod tests {
         let mut cmd = Command::new("root").subcommand(
             Command::new("sub")
                 .arg(Arg::new("level").long("level").default_value("info"))
-                .arg(Arg::new("verbose").long("verbose").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("verbose")
+                        .long("verbose")
+                        .action(ArgAction::SetTrue),
+                )
                 .arg(Arg::new("target")),
         );
         let matches = cmd

@@ -506,7 +506,9 @@ mod tests {
     #[test]
     fn server_start_config_file_defaults_to_none() {
         let LocalCommands::Server {
-            command: ServerCommands::Start { config_file, args, .. },
+            command: ServerCommands::Start {
+                config_file, args, ..
+            },
         } = local_command(&["server", "start"])
         else {
             panic!("expected server start");

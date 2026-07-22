@@ -52,10 +52,7 @@ fn derive_query_host(base_url: &str) -> Option<String> {
     let parsed = url::Url::parse(base_url).ok()?;
     let rest = parsed.host_str()?.strip_prefix("api.")?;
     let rest = rest.strip_prefix("control-plane.").unwrap_or(rest);
-    let port = parsed
-        .port()
-        .map(|p| format!(":{p}"))
-        .unwrap_or_default();
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
     Some(format!("{}://queries.{}{}", parsed.scheme(), rest, port))
 }
 
@@ -83,10 +80,7 @@ impl Client {
     }
 
     /// Create a new client with Bearer token authentication and a custom base URL.
-    pub fn with_bearer_token(
-        base_url: impl Into<String>,
-        token: impl Into<String>,
-    ) -> Self {
+    pub fn with_bearer_token(base_url: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -358,9 +352,7 @@ impl Client {
     }
 
     /// Get list of available organizations
-    pub async fn organization_get_list(
-        &self,
-    ) -> Result<ApiResponse<Vec<Organization>>, Error> {
+    pub async fn organization_get_list(&self) -> Result<ApiResponse<Vec<Organization>>, Error> {
         let path = "/v1/organizations".to_string();
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
@@ -507,7 +499,9 @@ impl Client {
         organization_id: &str,
         byoc_infrastructure_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -531,7 +525,9 @@ impl Client {
         byoc_infrastructure_id: &str,
         body: &ByocInfrastructurePatchRequest,
     ) -> Result<ApiResponse<ByocConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1091,7 +1087,8 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/caCertificates");
+        let path =
+            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/caCertificates");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1213,7 +1210,8 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServiceReadReplicaRequest,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/readReplica");
+        let path =
+            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/readReplica");
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1237,8 +1235,7 @@ impl Client {
         organization_id: &str,
         postgres_id: &str,
     ) -> Result<String, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/prometheus");
+        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/prometheus");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1284,7 +1281,8 @@ impl Client {
         postgres_id: &str,
         body: &PostgresServiceRestoreRequest,
     ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/restoredService");
+        let path =
+            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/restoredService");
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1337,8 +1335,7 @@ impl Client {
         to_date: &str,
         bucket_size_seconds: Option<i64>,
     ) -> Result<ApiResponse<PostgresMetrics>, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/metrics");
+        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/metrics");
         let mut req = self.request(reqwest::Method::GET, &path);
         req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
         if let Some(v) = bucket_size_seconds {
@@ -1376,9 +1373,8 @@ impl Client {
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<PostgresSlowQueryPattern>>, Error> {
-        let path = format!(
-            "/v1/organizations/{organization_id}/postgres/{postgres_id}/slowQueryPatterns"
-        );
+        let path =
+            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/slowQueryPatterns");
         let mut req = self.request(reqwest::Method::GET, &path);
         req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
         if let Some(v) = db_name {
@@ -1644,7 +1640,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1668,7 +1665,8 @@ impl Client {
         service_id: &str,
         body: &BackupBucketPostRequest,
     ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1693,7 +1691,8 @@ impl Client {
         service_id: &str,
         body: &BackupBucketPatchRequest,
     ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1717,7 +1716,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1740,7 +1740,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<BackupConfiguration>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1764,7 +1766,9 @@ impl Client {
         service_id: &str,
         body: &BackupConfigurationPatchRequest,
     ) -> Result<ApiResponse<BackupConfiguration>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1812,7 +1816,9 @@ impl Client {
         service_id: &str,
         backup_id: &str,
     ) -> Result<ApiResponse<Backup>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backups/{backup_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/backups/{backup_id}"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1884,7 +1890,9 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1909,7 +1917,9 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipePatchRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1934,7 +1944,9 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -1959,7 +1971,9 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipeScalingPatchRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/scaling");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/scaling"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -1984,7 +1998,9 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
     ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2009,7 +2025,9 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipeSettingsPutRequest,
     ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
+        );
         let mut req = self.request(reqwest::Method::PUT, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2035,7 +2053,9 @@ impl Client {
         click_pipe_id: &str,
         body: &ClickPipeStatePatchRequest,
     ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/state");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/state"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2059,7 +2079,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ClickPipesCdcScaling>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2083,7 +2105,9 @@ impl Client {
         service_id: &str,
         body: &ClickPipesCdcScalingPatchRequest,
     ) -> Result<ApiResponse<ClickPipesCdcScaling>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2107,7 +2131,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ReversePrivateEndpoint>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2131,7 +2157,9 @@ impl Client {
         service_id: &str,
         body: &CreateReversePrivateEndpoint,
     ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints"
+        );
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2156,7 +2184,9 @@ impl Client {
         service_id: &str,
         reverse_private_endpoint_id: &str,
     ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2180,7 +2210,9 @@ impl Client {
         service_id: &str,
         reverse_private_endpoint_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2205,7 +2237,9 @@ impl Client {
         reverse_private_endpoint_id: &str,
         body: &UpdateReversePrivateEndpoint,
     ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}"
+        );
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2230,7 +2264,9 @@ impl Client {
         service_id: &str,
         body: &ClickPipeSchemaDiscoveryRequest,
     ) -> Result<ApiResponse<ClickPipeSchemaDiscoveryResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/schemaDiscovery");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/schemaDiscovery"
+        );
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2254,7 +2290,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackAlertResponse>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2278,7 +2315,8 @@ impl Client {
         service_id: &str,
         body: &ClickStackCreateAlertRequest,
     ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2303,7 +2341,9 @@ impl Client {
         service_id: &str,
         click_stack_alert_id: &str,
     ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2328,7 +2368,9 @@ impl Client {
         click_stack_alert_id: &str,
         body: &ClickStackUpdateAlertRequest,
     ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}"
+        );
         let mut req = self.request(reqwest::Method::PUT, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2353,7 +2395,9 @@ impl Client {
         service_id: &str,
         click_stack_alert_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2376,7 +2420,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackDashboardResponse>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2400,7 +2446,9 @@ impl Client {
         service_id: &str,
         body: &ClickStackCreateDashboardRequest,
     ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards"
+        );
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2425,7 +2473,9 @@ impl Client {
         service_id: &str,
         click_stack_dashboard_id: &str,
     ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2450,7 +2500,9 @@ impl Client {
         click_stack_dashboard_id: &str,
         body: &ClickStackUpdateDashboardRequest,
     ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}"
+        );
         let mut req = self.request(reqwest::Method::PUT, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2475,7 +2527,9 @@ impl Client {
         service_id: &str,
         click_stack_dashboard_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2498,7 +2552,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackSource>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2521,7 +2576,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<Vec<ClickStackWebhook>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2570,7 +2627,8 @@ impl Client {
         service_id: &str,
         body: &ServicPrivateEndpointePostRequest,
     ) -> Result<ApiResponse<InstancePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/privateEndpoint");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/privateEndpoint");
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2594,7 +2652,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<PrivateEndpointConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/privateEndpointConfig");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/privateEndpointConfig"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2645,7 +2705,8 @@ impl Client {
         service_id: &str,
         body: &ServiceReplicaScalingPatchRequest,
     ) -> Result<ApiResponse<ServiceScalingPatchResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/replicaScaling");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/replicaScaling");
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2696,7 +2757,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ScalingSchedule>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2720,7 +2782,8 @@ impl Client {
         service_id: &str,
         body: &ScalingSchedulePostRequest,
     ) -> Result<ApiResponse<ScalingSchedule>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2744,7 +2807,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2767,7 +2831,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<UpgradeWindow>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2791,7 +2856,8 @@ impl Client {
         service_id: &str,
         body: &UpgradeWindowPutRequest,
     ) -> Result<ApiResponse<UpgradeWindow>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
         let mut req = self.request(reqwest::Method::PUT, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2815,7 +2881,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2838,7 +2905,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ServiceQueryAPIEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2861,7 +2930,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2885,7 +2956,9 @@ impl Client {
         service_id: &str,
         body: &InstanceServiceQueryApiEndpointsPostRequest,
     ) -> Result<ApiResponse<ServiceQueryAPIEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint"
+        );
         let mut req = self.request(reqwest::Method::POST, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -2964,7 +3037,8 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsList>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -2988,7 +3062,8 @@ impl Client {
         service_id: &str,
         body: &ServiceClickhouseSettingsPatchRequest,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsPatchResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
         let mut req = self.request(reqwest::Method::PATCH, &path);
         req = req.json(body);
         let resp = req.send().await?;
@@ -3012,7 +3087,9 @@ impl Client {
         organization_id: &str,
         service_id: &str,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsSchema>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/schema");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/schema"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -3036,7 +3113,9 @@ impl Client {
         service_id: &str,
         setting_name: &str,
     ) -> Result<ApiResponse<ServiceClickhouseSetting>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}"
+        );
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -3060,7 +3139,9 @@ impl Client {
         service_id: &str,
         setting_name: &str,
     ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}");
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}"
+        );
         let req = self.request(reqwest::Method::DELETE, &path);
         let resp = req.send().await?;
         let status = resp.status();
@@ -3076,7 +3157,6 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
-
 }
 
 #[cfg(test)]

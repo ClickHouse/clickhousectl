@@ -158,12 +158,12 @@ fn resolve_auth_with_sources(
     };
 
     if api_key.is_some() || api_secret.is_some() {
-        let key = api_key
-            .map(String::from)
-            .ok_or_else(|| CloudError::auth("API key required when --api-key or --api-secret is set"))?;
-        let secret = api_secret
-            .map(String::from)
-            .ok_or_else(|| CloudError::auth("API secret required when --api-key or --api-secret is set"))?;
+        let key = api_key.map(String::from).ok_or_else(|| {
+            CloudError::auth("API key required when --api-key or --api-secret is set")
+        })?;
+        let secret = api_secret.map(String::from).ok_or_else(|| {
+            CloudError::auth("API secret required when --api-key or --api-secret is set")
+        })?;
         return Ok(ResolvedAuth {
             creds: ResolvedCreds::Basic { key, secret },
             source: AuthSource::CliFlags,
@@ -292,7 +292,8 @@ impl AuthSource {
                 crate::cloud::credentials::credentials_path().display()
             ),
             AuthSource::EnvVars => {
-                let base = "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
+                let base =
+                    "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
                 match dotenv_env_provenance() {
                     Some(path) => format!("{base} (loaded from {})", path.display()),
                     None => base.to_string(),
@@ -1231,7 +1232,11 @@ mod tests {
                 .describe()
                 .contains("CLICKHOUSE_CLOUD_API_KEY")
         );
-        assert!(AuthSource::CredentialsFile.describe().contains("credentials"));
+        assert!(
+            AuthSource::CredentialsFile
+                .describe()
+                .contains("credentials")
+        );
         assert!(AuthSource::OAuthTokens.describe().contains("OAuth"));
     }
 
@@ -1312,10 +1317,15 @@ mod tests {
     }
 
     fn env_map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
-    fn lookup_from(map: &std::collections::HashMap<String, String>) -> impl Fn(&str) -> Option<String> + '_ {
+    fn lookup_from(
+        map: &std::collections::HashMap<String, String>,
+    ) -> impl Fn(&str) -> Option<String> + '_ {
         move |k: &str| map.get(k).cloned()
     }
 
@@ -1352,9 +1362,16 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
         ]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &some_credentials, &no_tokens)
-                .unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &some_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         assert_eq!(resolved.source, AuthSource::CredentialsFile);
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
@@ -1373,8 +1390,16 @@ mod tests {
         ]);
         let env = env_map(&[]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         assert_eq!(resolved.source, AuthSource::EnvVars);
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
@@ -1404,8 +1429,16 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
         ]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "shell_k");
@@ -1423,8 +1456,16 @@ mod tests {
         let dotenv = dotenv_with(&[("CLICKHOUSE_CLOUD_API_SECRET", "dot_s")]);
         let env = env_map(&[("CLICKHOUSE_CLOUD_API_KEY", "shell_k")]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "shell_k");
@@ -1457,7 +1498,16 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", ""),
         ]);
         let lookup = lookup_from(&env);
-        let resolved = resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "dot_k");

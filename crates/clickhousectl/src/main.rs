@@ -19,8 +19,8 @@ use cli::{
     ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, Cli, ClickPipeCommands,
     ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands, Commands,
     InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PostgresCertsCommands,
-    PostgresCommands, PostgresConfigCommands, PostgresReadReplicaCommands,
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
+    PostgresCommands, PostgresConfigCommands, PostgresReadReplicaCommands, PrivateEndpointCommands,
+    QueryEndpointCommands, ServiceCommands, SkillsArgs, UpdateArgs,
 };
 
 use cloud::CloudClient;
@@ -237,8 +237,8 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         .map_err(|e| Error::Cloud(e.to_string()))?;
                     cloud::auth::save_tokens(&tokens).map_err(|e| Error::Cloud(e.to_string()))?;
                     println!("Logged in successfully.");
-                    let tokens_path = cloud::auth::tokens_path()
-                        .map_err(|e| Error::Cloud(e.to_string()))?;
+                    let tokens_path =
+                        cloud::auth::tokens_path().map_err(|e| Error::Cloud(e.to_string()))?;
                     println!("Tokens saved to {}", tokens_path.display());
                     Ok(())
                 }
@@ -301,7 +301,11 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                 // CLI --api-key/--api-secret aren't relevant to `auth status` itself.
                 let active = cloud::resolve_active_auth_source();
                 let mark = |src: cloud::AuthSource| -> String {
-                    if active == Some(src) { "yes".into() } else { "-".into() }
+                    if active == Some(src) {
+                        "yes".into()
+                    } else {
+                        "-".into()
+                    }
                 };
 
                 let mut rows = Vec::new();
@@ -1379,7 +1383,10 @@ mod tests {
             Some(false)
         );
         // The update command never surfaces the notice.
-        assert_eq!(command_json_flag(&parse(&["clickhousectl", "update"])), None);
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "update"])),
+            None
+        );
         // Telemetry management commands are human-readable output.
         #[cfg(feature = "telemetry")]
         assert_eq!(

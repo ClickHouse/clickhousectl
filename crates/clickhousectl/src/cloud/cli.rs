@@ -15,8 +15,9 @@ const OBJECT_STORAGE_FORMATS: &[&str] = &[
     "Parquet",
     "Avro",
 ];
-const OBJECT_STORAGE_COMPRESSIONS: &[&str] =
-    &["none", "gzip", "gz", "brotli", "br", "xz", "LZMA", "zstd", "auto"];
+const OBJECT_STORAGE_COMPRESSIONS: &[&str] = &[
+    "none", "gzip", "gz", "brotli", "br", "xz", "LZMA", "zstd", "auto",
+];
 const OBJECT_STORAGE_TYPES: &[&str] = &[
     "s3",
     "gcs",
@@ -2560,10 +2561,7 @@ mod tests {
             panic!("expected schema-discover");
         };
         assert_eq!(service_id, "svc-1");
-        assert!(matches!(
-            command,
-            ClickPipeSchemaDiscoverCommands::Kafka(_)
-        ));
+        assert!(matches!(command, ClickPipeSchemaDiscoverCommands::Kafka(_)));
     }
 
     #[test]
@@ -2975,8 +2973,14 @@ mod tests {
 
         // Service reads
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "get", "svc-1"], false);
-        assert_write(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "service", "get", "svc-1"],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
+            false,
+        );
 
         // Backup reads
         assert_write(
@@ -3051,10 +3055,25 @@ mod tests {
 
         // Postgres reads
         assert_write(&["clickhousectl", "cloud", "postgres", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "postgres", "get", "pg-1"], false);
-        assert_write(&["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"], false);
-        assert_write(&["clickhousectl", "cloud", "postgres", "config", "get", "pg-1"], false);
-
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "get", "pg-1"],
+            false,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "certs", "get", "pg-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "config",
+                "get",
+                "pg-1",
+            ],
+            false,
+        );
     }
 
     #[test]
@@ -3267,16 +3286,112 @@ mod tests {
         );
 
         // Postgres writes
-        assert_write(&["clickhousectl", "cloud", "postgres", "create", "--name", "pg", "--region", "us-east-1", "--size", "m7i.2xlarge"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "update", "pg-1", "--size", "c6gd.large"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "delete", "pg-1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "config", "replace", "pg-1", "--file", "/tmp/c.json"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "config", "patch", "pg-1", "--set", "max_connections=500"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "reset-password", "pg-1", "--generate"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "read-replica", "create", "pg-1", "--name", "r1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "restore", "pg-1", "--name", "r", "--restore-target", "2026-04-16T12:00:00Z"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "restart", "pg-1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"], true);
-        assert_write(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "create",
+                "--name",
+                "pg",
+                "--region",
+                "us-east-1",
+                "--size",
+                "m7i.2xlarge",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "update",
+                "pg-1",
+                "--size",
+                "c6gd.large",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "delete", "pg-1"],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "config",
+                "replace",
+                "pg-1",
+                "--file",
+                "/tmp/c.json",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "config",
+                "patch",
+                "pg-1",
+                "--set",
+                "max_connections=500",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "reset-password",
+                "pg-1",
+                "--generate",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "read-replica",
+                "create",
+                "pg-1",
+                "--name",
+                "r1",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "restore",
+                "pg-1",
+                "--name",
+                "r",
+                "--restore-target",
+                "2026-04-16T12:00:00Z",
+            ],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "restart", "pg-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "promote", "pg-1"],
+            true,
+        );
+        assert_write(
+            &["clickhousectl", "cloud", "postgres", "switchover", "pg-1"],
+            true,
+        );
     }
 }
