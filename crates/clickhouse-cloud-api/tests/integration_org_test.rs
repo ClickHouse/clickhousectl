@@ -1233,7 +1233,13 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval, None)
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
         .await;
 
     match (test_result, cleanup_result) {

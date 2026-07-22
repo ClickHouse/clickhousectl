@@ -12,8 +12,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -179,17 +179,22 @@ pub async fn verify_seed_rows(
     ingest_timeout: Duration,
     poll_interval: Duration,
 ) -> TestResult<()> {
-    poll_until("seeded row count in ClickHouse", ingest_timeout, poll_interval, || {
-        let query = ch.query.clone();
-        let table = table.to_string();
-        async move {
-            match query.count_rows(&table).await {
-                Ok(count) if count >= expected_count => Ok(Some(count)),
-                Ok(_) => Ok(None),
-                Err(e) => Err(e),
+    poll_until(
+        "seeded row count in ClickHouse",
+        ingest_timeout,
+        poll_interval,
+        || {
+            let query = ch.query.clone();
+            let table = table.to_string();
+            async move {
+                match query.count_rows(&table).await {
+                    Ok(count) if count >= expected_count => Ok(Some(count)),
+                    Ok(_) => Ok(None),
+                    Err(e) => Err(e),
+                }
             }
-        }
-    })
+        },
+    )
     .await?;
     let actual = ch
         .query
@@ -230,7 +235,9 @@ pub fn random_token(len: usize) -> String {
     let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut out = String::with_capacity(len);
     for _ in 0..len {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         out.push(charset[(state >> 33) as usize % charset.len()] as char);
     }
     out
@@ -239,7 +246,7 @@ pub fn random_token(len: usize) -> String {
 /// Base64-encode a string for embedding in user_data templates without
 /// escaping issues (multi-line PEMs etc.).
 pub fn b64(s: &str) -> String {
-    use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
     STANDARD.encode(s.as_bytes())
 }

@@ -68,9 +68,7 @@ pub fn set_service_query_key(
     key: ServiceQueryKey,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut creds = load_credentials().unwrap_or_default();
-    creds
-        .service_query_keys
-        .insert(service_id.to_string(), key);
+    creds.service_query_keys.insert(service_id.to_string(), key);
     save_credentials(&creds)
 }
 

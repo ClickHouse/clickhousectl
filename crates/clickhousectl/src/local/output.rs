@@ -336,7 +336,11 @@ impl fmt::Display for ServerListOutput {
                     ServerListRowWithEngine {
                         name: e.name.clone(),
                         engine: e.engine.clone(),
-                        status: if e.running { "running".into() } else { "stopped".into() },
+                        status: if e.running {
+                            "running".into()
+                        } else {
+                            "stopped".into()
+                        },
                         pid_or_container: id,
                         version: e.version.clone().unwrap_or_default(),
                         http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
@@ -422,11 +426,7 @@ pub struct PostgresStartOutput {
 impl fmt::Display for PostgresStartOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let short = self.container_id.chars().take(12).collect::<String>();
-        writeln!(
-            f,
-            "Postgres '{}' running (container: {})",
-            self.name, short
-        )?;
+        writeln!(f, "Postgres '{}' running (container: {})", self.name, short)?;
         writeln!(f, "  Image:    {}", self.image)?;
         writeln!(f, "  Port:     {}", self.port)?;
         writeln!(f, "  User:     {}", self.user)?;
@@ -587,10 +587,8 @@ mod tests {
                 },
             ],
         };
-        let json: serde_json::Value = serde_json::from_str(
-            &serde_json::to_string_pretty(&output).unwrap(),
-        )
-        .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["versions"][0]["version"], "25.12.5.44");
         assert_eq!(json["versions"][0]["default"], true);
@@ -601,9 +599,7 @@ mod tests {
 
     #[test]
     fn list_installed_json_empty() {
-        let output = ListInstalledOutput {
-            versions: vec![],
-        };
+        let output = ListInstalledOutput { versions: vec![] };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
         assert_eq!(json["versions"].as_array().unwrap().len(), 0);
@@ -828,9 +824,7 @@ mod tests {
 
     #[test]
     fn server_stop_all_json_empty() {
-        let output = ServerStopAllOutput {
-            servers: vec![],
-        };
+        let output = ServerStopAllOutput { servers: vec![] };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
@@ -910,9 +904,7 @@ mod tests {
 
     #[test]
     fn list_installed_display_empty() {
-        let output = ListInstalledOutput {
-            versions: vec![],
-        };
+        let output = ListInstalledOutput { versions: vec![] };
         let text = output.to_string();
         assert!(text.contains("No versions installed"));
         assert!(text.contains("Run: clickhousectl local install stable"));
@@ -943,9 +935,7 @@ mod tests {
 
     #[test]
     fn list_available_display_empty() {
-        let output = ListAvailableOutput {
-            versions: vec![],
-        };
+        let output = ListAvailableOutput { versions: vec![] };
         assert_eq!(output.to_string(), "No versions available");
     }
 
@@ -1090,8 +1080,8 @@ mod tests {
                 http_port: Some(8123),
                 tcp_port: Some(9000),
                 project: None,
-                    engine: "clickhouse".to_string(),
-                    container_id: None,
+                engine: "clickhouse".to_string(),
+                container_id: None,
             }],
             total_servers: 1,
             total_running_servers: 1,
@@ -1133,9 +1123,7 @@ mod tests {
 
     #[test]
     fn server_stop_all_display_empty() {
-        let output = ServerStopAllOutput {
-            servers: vec![],
-        };
+        let output = ServerStopAllOutput { servers: vec![] };
         assert_eq!(output.to_string(), "No running servers");
     }
 

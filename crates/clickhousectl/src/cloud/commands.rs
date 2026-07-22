@@ -3,17 +3,17 @@ use crate::cloud::credentials;
 use crate::cloud::output::print_human;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
-    BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
+    AutoscalingMode, BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
     InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
     IpAccessListPatch, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1, Service,
-    ServiceEndpointChange, ServiceEndpointChangeProtocol,
-    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
-    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
-    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
-    ServiceReplicaScalingPatchRequest,
-    ServiceStatePatchRequestCommand, ServicPrivateEndpointePostRequest, AutoscalingMode,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1,
+    ServicPrivateEndpointePostRequest, Service, ServiceEndpointChange,
+    ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
+    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
+    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
+    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
+    ServiceStatePatchRequestCommand,
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
@@ -1053,7 +1053,11 @@ pub async fn clickpipe_create_s3(
         azure_container_name: args.azure_container_name.clone(),
         path: args.path.clone(),
         service_account_key,
-        skip_initial_load: if args.skip_initial_load { Some(true) } else { None },
+        skip_initial_load: if args.skip_initial_load {
+            Some(true)
+        } else {
+            None
+        },
         start_after: args.start_after.clone(),
     };
 
@@ -1110,9 +1114,7 @@ fn build_kafka_credentials(
             }
         }
         Auth::MUTUAL_TLS => match mtls_contents {
-            Some((cert, key)) => {
-                Ok(serde_json::json!({ "certificate": cert, "privateKey": key }))
-            }
+            Some((cert, key)) => Ok(serde_json::json!({ "certificate": cert, "privateKey": key })),
             None => Err("MUTUAL_TLS requires --client-certificate and --client-key".into()),
         },
         Auth::Unknown(_) => Ok(serde_json::Value::Null),
@@ -1228,13 +1230,16 @@ fn build_kinesis_source(
         authentication: parse_enum(&args.auth)?,
         iam_role: args.iam_role.clone(),
         access_key,
-        use_enhanced_fan_out: if args.enhanced_fan_out { Some(true) } else { None },
+        use_enhanced_fan_out: if args.enhanced_fan_out {
+            Some(true)
+        } else {
+            None
+        },
         iterator_type: parse_enum(&args.iterator_type)?,
         timestamp: args
             .iterator_timestamp
             .map(|t| {
-                i64::try_from(t)
-                    .map_err(|_| format!("--iterator-timestamp {t} is out of range"))
+                i64::try_from(t).map_err(|_| format!("--iterator-timestamp {t} is out of range"))
             })
             .transpose()?,
     })
@@ -2212,8 +2217,8 @@ pub async fn service_query(
     let sql = read_query_sql(opts.query.as_deref(), opts.queries_file.as_deref())?;
 
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
-    let service = resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref())
-        .await?;
+    let service =
+        resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref()).await?;
     let service_id = service.id.to_string();
 
     let format = opts.format.unwrap_or_else(default_query_format);
@@ -2226,9 +2231,13 @@ pub async fn service_query(
         // `--no-auto-enable` is a no-op here since nothing is ever
         // provisioned.
         let run = |wake: bool| {
-            client
-                .api()
-                .run_query_bearer(&service_id, &sql, opts.database.as_deref(), &format, wake)
+            client.api().run_query_bearer(
+                &service_id,
+                &sql,
+                opts.database.as_deref(),
+                &format,
+                wake,
+            )
         };
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
@@ -2352,9 +2361,7 @@ fn read_query_sql(
     }
 
     if std::io::stdin().is_terminal() {
-        return Err(
-            "no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.".into(),
-        );
+        return Err("no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.".into());
     }
 
     let mut content = String::new();
@@ -3465,8 +3472,7 @@ mod tests {
     fn resolve_horizontal_autoscaling_explicit_vertical_with_no_replicas() {
         // Explicit --autoscaling-mode vertical with no replica pair → mode set,
         // replicas absent (lets the server apply vertical defaults).
-        let resolved =
-            resolve_horizontal_autoscaling(Some("vertical"), None, None).unwrap();
+        let resolved = resolve_horizontal_autoscaling(Some("vertical"), None, None).unwrap();
         assert_eq!(resolved.autoscaling_mode, Some(AutoscalingMode::Vertical));
         assert!(resolved.min_replicas.is_none());
         assert!(resolved.max_replicas.is_none());
@@ -3837,7 +3843,8 @@ mod tests {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let args = kafka_args();
         let contents = Some(("CERT_PEM".into(), "KEY_PEM".into()));
-        let creds = super::build_kafka_credentials(&Auth::MUTUAL_TLS, &args.source, contents).unwrap();
+        let creds =
+            super::build_kafka_credentials(&Auth::MUTUAL_TLS, &args.source, contents).unwrap();
         assert_eq!(creds["certificate"], "CERT_PEM");
         assert_eq!(creds["privateKey"], "KEY_PEM");
     }

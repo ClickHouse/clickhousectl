@@ -408,10 +408,7 @@ async fn gcs_service_account_file_is_read_and_base64_encoded() {
 
     let gcs = &body["source"]["objectStorage"];
     assert_eq!(gcs["authentication"], "SERVICE_ACCOUNT");
-    let expected = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        sa_contents,
-    );
+    let expected = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sa_contents);
     assert_eq!(
         gcs["serviceAccountKey"].as_str(),
         Some(expected.as_str()),
@@ -590,7 +587,12 @@ async fn kafka_optional_fields_absent_when_flags_omitted() {
     let body = invoke_cli_capture_body(&mock, &kafka_args_minimal()).await;
 
     let kafka = &body["source"]["kafka"];
-    for field in ["consumerGroup", "iamRole", "schemaRegistry", "caCertificate"] {
+    for field in [
+        "consumerGroup",
+        "iamRole",
+        "schemaRegistry",
+        "caCertificate",
+    ] {
         assert!(
             kafka.get(field).is_none(),
             "{field} leaked into kafka source body: {kafka}",
@@ -1065,7 +1067,8 @@ async fn postgres_replication_mode_snapshot_serializes() {
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let body = invoke_cli_capture_body(&mock, &arg_refs).await;
     assert_eq!(
-        body["source"]["postgres"]["settings"]["replicationMode"], "snapshot",
+        body["source"]["postgres"]["settings"]["replicationMode"],
+        "snapshot",
     );
 }
 
@@ -1084,7 +1087,8 @@ async fn postgres_replication_mode_cdc_only_serializes() {
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let body = invoke_cli_capture_body(&mock, &arg_refs).await;
     assert_eq!(
-        body["source"]["postgres"]["settings"]["replicationMode"], "cdc_only",
+        body["source"]["postgres"]["settings"]["replicationMode"],
+        "cdc_only",
     );
 }
 
@@ -1218,7 +1222,9 @@ async fn dotenv_creds_produce_basic_auth_request() {
     let dir = tempfile::tempdir().unwrap();
     let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
     env_file
-        .write_all(b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n")
+        .write_all(
+            b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n",
+        )
         .unwrap();
     drop(env_file);
 
@@ -1576,7 +1582,9 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
     let query_host = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-        .respond_with(ResponseTemplate::new(206).set_body_string(r#"{"data":"Service is stopped"}"#))
+        .respond_with(
+            ResponseTemplate::new(206).set_body_string(r#"{"data":"Service is stopped"}"#),
+        )
         .mount(&query_host)
         .await;
 
@@ -1649,7 +1657,9 @@ async fn shell_env_overrides_dotenv_creds_in_request() {
     let dir = tempfile::tempdir().unwrap();
     let mut env_file = std::fs::File::create(dir.path().join(".env")).unwrap();
     env_file
-        .write_all(b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n")
+        .write_all(
+            b"CLICKHOUSE_CLOUD_API_KEY=dotenv-key\nCLICKHOUSE_CLOUD_API_SECRET=dotenv-secret\n",
+        )
         .unwrap();
     drop(env_file);
 

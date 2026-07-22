@@ -206,7 +206,10 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         );
         let (pg_ready, ch_ready) = tokio::try_join!(pg_ready_fut, ch_ready_fut)?;
 
-        assert!(!pg_ready.connection_string.is_empty(), "empty pg connection string");
+        assert!(
+            !pg_ready.connection_string.is_empty(),
+            "empty pg connection string"
+        );
         assert!(!pg_ready.hostname.is_empty(), "empty pg hostname");
         let ch_endpoint = ch_ready
             .endpoints
@@ -318,10 +321,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                     let pipe = resp.result.ok_or("clickpipe get returned no result")?;
                     match pipe.state {
                         ClickPipeState::Running => Ok(Some(pipe)),
-                        ClickPipeState::Failed | ClickPipeState::InternalError => {
-                            Err(format!("clickpipe entered terminal failure state {}", pipe.state)
-                                .into())
-                        }
+                        ClickPipeState::Failed | ClickPipeState::InternalError => Err(format!(
+                            "clickpipe entered terminal failure state {}",
+                            pipe.state
+                        )
+                        .into()),
                         _ => Ok(None),
                     }
                 }
@@ -333,7 +337,12 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
 
         log_phase("Verify seed rows in ClickHouse");
 
-        let ch_query = ClickHouseQuery::new(&ch_endpoint.host, ch_endpoint.port as u16, &ch_username, &clickhouse_password);
+        let ch_query = ClickHouseQuery::new(
+            &ch_endpoint.host,
+            ch_endpoint.port as u16,
+            &ch_username,
+            &clickhouse_password,
+        );
 
         poll_until(
             "seed row count in ClickHouse",
@@ -357,7 +366,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 "SELECT name FROM default.{TARGET_TABLE} WHERE id = 1 LIMIT 1"
             ))
             .await?;
-        assert_eq!(alice_name.as_deref(), Some("alice"), "row id=1 spot-check failed");
+        assert_eq!(
+            alice_name.as_deref(),
+            Some("alice"),
+            "row id=1 spot-check failed"
+        );
 
         // ── Insert more rows and verify ongoing CDC ─────────────────
 
@@ -573,4 +586,3 @@ impl ClickHouseQuery {
         }
     }
 }
-

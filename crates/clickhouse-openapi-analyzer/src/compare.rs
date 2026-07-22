@@ -473,7 +473,10 @@ fn compare_enum_values_consts(rust: &RustInventory, report: &mut DriftReport) {
         let rust_item = format!("models.rs::{name}::VALUES");
         let finding = Finding::new(
             FindingKind::EnumValuesMismatch,
-            format!("{name}::VALUES does not match enum wire values: {}", parts.join("; ")),
+            format!(
+                "{name}::VALUES does not match enum wire values: {}",
+                parts.join("; ")
+            ),
         )
         .at_rust(&rust_item)
         .detail("enum", name);

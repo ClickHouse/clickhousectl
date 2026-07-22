@@ -72,8 +72,7 @@ pub struct VersionEntry {
 /// Fetches available versions from GitHub releases
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = crate::http::client_builder()
-        .build()?;
+    let client = crate::http::client_builder().build()?;
 
     let response = client
         .get(url)

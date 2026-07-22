@@ -8,8 +8,8 @@
 // Each test binary uses a different subset — silence dead_code for the rest.
 #![allow(dead_code)]
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 use std::env;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -300,7 +300,10 @@ impl TestContext {
 pub fn create_client() -> TestResult<Client> {
     let key = required_env("CLICKHOUSE_CLOUD_API_KEY")?;
     let secret = required_env("CLICKHOUSE_CLOUD_API_SECRET")?;
-    match env::var("CLICKHOUSE_CLOUD_API_BASE_URL").ok().filter(|s| !s.is_empty()) {
+    match env::var("CLICKHOUSE_CLOUD_API_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
         Some(base_url) => Ok(Client::with_base_url(base_url, key, secret)),
         None => Ok(Client::new(key, secret)),
     }
@@ -505,7 +508,8 @@ impl CleanupRegistry {
         service_id: impl Into<String>,
         clickpipe_id: impl Into<String>,
     ) {
-        self.clickpipes.push((service_id.into(), clickpipe_id.into()));
+        self.clickpipes
+            .push((service_id.into(), clickpipe_id.into()));
     }
 
     /// Register a `default.<table>` destination table so teardown drops it.
@@ -521,7 +525,8 @@ impl CleanupRegistry {
     pub fn merge_from(&mut self, mut other: CleanupRegistry) {
         self.service_ids.append(&mut other.service_ids);
         self.postgres_ids.append(&mut other.postgres_ids);
-        self.postgres_replica_ids.append(&mut other.postgres_replica_ids);
+        self.postgres_replica_ids
+            .append(&mut other.postgres_replica_ids);
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
         self.api_key_ids.append(&mut other.api_key_ids);
@@ -543,8 +548,7 @@ impl CleanupRegistry {
     }
 
     pub fn unregister_api_key(&mut self, key_id: &str) {
-        self.api_key_ids
-            .retain(|registered| registered != key_id);
+        self.api_key_ids.retain(|registered| registered != key_id);
     }
 
     pub fn register_query_endpoint(&mut self, service_id: impl Into<String>) {
@@ -579,11 +583,12 @@ impl CleanupRegistry {
         setting_name: impl Into<String>,
         original_value: impl Into<String>,
     ) {
-        self.clickhouse_setting_restores.push(ClickhouseSettingRestore {
-            service_id: service_id.into(),
-            setting_name: setting_name.into(),
-            original_value: original_value.into(),
-        });
+        self.clickhouse_setting_restores
+            .push(ClickhouseSettingRestore {
+                service_id: service_id.into(),
+                setting_name: setting_name.into(),
+                original_value: original_value.into(),
+            });
     }
 
     pub fn unregister_clickhouse_setting_restore(&mut self, service_id: &str, setting_name: &str) {
@@ -672,9 +677,7 @@ impl CleanupRegistry {
         // the wrong role, every subsequent run starts with bad state. A
         // 404 means the user is no longer in the org and we have nothing
         // to do.
-        while let Some((user_id, original_assigned_role_ids)) =
-            self.member_role_restores.pop()
-        {
+        while let Some((user_id, original_assigned_role_ids)) = self.member_role_restores.pop() {
             let body = MemberPatchRequest {
                 assigned_role_ids: Some(original_assigned_role_ids.clone()),
                 #[cfg(feature = "deprecated-fields")]
@@ -752,7 +755,10 @@ impl CleanupRegistry {
         // The service itself may still be around; that's fine — we're just
         // removing the binding so the API key can be deleted cleanly next.
         while let Some(service_id) = self.query_endpoint_service_ids.pop() {
-            match client.instance_query_endpoint_delete(org_id, &service_id).await {
+            match client
+                .instance_query_endpoint_delete(org_id, &service_id)
+                .await
+            {
                 Ok(_) => {}
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
                 Err(e) => failures.push(format!("query endpoint on {service_id}: {e}")),
@@ -823,9 +829,11 @@ impl CleanupRegistry {
             self.tables.clear();
         }
 
-
         while let Some(service_id) = self.service_ids.pop() {
-            if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
+            if let Err(error) =
+                ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval)
+                    .await
+            {
                 failures.push(format!("{service_id}: {error}"));
             }
         }
@@ -843,7 +851,10 @@ impl CleanupRegistry {
         }
 
         while let Some(postgres_id) = self.postgres_ids.pop() {
-            if let Err(error) = ensure_postgres_gone(client, org_id, &postgres_id, delete_timeout, poll_interval).await {
+            if let Err(error) =
+                ensure_postgres_gone(client, org_id, &postgres_id, delete_timeout, poll_interval)
+                    .await
+            {
                 failures.push(format!("postgres {postgres_id}: {error}"));
             }
         }
@@ -947,24 +958,32 @@ async fn ensure_service_gone(
                         )
                         .await;
                     // Wait for stop
-                    let _ = poll_until("service stop for cleanup", delete_timeout, poll_interval, || {
-                        let client = client.clone();
-                        let org_id = org_id.to_string();
-                        let service_id = service_id.to_string();
-                        async move {
-                            let resp = client.instance_get(&org_id, &service_id).await?;
-                            let state = resp
-                                .result
-                                .as_ref()
-                                .map(|s| s.state.to_string())
-                                .unwrap_or_default();
-                            if matches!(state.as_str(), "stopped" | "idle" | "degraded" | "failed") {
-                                Ok(Some(()))
-                            } else {
-                                Ok(None)
+                    let _ = poll_until(
+                        "service stop for cleanup",
+                        delete_timeout,
+                        poll_interval,
+                        || {
+                            let client = client.clone();
+                            let org_id = org_id.to_string();
+                            let service_id = service_id.to_string();
+                            async move {
+                                let resp = client.instance_get(&org_id, &service_id).await?;
+                                let state = resp
+                                    .result
+                                    .as_ref()
+                                    .map(|s| s.state.to_string())
+                                    .unwrap_or_default();
+                                if matches!(
+                                    state.as_str(),
+                                    "stopped" | "idle" | "degraded" | "failed"
+                                ) {
+                                    Ok(Some(()))
+                                } else {
+                                    Ok(None)
+                                }
                             }
-                        }
-                    })
+                        },
+                    )
                     .await;
                 }
             }
@@ -1008,13 +1027,19 @@ async fn ensure_clickpipe_gone(
 ) -> TestResult<()> {
     eprintln!("  cleanup: ensuring clickpipe is gone");
 
-    match client.click_pipe_get(org_id, service_id, clickpipe_id).await {
+    match client
+        .click_pipe_get(org_id, service_id, clickpipe_id)
+        .await
+    {
         Ok(_) => {}
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
         Err(_) => {}
     }
 
-    match client.click_pipe_delete(org_id, service_id, clickpipe_id).await {
+    match client
+        .click_pipe_delete(org_id, service_id, clickpipe_id)
+        .await
+    {
         Ok(_) => {}
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
         Err(e) => return Err(e.into()),
@@ -1026,7 +1051,10 @@ async fn ensure_clickpipe_gone(
         let service_id = service_id.to_string();
         let clickpipe_id = clickpipe_id.to_string();
         async move {
-            match client.click_pipe_get(&org_id, &service_id, &clickpipe_id).await {
+            match client
+                .click_pipe_get(&org_id, &service_id, &clickpipe_id)
+                .await
+            {
                 Ok(_) => Ok(None),
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
                 Err(e) => Err(e.into()),
@@ -1345,7 +1373,8 @@ pub async fn provision_clickhouse(
 
     if svc.iam_role.is_empty() {
         return Err(
-            "provisioned service has no iamRole populated — cannot establish ClickPipes trust".into(),
+            "provisioned service has no iamRole populated — cannot establish ClickPipes trust"
+                .into(),
         );
     }
 
@@ -1404,7 +1433,10 @@ pub async fn attach_clickhouse(
             .iter()
             .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
             .ok_or("service has no https endpoint to wake")?;
-        let username = https.username.clone().unwrap_or_else(|| "default".to_string());
+        let username = https
+            .username
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
         let wake_query = ClickHouseQuery::new(&https.host, https.port as u16, &username, password);
         let _ = wake_query.run_query("SELECT 1 FORMAT TabSeparated").await?;
 
@@ -1429,10 +1461,9 @@ pub async fn attach_clickhouse(
         )
         .await?;
     } else if state != "running" {
-        return Err(format!(
-            "service {service_id} is in state {state}, expected running or idle"
-        )
-        .into());
+        return Err(
+            format!("service {service_id} is in state {state}, expected running or idle").into(),
+        );
     }
     if svc.iam_role.is_empty() {
         return Err(

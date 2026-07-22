@@ -99,7 +99,10 @@ async fn assert_create_shape_accepted(
     request: ClickPipePostRequest,
 ) -> TestResult<()> {
     let mut cleanup = CleanupRegistry::default();
-    eprintln!("create request body: {}", serde_json::to_string_pretty(&request)?);
+    eprintln!(
+        "create request body: {}",
+        serde_json::to_string_pretty(&request)?
+    );
 
     let outcome: TestResult<()> = match ctx
         .client
@@ -113,13 +116,17 @@ async fn assert_create_shape_accepted(
             }
             Ok(())
         }
-        Err(Error::Api { status: 400, message }) if is_runtime_error(&message) => {
+        Err(Error::Api {
+            status: 400,
+            message,
+        }) if is_runtime_error(&message) => {
             eprintln!("  shape accepted; runtime validation failed as expected: {message}");
             Ok(())
         }
-        Err(Error::Api { status: 400, message }) => {
-            Err(format!("shape rejected (HTTP 400): {message}").into())
-        }
+        Err(Error::Api {
+            status: 400,
+            message,
+        }) => Err(format!("shape rejected (HTTP 400): {message}").into()),
         Err(other) => Err(format!("create failed with non-shape error: {other}").into()),
     };
 
@@ -222,9 +229,7 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
                 topics: "smoke-topic".to_string(),
                 authentication: ClickPipePostKafkaSourceAuthentication::IAM_ROLE,
                 credentials: serde_json::Value::Null,
-                iam_role: Some(
-                    "arn:aws:iam::000000000000:role/smoke-fake-role".to_string(),
-                ),
+                iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
                 offset: Some(ClickPipeKafkaOffset {
                     strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
                     timestamp: None,
@@ -276,11 +281,8 @@ async fn cloud_clickpipe_create_s3_iam_user_smoke() -> TestResult<()> {
             object_storage: Some(ClickPipePostObjectStorageSource {
                 r#type: ClickPipePostObjectStorageSourceType::default(),
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
-                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json"
-                    .to_string(),
-                authentication: Some(
-                    ClickPipePostObjectStorageSourceAuthentication::IAM_USER,
-                ),
+                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json".to_string(),
+                authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER),
                 access_key: Some(MskIamUser {
                     access_key_id: "AKIAFAKEKEYFORSMOKE".to_string(),
                     secret_key: "fake/secret/for/smoke/test/0000000000000000".to_string(),
@@ -305,14 +307,9 @@ async fn cloud_clickpipe_create_s3_iam_role_smoke() -> TestResult<()> {
             object_storage: Some(ClickPipePostObjectStorageSource {
                 r#type: ClickPipePostObjectStorageSourceType::default(),
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
-                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json"
-                    .to_string(),
-                authentication: Some(
-                    ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE,
-                ),
-                iam_role: Some(
-                    "arn:aws:iam::000000000000:role/smoke-fake-role".to_string(),
-                ),
+                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json".to_string(),
+                authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
+                iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -353,8 +350,7 @@ async fn cloud_clickpipe_create_bigquery_snapshot_smoke() -> TestResult<()> {
                 },
                 snapshot_staging_path: "gs://smoke-fake-bucket/staging".to_string(),
                 settings: ClickPipeBigQueryPipeSettings {
-                    replication_mode:
-                        ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
+                    replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
                     ..Default::default()
                 },
                 table_mappings: vec![ClickPipeBigQueryPipeTableMapping {
@@ -421,11 +417,9 @@ async fn cloud_clickpipe_create_mongodb_cdc_smoke() -> TestResult<()> {
                     password: "smoke-pass".to_string(),
                 }),
                 uri: "mongodb://mongo.invalid:27017".to_string(),
-                read_preference:
-                    ClickPipeMutateMongoDBSourceReadpreference::Primary,
+                read_preference: ClickPipeMutateMongoDBSourceReadpreference::Primary,
                 settings: ClickPipeMongoDBPipeSettings {
-                    replication_mode:
-                        ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
+                    replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
                     ..Default::default()
                 },
                 table_mappings: vec![ClickPipeMongoDBPipeTableMapping {

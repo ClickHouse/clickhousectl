@@ -10,8 +10,8 @@ use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::Utc;
 use clickhouse_cloud_api::models::{
-    ApiKeyPostRequest, ApiKeyPostRequestState,
-    InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
+    ApiKeyPostRequest, ApiKeyPostRequestState, InstanceServiceQueryApiEndpointsPostRequest,
+    IpAccessListEntry,
 };
 
 /// The role attached to the query endpoint binding. Grants the key read +

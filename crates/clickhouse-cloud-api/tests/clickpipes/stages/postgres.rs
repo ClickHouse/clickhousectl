@@ -13,8 +13,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -92,7 +92,12 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
         // right rows (rather than passing on aliased data).
         mappings: &[
             ("pg_users", "postgres_multi_a_users", 1, "Ada Lovelace"),
-            ("pg_users_more", "postgres_multi_b_users", 101, "Joan Clarke"),
+            (
+                "pg_users_more",
+                "postgres_multi_b_users",
+                101,
+                "Joan Clarke",
+            ),
         ],
         replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
         publication_name: None,
@@ -347,11 +352,7 @@ async fn run_inner(
             .map(|(name, err)| format!("    - {name}: {err}"))
             .collect::<Vec<_>>()
             .join("\n");
-        return Err(format!(
-            "{} variant failure(s):\n{summary}",
-            variant_failures.len()
-        )
-        .into());
+        return Err(format!("{} variant failure(s):\n{summary}", variant_failures.len()).into());
     }
 
     Ok(())

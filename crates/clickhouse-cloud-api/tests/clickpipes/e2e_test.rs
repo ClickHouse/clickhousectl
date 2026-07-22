@@ -26,16 +26,15 @@ async fn cloud_clickpipe_e2e_all_sources() -> TestResult<()> {
     let mut harness = E2eHarness::provision("cloud_clickpipe_e2e_all_sources").await?;
 
     eprintln!("\n== Running stages in parallel ==");
-    let (s3_out, kafka_scram_out, kafka_mtls_out, kinesis_out, mysql_out, mongo_out, postgres_out) =
-        tokio::join!(
-            run_s3_stage(harness.make_stage_ctx()),
-            run_kafka_scram_tls_stage(harness.make_stage_ctx()),
-            run_kafka_mtls_stage(harness.make_stage_ctx()),
-            run_kinesis_stage(harness.make_stage_ctx()),
-            run_mysql_stage(harness.make_stage_ctx()),
-            run_mongo_stage(harness.make_stage_ctx()),
-            run_postgres_stage(harness.make_stage_ctx()),
-        );
+    let (s3_out, kafka_scram_out, kafka_mtls_out, kinesis_out, mysql_out, mongo_out, postgres_out) = tokio::join!(
+        run_s3_stage(harness.make_stage_ctx()),
+        run_kafka_scram_tls_stage(harness.make_stage_ctx()),
+        run_kafka_mtls_stage(harness.make_stage_ctx()),
+        run_kinesis_stage(harness.make_stage_ctx()),
+        run_mysql_stage(harness.make_stage_ctx()),
+        run_mongo_stage(harness.make_stage_ctx()),
+        run_postgres_stage(harness.make_stage_ctx()),
+    );
 
     let mut failures = Vec::new();
     for (name, outcome) in [

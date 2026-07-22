@@ -124,7 +124,10 @@ pub fn load_tokens() -> Option<TokenStore> {
 /// Path-injected core of [`load_tokens`]. Reads the global token file first;
 /// if absent/unreadable, attempts a one-time migration from `legacy_path`
 /// (write the global copy, best-effort delete the legacy file).
-fn load_tokens_from(global_path: &std::path::Path, legacy_path: &std::path::Path) -> Option<TokenStore> {
+fn load_tokens_from(
+    global_path: &std::path::Path,
+    legacy_path: &std::path::Path,
+) -> Option<TokenStore> {
     if let Ok(data) = std::fs::read_to_string(global_path)
         && let Ok(tokens) = serde_json::from_str::<TokenStore>(&data)
     {
@@ -197,8 +200,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
         )
     })?;
 
-    let client = crate::http::client_builder()
-        .build()?;
+    let client = crate::http::client_builder().build()?;
 
     // Step 1: Request device code
     let form_body = format!(
@@ -314,8 +316,7 @@ pub async fn refresh_access_token(
     let config = auth_config_for_url(&tokens.api_url)
         .ok_or_else(|| format!("Cannot refresh: unknown API host in '{}'", tokens.api_url))?;
 
-    let client = crate::http::client_builder()
-        .build()?;
+    let client = crate::http::client_builder().build()?;
 
     let form_body = format!(
         "grant_type={}&client_id={}&refresh_token={}",
@@ -521,11 +522,19 @@ mod tests {
 
         let mut global_tokens = sample_tokens();
         global_tokens.access_token = "global-wins".into();
-        std::fs::write(&global, serde_json::to_string_pretty(&global_tokens).unwrap()).unwrap();
+        std::fs::write(
+            &global,
+            serde_json::to_string_pretty(&global_tokens).unwrap(),
+        )
+        .unwrap();
 
         let mut legacy_tokens = sample_tokens();
         legacy_tokens.access_token = "legacy-ignored".into();
-        std::fs::write(&legacy, serde_json::to_string_pretty(&legacy_tokens).unwrap()).unwrap();
+        std::fs::write(
+            &legacy,
+            serde_json::to_string_pretty(&legacy_tokens).unwrap(),
+        )
+        .unwrap();
 
         let loaded = load_tokens_from(&global, &legacy).expect("global file should load");
         assert_eq!(loaded.access_token, "global-wins");
