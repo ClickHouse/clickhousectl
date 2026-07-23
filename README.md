@@ -891,12 +891,14 @@ Each event contains exactly:
 
 - the command path (e.g. `local start`)
 - the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
-- the exit code (`gh`-style: 0 success, 1 error, 2 cancelled, 4 auth required)
+- the exit code (`gh`-style: 0 success, 1 error, 2 cancelled/usage error, 4 auth required)
 - the CLI version, OS, and architecture
 - whether it ran in CI (`CI` env var)
 - whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)
 
-There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
+There is no install ID, no device ID, and no fingerprinting of any kind. Every string in the event is cloned from the clap command definitions — subcommand and flag names as clap defines them — never from what you actually typed, so leaking an argument value is structurally impossible.
+
+Help, version, bare, and incomplete invocations (`--help`, `--version`, `clickhousectl` with no subcommand, or a command group without one) count as usage like any other command and produce the same names-only events under the same consent rules. Genuinely mistyped invocations (unknown commands or flags) never produce an event.
 
 Nothing is ever sent before you have seen the notice or explicitly enabled telemetry with `clickhousectl telemetry enable`: the first run prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run — or immediately if you opt in by running `telemetry enable`, which is explicit consent and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 

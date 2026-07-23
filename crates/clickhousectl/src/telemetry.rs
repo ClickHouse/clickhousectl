@@ -12,9 +12,11 @@
 //! everything: no notice, no file write, no send.
 //!
 //! The payload carries the command path and flag *names* only — never flag
-//! values, never positional arguments. It is built from the clap definitions
-//! ([`capture`] walks `ArgMatches` ids and `Arg` metadata, never touching
-//! `get_one`/`get_raw`), so leaking a value is structurally impossible.
+//! values, never positional arguments. Every recorded string is cloned from
+//! the clap definitions ([`capture`] walks `ArgMatches` ids and `Arg`
+//! metadata; [`capture_from_args`] resolves raw tokens against `Command` and
+//! `Arg` metadata and drops whatever doesn't resolve), so a user-supplied
+//! token can never appear in an event.
 //!
 //! Transport is a detached child process (`clickhousectl telemetry send`,
 //! hidden): the parent spawns it with all stdio nulled and never waits, so
@@ -233,6 +235,107 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
         path.push(sub_cmd.get_name());
         stack.push(sub_cmd);
         current = sub_matches;
+    }
+    Invocation {
+        command: path.join(" "),
+        flags: flags.into_iter().collect(),
+    }
+}
+
+/// Derive the command path and passed-flag names from raw argv (without
+/// argv[0]), for invocations that never produced `ArgMatches`: help, version,
+/// bare, and incomplete-subcommand invocations surface as clap errors before
+/// parsing completes (issue #309).
+///
+/// Same names-only discipline as [`capture`], enforced differently: the walk
+/// reads raw tokens, but every recorded string is cloned from the clap
+/// definitions — `Command::get_name` for subcommands, `Arg::get_long` for
+/// flags — never from a user-supplied token. Tokens that don't resolve
+/// against the definitions (values, positionals, typos) are skipped, `--`
+/// ends the walk, and the token after a value-taking flag is consumed as its
+/// value — so a value that coincidentally matches a subcommand name usually
+/// cannot extend the path (an unconsumable value token still can, which at
+/// worst distorts the recorded *path*, never leaks the token itself).
+///
+/// `root` must have had [`clap::Command::build`] called: clap's auto
+/// `--help`/`--version` args only exist on built commands.
+pub fn capture_from_args(root: &clap::Command, args: &[std::ffi::OsString]) -> Invocation {
+    /// Innermost-first lookup of a long flag (or long alias) on the command
+    /// stack; globals are propagated downward at build time, so either level
+    /// resolves.
+    fn find_long<'a>(stack: &[&'a clap::Command], name: &str) -> Option<&'a clap::Arg> {
+        stack.iter().rev().find_map(|cmd| {
+            cmd.get_arguments().find(|a| {
+                a.get_long() == Some(name)
+                    || a.get_all_aliases().is_some_and(|al| al.contains(&name))
+            })
+        })
+    }
+
+    fn find_short<'a>(stack: &[&'a clap::Command], c: char) -> Option<&'a clap::Arg> {
+        stack.iter().rev().find_map(|cmd| {
+            cmd.get_arguments().find(|a| {
+                a.get_short() == Some(c)
+                    || a.get_all_short_aliases().is_some_and(|al| al.contains(&c))
+            })
+        })
+    }
+
+    fn takes_values(arg: &clap::Arg) -> bool {
+        arg.get_num_args().is_some_and(|r| r.takes_values())
+    }
+
+    let mut path: Vec<&str> = Vec::new();
+    let mut stack: Vec<&clap::Command> = vec![root];
+    let mut flags = std::collections::BTreeSet::new();
+    let mut skip_next_value = false;
+    for token in args {
+        // Non-UTF-8 tokens can only be values; skip them.
+        let Some(token) = token.to_str() else {
+            continue;
+        };
+        if skip_next_value {
+            skip_next_value = false;
+            continue;
+        }
+        if token == "--" {
+            break;
+        }
+        if let Some(rest) = token.strip_prefix("--") {
+            // `--name` or `--name=value`; the inline value is never examined.
+            let (name, inline_value) = match rest.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (rest, false),
+            };
+            if let Some(arg) = find_long(&stack, name) {
+                if let Some(long) = arg.get_long() {
+                    flags.insert(long.to_string());
+                }
+                skip_next_value = !inline_value && takes_values(arg);
+            }
+        } else if let Some(cluster) = token.strip_prefix('-').filter(|c| !c.is_empty()) {
+            // Short-flag cluster (`-h`, `-ab`). A value-taking short ends the
+            // cluster: the remainder (`-oVALUE`) or the next token is its value.
+            let mut chars = cluster.chars();
+            while let Some(c) = chars.next() {
+                let Some(arg) = find_short(&stack, c) else {
+                    break;
+                };
+                flags.insert(arg.get_long().unwrap_or(arg.get_id().as_str()).to_string());
+                if takes_values(arg) {
+                    skip_next_value = chars.as_str().is_empty();
+                    break;
+                }
+            }
+        } else if let Some(sub_cmd) = stack
+            .last()
+            .expect("stack starts non-empty and only grows")
+            .find_subcommand(token)
+        {
+            path.push(sub_cmd.get_name());
+            stack.push(sub_cmd);
+        }
+        // Anything else is a value or positional: skipped, never recorded.
     }
     Invocation {
         command: path.join(" "),
@@ -660,6 +763,133 @@ mod tests {
         let inv = capture_from(&["clickhousectl", "local", "list"]);
         assert_eq!(inv.command, "local list");
         assert!(inv.flags.is_empty());
+    }
+
+    // -- capture_from_args: raw argv, same names-only discipline --------------
+
+    /// Mirrors the error path in `main`: the parse is attempted (and fails)
+    /// on the same `Command` before `build()`, so partially-built state is
+    /// identical to production.
+    fn capture_raw(args: &[&str]) -> Invocation {
+        let mut cmd = crate::cli::Cli::command();
+        let argv: Vec<std::ffi::OsString> = std::iter::once("clickhousectl")
+            .chain(args.iter().copied())
+            .map(Into::into)
+            .collect();
+        let _ = cmd.try_get_matches_from_mut(&argv);
+        cmd.build();
+        let args: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+        capture_from_args(&cmd, &args)
+    }
+
+    #[test]
+    fn capture_from_args_root_help_and_version() {
+        for args in [&["--help"][..], &["-h"][..]] {
+            let inv = capture_raw(args);
+            assert_eq!(inv.command, "");
+            assert_eq!(inv.flags, ["help"]);
+        }
+        for args in [&["--version"][..], &["-V"][..]] {
+            let inv = capture_raw(args);
+            assert_eq!(inv.command, "");
+            assert_eq!(inv.flags, ["version"]);
+        }
+    }
+
+    #[test]
+    fn capture_from_args_bare_invocation_is_empty() {
+        let inv = capture_raw(&[]);
+        assert_eq!(inv.command, "");
+        assert!(inv.flags.is_empty());
+    }
+
+    #[test]
+    fn capture_from_args_records_full_subcommand_path() {
+        let inv = capture_raw(&["cloud", "service", "list", "--help"]);
+        assert_eq!(inv.command, "cloud service list");
+        assert_eq!(inv.flags, ["help"]);
+    }
+
+    #[test]
+    fn capture_from_args_incomplete_groups() {
+        let inv = capture_raw(&["local"]);
+        assert_eq!(inv.command, "local");
+        assert!(inv.flags.is_empty());
+
+        let inv = capture_raw(&["cloud", "--json"]);
+        assert_eq!(inv.command, "cloud");
+        assert_eq!(inv.flags, ["json"]);
+    }
+
+    #[test]
+    fn capture_from_args_never_records_values_or_positionals() {
+        let inv = capture_raw(&[
+            "cloud",
+            "service",
+            "get",
+            "SECRET-SERVICE-ID",
+            "--org-id",
+            "SECRET-ORG",
+            "--help",
+        ]);
+        assert_eq!(inv.command, "cloud service get");
+        assert_eq!(inv.flags, ["help", "org-id"]);
+        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+
+        // The inline-equals form is equally unexaminable.
+        let inv = capture_raw(&["cloud", "service", "get", "--org-id=SECRET-ORG", "--help"]);
+        assert_eq!(inv.flags, ["help", "org-id"]);
+        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+    }
+
+    #[test]
+    fn capture_from_args_value_matching_subcommand_name_is_not_descended() {
+        // "service" is a value here (consumed by the value-taking --api-key),
+        // not a path segment — even though it names a `cloud` subcommand.
+        let inv = capture_raw(&["cloud", "--api-key", "service", "--help"]);
+        assert_eq!(inv.command, "cloud");
+        assert_eq!(inv.flags, ["api-key", "help"]);
+    }
+
+    #[test]
+    fn capture_from_args_skips_unknown_tokens() {
+        let inv = capture_raw(&["clout", "--frobnicate", "-Z"]);
+        assert_eq!(inv.command, "");
+        assert!(inv.flags.is_empty());
+    }
+
+    #[test]
+    fn capture_from_args_stops_at_double_dash() {
+        let inv = capture_raw(&["local", "--", "--help"]);
+        assert_eq!(inv.command, "local");
+        assert!(inv.flags.is_empty());
+    }
+
+    #[test]
+    fn capture_from_args_help_subcommand() {
+        // The auto help subcommand has no nested subcommands of its own, so
+        // the topic token is a positional and only "help" is recorded.
+        let inv = capture_raw(&["help", "cloud"]);
+        assert_eq!(inv.command, "help");
+        assert!(inv.flags.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_from_args_skips_non_utf8_tokens() {
+        use std::os::unix::ffi::OsStringExt;
+        let args = vec![
+            std::ffi::OsString::from("local"),
+            std::ffi::OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]),
+            std::ffi::OsString::from("--help"),
+        ];
+        let mut cmd = crate::cli::Cli::command();
+        cmd.build();
+        let inv = capture_from_args(&cmd, &args);
+        assert_eq!(inv.command, "local");
+        assert_eq!(inv.flags, ["help"]);
     }
 
     #[test]
