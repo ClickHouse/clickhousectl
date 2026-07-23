@@ -41,25 +41,45 @@ async fn main() {
     let matches = match cmd.try_get_matches_from_mut(std::env::args_os()) {
         Ok(matches) => matches,
         Err(e) => {
-            match e.kind() {
-                // --version always hits the network to refresh the cache + timer,
-                // then prints the notice from the freshly-updated cache.
+            let exit_code = match e.kind() {
+                // --version always hits the network to refresh the cache +
+                // timer; the notice below then prints from the fresh cache.
                 ErrorKind::DisplayVersion => {
                     e.print().expect("failed to print output");
                     update::force_refresh_update_cache().await;
-                    update::print_cached_update_notice();
-                    std::process::exit(0);
+                    e.exit_code() // 0
                 }
                 // --help shows the notice from cache (no blocking network call).
                 ErrorKind::DisplayHelp => {
                     e.print().expect("failed to print output");
-                    update::print_cached_update_notice();
-                    std::process::exit(0);
+                    e.exit_code() // 0
                 }
-                // Parse errors exit here, before telemetry capture: a mistyped
-                // invocation never produces an event.
+                // Structurally valid but incomplete: bare `clickhousectl`
+                // (full help), or a command group given flags but no
+                // subcommand (usage error). Both print to stderr and keep
+                // clap's usage-error exit code, but participate in the
+                // update notice and telemetry below like --help does.
+                ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                | ErrorKind::MissingSubcommand => {
+                    let _ = e.print();
+                    e.exit_code() // 2
+                }
+                // Genuine parse errors (typos, unknown flags) exit here,
+                // before telemetry capture: a mistyped invocation never
+                // produces an event.
                 _ => e.exit(),
+            };
+            update::print_cached_update_notice();
+            // No `ArgMatches` exists on this path, so the invocation is
+            // re-derived from raw argv against the built clap definitions —
+            // same names-only discipline, same consent rules as any command.
+            #[cfg(feature = "telemetry")]
+            {
+                cmd.build();
+                let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+                telemetry::finalize(telemetry::capture_from_args(&cmd, &args), exit_code);
             }
+            std::process::exit(exit_code);
         }
     };
 

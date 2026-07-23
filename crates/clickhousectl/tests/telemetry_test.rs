@@ -472,6 +472,174 @@ async fn parent_never_waits_for_a_slow_endpoint() {
     );
 }
 
+// --- Issue #309: help, version, bare, and incomplete invocations -----------
+
+#[tokio::test]
+async fn first_run_help_writes_marker_prints_notice_sends_nothing() {
+    let sandbox = Sandbox::new().await;
+
+    let output = sandbox.run(&["--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout_of(&output).contains("Usage:"));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("anonymous usage data") && stderr.contains("telemetry disable"),
+        "a first-ever --help must print the notice, got stderr: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.state_path()).unwrap(),
+        r#"{"disabled":false}"#
+    );
+    // The notice-showing run itself sends nothing (Homebrew-style consent).
+    sandbox.assert_no_requests().await;
+
+    // Second --help: notice appears exactly once ever; now-consented run
+    // sends an event under the same rules as any other command.
+    let output = sandbox.run(&["--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "");
+    assert_eq!(payloads[0]["flags"], serde_json::json!(["help"]));
+    assert_eq!(payloads[0]["exit_code"], 0);
+}
+
+#[tokio::test]
+async fn subcommand_help_sends_full_command_path() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&["cloud", "service", "list", "--help"]);
+    assert_eq!(output.status.code(), Some(0));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "cloud service list");
+    assert_eq!(payloads[0]["flags"], serde_json::json!(["help"]));
+    assert_eq!(payloads[0]["exit_code"], 0);
+}
+
+/// Note: `--version` force-refreshes the update cache against the real GitHub
+/// API (10s timeout) before finalizing, so this test can be slow offline.
+#[tokio::test]
+async fn version_sends_event() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&["--version"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout_of(&output).contains(env!("CARGO_PKG_VERSION")));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "");
+    assert_eq!(payloads[0]["flags"], serde_json::json!(["version"]));
+    assert_eq!(payloads[0]["exit_code"], 0);
+}
+
+#[tokio::test]
+async fn bare_invocation_prints_update_notice_and_sends_event() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // Seed the update cache (format: `<unix-ts>\n<version>`, see
+    // update.rs::save_update_check) so the notice has something to say.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        sandbox
+            .home
+            .path()
+            .join(".clickhouse")
+            .join("last_update_check"),
+        format!("{now}\n99.0.0"),
+    )
+    .unwrap();
+
+    let output = sandbox.run(&[]);
+    // Usage-error exit code is preserved; help goes to stderr.
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("Usage:"),
+        "bare run must print help: {stderr}"
+    );
+    // The update notice is now consistent with --help.
+    assert!(
+        stderr.contains("There is a new version of clickhousectl"),
+        "bare run must print the update notice: {stderr}"
+    );
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "");
+    assert!(payloads[0]["flags"].as_array().unwrap().is_empty());
+    assert_eq!(payloads[0]["exit_code"], 2);
+}
+
+#[tokio::test]
+async fn incomplete_subcommand_sends_group_path() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // Bare group: clap prints full help on stderr.
+    let output = sandbox.run(&["local"]);
+    assert_eq!(output.status.code(), Some(2));
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "local");
+    assert!(payloads[0]["flags"].as_array().unwrap().is_empty());
+    assert_eq!(payloads[0]["exit_code"], 2);
+
+    // Group with a flag but no subcommand: a different clap error kind
+    // (MissingSubcommand), same telemetry treatment.
+    let output = sandbox.run(&["cloud", "--json"]);
+    assert_eq!(output.status.code(), Some(2));
+    let payloads = sandbox.wait_for_requests(2).await;
+    assert_eq!(payloads[1]["command"], "cloud");
+    assert_eq!(payloads[1]["flags"], serde_json::json!(["json"]));
+    assert_eq!(payloads[1]["exit_code"], 2);
+}
+
+/// Genuinely mistyped invocations stay event-free — and don't even trigger
+/// the first-run notice or marker. Only well-formed help/version/bare/
+/// incomplete invocations joined the telemetry lifecycle.
+#[tokio::test]
+async fn mistyped_invocation_stays_event_free_and_markerless() {
+    let sandbox = Sandbox::new().await;
+
+    let output = sandbox.run(&["clout"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+
+    let output = sandbox.run(&["local", "list", "--frobnicate"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+
+    assert!(
+        !sandbox.state_path().exists(),
+        "a mistyped invocation must not write the marker file"
+    );
+    sandbox.assert_no_requests().await;
+}
+
+#[tokio::test]
+async fn do_not_track_help_is_fully_silent() {
+    let sandbox = Sandbox::new().await;
+
+    let output = sandbox
+        .command(&["--help"])
+        .env("DO_NOT_TRACK", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout_of(&output).contains("Usage:"));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    assert!(
+        !sandbox.state_path().exists(),
+        "DO_NOT_TRACK must not write the marker file on the help path"
+    );
+    sandbox.assert_no_requests().await;
+}
+
 /// Check the marker file used by `Sandbox::state_path` matches what the
 /// binary actually writes — guards against the test suite silently diverging
 /// from the real path.
