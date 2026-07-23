@@ -27,6 +27,10 @@ LIVE_SPEC_URL = os.environ.get(
     "CLICKHOUSE_OPENAPI_SPEC_URL", "https://api.clickhouse.cloud/v1"
 )
 ISSUE_LABEL = "openapi-drift"
+# GitHub rejects issue bodies and comments over 65,536 characters.
+MAX_ISSUE_BODY_CHARS = 65536
+CONTINUATION_NOTICE = "\n---\n\n**Report continues in the next comment.**\n"
+CONTINUATION_HEADER = "**Drift report, continued from above.**\n\n---\n\n"
 
 
 def fetch_live_spec() -> dict | None:
@@ -156,11 +160,131 @@ def open_drift_issues() -> list[dict]:
     return json.loads(result.stdout)
 
 
+def split_issue_body(body: str) -> list[str]:
+    """Split an oversized body into GitHub-sized chunks; overflow goes to comments.
+
+    Chunks break at line boundaries, preferring the last point that is outside
+    any code fence or <details> block so no block straddles a chunk boundary.
+    If a single block exceeds the budget, it is cut mid-block and re-closed to
+    keep the chunk's markdown well-formed.
+    """
+    if len(body) <= MAX_ISSUE_BODY_CHARS:
+        return [body]
+    closers = "```\n</details>\n"
+    lines = body.splitlines()
+    chunks = []
+    start = 0
+    while start < len(lines):
+        header = CONTINUATION_HEADER if chunks else ""
+        budget = (
+            MAX_ISSUE_BODY_CHARS - len(header) - len(CONTINUATION_NOTICE) - len(closers)
+        )
+        used = 0
+        in_fence = False
+        in_details = False
+        clean_cut = None
+        end = start
+        while end < len(lines):
+            line = lines[end]
+            if used + len(line) + 1 > budget:
+                break
+            used += len(line) + 1
+            end += 1
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+            elif stripped == "<details>":
+                in_details = True
+            elif stripped == "</details>":
+                in_details = False
+            if not in_fence and not in_details:
+                clean_cut = end
+        if end == len(lines):
+            chunks.append(header + "\n".join(lines[start:]))
+            break
+        if clean_cut is not None and clean_cut > start:
+            kept = lines[start:clean_cut]
+            start = clean_cut
+        elif end > start:
+            # A single block exceeds the budget; cut mid-block and re-close.
+            kept = lines[start:end]
+            if in_fence:
+                kept.append("```")
+            if in_details:
+                kept.append("</details>")
+            start = end
+        else:
+            # A single line alone exceeds the budget; hard-truncate it so the
+            # emitted chunk is guaranteed to fit, leaving a visible marker.
+            marker = "… [line truncated]"
+            cut = max(budget - len(marker) - len(closers), 0)
+            kept = [lines[start][:cut] + marker]
+            if in_fence:
+                kept.append("```")
+            if in_details:
+                kept.append("</details>")
+            start += 1
+        # Only advertise a continuation when more lines actually remain; the
+        # forced branches above can consume the final line of the body.
+        notice = CONTINUATION_NOTICE if start < len(lines) else ""
+        chunks.append(header + "\n".join(kept) + notice)
+    return chunks
+
+
 def create_issue(title: str, body: str):
-    subprocess.run(
-        ["gh", "issue", "create", "--title", title, "--body", body, "--label", ISSUE_LABEL],
+    chunks = split_issue_body(body)
+    # The body can exceed the kernel's per-argument size limit; feed it via stdin.
+    result = subprocess.run(
+        ["gh", "issue", "create", "--title", title, "--body-file", "-", "--label", ISSUE_LABEL],
+        input=chunks[0],
+        text=True,
         check=True,
+        capture_output=True,
     )
+    issue_url = result.stdout.strip().splitlines()[-1]
+    print(issue_url, file=sys.stderr)
+    for chunk in chunks[1:]:
+        try:
+            subprocess.run(
+                ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                input=chunk,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            # Retry once; transient GitHub failures are common.
+            try:
+                subprocess.run(
+                    ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                    input=chunk,
+                    text=True,
+                    check=True,
+                )
+            except subprocess.CalledProcessError:
+                # A comment failed twice. Never leave an issue that silently
+                # looks complete: best-effort flag it as truncated, then fail
+                # loudly so the CI run still reports the problem.
+                fallback = (
+                    "**This drift report is incomplete.** A continuation comment "
+                    "failed to post after a retry; check the workflow logs and "
+                    "re-run the drift check to regenerate the full report.\n"
+                )
+                try:
+                    subprocess.run(
+                        ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                        input=fallback,
+                        text=True,
+                        check=False,
+                        capture_output=True,
+                    )
+                except Exception:  # noqa: BLE001 - the fallback must never mask the failure
+                    pass
+                print(
+                    f"ERROR: failed to post a continuation comment to {issue_url}; "
+                    "the drift report is incomplete.",
+                    file=sys.stderr,
+                )
+                raise
 
 
 def build_issue_body(report: dict, live_spec: dict) -> str:
