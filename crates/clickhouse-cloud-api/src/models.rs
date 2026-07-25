@@ -510,8 +510,14 @@ pub enum ActivityType {
     Organization_member_delete,
     #[serde(rename = "organization_member_update_role")]
     Organization_member_update_role,
+    #[serde(rename = "organization_member_update_roles")]
+    Organization_member_update_roles,
     #[serde(rename = "organization_member_update_mfa_method")]
     Organization_member_update_mfa_method,
+    #[serde(rename = "organization_saml_connection_create")]
+    Organization_saml_connection_create,
+    #[serde(rename = "organization_saml_connection_update")]
+    Organization_saml_connection_update,
     #[serde(rename = "user_login")]
     User_login,
     #[serde(rename = "user_login_failed")]
@@ -556,6 +562,8 @@ pub enum ActivityType {
     Service_update_max_allowable_replicas,
     #[serde(rename = "service_update_backup_configuration")]
     Service_update_backup_configuration,
+    #[serde(rename = "service_update_snapshot_configuration")]
+    Service_update_snapshot_configuration,
     #[serde(rename = "service_restore_backup")]
     Service_restore_backup,
     #[serde(rename = "service_update_release_channel")]
@@ -604,8 +612,17 @@ impl std::fmt::Display for ActivityType {
             Self::Organization_member_leave => write!(f, "organization_member_leave"),
             Self::Organization_member_delete => write!(f, "organization_member_delete"),
             Self::Organization_member_update_role => write!(f, "organization_member_update_role"),
+            Self::Organization_member_update_roles => {
+                write!(f, "organization_member_update_roles")
+            }
             Self::Organization_member_update_mfa_method => {
                 write!(f, "organization_member_update_mfa_method")
+            }
+            Self::Organization_saml_connection_create => {
+                write!(f, "organization_saml_connection_create")
+            }
+            Self::Organization_saml_connection_update => {
+                write!(f, "organization_saml_connection_update")
             }
             Self::User_login => write!(f, "user_login"),
             Self::User_login_failed => write!(f, "user_login_failed"),
@@ -638,6 +655,9 @@ impl std::fmt::Display for ActivityType {
             }
             Self::Service_update_backup_configuration => {
                 write!(f, "service_update_backup_configuration")
+            }
+            Self::Service_update_snapshot_configuration => {
+                write!(f, "service_update_snapshot_configuration")
             }
             Self::Service_restore_backup => write!(f, "service_restore_backup"),
             Self::Service_update_release_channel => write!(f, "service_update_release_channel"),
@@ -2994,6 +3014,7 @@ pub enum ClickStackAlertResponseState {
     OK,
     INSUFFICIENT_DATA,
     DISABLED,
+    PENDING,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -3006,6 +3027,7 @@ impl std::fmt::Display for ClickStackAlertResponseState {
             Self::OK => write!(f, "OK"),
             Self::INSUFFICIENT_DATA => write!(f, "INSUFFICIENT_DATA"),
             Self::DISABLED => write!(f, "DISABLED"),
+            Self::PENDING => write!(f, "PENDING"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -9059,6 +9081,12 @@ pub struct ClickPipePatchObjectStorageSource {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchPostgresPipeRemoveTableMapping {
     #[serde(
+        rename = "partitionByExpr",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub partition_by_expr: Option<String>,
+    #[serde(
         rename = "partitionKey",
         skip_serializing_if = "Option::is_none",
         default
@@ -9525,6 +9553,12 @@ pub struct ClickPipePostgresPipeSettings {
 pub struct ClickPipePostgresPipeTableMapping {
     #[serde(rename = "excludedColumns", default)]
     pub excluded_columns: Vec<String>,
+    #[serde(
+        rename = "partitionByExpr",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub partition_by_expr: Option<String>,
     #[serde(rename = "partitionKey", default)]
     pub partition_key: String,
     #[serde(rename = "sortingKeys", default)]
@@ -9838,6 +9872,12 @@ pub struct ClickStackAlertResponse {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
     #[serde(
+        rename = "numConsecutiveWindows",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub num_consecutive_windows: Option<i64>,
+    #[serde(
         rename = "savedSearchId",
         skip_serializing_if = "Option::is_none",
         default
@@ -9969,6 +10009,12 @@ pub struct ClickStackCreateAlertRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
     #[serde(
+        rename = "numConsecutiveWindows",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub num_consecutive_windows: Option<i64>,
+    #[serde(
         rename = "savedSearchId",
         skip_serializing_if = "Option::is_none",
         default
@@ -10092,6 +10138,12 @@ pub struct ClickStackDashboardResponse {
 /// `ClickStackFilter` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilter {
+    #[serde(
+        rename = "appliesToSourceIds",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub applies_to_source_ids: Option<Vec<String>>,
     pub expression: String,
     pub id: String,
     pub name: String,
@@ -10117,6 +10169,12 @@ pub struct ClickStackFilter {
 /// `ClickStackFilterInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilterInput {
+    #[serde(
+        rename = "appliesToSourceIds",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub applies_to_source_ids: Option<Vec<String>>,
     pub expression: String,
     pub name: String,
     #[serde(rename = "sourceId")]
@@ -10258,6 +10316,12 @@ pub struct ClickStackLineBuilderChartConfig {
     pub display_type: ClickStackLineBuilderChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
+    #[serde(
+        rename = "fitYAxisToData",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub fit_y_axis_to_data: Option<bool>,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
     #[serde(
@@ -10294,6 +10358,12 @@ pub struct ClickStackLineRawSqlChartConfig {
     pub display_type: ClickStackLineRawSqlChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
+    #[serde(
+        rename = "fitYAxisToData",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub fit_y_axis_to_data: Option<bool>,
     #[serde(
         rename = "numberFormat",
         skip_serializing_if = "Option::is_none",
@@ -10729,12 +10799,16 @@ pub struct ClickStackPieBuilderChartConfig {
     pub display_type: ClickStackPieBuilderChartConfigDisplaytype,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub limit: Option<i64>,
     #[serde(
         rename = "numberFormat",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
@@ -11297,6 +11371,12 @@ pub struct ClickStackUpdateAlertRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
+    #[serde(
+        rename = "numConsecutiveWindows",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub num_consecutive_windows: Option<i64>,
     #[serde(
         rename = "savedSearchId",
         skip_serializing_if = "Option::is_none",

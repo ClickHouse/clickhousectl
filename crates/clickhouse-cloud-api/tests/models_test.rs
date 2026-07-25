@@ -1858,3 +1858,156 @@ fn mysql_patch_source_server_id_nullable() {
     let src: ClickPipePatchMySQLSource = serde_json::from_str(json).unwrap();
     assert_eq!(src.server_id, Some(100));
 }
+
+#[test]
+fn clickstack_alert_num_consecutive_windows_present_and_absent() {
+    let json = r#"{
+        "id": "alert-1",
+        "name": "High CPU",
+        "numConsecutiveWindows": 3
+    }"#;
+    let alert: ClickStackAlertResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(alert.num_consecutive_windows, Some(3));
+    let v = serde_json::to_value(&alert).unwrap();
+    assert_eq!(v["numConsecutiveWindows"], 3);
+
+    // Absent -> None -> dropped by skip_serializing_if.
+    let alert = ClickStackAlertResponse::default();
+    assert_eq!(alert.num_consecutive_windows, None);
+    let v = serde_json::to_value(&alert).unwrap();
+    assert!(v.get("numConsecutiveWindows").is_none());
+}
+
+#[test]
+fn clickstack_create_alert_num_consecutive_windows_round_trip() {
+    let v = serde_json::to_value(ClickStackCreateAlertRequest {
+        num_consecutive_windows: Some(5),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(v["numConsecutiveWindows"], 5);
+    let v = serde_json::to_value(ClickStackCreateAlertRequest::default()).unwrap();
+    assert!(v.get("numConsecutiveWindows").is_none());
+}
+
+#[test]
+fn clickstack_update_alert_num_consecutive_windows_round_trip() {
+    let v = serde_json::to_value(ClickStackUpdateAlertRequest {
+        num_consecutive_windows: Some(7),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(v["numConsecutiveWindows"], 7);
+    let v = serde_json::to_value(ClickStackUpdateAlertRequest::default()).unwrap();
+    assert!(v.get("numConsecutiveWindows").is_none());
+}
+
+#[test]
+fn clickstack_filter_applies_to_source_ids_round_trip() {
+    let json = r#"{
+        "expression": "level = 'error'",
+        "id": "f-1",
+        "name": "errors",
+        "sourceId": "src-1",
+        "type": "sql",
+        "appliesToSourceIds": ["src-1", "src-2"]
+    }"#;
+    let filter: ClickStackFilter = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        filter.applies_to_source_ids,
+        Some(vec!["src-1".to_string(), "src-2".to_string()])
+    );
+    let v = serde_json::to_value(&filter).unwrap();
+    assert_eq!(v["appliesToSourceIds"][0], "src-1");
+    assert_eq!(v["appliesToSourceIds"][1], "src-2");
+
+    // Absent -> None -> dropped.
+    let filter = ClickStackFilter::default();
+    assert_eq!(filter.applies_to_source_ids, None);
+    let v = serde_json::to_value(&filter).unwrap();
+    assert!(v.get("appliesToSourceIds").is_none());
+}
+
+#[test]
+fn clickstack_filter_input_applies_to_source_ids_round_trip() {
+    let json = r#"{
+        "expression": "level = 'error'",
+        "name": "errors",
+        "sourceId": "src-1",
+        "type": "sql",
+        "appliesToSourceIds": ["src-9"]
+    }"#;
+    let filter: ClickStackFilterInput = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        filter.applies_to_source_ids,
+        Some(vec!["src-9".to_string()])
+    );
+    let v = serde_json::to_value(&filter).unwrap();
+    assert_eq!(v["appliesToSourceIds"][0], "src-9");
+
+    let v = serde_json::to_value(ClickStackFilterInput::default()).unwrap();
+    assert!(v.get("appliesToSourceIds").is_none());
+}
+
+#[test]
+fn clickpipe_postgres_table_mapping_partition_by_expr_round_trip() {
+    let json = r#"{"partitionByExpr": "toYYYYMM(created_at)"}"#;
+    let mapping: ClickPipePostgresPipeTableMapping = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        mapping.partition_by_expr.as_deref(),
+        Some("toYYYYMM(created_at)")
+    );
+    let v = serde_json::to_value(&mapping).unwrap();
+    assert_eq!(v["partitionByExpr"], "toYYYYMM(created_at)");
+
+    let v = serde_json::to_value(ClickPipePostgresPipeTableMapping::default()).unwrap();
+    assert!(v.get("partitionByExpr").is_none());
+}
+
+#[test]
+fn clickpipe_patch_remove_table_mapping_partition_by_expr_round_trip() {
+    let json = r#"{"partitionByExpr": "toDate(ts)"}"#;
+    let mapping: ClickPipePatchPostgresPipeRemoveTableMapping = serde_json::from_str(json).unwrap();
+    assert_eq!(mapping.partition_by_expr.as_deref(), Some("toDate(ts)"));
+    let v = serde_json::to_value(&mapping).unwrap();
+    assert_eq!(v["partitionByExpr"], "toDate(ts)");
+
+    let v = serde_json::to_value(ClickPipePatchPostgresPipeRemoveTableMapping::default()).unwrap();
+    assert!(v.get("partitionByExpr").is_none());
+}
+
+#[test]
+fn activity_type_new_wire_values_deserialize_to_typed_variants() {
+    let cases = [
+        (
+            "organization_member_update_roles",
+            ActivityType::Organization_member_update_roles,
+        ),
+        (
+            "organization_saml_connection_create",
+            ActivityType::Organization_saml_connection_create,
+        ),
+        (
+            "organization_saml_connection_update",
+            ActivityType::Organization_saml_connection_update,
+        ),
+        (
+            "service_update_snapshot_configuration",
+            ActivityType::Service_update_snapshot_configuration,
+        ),
+    ];
+    for (wire, expected) in cases {
+        let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
+        assert_eq!(parsed, expected, "{wire} should not be Unknown");
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn clickstack_alert_response_state_pending() {
+    let parsed: ClickStackAlertResponseState = serde_json::from_str("\"PENDING\"").unwrap();
+    assert_eq!(parsed, ClickStackAlertResponseState::PENDING);
+    assert_eq!(parsed.to_string(), "PENDING");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "PENDING");
+}
