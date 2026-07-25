@@ -2570,6 +2570,112 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// ClickStack: Create Source
+    pub async fn click_stack_create_source(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &ClickStackSource,
+    ) -> Result<ApiResponse<ClickStackSource>, Error> {
+        let path =
+            format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Get Source
+    pub async fn click_stack_get_source(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_source_id: &str,
+    ) -> Result<ApiResponse<ClickStackSource>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Update Source
+    pub async fn click_stack_update_source(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_source_id: &str,
+        body: &ClickStackSource,
+    ) -> Result<ApiResponse<ClickStackSource>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
+        );
+        let mut req = self.request(reqwest::Method::PUT, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Delete Source
+    pub async fn click_stack_delete_source(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_source_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
+        );
+        let req = self.request(reqwest::Method::DELETE, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// ClickStack: List Webhooks
     pub async fn click_stack_list_webhooks(
         &self,

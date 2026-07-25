@@ -2063,6 +2063,131 @@ async fn list_sources() {
 }
 
 #[tokio::test]
+async fn create_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"kind": "promql", "name": "Prometheus Metrics"}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "source-1",
+            "kind": "promql",
+            "name": "Prometheus Metrics",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSource::ClickStackPromqlSource(ClickStackPromqlSource {
+        name: "Prometheus Metrics".to_string(),
+        kind: ClickStackPromqlSourceKind::Promql,
+        connection: "conn-1".to_string(),
+        from: ClickStackSourceFrom {
+            database_name: "default".to_string(),
+            table_name: "metrics".to_string(),
+        },
+        timestamp_value_expression: "timestamp".to_string(),
+        ..Default::default()
+    });
+    let resp = c
+        .click_stack_create_source("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn get_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/source-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "source-1",
+            "kind": "promql",
+            "name": "My Source",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_source("org-1", "svc-1", "source-1")
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn update_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/source-1",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "Updated Source"}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "source-1",
+            "kind": "promql",
+            "name": "Updated Source",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSource::ClickStackPromqlSource(ClickStackPromqlSource {
+        name: "Updated Source".to_string(),
+        kind: ClickStackPromqlSourceKind::Promql,
+        connection: "conn-1".to_string(),
+        from: ClickStackSourceFrom {
+            database_name: "default".to_string(),
+            table_name: "metrics".to_string(),
+        },
+        timestamp_value_expression: "timestamp".to_string(),
+        ..Default::default()
+    });
+    let resp = c
+        .click_stack_update_source("org-1", "svc-1", "source-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn delete_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/source-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_source("org-1", "svc-1", "source-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+#[tokio::test]
 async fn list_webhooks() {
     let (s, c) = setup().await;
 

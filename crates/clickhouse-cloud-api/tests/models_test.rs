@@ -1721,6 +1721,51 @@ fn round_trip_clickstack_log_source_new_fields() {
 }
 
 #[test]
+fn clickstack_source_dispatches_promql_variant() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "promql",
+        "name": "Prometheus Metrics",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "timestamp"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackPromqlSource(src) => {
+            assert_eq!(src.kind, ClickStackPromqlSourceKind::Promql);
+            assert_eq!(src.name, "Prometheus Metrics");
+            assert_eq!(src.connection, "conn-1");
+            assert_eq!(src.id.as_deref(), Some("src-1"));
+        }
+        other => panic!("expected Promql source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_log_variant() {
+    // Regression: a log-source payload must not be swallowed by the new Promql
+    // variant and must still resolve to the log-source variant.
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackLogSource(src) => {
+            assert_eq!(src.kind, ClickStackLogSourceKind::Log);
+            assert_eq!(src.name, "logs");
+        }
+        other => panic!("expected log source, got {other}"),
+    }
+}
+
+#[test]
 fn deserialize_clickstack_alert_with_note() {
     let json = r#"{
         "id": "alert-1",

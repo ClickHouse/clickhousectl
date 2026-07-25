@@ -4663,6 +4663,26 @@ impl std::fmt::Display for ClickStackPieRawSqlChartConfigDisplaytype {
     }
 }
 
+/// Inline enum for `ClickStackPromqlSource.kind`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPromqlSourceKind {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPromqlSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackSavedFilterValue.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackSavedFilterValueType {
@@ -7952,6 +7972,7 @@ pub enum ClickStackSource {
     ClickStackTraceSource(ClickStackTraceSource),
     ClickStackMetricSource(ClickStackMetricSource),
     ClickStackSessionSource(ClickStackSessionSource),
+    ClickStackPromqlSource(ClickStackPromqlSource),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
 }
@@ -7963,6 +7984,7 @@ impl std::fmt::Display for ClickStackSource {
             Self::ClickStackTraceSource(_) => write!(f, "ClickStackTraceSource"),
             Self::ClickStackMetricSource(_) => write!(f, "ClickStackMetricSource"),
             Self::ClickStackSessionSource(_) => write!(f, "ClickStackSessionSource"),
+            Self::ClickStackPromqlSource(_) => write!(f, "ClickStackPromqlSource"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -11317,6 +11339,29 @@ pub struct ClickStackPieRawSqlChartConfig {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackPromqlSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlSource {
+    pub connection: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
+    pub from: ClickStackSourceFrom,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
+    pub kind: ClickStackPromqlSourceKind,
+    pub name: String,
+    #[serde(
+        rename = "querySettings",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub query_settings: Option<Vec<ClickStackQuerySetting>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
+    #[serde(rename = "timestampValueExpression")]
+    pub timestamp_value_expression: String,
 }
 
 /// `ClickStackQuerySetting` from the ClickHouse Cloud API.
