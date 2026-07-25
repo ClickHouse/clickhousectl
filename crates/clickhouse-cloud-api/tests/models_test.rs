@@ -2326,3 +2326,50 @@ fn clickstack_on_click_external_round_trip() {
     assert_eq!(v["type"], "external");
     assert_eq!(v["urlTemplate"], "https://example.com/{{ServiceName}}");
 }
+
+#[test]
+fn deserialize_clickstack_connection_with_null_prefix() {
+    let json = r#"{
+        "id": "507f1f77bcf86cd799439012",
+        "name": "Production ClickHouse",
+        "host": "https://clickhouse.example.com:8443",
+        "username": "default",
+        "hyperdxSettingPrefix": null,
+        "isPrometheusEndpoint": false,
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let conn: ClickStackConnection = serde_json::from_str(json).unwrap();
+    assert_eq!(conn.id, "507f1f77bcf86cd799439012");
+    assert_eq!(conn.name, "Production ClickHouse");
+    assert_eq!(conn.host, "https://clickhouse.example.com:8443");
+    assert_eq!(conn.username, "default");
+    assert_eq!(conn.hyperdx_setting_prefix, None);
+    assert_eq!(conn.is_prometheus_endpoint, Some(false));
+    assert!(conn.created_at.is_some());
+    assert!(conn.updated_at.is_some());
+}
+
+#[test]
+fn serialize_clickstack_create_connection_request_omits_none() {
+    let req = ClickStackCreateConnectionRequest {
+        name: "Production ClickHouse".to_string(),
+        host: "https://clickhouse.example.com:8443".to_string(),
+        username: "default".to_string(),
+        password: Some("my-secret-password".to_string()),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["name"], "Production ClickHouse");
+    assert_eq!(v["host"], "https://clickhouse.example.com:8443");
+    assert_eq!(v["username"], "default");
+    assert_eq!(v["password"], "my-secret-password");
+    assert!(
+        v.get("hyperdxSettingPrefix").is_none(),
+        "hyperdxSettingPrefix must be omitted when None"
+    );
+    assert!(
+        v.get("isPrometheusEndpoint").is_none(),
+        "isPrometheusEndpoint must be omitted when None"
+    );
+}

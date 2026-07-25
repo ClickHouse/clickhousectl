@@ -2205,6 +2205,147 @@ async fn list_webhooks() {
 }
 
 // ===========================================================================
+// ClickStack: Connections
+// ===========================================================================
+
+#[tokio::test]
+async fn list_connections() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections",
+        ))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_list_connections("org-1", "svc-1")
+        .await
+        .unwrap();
+    let connections = resp.result.unwrap();
+    assert_eq!(connections.len(), 0);
+}
+
+#[tokio::test]
+async fn create_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Production ClickHouse",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default",
+            "password": "my-secret-password"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "conn-1",
+            "name": "Production ClickHouse",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateConnectionRequest {
+        name: "Production ClickHouse".to_string(),
+        host: "https://clickhouse.example.com:8443".to_string(),
+        username: "default".to_string(),
+        password: Some("my-secret-password".to_string()),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_connection("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let conn = resp.result.unwrap();
+    assert_eq!(conn.id, "conn-1");
+    assert_eq!(conn.name, "Production ClickHouse");
+}
+
+#[tokio::test]
+async fn get_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "conn-1",
+            "name": "Production ClickHouse",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_connection("org-1", "svc-1", "conn-1")
+        .await
+        .unwrap();
+    let conn = resp.result.unwrap();
+    assert_eq!(conn.id, "conn-1");
+}
+
+#[tokio::test]
+async fn update_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Updated Connection"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "conn-1",
+            "name": "Updated Connection",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackUpdateConnectionRequest {
+        name: "Updated Connection".to_string(),
+        host: "https://clickhouse.example.com:8443".to_string(),
+        username: "default".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_connection("org-1", "svc-1", "conn-1", &body)
+        .await
+        .unwrap();
+    let conn = resp.result.unwrap();
+    assert_eq!(conn.name, "Updated Connection");
+}
+
+#[tokio::test]
+async fn delete_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_connection("org-1", "svc-1", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
 // PostgreSQL Services
 // ===========================================================================
 

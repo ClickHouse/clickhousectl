@@ -2676,6 +2676,138 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// ClickStack: List Connections
+    pub async fn click_stack_list_connections(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<Vec<ClickStackConnection>>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/connections"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Create Connection
+    pub async fn click_stack_create_connection(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &ClickStackCreateConnectionRequest,
+    ) -> Result<ApiResponse<ClickStackConnection>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/connections"
+        );
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Get Connection
+    pub async fn click_stack_get_connection(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_connection_id: &str,
+    ) -> Result<ApiResponse<ClickStackConnection>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/connections/{click_stack_connection_id}"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Update Connection
+    pub async fn click_stack_update_connection(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_connection_id: &str,
+        body: &ClickStackUpdateConnectionRequest,
+    ) -> Result<ApiResponse<ClickStackConnection>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/connections/{click_stack_connection_id}"
+        );
+        let mut req = self.request(reqwest::Method::PUT, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Delete Connection
+    pub async fn click_stack_delete_connection(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_connection_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/connections/{click_stack_connection_id}"
+        );
+        let req = self.request(reqwest::Method::DELETE, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// ClickStack: List Webhooks
     pub async fn click_stack_list_webhooks(
         &self,

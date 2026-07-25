@@ -10429,6 +10429,31 @@ pub struct ClickStackCategoricalBarRawSqlChartConfig {
     pub sql_template: String,
 }
 
+/// `ClickStackConnection` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackConnection {
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub host: String,
+    #[serde(
+        rename = "hyperdxSettingPrefix",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub hyperdx_setting_prefix: Option<String>,
+    pub id: String,
+    #[serde(
+        rename = "isPrometheusEndpoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub is_prometheus_endpoint: Option<bool>,
+    pub name: String,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub username: String,
+}
+
 /// `ClickStackCreateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateAlertRequest {
@@ -10488,6 +10513,28 @@ pub struct ClickStackCreateAlertRequest {
     pub threshold_type: ClickStackCreateAlertRequestThresholdtype,
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
     pub tile_id: Option<String>,
+}
+
+/// `ClickStackCreateConnectionRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCreateConnectionRequest {
+    pub host: String,
+    #[serde(
+        rename = "hyperdxSettingPrefix",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub hyperdx_setting_prefix: Option<String>,
+    #[serde(
+        rename = "isPrometheusEndpoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub is_prometheus_endpoint: Option<bool>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password: Option<String>,
+    pub username: String,
 }
 
 /// `ClickStackCreateDashboardRequest` from the ClickHouse Cloud API.
@@ -11938,6 +11985,28 @@ pub struct ClickStackUpdateAlertRequest {
     pub threshold_type: ClickStackUpdateAlertRequestThresholdtype,
     #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
     pub tile_id: Option<String>,
+}
+
+/// `ClickStackUpdateConnectionRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackUpdateConnectionRequest {
+    pub host: String,
+    #[serde(
+        rename = "hyperdxSettingPrefix",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub hyperdx_setting_prefix: Option<String>,
+    #[serde(
+        rename = "isPrometheusEndpoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub is_prometheus_endpoint: Option<bool>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password: Option<String>,
+    pub username: String,
 }
 
 /// `ClickStackUpdateDashboardRequest` from the ClickHouse Cloud API.
