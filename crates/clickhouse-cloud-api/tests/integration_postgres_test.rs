@@ -81,6 +81,23 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         eprintln!("postgres_id: <redacted>");
         cleanup.register_postgres(postgres_id.clone());
 
+        // The create response is the only API surface guaranteed to return
+        // credentials: from July 31, 2026 the get endpoint stops echoing
+        // `password` and `connectionString`, so assert them here rather
+        // than on the polled get below.
+        assert!(
+            !created.username.is_empty(),
+            "postgres create returned empty username"
+        );
+        assert!(
+            !created.password.is_empty(),
+            "postgres create returned empty password"
+        );
+        assert!(
+            !created.connection_string.is_empty(),
+            "postgres create returned empty connection string"
+        );
+
         let ready = failures
             .run(
                 &ctx,
@@ -128,10 +145,6 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         assert!(
             !ready.hostname.is_empty(),
             "running postgres service returned empty hostname"
-        );
-        assert!(
-            !ready.connection_string.is_empty(),
-            "running postgres service returned empty connection string"
         );
 
         let listed = failures
