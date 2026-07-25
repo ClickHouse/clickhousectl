@@ -2011,3 +2011,273 @@ fn clickstack_alert_response_state_pending() {
     assert_eq!(parsed.to_string(), "PENDING");
     assert_eq!(serde_json::to_value(&parsed).unwrap(), "PENDING");
 }
+
+#[test]
+fn clickstack_number_tile_color_condition_numeric_variant() {
+    // A `gt`/`gte`/`lt`/`lte` operator with a scalar value dispatches to the
+    // numeric variant (the first arm of the untagged union).
+    let json = r#"{"operator": "gt", "value": 100, "color": "chart-red"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackNumericColorConditionOperator::Gt);
+            assert_eq!(c.value, 100.0);
+            assert_eq!(c.color, ClickStackChartColor::Chart_red);
+        }
+        other => panic!("expected numeric variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_between_variant() {
+    // The `between` operator carries an inclusive [min, max] array value, so it
+    // fails the numeric (scalar) variant and lands on the between variant.
+    let json = r#"{"operator": "between", "value": [100, 500], "color": "chart-warning"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackBetweenColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackBetweenColorConditionOperator::Between);
+            assert_eq!(c.value, vec![100.0, 500.0]);
+            assert_eq!(c.color, ClickStackChartColor::Chart_warning);
+        }
+        other => panic!("expected between variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_equality_string_value() {
+    // A string-valued `eq` fails the numeric and between variants (their values
+    // are number/array) and lands on the equality variant.
+    let json =
+        r#"{"operator": "eq", "value": "healthy", "color": "chart-success", "label": "Healthy"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackEqualityColorConditionOperator::Eq);
+            assert_eq!(c.value, serde_json::json!("healthy"));
+            assert_eq!(c.color, ClickStackChartColor::Chart_success);
+            assert_eq!(c.label.as_deref(), Some("Healthy"));
+        }
+        other => panic!("expected equality variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_equality_numeric_value() {
+    // A numeric-valued `eq` is structurally identical to a numeric condition; it
+    // is the strict operator enum (no `eq` in the numeric operator set) that
+    // routes it to the equality variant rather than the numeric one.
+    let json = r#"{"operator": "eq", "value": 42, "color": "chart-error"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackEqualityColorConditionOperator::Eq);
+            assert_eq!(c.value.as_f64(), Some(42.0));
+            assert_eq!(c.color, ClickStackChartColor::Chart_error);
+        }
+        other => panic!("expected equality variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_categorical_bar_builder_variant() {
+    // `displayType: "bar"` must dispatch to the categorical bar variant, not the
+    // stacked bar variant (whose discriminator is "stacked_bar").
+    let json = r#"{
+        "displayType": "bar",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+            ClickStackCategoricalBarChartConfig::ClickStackCategoricalBarBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackCategoricalBarBuilderChartConfigDisplaytype::Bar
+            );
+            assert_eq!(b.select.len(), 1);
+        }
+        other => panic!("expected categorical bar builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_categorical_bar_raw_sql_variant() {
+    // The Raw SQL categorical bar (configType "sql") also dispatches to the
+    // categorical bar variant rather than the stacked bar Raw SQL variant.
+    let json = r#"{
+        "displayType": "bar",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+            ClickStackCategoricalBarChartConfig::ClickStackCategoricalBarRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(r.sql_template, "SELECT count() FROM t GROUP BY service");
+            assert_eq!(
+                r.display_type,
+                ClickStackCategoricalBarRawSqlChartConfigDisplaytype::Bar
+            );
+        }
+        other => panic!("expected categorical bar raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_not_categorical_bar() {
+    // The categorical bar variant is ordered first but its `displayType` is
+    // strictly "bar", so a "stacked_bar" payload is rejected by it and falls
+    // through to the other builder variants unchanged (i.e. dispatch of the
+    // stacked bar payload is not captured by the new variant).
+    let json = r#"{
+        "displayType": "stacked_bar",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    assert!(
+        !matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackCategoricalBarChartConfig(_)
+        ),
+        "stacked_bar must not dispatch to the categorical bar variant, got {cfg}"
+    );
+}
+
+#[test]
+fn clickstack_tile_config_event_patterns_variant() {
+    // `displayType: "event_patterns"` dispatches to the event-patterns variant;
+    // it requires only sourceId (no select), so it is ordered before markdown.
+    let json = r#"{
+        "displayType": "event_patterns",
+        "sourceId": "src-9",
+        "where": "level:error",
+        "whereLanguage": "lucene"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackEventPatternsChartConfig(e) => {
+            assert_eq!(e.source_id, "src-9");
+            assert_eq!(
+                e.display_type,
+                ClickStackEventPatternsChartConfigDisplaytype::Event_patterns
+            );
+            assert_eq!(e.r#where.as_deref(), Some("level:error"));
+            assert_eq!(
+                e.where_language,
+                Some(ClickStackEventPatternsChartConfigWherelanguage::Lucene)
+            );
+        }
+        other => panic!("expected event patterns variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_chart_color_known_and_unknown_round_trip() {
+    // A known palette token maps to its typed variant and back.
+    let known: ClickStackChartColor = serde_json::from_str("\"chart-light-blue\"").unwrap();
+    assert_eq!(known, ClickStackChartColor::Chart_light_blue);
+    assert_eq!(known.to_string(), "chart-light-blue");
+    assert_eq!(serde_json::to_value(&known).unwrap(), "chart-light-blue");
+
+    // An unrecognized token round-trips through the Unknown(String) catch-all.
+    let unknown: ClickStackChartColor = serde_json::from_str("\"chart-teal\"").unwrap();
+    assert_eq!(
+        unknown,
+        ClickStackChartColor::Unknown("chart-teal".to_string())
+    );
+    assert_eq!(unknown.to_string(), "chart-teal");
+    assert_eq!(serde_json::to_value(&unknown).unwrap(), "chart-teal");
+}
+
+#[test]
+fn clickstack_background_chart_round_trip() {
+    let json = r#"{"type": "area", "color": "chart-blue"}"#;
+    let bg: ClickStackBackgroundChart = serde_json::from_str(json).unwrap();
+    assert_eq!(bg.r#type, ClickStackBackgroundChartType::Area);
+    assert_eq!(bg.color, Some(ClickStackChartColor::Chart_blue));
+    let v = serde_json::to_value(&bg).unwrap();
+    assert_eq!(v["type"], "area");
+    assert_eq!(v["color"], "chart-blue");
+
+    // color is optional and dropped when absent.
+    let json = r#"{"type": "line"}"#;
+    let bg: ClickStackBackgroundChart = serde_json::from_str(json).unwrap();
+    assert_eq!(bg.r#type, ClickStackBackgroundChartType::Line);
+    assert_eq!(bg.color, None);
+    let v = serde_json::to_value(&bg).unwrap();
+    assert!(v.get("color").is_none());
+}
+
+#[test]
+fn clickstack_number_builder_chart_config_color_fields_round_trip() {
+    let json = r#"{
+        "displayType": "number",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}],
+        "color": "chart-blue",
+        "colorRules": [
+            {"operator": "gt", "value": 100, "color": "chart-red"}
+        ],
+        "backgroundChart": {"type": "line", "color": "chart-green"}
+    }"#;
+    let cfg: ClickStackNumberBuilderChartConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.color, Some(ClickStackChartColor::Chart_blue));
+    let rules = cfg.color_rules.as_ref().unwrap();
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackNumericColorConditionOperator::Gt);
+        }
+        other => panic!("expected numeric rule, got {other}"),
+    }
+    let bg = cfg.background_chart.as_ref().unwrap();
+    assert_eq!(bg.r#type, ClickStackBackgroundChartType::Line);
+
+    let v = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(v["color"], "chart-blue");
+    assert_eq!(v["colorRules"][0]["operator"], "gt");
+    assert_eq!(v["backgroundChart"]["type"], "line");
+
+    // The three new fields are optional and dropped when absent.
+    let v = serde_json::to_value(ClickStackNumberBuilderChartConfig::default()).unwrap();
+    assert!(v.get("color").is_none());
+    assert!(v.get("colorRules").is_none());
+    assert!(v.get("backgroundChart").is_none());
+}
+
+#[test]
+fn clickstack_number_raw_sql_chart_config_color_round_trip() {
+    let json = r#"{
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "displayType": "number",
+        "sqlTemplate": "SELECT count() FROM t",
+        "color": "chart-purple"
+    }"#;
+    let cfg: ClickStackNumberRawSqlChartConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.color, Some(ClickStackChartColor::Chart_purple));
+    let v = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(v["color"], "chart-purple");
+
+    let v = serde_json::to_value(ClickStackNumberRawSqlChartConfig::default()).unwrap();
+    assert!(v.get("color").is_none());
+}
+
+#[test]
+fn clickstack_on_click_external_round_trip() {
+    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{ServiceName}}"}"#;
+    let ext: ClickStackOnClickExternal = serde_json::from_str(json).unwrap();
+    assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
+    assert_eq!(ext.url_template, "https://example.com/{{ServiceName}}");
+    let v = serde_json::to_value(&ext).unwrap();
+    assert_eq!(v["type"], "external");
+    assert_eq!(v["urlTemplate"], "https://example.com/{{ServiceName}}");
+}

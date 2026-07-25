@@ -3074,6 +3074,29 @@ impl std::fmt::Display for ClickStackAlertResponseThresholdtype {
     }
 }
 
+/// Inline enum for `ClickStackBackgroundChart.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackBackgroundChartType {
+    #[serde(rename = "line")]
+    #[default]
+    Line,
+    #[serde(rename = "area")]
+    Area,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBackgroundChartType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line => write!(f, "line"),
+            Self::Area => write!(f, "area"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackBarBuilderChartConfig.displayType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackBarBuilderChartConfigDisplaytype {
@@ -3129,6 +3152,149 @@ impl std::fmt::Display for ClickStackBarRawSqlChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackBetweenColorCondition.operator`.
+///
+/// Intentionally has no `Unknown(String)` catch-all: the operator is the
+/// discriminator that lets the untagged `ClickStackNumberTileColorCondition`
+/// union route payloads to the correct condition variant, so an unrecognized
+/// operator must fail this variant rather than be silently absorbed.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackBetweenColorConditionOperator {
+    #[serde(rename = "between")]
+    #[default]
+    Between,
+}
+
+impl std::fmt::Display for ClickStackBetweenColorConditionOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Between => write!(f, "between"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarBuilderChartConfig.displayType`.
+///
+/// Intentionally has no `Unknown(String)` catch-all: it discriminates the
+/// categorical bar variant (`bar`) from the stacked bar variant
+/// (`stacked_bar`) inside the untagged `ClickStackTileConfig` union, so a
+/// non-`bar` display type must fail this variant.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarBuilderChartConfigDisplaytype {
+    #[serde(rename = "bar")]
+    #[default]
+    Bar,
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bar => write!(f, "bar"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarRawSqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarRawSqlChartConfigConfigtype {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarRawSqlChartConfig.displayType`.
+///
+/// Intentionally has no `Unknown(String)` catch-all: it discriminates the
+/// categorical bar variant (`bar`) from the stacked bar variant
+/// (`stacked_bar`) inside the untagged `ClickStackTileConfig` union, so a
+/// non-`bar` display type must fail this variant.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarRawSqlChartConfigDisplaytype {
+    #[serde(rename = "bar")]
+    #[default]
+    Bar,
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bar => write!(f, "bar"),
+        }
+    }
+}
+
+/// Palette-token colors shared by ClickStack chart tiles.
+///
+/// Used by `ClickStackBackgroundChart`, `ClickStackNumericColorCondition`,
+/// `ClickStackBetweenColorCondition`, `ClickStackEqualityColorCondition`,
+/// `ClickStackNumberBuilderChartConfig`, and `ClickStackNumberRawSqlChartConfig`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackChartColor {
+    #[serde(rename = "chart-blue")]
+    #[default]
+    Chart_blue,
+    #[serde(rename = "chart-orange")]
+    Chart_orange,
+    #[serde(rename = "chart-red")]
+    Chart_red,
+    #[serde(rename = "chart-cyan")]
+    Chart_cyan,
+    #[serde(rename = "chart-green")]
+    Chart_green,
+    #[serde(rename = "chart-pink")]
+    Chart_pink,
+    #[serde(rename = "chart-purple")]
+    Chart_purple,
+    #[serde(rename = "chart-light-blue")]
+    Chart_light_blue,
+    #[serde(rename = "chart-brown")]
+    Chart_brown,
+    #[serde(rename = "chart-gray")]
+    Chart_gray,
+    #[serde(rename = "chart-success")]
+    Chart_success,
+    #[serde(rename = "chart-warning")]
+    Chart_warning,
+    #[serde(rename = "chart-error")]
+    Chart_error,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackChartColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chart_blue => write!(f, "chart-blue"),
+            Self::Chart_orange => write!(f, "chart-orange"),
+            Self::Chart_red => write!(f, "chart-red"),
+            Self::Chart_cyan => write!(f, "chart-cyan"),
+            Self::Chart_green => write!(f, "chart-green"),
+            Self::Chart_pink => write!(f, "chart-pink"),
+            Self::Chart_purple => write!(f, "chart-purple"),
+            Self::Chart_light_blue => write!(f, "chart-light-blue"),
+            Self::Chart_brown => write!(f, "chart-brown"),
+            Self::Chart_gray => write!(f, "chart-gray"),
+            Self::Chart_success => write!(f, "chart-success"),
+            Self::Chart_warning => write!(f, "chart-warning"),
+            Self::Chart_error => write!(f, "chart-error"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3276,6 +3442,73 @@ pub enum ClickStackDashboardResponseSavedquerylanguage {
 }
 
 impl std::fmt::Display for ClickStackDashboardResponseSavedquerylanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackEqualityColorCondition.operator`.
+///
+/// Intentionally has no `Unknown(String)` catch-all: the operator is the
+/// discriminator that lets the untagged `ClickStackNumberTileColorCondition`
+/// union route a numeric-valued `eq`/`neq` payload to this equality variant
+/// rather than to the numeric variant it structurally resembles.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackEqualityColorConditionOperator {
+    #[serde(rename = "eq")]
+    #[default]
+    Eq,
+    #[serde(rename = "neq")]
+    Neq,
+}
+
+impl std::fmt::Display for ClickStackEqualityColorConditionOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eq => write!(f, "eq"),
+            Self::Neq => write!(f, "neq"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackEventPatternsChartConfig.displayType`.
+///
+/// Intentionally has no `Unknown(String)` catch-all: it discriminates the
+/// event-patterns variant inside the untagged `ClickStackTileConfig` union,
+/// so a non-`event_patterns` display type must fail this variant.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackEventPatternsChartConfigDisplaytype {
+    #[serde(rename = "event_patterns")]
+    #[default]
+    Event_patterns,
+}
+
+impl std::fmt::Display for ClickStackEventPatternsChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Event_patterns => write!(f, "event_patterns"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackEventPatternsChartConfig.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackEventPatternsChartConfigWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackEventPatternsChartConfigWherelanguage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sql => write!(f, "sql"),
@@ -4154,6 +4387,36 @@ impl std::fmt::Display for ClickStackNumberRawSqlChartConfigDisplaytype {
     }
 }
 
+/// Inline enum for `ClickStackNumericColorCondition.operator`.
+///
+/// Intentionally has no `Unknown(String)` catch-all: the operator is the
+/// discriminator that lets the untagged `ClickStackNumberTileColorCondition`
+/// union reject an `eq`/`neq`/`between` payload here so it can be routed to
+/// the matching condition variant instead.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackNumericColorConditionOperator {
+    #[serde(rename = "gt")]
+    #[default]
+    Gt,
+    #[serde(rename = "gte")]
+    Gte,
+    #[serde(rename = "lt")]
+    Lt,
+    #[serde(rename = "lte")]
+    Lte,
+}
+
+impl std::fmt::Display for ClickStackNumericColorConditionOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gt => write!(f, "gt"),
+            Self::Gte => write!(f, "gte"),
+            Self::Lt => write!(f, "lt"),
+            Self::Lte => write!(f, "lte"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackOnClickDashboard.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackOnClickDashboardType {
@@ -4192,6 +4455,26 @@ impl std::fmt::Display for ClickStackOnClickDashboardWherelanguage {
         match self {
             Self::Sql => write!(f, "sql"),
             Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickExternal.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickExternalType {
+    #[serde(rename = "external")]
+    #[default]
+    External,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickExternalType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::External => write!(f, "external"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -7449,6 +7732,38 @@ impl std::fmt::Display for ClickStackBarChartConfig {
     }
 }
 
+/// `ClickStackCategoricalBarChartConfig` - one of multiple variants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClickStackCategoricalBarChartConfig {
+    ClickStackCategoricalBarBuilderChartConfig(ClickStackCategoricalBarBuilderChartConfig),
+    ClickStackCategoricalBarRawSqlChartConfig(ClickStackCategoricalBarRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl Default for ClickStackCategoricalBarChartConfig {
+    fn default() -> Self {
+        Self::ClickStackCategoricalBarBuilderChartConfig(
+            ClickStackCategoricalBarBuilderChartConfig::default(),
+        )
+    }
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackCategoricalBarBuilderChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarBuilderChartConfig")
+            }
+            Self::ClickStackCategoricalBarRawSqlChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarRawSqlChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackDashboardChartSeries` - one of multiple variants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -7517,6 +7832,34 @@ impl std::fmt::Display for ClickStackNumberChartConfig {
             }
             Self::ClickStackNumberRawSqlChartConfig(_) => {
                 write!(f, "ClickStackNumberRawSqlChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackNumberTileColorCondition` - one of multiple variants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClickStackNumberTileColorCondition {
+    ClickStackNumericColorCondition(ClickStackNumericColorCondition),
+    ClickStackBetweenColorCondition(ClickStackBetweenColorCondition),
+    ClickStackEqualityColorCondition(ClickStackEqualityColorCondition),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumberTileColorCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackNumericColorCondition(_) => {
+                write!(f, "ClickStackNumericColorCondition")
+            }
+            Self::ClickStackBetweenColorCondition(_) => {
+                write!(f, "ClickStackBetweenColorCondition")
+            }
+            Self::ClickStackEqualityColorCondition(_) => {
+                write!(f, "ClickStackEqualityColorCondition")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -7653,6 +7996,13 @@ impl std::fmt::Display for ClickStackTableChartConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ClickStackTileConfig {
+    // Ordered first: the categorical bar variant's `displayType` is strictly
+    // `bar`, whereas the builder configs below (Line, Bar, Table, Number, Pie)
+    // share identical required fields and catch-all `displayType` enums, so the
+    // first of them would otherwise swallow any `bar` payload. Listing the
+    // strict variant first lets a `bar` payload reach it; every other display
+    // type is rejected by the strict enum and falls through unchanged.
+    ClickStackCategoricalBarChartConfig(ClickStackCategoricalBarChartConfig),
     ClickStackLineChartConfig(ClickStackLineChartConfig),
     ClickStackBarChartConfig(ClickStackBarChartConfig),
     ClickStackTableChartConfig(ClickStackTableChartConfig),
@@ -7660,6 +8010,9 @@ pub enum ClickStackTileConfig {
     ClickStackPieChartConfig(ClickStackPieChartConfig),
     ClickStackHeatmapChartConfig(ClickStackHeatmapChartConfig),
     ClickStackSearchChartConfig(ClickStackSearchChartConfig),
+    // Ordered before the markdown variant, whose `displayType` catch-all would
+    // otherwise absorb an `event_patterns` payload.
+    ClickStackEventPatternsChartConfig(ClickStackEventPatternsChartConfig),
     ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfig),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
@@ -7668,6 +8021,9 @@ pub enum ClickStackTileConfig {
 impl std::fmt::Display for ClickStackTileConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ClickStackCategoricalBarChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarChartConfig")
+            }
             Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
             Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
             Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
@@ -7675,6 +8031,9 @@ impl std::fmt::Display for ClickStackTileConfig {
             Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
             Self::ClickStackHeatmapChartConfig(_) => write!(f, "ClickStackHeatmapChartConfig"),
             Self::ClickStackSearchChartConfig(_) => write!(f, "ClickStackSearchChartConfig"),
+            Self::ClickStackEventPatternsChartConfig(_) => {
+                write!(f, "ClickStackEventPatternsChartConfig")
+            }
             Self::ClickStackMarkdownChartConfig(_) => write!(f, "ClickStackMarkdownChartConfig"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -9930,6 +10289,14 @@ pub struct ClickStackAlertSilenced {
     pub until: chrono::DateTime<chrono::Utc>,
 }
 
+/// `ClickStackBackgroundChart` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBackgroundChart {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<ClickStackChartColor>,
+    pub r#type: ClickStackBackgroundChartType,
+}
+
 /// `ClickStackBarBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackBarBuilderChartConfig {
@@ -9975,6 +10342,59 @@ pub struct ClickStackBarRawSqlChartConfig {
     pub display_type: ClickStackBarRawSqlChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
+    #[serde(
+        rename = "numberFormat",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+}
+
+/// `ClickStackBetweenColorCondition` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBetweenColorCondition {
+    pub color: ClickStackChartColor,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+    pub operator: ClickStackBetweenColorConditionOperator,
+    pub value: Vec<f64>,
+}
+
+/// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCategoricalBarBuilderChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackCategoricalBarBuilderChartConfigDisplaytype,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub limit: Option<i64>,
+    #[serde(
+        rename = "numberFormat",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+}
+
+/// `ClickStackCategoricalBarRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCategoricalBarRawSqlChartConfig {
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackCategoricalBarRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackCategoricalBarRawSqlChartConfigDisplaytype,
     #[serde(
         rename = "numberFormat",
         skip_serializing_if = "Option::is_none",
@@ -10133,6 +10553,36 @@ pub struct ClickStackDashboardResponse {
     pub tags: Vec<String>,
     #[serde(default)]
     pub tiles: Vec<ClickStackTileOutput>,
+}
+
+/// `ClickStackEqualityColorCondition` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackEqualityColorCondition {
+    pub color: ClickStackChartColor,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+    pub operator: ClickStackEqualityColorConditionOperator,
+    /// A finite number or a string; the spec models this as `oneOf number|string`.
+    pub value: serde_json::Value,
+}
+
+/// `ClickStackEventPatternsChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackEventPatternsChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackEventPatternsChartConfigDisplaytype,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(
+        rename = "whereLanguage",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub where_language: Option<ClickStackEventPatternsChartConfigWherelanguage>,
 }
 
 /// `ClickStackFilter` from the ClickHouse Cloud API.
@@ -10618,6 +11068,20 @@ pub struct ClickStackMetricTables {
 /// `ClickStackNumberBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberBuilderChartConfig {
+    #[serde(
+        rename = "backgroundChart",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub background_chart: Option<ClickStackBackgroundChart>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(
+        rename = "colorRules",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackNumberBuilderChartConfigDisplaytype,
     #[serde(
@@ -10694,6 +11158,8 @@ pub struct ClickStackNumberFormat {
 /// `ClickStackNumberRawSqlChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberRawSqlChartConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<ClickStackChartColor>,
     #[serde(rename = "configType")]
     pub config_type: ClickStackNumberRawSqlChartConfigConfigtype,
     #[serde(rename = "connectionId")]
@@ -10710,6 +11176,16 @@ pub struct ClickStackNumberRawSqlChartConfig {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackNumericColorCondition` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackNumericColorCondition {
+    pub color: ClickStackChartColor,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+    pub operator: ClickStackNumericColorConditionOperator,
+    pub value: f64,
 }
 
 /// `ClickStackOnClickDashboard` from the ClickHouse Cloud API.
@@ -10731,6 +11207,14 @@ pub struct ClickStackOnClickDashboard {
         default
     )]
     pub where_template: Option<String>,
+}
+
+/// `ClickStackOnClickExternal` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickExternal {
+    pub r#type: ClickStackOnClickExternalType,
+    #[serde(rename = "urlTemplate")]
+    pub url_template: String,
 }
 
 /// `ClickStackOnClickFilterTemplate` from the ClickHouse Cloud API.
