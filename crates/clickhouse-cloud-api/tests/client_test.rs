@@ -2635,6 +2635,211 @@ async fn delete_role() {
 }
 
 // ===========================================================================
+// ClickStack: Webhooks & Dashboard validation
+// ===========================================================================
+
+#[tokio::test]
+async fn create_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Production Alerts",
+            "service": "slack",
+            "url": "https://hooks.slack.com/services/T/B/X"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-1",
+            "name": "Production Alerts",
+            "service": "slack",
+            "url": "https://hooks.slack.com/services/T/B/X",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Production Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn update_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/webhook-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Updated Alerts"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-1",
+            "name": "Updated Alerts",
+            "service": "slack",
+            "url": "https://hooks.slack.com/services/T/B/X",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Updated Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_webhook("org-1", "svc-1", "webhook-1", &body)
+        .await
+        .unwrap();
+    // The response union resolves to a concrete Slack webhook variant.
+    match resp.result.unwrap() {
+        ClickStackWebhook::ClickStackSlackWebhook(w) => {
+            assert_eq!(w.id, "webhook-1");
+            assert_eq!(w.name, "Updated Alerts");
+        }
+        other => panic!("expected Slack webhook variant, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn delete_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/webhook-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_webhook("org-1", "svc-1", "webhook-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+#[tokio::test]
+async fn validate_dashboard() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/validate",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "My Dashboard"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "valid": false,
+            "errors": [
+                {"path": "tiles.0.config", "message": "Required"}
+            ],
+            "normalized": null
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateDashboardRequest {
+        name: "My Dashboard".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_validate_dashboard("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let result = resp.result.unwrap();
+    assert!(!result.valid);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].path, "tiles.0.config");
+    assert_eq!(result.normalized, None);
+}
+
+// ===========================================================================
+// Organization quotas
+// ===========================================================================
+
+#[tokio::test]
+async fn list_quotas() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/quotas"))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "quotaCode": "services-per-organization",
+                "name": "Services per organization",
+                "description": "Limits services.",
+                "scope": "organization",
+                "value": 20,
+                "usage": 3,
+                "adjustable": true
+            }
+        ])))
+        .mount(&s)
+        .await;
+
+    let resp = c.organization_quotas_get_list("org-1").await.unwrap();
+    let quotas = resp.result.unwrap();
+    assert_eq!(quotas.len(), 1);
+    assert_eq!(
+        quotas[0].quota_code,
+        OrganizationQuotaQuotacode::Services_per_organization
+    );
+    assert_eq!(quotas[0].scope, OrganizationQuotaScope::Organization);
+    assert_eq!(quotas[0].usage, Some(3));
+}
+
+#[tokio::test]
+async fn get_quota() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/quotas/replicas-per-warehouse",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "quotaCode": "replicas-per-warehouse",
+            "name": "Replicas per warehouse",
+            "description": "Limits each warehouse individually.",
+            "scope": "warehouse",
+            "value": 20,
+            "adjustable": true
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_quota_get("org-1", "replicas-per-warehouse")
+        .await
+        .unwrap();
+    let quota = resp.result.unwrap();
+    assert_eq!(
+        quota.quota_code,
+        OrganizationQuotaQuotacode::Replicas_per_warehouse
+    );
+    assert_eq!(quota.scope, OrganizationQuotaScope::Warehouse);
+    assert_eq!(quota.usage, None);
+}
+
+// ===========================================================================
 // PostgreSQL Services
 // ===========================================================================
 

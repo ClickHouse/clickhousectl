@@ -5590,6 +5590,32 @@ impl std::fmt::Display for ClickStackUpdateDashboardRequestSavedquerylanguage {
     }
 }
 
+/// Inline enum for `ClickStackWebhookInput.service`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackWebhookInputService {
+    #[serde(rename = "slack")]
+    #[default]
+    Slack,
+    #[serde(rename = "incidentio")]
+    Incidentio,
+    #[serde(rename = "generic")]
+    Generic,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackWebhookInputService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slack => write!(f, "slack"),
+            Self::Incidentio => write!(f, "incidentio"),
+            Self::Generic => write!(f, "generic"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `CreateReversePrivateEndpoint.mskAuthentication`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CreateReversePrivateEndpointMskauthentication {
@@ -6199,6 +6225,57 @@ impl std::fmt::Display for OrganizationPrivateEndpointRegion {
             Self::Westus3 => write!(f, "westus3"),
             Self::Germanywestcentral => write!(f, "germanywestcentral"),
             Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `OrganizationQuota.quotaCode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum OrganizationQuotaQuotacode {
+    #[serde(rename = "services-per-organization")]
+    #[default]
+    Services_per_organization,
+    #[serde(rename = "postgres-services-per-organization")]
+    Postgres_services_per_organization,
+    #[serde(rename = "replicas-per-warehouse")]
+    Replicas_per_warehouse,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationQuotaQuotacode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Services_per_organization => write!(f, "services-per-organization"),
+            Self::Postgres_services_per_organization => {
+                write!(f, "postgres-services-per-organization")
+            }
+            Self::Replicas_per_warehouse => write!(f, "replicas-per-warehouse"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `OrganizationQuota.scope`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum OrganizationQuotaScope {
+    #[serde(rename = "organization")]
+    #[default]
+    Organization,
+    #[serde(rename = "warehouse")]
+    Warehouse,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationQuotaScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Organization => write!(f, "organization"),
+            Self::Warehouse => write!(f, "warehouse"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -8157,6 +8234,15 @@ impl std::fmt::Display for ClickStackWebhook {
 /// Type alias for `ClickStackCASLPermissionConditions`.
 pub type ClickStackCASLPermissionConditions = serde_json::Value;
 
+/// Type alias for `ClickStackValidateDashboardResponseNormalized`.
+pub type ClickStackValidateDashboardResponseNormalized = serde_json::Value;
+
+/// Type alias for `ClickStackWebhookInputHeaders`.
+pub type ClickStackWebhookInputHeaders = std::collections::BTreeMap<String, String>;
+
+/// Type alias for `ClickStackWebhookInputQueryParams`.
+pub type ClickStackWebhookInputQueryParams = std::collections::BTreeMap<String, String>;
+
 /// Type alias for `pgCreatedAtProperty`.
 pub type PgCreatedAtProperty = chrono::DateTime<chrono::Utc>;
 
@@ -10003,12 +10089,8 @@ pub struct ClickPipePostgresPipeSettings {
 pub struct ClickPipePostgresPipeTableMapping {
     #[serde(rename = "excludedColumns", default)]
     pub excluded_columns: Vec<String>,
-    #[serde(
-        rename = "partitionByExpr",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    pub partition_by_expr: Option<String>,
+    #[serde(rename = "partitionByExpr", default)]
+    pub partition_by_expr: String,
     #[serde(rename = "partitionKey", default)]
     pub partition_key: String,
     #[serde(rename = "sortingKeys", default)]
@@ -12220,6 +12302,42 @@ pub struct ClickStackUpdateRoleRequest {
     pub permissions: Vec<ClickStackCASLPermission>,
 }
 
+/// `ClickStackValidateDashboardError` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateDashboardError {
+    pub message: String,
+    pub path: String,
+}
+
+/// `ClickStackValidateDashboardResponse` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateDashboardResponse {
+    pub errors: Vec<ClickStackValidateDashboardError>,
+    pub normalized: Option<ClickStackValidateDashboardResponseNormalized>,
+    pub valid: bool,
+}
+
+/// `ClickStackWebhookInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackWebhookInput {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub headers: Option<ClickStackWebhookInputHeaders>,
+    pub name: String,
+    #[serde(
+        rename = "queryParams",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub query_params: Option<ClickStackWebhookInputQueryParams>,
+    #[serde(default)]
+    pub service: ClickStackWebhookInputService,
+    pub url: String,
+}
+
 /// `CreateReversePrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CreateReversePrivateEndpoint {
@@ -12585,6 +12703,20 @@ pub struct OrganizationPrivateEndpointsPatch {
     pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
     #[serde(default)]
     pub remove: Vec<OrganizationPatchPrivateEndpoint>,
+}
+
+/// `OrganizationQuota` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OrganizationQuota {
+    pub adjustable: bool,
+    pub description: String,
+    pub name: String,
+    #[serde(rename = "quotaCode")]
+    pub quota_code: OrganizationQuotaQuotacode,
+    pub scope: OrganizationQuotaScope,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage: Option<i64>,
+    pub value: i64,
 }
 
 /// `PLAIN` from the ClickHouse Cloud API.

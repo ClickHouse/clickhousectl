@@ -1998,15 +1998,13 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
 fn clickpipe_postgres_table_mapping_partition_by_expr_round_trip() {
     let json = r#"{"partitionByExpr": "toYYYYMM(created_at)"}"#;
     let mapping: ClickPipePostgresPipeTableMapping = serde_json::from_str(json).unwrap();
-    assert_eq!(
-        mapping.partition_by_expr.as_deref(),
-        Some("toYYYYMM(created_at)")
-    );
+    assert_eq!(mapping.partition_by_expr, "toYYYYMM(created_at)");
     let v = serde_json::to_value(&mapping).unwrap();
     assert_eq!(v["partitionByExpr"], "toYYYYMM(created_at)");
 
-    let v = serde_json::to_value(ClickPipePostgresPipeTableMapping::default()).unwrap();
-    assert!(v.get("partitionByExpr").is_none());
+    // The field is required (non-nullable), so the default is the empty string.
+    let mapping: ClickPipePostgresPipeTableMapping = serde_json::from_str("{}").unwrap();
+    assert_eq!(mapping.partition_by_expr, "");
 }
 
 #[test]
@@ -2555,4 +2553,173 @@ fn serialize_clickstack_saved_search_input_minimal_omits_optionals() {
     assert!(v.get("orderBy").is_none());
     assert!(v.get("tags").is_none());
     assert!(v.get("filters").is_none());
+}
+
+#[test]
+fn clickstack_webhook_input_headers_and_query_params_round_trip() {
+    let json = r#"{
+        "name": "Production Alerts",
+        "service": "incidentio",
+        "url": "https://api.incident.io/v2/alert_events/http/xyz",
+        "description": "Sends critical alerts",
+        "body": "{\"alert\": \"{{title}}\"}",
+        "headers": {"Authorization": "Bearer token", "X-Custom": "value"},
+        "queryParams": {"source": "clickstack", "env": "prod"}
+    }"#;
+    let input: ClickStackWebhookInput = serde_json::from_str(json).unwrap();
+    assert_eq!(input.name, "Production Alerts");
+    assert_eq!(input.service, ClickStackWebhookInputService::Incidentio);
+    assert_eq!(
+        input.url,
+        "https://api.incident.io/v2/alert_events/http/xyz"
+    );
+
+    let headers = input.headers.clone().unwrap();
+    assert_eq!(
+        headers.get("Authorization"),
+        Some(&"Bearer token".to_string())
+    );
+    assert_eq!(headers.get("X-Custom"), Some(&"value".to_string()));
+    let query_params = input.query_params.clone().unwrap();
+    assert_eq!(query_params.get("source"), Some(&"clickstack".to_string()));
+    assert_eq!(query_params.get("env"), Some(&"prod".to_string()));
+
+    // Maps serialize back as JSON objects, and the enum keeps its wire value.
+    let v = serde_json::to_value(&input).unwrap();
+    assert_eq!(v["service"], "incidentio");
+    assert!(v["headers"].is_object());
+    assert_eq!(v["headers"]["Authorization"], "Bearer token");
+    assert!(v["queryParams"].is_object());
+    assert_eq!(v["queryParams"]["source"], "clickstack");
+
+    let back: ClickStackWebhookInput = serde_json::from_value(v).unwrap();
+    assert_eq!(back, input);
+}
+
+#[test]
+fn serialize_clickstack_webhook_input_minimal_omits_optionals() {
+    let input = ClickStackWebhookInput {
+        name: "Slack Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&input).unwrap();
+    assert_eq!(v["name"], "Slack Alerts");
+    assert_eq!(v["service"], "slack");
+    assert_eq!(v["url"], "https://hooks.slack.com/services/T/B/X");
+    assert!(v.get("description").is_none());
+    assert!(v.get("body").is_none());
+    assert!(v.get("headers").is_none());
+    assert!(v.get("queryParams").is_none());
+}
+
+#[test]
+fn clickstack_validate_dashboard_response_round_trip() {
+    let json = r#"{
+        "valid": false,
+        "errors": [
+            {"path": "tiles.0.config", "message": "Required"},
+            {"path": "", "message": "Top-level error"}
+        ],
+        "normalized": {"name": "My Dashboard", "tiles": [{"id": "t1"}]}
+    }"#;
+    let resp: ClickStackValidateDashboardResponse = serde_json::from_str(json).unwrap();
+    assert!(!resp.valid);
+    assert_eq!(resp.errors.len(), 2);
+    assert_eq!(resp.errors[0].path, "tiles.0.config");
+    assert_eq!(resp.errors[0].message, "Required");
+    assert_eq!(resp.errors[1].path, "");
+
+    // `normalized` is a free-form Value; its arbitrary payload is preserved.
+    let normalized = resp.normalized.as_ref().unwrap();
+    assert_eq!(normalized["name"], "My Dashboard");
+    assert_eq!(normalized["tiles"][0]["id"], "t1");
+
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["valid"], false);
+    assert_eq!(v["errors"][0]["path"], "tiles.0.config");
+    assert_eq!(v["normalized"]["name"], "My Dashboard");
+
+    let back: ClickStackValidateDashboardResponse = serde_json::from_value(v).unwrap();
+    assert_eq!(back, resp);
+}
+
+#[test]
+fn clickstack_validate_dashboard_response_valid_null_normalized() {
+    let json = r#"{"valid": true, "errors": [], "normalized": null}"#;
+    let resp: ClickStackValidateDashboardResponse = serde_json::from_str(json).unwrap();
+    assert!(resp.valid);
+    assert!(resp.errors.is_empty());
+    assert_eq!(resp.normalized, None);
+
+    // A required-but-nullable field still serializes (as null), not omitted.
+    let v = serde_json::to_value(&resp).unwrap();
+    assert!(v.get("normalized").is_some());
+    assert!(v["normalized"].is_null());
+}
+
+#[test]
+fn organization_quota_typed_enums_round_trip() {
+    let json = r#"{
+        "quotaCode": "replicas-per-warehouse",
+        "name": "Replicas per warehouse",
+        "description": "Limits each warehouse individually.",
+        "scope": "warehouse",
+        "value": 20,
+        "usage": 3,
+        "adjustable": true
+    }"#;
+    let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        quota.quota_code,
+        OrganizationQuotaQuotacode::Replicas_per_warehouse
+    );
+    assert_eq!(quota.scope, OrganizationQuotaScope::Warehouse);
+    assert_eq!(quota.value, 20);
+    assert_eq!(quota.usage, Some(3));
+    assert!(quota.adjustable);
+
+    let v = serde_json::to_value(&quota).unwrap();
+    assert_eq!(v["quotaCode"], "replicas-per-warehouse");
+    assert_eq!(v["scope"], "warehouse");
+    assert_eq!(v["value"], 20);
+    assert_eq!(v["usage"], 3);
+
+    let back: OrganizationQuota = serde_json::from_value(v).unwrap();
+    assert_eq!(back, quota);
+}
+
+#[test]
+fn organization_quota_usage_optional_omitted() {
+    let json = r#"{
+        "quotaCode": "services-per-organization",
+        "name": "Services per organization",
+        "description": "Limits services.",
+        "scope": "organization",
+        "value": 20,
+        "adjustable": false
+    }"#;
+    let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        quota.quota_code,
+        OrganizationQuotaQuotacode::Services_per_organization
+    );
+    assert_eq!(quota.scope, OrganizationQuotaScope::Organization);
+    assert_eq!(quota.usage, None);
+
+    let v = serde_json::to_value(&quota).unwrap();
+    assert!(v.get("usage").is_none(), "usage must be omitted when None");
+}
+
+#[test]
+fn organization_quota_quota_code_unknown_catch_all() {
+    let parsed: OrganizationQuotaQuotacode =
+        serde_json::from_str("\"queries-per-second\"").unwrap();
+    assert_eq!(
+        parsed,
+        OrganizationQuotaQuotacode::Unknown("queries-per-second".to_string())
+    );
+    assert_eq!(parsed.to_string(), "queries-per-second");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "queries-per-second");
 }
