@@ -3597,6 +3597,32 @@ impl std::fmt::Display for ClickStackLogSourceKind {
     }
 }
 
+/// Inline enum for `ClickStackLogSource.useTextIndexForImplicitColumn`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLogSourceUsetextindexforimplicitcolumn {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "enabled")]
+    Enabled,
+    #[serde(rename = "disabled")]
+    Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLogSourceUsetextindexforimplicitcolumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackMarkdownChartConfig.displayType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackMarkdownChartConfigDisplaytype {
@@ -5014,6 +5040,32 @@ impl std::fmt::Display for ClickStackTraceSourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Trace => write!(f, "trace"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackTraceSource.useTextIndexForImplicitColumn`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackTraceSourceUsetextindexforimplicitcolumn {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "enabled")]
+    Enabled,
+    #[serde(rename = "disabled")]
+    Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTraceSourceUsetextindexforimplicitcolumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -10266,6 +10318,8 @@ pub struct ClickStackLogSource {
     pub connection: String,
     #[serde(rename = "defaultTableSelectExpression")]
     pub default_table_select_expression: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     #[serde(
         rename = "displayedTimestampValueExpression",
         skip_serializing_if = "Option::is_none",
@@ -10299,7 +10353,8 @@ pub struct ClickStackLogSource {
     )]
     pub highlighted_trace_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     #[serde(
         rename = "implicitColumnExpression",
         skip_serializing_if = "Option::is_none",
@@ -10307,6 +10362,12 @@ pub struct ClickStackLogSource {
     )]
     pub implicit_column_expression: Option<String>,
     pub kind: ClickStackLogSourceKind,
+    #[serde(
+        rename = "knownColumnsListExpression",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub known_columns_list_expression: Option<String>,
     #[serde(
         rename = "materializedViews",
         skip_serializing_if = "Option::is_none",
@@ -10338,6 +10399,8 @@ pub struct ClickStackLogSource {
         default
     )]
     pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(
         rename = "serviceNameExpression",
         skip_serializing_if = "Option::is_none",
@@ -10370,6 +10433,13 @@ pub struct ClickStackLogSource {
         default
     )]
     pub trace_source_id: Option<String>,
+    #[serde(
+        rename = "useTextIndexForImplicitColumn",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub use_text_index_for_implicit_column:
+        Option<ClickStackLogSourceUsetextindexforimplicitcolumn>,
 }
 
 /// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
@@ -10422,8 +10492,11 @@ pub struct ClickStackMaterializedView {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackMetricSource {
     pub connection: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     pub from: ClickStackMetricSourceFrom,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     pub kind: ClickStackMetricSourceKind,
     #[serde(
         rename = "logSourceId",
@@ -10442,6 +10515,8 @@ pub struct ClickStackMetricSource {
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(rename = "resourceAttributesExpression")]
     pub resource_attributes_expression: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(rename = "timestampValueExpression")]
     pub timestamp_value_expression: String,
 }
@@ -10780,8 +10855,11 @@ pub struct ClickStackSelectItem {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSessionSource {
     pub connection: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     pub from: ClickStackSourceFrom,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     pub kind: ClickStackSessionSourceKind,
     pub name: String,
     #[serde(
@@ -10790,6 +10868,8 @@ pub struct ClickStackSessionSource {
         default
     )]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(
         rename = "timestampValueExpression",
         skip_serializing_if = "Option::is_none",
@@ -11045,12 +11125,10 @@ pub struct ClickStackTimeChartSeries {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTraceSource {
     pub connection: String,
-    #[serde(
-        rename = "defaultTableSelectExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    pub default_table_select_expression: Option<String>,
+    #[serde(rename = "defaultTableSelectExpression", default)]
+    pub default_table_select_expression: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     #[serde(rename = "durationExpression")]
     pub duration_expression: String,
     #[serde(rename = "durationPrecision")]
@@ -11082,7 +11160,8 @@ pub struct ClickStackTraceSource {
     )]
     pub highlighted_trace_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     #[serde(
         rename = "implicitColumnExpression",
         skip_serializing_if = "Option::is_none",
@@ -11090,6 +11169,12 @@ pub struct ClickStackTraceSource {
     )]
     pub implicit_column_expression: Option<String>,
     pub kind: ClickStackTraceSourceKind,
+    #[serde(
+        rename = "knownColumnsListExpression",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub known_columns_list_expression: Option<String>,
     #[serde(
         rename = "logSourceId",
         skip_serializing_if = "Option::is_none",
@@ -11129,6 +11214,8 @@ pub struct ClickStackTraceSource {
         default
     )]
     pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(
         rename = "serviceNameExpression",
         skip_serializing_if = "Option::is_none",
@@ -11169,6 +11256,13 @@ pub struct ClickStackTraceSource {
     pub timestamp_value_expression: String,
     #[serde(rename = "traceIdExpression")]
     pub trace_id_expression: String,
+    #[serde(
+        rename = "useTextIndexForImplicitColumn",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub use_text_index_for_implicit_column:
+        Option<ClickStackTraceSourceUsetextindexforimplicitcolumn>,
 }
 
 /// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API.

@@ -1643,6 +1643,84 @@ fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
 }
 
 #[test]
+fn deserialize_clickstack_log_source_without_id() {
+    // `id` is server-generated and omitted from create/update request payloads;
+    // it must deserialize to None and be dropped on serialize.
+    let json = r#"{
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts"
+    }"#;
+    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.id, None);
+    let v = serde_json::to_value(&src).unwrap();
+    assert!(v.get("id").is_none(), "id must be omitted when None");
+}
+
+#[test]
+fn deserialize_clickstack_trace_source_requires_default_table_select_expression() {
+    let json = r#"{
+        "id": "trace-1",
+        "kind": "trace",
+        "name": "traces",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "Timestamp, SpanName",
+        "from": {"databaseName": "default", "tableName": "traces"},
+        "timestampValueExpression": "Timestamp",
+        "durationExpression": "Duration",
+        "durationPrecision": 9,
+        "traceIdExpression": "TraceId",
+        "spanIdExpression": "SpanId",
+        "parentSpanIdExpression": "ParentSpanId",
+        "spanNameExpression": "SpanName",
+        "spanKindExpression": "SpanKind"
+    }"#;
+    let src: ClickStackTraceSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.default_table_select_expression, "Timestamp, SpanName");
+    let v = serde_json::to_value(&src).unwrap();
+    assert_eq!(v["defaultTableSelectExpression"], "Timestamp, SpanName");
+}
+
+#[test]
+fn round_trip_clickstack_log_source_new_fields() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "section": "Billing",
+        "disabled": false,
+        "knownColumnsListExpression": "Timestamp, Body, ServiceName",
+        "useTextIndexForImplicitColumn": "auto"
+    }"#;
+    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.section.as_deref(), Some("Billing"));
+    assert_eq!(src.disabled, Some(false));
+    assert_eq!(
+        src.known_columns_list_expression.as_deref(),
+        Some("Timestamp, Body, ServiceName")
+    );
+    assert_eq!(
+        src.use_text_index_for_implicit_column,
+        Some(ClickStackLogSourceUsetextindexforimplicitcolumn::Auto)
+    );
+    let v = serde_json::to_value(&src).unwrap();
+    assert_eq!(v["section"], "Billing");
+    assert_eq!(v["disabled"], false);
+    assert_eq!(
+        v["knownColumnsListExpression"],
+        "Timestamp, Body, ServiceName"
+    );
+    assert_eq!(v["useTextIndexForImplicitColumn"], "auto");
+}
+
+#[test]
 fn deserialize_clickstack_alert_with_note() {
     let json = r#"{
         "id": "alert-1",
