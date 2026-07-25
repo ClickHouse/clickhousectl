@@ -8035,6 +8035,7 @@ impl std::fmt::Display for ClickStackNumberTileColorCondition {
 pub enum ClickStackOnClick {
     ClickStackOnClickSearch(ClickStackOnClickSearch),
     ClickStackOnClickDashboard(ClickStackOnClickDashboard),
+    ClickStackOnClickExternal(ClickStackOnClickExternal),
     /// Catch-all for unknown or newly-added values.
     Unknown(String),
 }
@@ -8050,6 +8051,7 @@ impl std::fmt::Display for ClickStackOnClick {
         match self {
             Self::ClickStackOnClickSearch(_) => write!(f, "ClickStackOnClickSearch"),
             Self::ClickStackOnClickDashboard(_) => write!(f, "ClickStackOnClickDashboard"),
+            Self::ClickStackOnClickExternal(_) => write!(f, "ClickStackOnClickExternal"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }

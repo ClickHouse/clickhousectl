@@ -2326,6 +2326,58 @@ fn clickstack_on_click_external_round_trip() {
 }
 
 #[test]
+fn deserialize_clickstack_on_click_dispatches_external() {
+    // An "external" on-click payload has no `target`, so it cannot match the
+    // Search or Dashboard variants (both require `target`) and dispatches
+    // through the untagged union to the External variant.
+    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{value}}"}"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match &on_click {
+        ClickStackOnClick::ClickStackOnClickExternal(ext) => {
+            assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
+            assert_eq!(ext.url_template, "https://example.com/{{value}}");
+        }
+        other => panic!("expected external variant, got {other}"),
+    }
+    // Round-trips back to the same wire shape through the union.
+    let v = serde_json::to_value(&on_click).unwrap();
+    assert_eq!(v["type"], "external");
+    assert_eq!(v["urlTemplate"], "https://example.com/{{value}}");
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dispatches_search() {
+    // Regression: adding the External variant must not steal the Search shape.
+    let json = r#"{
+        "type": "search",
+        "target": {"mode": "id", "id": "search-1"}
+    }"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickSearch(s) => {
+            assert_eq!(s.r#type, ClickStackOnClickSearchType::Search);
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dashboard_still_parses() {
+    // Regression: adding the External variant must not disturb dashboard
+    // parsing. As documented on deserialize_clickstack_on_click_dashboard_struct,
+    // the untagged parent's first (Search) variant catches the dashboard shape
+    // because ClickStackOnClickSearchType has an Unknown(String) catch-all, so
+    // we deserialize directly into ClickStackOnClickDashboard. The External
+    // variant is inserted after Search/Dashboard, so it changes neither.
+    let json = r#"{
+        "type": "dashboard",
+        "target": {"mode": "template", "template": "{{x}}"}
+    }"#;
+    let dash: ClickStackOnClickDashboard = serde_json::from_str(json).unwrap();
+    assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
+}
+
+#[test]
 fn deserialize_clickstack_connection_with_null_prefix() {
     let json = r#"{
         "id": "507f1f77bcf86cd799439012",
