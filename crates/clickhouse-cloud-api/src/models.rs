@@ -8088,6 +8088,9 @@ impl std::fmt::Display for ClickStackWebhook {
     }
 }
 
+/// Type alias for `ClickStackCASLPermissionConditions`.
+pub type ClickStackCASLPermissionConditions = serde_json::Value;
+
 /// Type alias for `pgCreatedAtProperty`.
 pub type PgCreatedAtProperty = chrono::DateTime<chrono::Utc>;
 
@@ -10386,6 +10389,19 @@ pub struct ClickStackBetweenColorCondition {
     pub value: Vec<f64>,
 }
 
+/// `ClickStackCASLPermission` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCASLPermission {
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub conditions: Option<ClickStackCASLPermissionConditions>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub integration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub inverted: Option<bool>,
+    pub subject: String,
+}
+
 /// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarBuilderChartConfig {
@@ -10566,6 +10582,15 @@ pub struct ClickStackCreateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<String>>,
     pub tiles: Vec<ClickStackTileInput>,
+}
+
+/// `ClickStackCreateRoleRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCreateRoleRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    pub name: String,
+    pub permissions: Vec<ClickStackCASLPermission>,
 }
 
 /// `ClickStackDashboardContainer` from the ClickHouse Cloud API.
@@ -11418,6 +11443,22 @@ pub struct ClickStackQuerySetting {
     pub value: String,
 }
 
+/// `ClickStackRole` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackRole {
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    pub id: String,
+    #[serde(rename = "isPredefined")]
+    pub is_predefined: bool,
+    pub name: String,
+    pub permissions: Vec<ClickStackCASLPermission>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// `ClickStackSavedFilterValue` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSavedFilterValue {
@@ -12038,6 +12079,16 @@ pub struct ClickStackUpdateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<String>>,
     pub tiles: Vec<ClickStackTileInput>,
+}
+
+/// `ClickStackUpdateRoleRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackUpdateRoleRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+    pub permissions: Vec<ClickStackCASLPermission>,
 }
 
 /// `CreateReversePrivateEndpoint` from the ClickHouse Cloud API.

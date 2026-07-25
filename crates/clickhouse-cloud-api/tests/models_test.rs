@@ -2373,3 +2373,120 @@ fn serialize_clickstack_create_connection_request_omits_none() {
         "isPrometheusEndpoint must be omitted when None"
     );
 }
+
+#[test]
+fn deserialize_clickstack_role_with_nested_conditions() {
+    let json = r#"{
+        "id": "role-1",
+        "name": "Deploy Bot",
+        "description": "Manages dashboards via Terraform",
+        "isPredefined": false,
+        "permissions": [
+            {
+                "action": "read",
+                "subject": "dashboard",
+                "inverted": false,
+                "integration": "mongodb",
+                "conditions": {
+                    "teamId": "team-1",
+                    "tags": ["prod", "eu"]
+                }
+            }
+        ]
+    }"#;
+    let role: ClickStackRole = serde_json::from_str(json).unwrap();
+    assert_eq!(role.id, "role-1");
+    assert_eq!(role.name, "Deploy Bot");
+    assert!(!role.is_predefined);
+    assert_eq!(role.permissions.len(), 1);
+
+    let perm = &role.permissions[0];
+    assert_eq!(perm.action, "read");
+    assert_eq!(perm.subject, "dashboard");
+    assert_eq!(perm.inverted, Some(false));
+    assert_eq!(perm.integration, Some("mongodb".to_string()));
+
+    // Free-form conditions land as serde_json::Value with the nested content intact.
+    let conditions = perm.conditions.as_ref().unwrap();
+    assert_eq!(conditions["teamId"], "team-1");
+    assert_eq!(conditions["tags"][0], "prod");
+    assert_eq!(conditions["tags"][1], "eu");
+}
+
+#[test]
+fn clickstack_role_round_trip() {
+    let role = ClickStackRole {
+        id: "role-1".to_string(),
+        name: "Deploy Bot".to_string(),
+        is_predefined: false,
+        permissions: vec![ClickStackCASLPermission {
+            action: "manage".to_string(),
+            subject: "all".to_string(),
+            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&role).unwrap();
+    assert_eq!(v["id"], "role-1");
+    assert_eq!(v["isPredefined"], false);
+    assert_eq!(v["permissions"][0]["action"], "manage");
+    assert_eq!(v["permissions"][0]["subject"], "all");
+    assert_eq!(v["permissions"][0]["conditions"]["teamId"], "team-1");
+
+    // Optional fields dropped when None.
+    assert!(v.get("description").is_none());
+    assert!(v.get("createdAt").is_none());
+    assert!(v.get("updatedAt").is_none());
+
+    let back: ClickStackRole = serde_json::from_value(v).unwrap();
+    assert_eq!(back, role);
+}
+
+#[test]
+fn serialize_clickstack_casl_permission_omits_none() {
+    let perm = ClickStackCASLPermission {
+        action: "read".to_string(),
+        subject: "dashboard".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&perm).unwrap();
+    assert_eq!(v["action"], "read");
+    assert_eq!(v["subject"], "dashboard");
+    assert!(v.get("inverted").is_none());
+    assert!(v.get("integration").is_none());
+    assert!(v.get("conditions").is_none());
+}
+
+#[test]
+fn serialize_clickstack_create_role_request_omits_none() {
+    let req = ClickStackCreateRoleRequest {
+        name: "Deploy Bot".to_string(),
+        permissions: vec![ClickStackCASLPermission {
+            action: "read".to_string(),
+            subject: "dashboard".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["name"], "Deploy Bot");
+    assert_eq!(v["permissions"][0]["action"], "read");
+    assert!(v.get("description").is_none());
+}
+
+#[test]
+fn serialize_clickstack_update_role_request_omits_none() {
+    let req = ClickStackUpdateRoleRequest {
+        permissions: vec![ClickStackCASLPermission {
+            action: "manage".to_string(),
+            subject: "all".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["permissions"][0]["action"], "manage");
+    assert!(v.get("name").is_none());
+    assert!(v.get("description").is_none());
+}

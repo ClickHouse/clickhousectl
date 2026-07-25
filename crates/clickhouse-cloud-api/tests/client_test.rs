@@ -2346,6 +2346,158 @@ async fn delete_connection() {
 }
 
 // ===========================================================================
+// ClickStack: Roles
+// ===========================================================================
+
+#[tokio::test]
+async fn list_roles() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles",
+        ))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&s)
+        .await;
+
+    let resp = c.click_stack_list_roles("org-1", "svc-1").await.unwrap();
+    let roles = resp.result.unwrap();
+    assert_eq!(roles.len(), 0);
+}
+
+#[tokio::test]
+async fn create_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Deploy Bot",
+            "permissions": [{
+                "action": "read",
+                "subject": "dashboard",
+                "conditions": { "teamId": "team-1" }
+            }]
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "role-1",
+            "name": "Deploy Bot",
+            "isPredefined": false,
+            "permissions": [{
+                "action": "read",
+                "subject": "dashboard",
+                "conditions": { "teamId": "team-1" }
+            }]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateRoleRequest {
+        name: "Deploy Bot".to_string(),
+        permissions: vec![ClickStackCASLPermission {
+            action: "read".to_string(),
+            subject: "dashboard".to_string(),
+            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_role("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let role = resp.result.unwrap();
+    assert_eq!(role.id, "role-1");
+    assert_eq!(role.name, "Deploy Bot");
+    assert!(!role.is_predefined);
+}
+
+#[tokio::test]
+async fn get_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "role-1",
+            "name": "Read Only",
+            "isPredefined": true,
+            "permissions": [{ "action": "read", "subject": "dashboard" }]
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_role("org-1", "svc-1", "role-1")
+        .await
+        .unwrap();
+    let role = resp.result.unwrap();
+    assert_eq!(role.id, "role-1");
+    assert!(role.is_predefined);
+}
+
+#[tokio::test]
+async fn update_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "permissions": [{ "action": "manage", "subject": "all" }]
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "role-1",
+            "name": "Deploy Bot",
+            "isPredefined": false,
+            "permissions": [{ "action": "manage", "subject": "all" }]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackUpdateRoleRequest {
+        permissions: vec![ClickStackCASLPermission {
+            action: "manage".to_string(),
+            subject: "all".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_role("org-1", "svc-1", "role-1", &body)
+        .await
+        .unwrap();
+    let role = resp.result.unwrap();
+    assert_eq!(role.permissions.len(), 1);
+    assert_eq!(role.permissions[0].action, "manage");
+}
+
+#[tokio::test]
+async fn delete_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_role("org-1", "svc-1", "role-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
 // PostgreSQL Services
 // ===========================================================================
 
