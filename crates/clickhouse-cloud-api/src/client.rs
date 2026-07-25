@@ -2414,6 +2414,138 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// ClickStack: List Saved Searches
+    pub async fn click_stack_list_saved_searches(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+    ) -> Result<ApiResponse<Vec<ClickStackSavedSearch>>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Create Saved Search
+    pub async fn click_stack_create_saved_search(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        body: &ClickStackSavedSearchInput,
+    ) -> Result<ApiResponse<ClickStackSavedSearch>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches"
+        );
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Get Saved Search
+    pub async fn click_stack_get_saved_search(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_saved_search_id: &str,
+    ) -> Result<ApiResponse<ClickStackSavedSearch>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches/{click_stack_saved_search_id}"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Update Saved Search
+    pub async fn click_stack_update_saved_search(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_saved_search_id: &str,
+        body: &ClickStackSavedSearchInput,
+    ) -> Result<ApiResponse<ClickStackSavedSearch>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches/{click_stack_saved_search_id}"
+        );
+        let mut req = self.request(reqwest::Method::PUT, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// ClickStack: Delete Saved Search
+    pub async fn click_stack_delete_saved_search(
+        &self,
+        organization_id: &str,
+        service_id: &str,
+        click_stack_saved_search_id: &str,
+    ) -> Result<ApiResponse<serde_json::Value>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches/{click_stack_saved_search_id}"
+        );
+        let req = self.request(reqwest::Method::DELETE, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// ClickStack: List Dashboards
     pub async fn click_stack_list_dashboards(
         &self,

@@ -1912,6 +1912,143 @@ async fn delete_alert() {
 }
 
 // ===========================================================================
+// ClickStack: Saved Searches
+// ===========================================================================
+
+#[tokio::test]
+async fn list_saved_searches() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches",
+        ))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "id": "search-1",
+                "name": "Production Errors",
+                "sourceId": "source-1"
+            }
+        ])))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_list_saved_searches("org-1", "svc-1")
+        .await
+        .unwrap();
+    let searches = resp.result.unwrap();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].source_id, "source-1");
+}
+
+#[tokio::test]
+async fn create_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Production Errors",
+            "sourceId": "source-1"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "search-1",
+            "name": "Production Errors",
+            "sourceId": "source-1"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSavedSearchInput {
+        name: "Production Errors".to_string(),
+        source_id: "source-1".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_saved_search("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().id, "search-1");
+}
+
+#[tokio::test]
+async fn get_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "search-1",
+            "name": "Production Errors",
+            "sourceId": "source-1"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_saved_search("org-1", "svc-1", "search-1")
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn update_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Updated Search",
+            "sourceId": "source-1"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "search-1",
+            "name": "Updated Search",
+            "sourceId": "source-1"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSavedSearchInput {
+        name: "Updated Search".to_string(),
+        source_id: "source-1".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_saved_search("org-1", "svc-1", "search-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn delete_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_saved_search("org-1", "svc-1", "search-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
 // ClickStack: Dashboards
 // ===========================================================================
 

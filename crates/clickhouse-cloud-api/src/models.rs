@@ -4703,6 +4703,72 @@ impl std::fmt::Display for ClickStackSavedFilterValueType {
     }
 }
 
+/// Inline enum for `ClickStackSavedSearchFilter.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSavedSearchFilterType {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedSearchFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSavedSearchInput.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSavedSearchInputWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedSearchInputWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSavedSearch.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSavedSearchWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedSearchWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackSearchChartConfig.displayType`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackSearchChartConfigDisplaytype {
@@ -11465,6 +11531,69 @@ pub struct ClickStackSavedFilterValue {
     pub condition: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub r#type: Option<ClickStackSavedFilterValueType>,
+}
+
+/// `ClickStackSavedSearch` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearch {
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filters: Option<Vec<ClickStackSavedSearchFilter>>,
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(rename = "teamId", skip_serializing_if = "Option::is_none", default)]
+    pub team_id: Option<String>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(
+        rename = "whereLanguage",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub where_language: Option<ClickStackSavedSearchWherelanguage>,
+}
+
+/// `ClickStackSavedSearchFilter` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearchFilter {
+    pub condition: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#type: Option<ClickStackSavedSearchFilterType>,
+}
+
+/// `ClickStackSavedSearchInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearchInput {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filters: Option<Vec<ClickStackSavedSearchFilter>>,
+    pub name: String,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(
+        rename = "whereLanguage",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub where_language: Option<ClickStackSavedSearchInputWherelanguage>,
 }
 
 /// `ClickStackSearchChartConfig` from the ClickHouse Cloud API.

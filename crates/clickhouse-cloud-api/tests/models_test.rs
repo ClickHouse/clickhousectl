@@ -2490,3 +2490,69 @@ fn serialize_clickstack_update_role_request_omits_none() {
     assert!(v.get("name").is_none());
     assert!(v.get("description").is_none());
 }
+
+#[test]
+fn deserialize_clickstack_saved_search_full_round_trip() {
+    let json = r#"{
+        "id": "507f1f77bcf86cd799439011",
+        "name": "Production Errors",
+        "sourceId": "507f1f77bcf86cd799439012",
+        "select": "Timestamp, ServiceName, Body",
+        "where": "SeverityText:ERROR",
+        "whereLanguage": "lucene",
+        "orderBy": "Timestamp DESC",
+        "tags": ["production", "errors"],
+        "filters": [
+            {"type": "sql", "condition": "ServiceName IN ('checkout', 'payments')"}
+        ],
+        "teamId": "507f1f77bcf86cd799439013",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let search: ClickStackSavedSearch = serde_json::from_str(json).unwrap();
+    assert_eq!(search.id, "507f1f77bcf86cd799439011");
+    assert_eq!(search.name, "Production Errors");
+    assert_eq!(search.source_id, "507f1f77bcf86cd799439012");
+    assert_eq!(
+        search.where_language,
+        Some(ClickStackSavedSearchWherelanguage::Lucene)
+    );
+    let filters = search.filters.clone().unwrap();
+    assert_eq!(filters.len(), 1);
+    assert_eq!(
+        filters[0].r#type,
+        Some(ClickStackSavedSearchFilterType::Sql)
+    );
+    assert_eq!(
+        filters[0].condition,
+        "ServiceName IN ('checkout', 'payments')"
+    );
+    assert_eq!(search.team_id, Some("507f1f77bcf86cd799439013".to_string()));
+
+    let v = serde_json::to_value(&search).unwrap();
+    assert_eq!(v["whereLanguage"], "lucene");
+    assert_eq!(v["filters"][0]["type"], "sql");
+    assert_eq!(v["orderBy"], "Timestamp DESC");
+    assert_eq!(v["tags"][0], "production");
+
+    let round: ClickStackSavedSearch = serde_json::from_value(v).unwrap();
+    assert_eq!(round, search);
+}
+
+#[test]
+fn serialize_clickstack_saved_search_input_minimal_omits_optionals() {
+    let input = ClickStackSavedSearchInput {
+        name: "Production Errors".to_string(),
+        source_id: "507f1f77bcf86cd799439012".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&input).unwrap();
+    assert_eq!(v["name"], "Production Errors");
+    assert_eq!(v["sourceId"], "507f1f77bcf86cd799439012");
+    assert!(v.get("select").is_none());
+    assert!(v.get("where").is_none());
+    assert!(v.get("whereLanguage").is_none());
+    assert!(v.get("orderBy").is_none());
+    assert!(v.get("tags").is_none());
+    assert!(v.get("filters").is_none());
+}
