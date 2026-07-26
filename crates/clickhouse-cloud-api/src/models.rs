@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 /// `displayType`, `service`, `operator`) shares the same deserialization shape:
 /// buffer the payload as a [`serde_json::Value`], read the discriminator key,
 /// and route each known wire value to the matching variant via
-/// [`serde_json::from_value`]. Any unrecognized or missing discriminator falls
-/// through to the enum's `Unknown(serde_json::Value)` catch-all, so unknown
-/// payloads round-trip losslessly instead of failing to deserialize. This
-/// explicit dispatch avoids the greedy first-match misrouting that
-/// `#[serde(untagged)]` derives suffer when variants share a discriminator.
+/// [`serde_json::from_value`]. Any unrecognized discriminator falls through to
+/// the enum's `Unknown(serde_json::Value)` catch-all, so unknown payloads
+/// round-trip losslessly instead of failing to deserialize. This explicit
+/// dispatch avoids the greedy first-match misrouting that `#[serde(untagged)]`
+/// derives suffer when variants share a discriminator.
 ///
 /// The macro emits **only** the `Deserialize` impl. The enum declaration, its
 /// derives/serde attributes, and its `Display` impl must remain literal source
@@ -36,13 +36,41 @@ use serde::{Deserialize, Serialize};
 /// }
 /// ```
 ///
+/// Some unions discriminate one variant by the *absence* of the key rather than
+/// by a wire value of it (e.g. a ClickStack chart config carries
+/// `configType: "sql"` when it is a raw-SQL config and carries no `configType`
+/// at all when it is a builder config). Such a union adds a trailing `none` arm
+/// naming the variant the key's absence selects:
+///
+/// ```ignore
+/// discriminated_union! {
+///     ClickStackLineChartConfig, "configType" {
+///         "sql" => ClickStackLineRawSqlChartConfig,
+///         none => ClickStackLineBuilderChartConfig,
+///     }
+/// }
+/// ```
+///
+/// The `none` arm pins two semantics:
+///
+/// * It deliberately conflates "key absent" and "key present but not a string":
+///   both produce a `None` scrutinee, so both dispatch to the absence variant.
+/// * When the absence variant is total — every field either `Option<T>` or
+///   `#[serde(default)]`, so it cannot fail to deserialize — the arm always
+///   succeeds. `Unknown` is then reachable only via unrecognized *string*
+///   values of the key.
+///
+/// Without a `none` arm, an absent or non-string discriminator falls to
+/// `Unknown` through the final catch-all.
+///
 /// New discriminated unions in this module should use this macro rather than
 /// hand-writing the impl. Enums whose variants need multi-level or nested
 /// dispatch do not fit this single-key shape and must stay hand-written.
 macro_rules! discriminated_union {
     (
         $enum:ident, $key:literal {
-            $( $( $wire:literal )|+ => $variant:ident ),+ $(,)?
+            $( $( $wire:literal )|+ => $variant:ident, )+
+            $( none => $absent:ident, )?
         }
     ) => {
         impl<'de> Deserialize<'de> for $enum {
@@ -57,6 +85,11 @@ macro_rules! discriminated_union {
                             .map($enum::$variant)
                             .map_err(serde::de::Error::custom),
                     )+
+                    $(
+                        None => serde_json::from_value(value)
+                            .map($enum::$absent)
+                            .map_err(serde::de::Error::custom),
+                    )?
                     _ => Ok($enum::Unknown(value)),
                 }
             }
@@ -7906,13 +7939,27 @@ impl std::fmt::Display for ClickStackAlertChannel {
 }
 
 /// `ClickStackBarChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant); see the `discriminated_union!` invocation below for the
+/// wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackBarChartConfig {
     ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfig),
     ClickStackBarRawSqlChartConfig(ClickStackBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackBarChartConfig, "configType" {
+        "sql" => ClickStackBarRawSqlChartConfig,
+        none => ClickStackBarBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackBarChartConfig {
@@ -7928,13 +7975,27 @@ impl std::fmt::Display for ClickStackBarChartConfig {
 }
 
 /// `ClickStackCategoricalBarChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant); see the `discriminated_union!` invocation below for the
+/// wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackCategoricalBarChartConfig {
     ClickStackCategoricalBarBuilderChartConfig(ClickStackCategoricalBarBuilderChartConfig),
     ClickStackCategoricalBarRawSqlChartConfig(ClickStackCategoricalBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackCategoricalBarChartConfig, "configType" {
+        "sql" => ClickStackCategoricalBarRawSqlChartConfig,
+        none => ClickStackCategoricalBarBuilderChartConfig,
+    }
 }
 
 impl Default for ClickStackCategoricalBarChartConfig {
@@ -8002,13 +8063,27 @@ impl std::fmt::Display for ClickStackDashboardChartSeries {
 }
 
 /// `ClickStackLineChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant); see the `discriminated_union!` invocation below for the
+/// wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackLineChartConfig {
     ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfig),
     ClickStackLineRawSqlChartConfig(ClickStackLineRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackLineChartConfig, "configType" {
+        "sql" => ClickStackLineRawSqlChartConfig,
+        none => ClickStackLineBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackLineChartConfig {
@@ -8026,13 +8101,27 @@ impl std::fmt::Display for ClickStackLineChartConfig {
 }
 
 /// `ClickStackNumberChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant); see the `discriminated_union!` invocation below for the
+/// wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackNumberChartConfig {
     ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfig),
     ClickStackNumberRawSqlChartConfig(ClickStackNumberRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackNumberChartConfig, "configType" {
+        "sql" => ClickStackNumberRawSqlChartConfig,
+        none => ClickStackNumberBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackNumberChartConfig {
@@ -8177,13 +8266,27 @@ impl std::fmt::Display for ClickStackOnClickTarget {
 }
 
 /// `ClickStackPieChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant); see the `discriminated_union!` invocation below for the
+/// wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackPieChartConfig {
     ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfig),
     ClickStackPieRawSqlChartConfig(ClickStackPieRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackPieChartConfig, "configType" {
+        "sql" => ClickStackPieRawSqlChartConfig,
+        none => ClickStackPieBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackPieChartConfig {
@@ -8241,13 +8344,27 @@ impl std::fmt::Display for ClickStackSource {
 }
 
 /// `ClickStackTableChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant); see the `discriminated_union!` invocation below for the
+/// wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackTableChartConfig {
     ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfig),
     ClickStackTableRawSqlChartConfig(ClickStackTableRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackTableChartConfig, "configType" {
+        "sql" => ClickStackTableRawSqlChartConfig,
+        none => ClickStackTableBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackTableChartConfig {
@@ -10619,7 +10736,7 @@ pub struct ClickStackBarBuilderChartConfig {
     pub align_date_range_to_granularity: Option<bool>,
     #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
     pub as_ratio: Option<bool>,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackBarBuilderChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
@@ -10631,8 +10748,9 @@ pub struct ClickStackBarBuilderChartConfig {
         default
     )]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(default)]
     pub select: Vec<ClickStackSelectItem>,
-    #[serde(rename = "sourceId")]
+    #[serde(rename = "sourceId", default)]
     pub source_id: String,
 }
 
@@ -10645,11 +10763,11 @@ pub struct ClickStackBarRawSqlChartConfig {
         default
     )]
     pub align_date_range_to_granularity: Option<bool>,
-    #[serde(rename = "configType")]
+    #[serde(rename = "configType", default)]
     pub config_type: ClickStackBarRawSqlChartConfigConfigtype,
-    #[serde(rename = "connectionId")]
+    #[serde(rename = "connectionId", default)]
     pub connection_id: String,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackBarRawSqlChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
@@ -10661,7 +10779,7 @@ pub struct ClickStackBarRawSqlChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
-    #[serde(rename = "sqlTemplate")]
+    #[serde(rename = "sqlTemplate", default)]
     pub sql_template: String,
 }
 
@@ -10691,7 +10809,7 @@ pub struct ClickStackCASLPermission {
 /// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarBuilderChartConfig {
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackCategoricalBarBuilderChartConfigDisplaytype,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
@@ -10705,19 +10823,20 @@ pub struct ClickStackCategoricalBarBuilderChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
     pub order_by: Option<String>,
+    #[serde(default)]
     pub select: Vec<ClickStackSelectItem>,
-    #[serde(rename = "sourceId")]
+    #[serde(rename = "sourceId", default)]
     pub source_id: String,
 }
 
 /// `ClickStackCategoricalBarRawSqlChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCategoricalBarRawSqlChartConfig {
-    #[serde(rename = "configType")]
+    #[serde(rename = "configType", default)]
     pub config_type: ClickStackCategoricalBarRawSqlChartConfigConfigtype,
-    #[serde(rename = "connectionId")]
+    #[serde(rename = "connectionId", default)]
     pub connection_id: String,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackCategoricalBarRawSqlChartConfigDisplaytype,
     #[serde(
         rename = "numberFormat",
@@ -10727,7 +10846,7 @@ pub struct ClickStackCategoricalBarRawSqlChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
-    #[serde(rename = "sqlTemplate")]
+    #[serde(rename = "sqlTemplate", default)]
     pub sql_template: String,
 }
 
@@ -11142,7 +11261,7 @@ pub struct ClickStackLineBuilderChartConfig {
         default
     )]
     pub compare_to_previous_period: Option<bool>,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackLineBuilderChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
@@ -11160,8 +11279,9 @@ pub struct ClickStackLineBuilderChartConfig {
         default
     )]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(default)]
     pub select: Vec<ClickStackSelectItem>,
-    #[serde(rename = "sourceId")]
+    #[serde(rename = "sourceId", default)]
     pub source_id: String,
 }
 
@@ -11180,11 +11300,11 @@ pub struct ClickStackLineRawSqlChartConfig {
         default
     )]
     pub compare_to_previous_period: Option<bool>,
-    #[serde(rename = "configType")]
+    #[serde(rename = "configType", default)]
     pub config_type: ClickStackLineRawSqlChartConfigConfigtype,
-    #[serde(rename = "connectionId")]
+    #[serde(rename = "connectionId", default)]
     pub connection_id: String,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackLineRawSqlChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
@@ -11202,7 +11322,7 @@ pub struct ClickStackLineRawSqlChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
-    #[serde(rename = "sqlTemplate")]
+    #[serde(rename = "sqlTemplate", default)]
     pub sql_template: String,
 }
 
@@ -11462,7 +11582,7 @@ pub struct ClickStackNumberBuilderChartConfig {
         default
     )]
     pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackNumberBuilderChartConfigDisplaytype,
     #[serde(
         rename = "numberFormat",
@@ -11470,8 +11590,9 @@ pub struct ClickStackNumberBuilderChartConfig {
         default
     )]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(default)]
     pub select: Vec<ClickStackSelectItem>,
-    #[serde(rename = "sourceId")]
+    #[serde(rename = "sourceId", default)]
     pub source_id: String,
 }
 
@@ -11540,11 +11661,11 @@ pub struct ClickStackNumberFormat {
 pub struct ClickStackNumberRawSqlChartConfig {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub color: Option<ClickStackChartColor>,
-    #[serde(rename = "configType")]
+    #[serde(rename = "configType", default)]
     pub config_type: ClickStackNumberRawSqlChartConfigConfigtype,
-    #[serde(rename = "connectionId")]
+    #[serde(rename = "connectionId", default)]
     pub connection_id: String,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackNumberRawSqlChartConfigDisplaytype,
     #[serde(
         rename = "numberFormat",
@@ -11554,7 +11675,7 @@ pub struct ClickStackNumberRawSqlChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
-    #[serde(rename = "sqlTemplate")]
+    #[serde(rename = "sqlTemplate", default)]
     pub sql_template: String,
 }
 
@@ -11659,7 +11780,7 @@ pub struct ClickStackPagerDutyAPIWebhook {
 /// `ClickStackPieBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackPieBuilderChartConfig {
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackPieBuilderChartConfigDisplaytype,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
@@ -11673,19 +11794,20 @@ pub struct ClickStackPieBuilderChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
     pub order_by: Option<String>,
+    #[serde(default)]
     pub select: Vec<ClickStackSelectItem>,
-    #[serde(rename = "sourceId")]
+    #[serde(rename = "sourceId", default)]
     pub source_id: String,
 }
 
 /// `ClickStackPieRawSqlChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackPieRawSqlChartConfig {
-    #[serde(rename = "configType")]
+    #[serde(rename = "configType", default)]
     pub config_type: ClickStackPieRawSqlChartConfigConfigtype,
-    #[serde(rename = "connectionId")]
+    #[serde(rename = "connectionId", default)]
     pub connection_id: String,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackPieRawSqlChartConfigDisplaytype,
     #[serde(
         rename = "numberFormat",
@@ -11695,7 +11817,7 @@ pub struct ClickStackPieRawSqlChartConfig {
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
-    #[serde(rename = "sqlTemplate")]
+    #[serde(rename = "sqlTemplate", default)]
     pub sql_template: String,
 }
 
@@ -11976,7 +12098,7 @@ pub struct ClickStackSourceFrom {
 pub struct ClickStackTableBuilderChartConfig {
     #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
     pub as_ratio: Option<bool>,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackTableBuilderChartConfigDisplaytype,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
@@ -11998,8 +12120,9 @@ pub struct ClickStackTableBuilderChartConfig {
     pub on_click: Option<ClickStackOnClick>,
     #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
     pub order_by: Option<String>,
+    #[serde(default)]
     pub select: Vec<ClickStackSelectItem>,
-    #[serde(rename = "sourceId")]
+    #[serde(rename = "sourceId", default)]
     pub source_id: String,
 }
 
@@ -12047,11 +12170,11 @@ pub struct ClickStackTableChartSeries {
 /// `ClickStackTableRawSqlChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTableRawSqlChartConfig {
-    #[serde(rename = "configType")]
+    #[serde(rename = "configType", default)]
     pub config_type: ClickStackTableRawSqlChartConfigConfigtype,
-    #[serde(rename = "connectionId")]
+    #[serde(rename = "connectionId", default)]
     pub connection_id: String,
-    #[serde(rename = "displayType")]
+    #[serde(rename = "displayType", default)]
     pub display_type: ClickStackTableRawSqlChartConfigDisplaytype,
     #[serde(
         rename = "numberFormat",
@@ -12063,7 +12186,7 @@ pub struct ClickStackTableRawSqlChartConfig {
     pub on_click: Option<ClickStackOnClick>,
     #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
     pub source_id: Option<String>,
-    #[serde(rename = "sqlTemplate")]
+    #[serde(rename = "sqlTemplate", default)]
     pub sql_template: String,
 }
 
