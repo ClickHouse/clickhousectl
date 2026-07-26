@@ -2816,9 +2816,9 @@ fn clickstack_tile_config_markdown_variant() {
 
 #[test]
 fn clickstack_tile_config_heatmap_variant() {
-    // Untagged-enum dispatch must reach the new ClickStackHeatmapChartConfig
-    // arm. The discriminator is `displayType: "heatmap"` plus the heatmap-
-    // specific `select` shape with `valueExpression`.
+    // `displayType: "heatmap"` is the only discriminator that reaches the
+    // ClickStackHeatmapChartConfig arm; the heatmap-specific `select` shape with
+    // `valueExpression` is then parsed by that variant, not used to select it.
     let json = r#"{
         "displayType": "heatmap",
         "sourceId": "src-1",
@@ -2850,17 +2850,66 @@ fn clickstack_tile_config_unknown_display_type_round_trips() {
 }
 
 #[test]
-fn clickstack_tile_config_known_display_type_novel_shape_falls_to_sub_union_unknown() {
-    // A known `displayType` whose body matches neither the builder nor the raw
-    // SQL shape must land in the sub-union's Unknown(Value) rather than error.
+fn clickstack_tile_config_line_novel_shape_defaults_to_builder() {
+    // A known `displayType` carrying no `configType` dispatches to the builder
+    // variant: the novel member is ignored and the builder's strict fields fall
+    // back to their serde defaults instead of failing the response.
     let json = r#"{"displayType":"line","somethingNew":true}"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
     match cfg {
-        ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(v)) => {
-            assert_eq!(v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "");
+            assert!(b.select.is_empty());
         }
-        other => panic!("expected line sub-union Unknown(Value), got {other}"),
+        other => panic!("expected line builder variant, got {other}"),
     }
+}
+
+#[test]
+fn clickstack_tile_config_line_minimal_body_defaults_to_builder() {
+    // The bare discriminator with no `configType` key at all: key absence is the
+    // builder discriminator, and every builder field defaults.
+    let json = r#"{"displayType":"line"}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b, ClickStackLineBuilderChartConfig::default());
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_non_string_config_type_defaults_to_builder() {
+    // A non-string `configType` is deliberately conflated with an absent one:
+    // both dispatch to the builder variant rather than to Unknown.
+    let json = r#"{"displayType":"line","configType":123,"sourceId":"src-1"}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_line_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // With the builder variant total, an unrecognized *string* `configType` is
+    // the only route into the line sub-union's Unknown(Value); it round-trips.
+    let json = r#"{"displayType":"line","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
 }
 
 #[test]
@@ -3003,89 +3052,159 @@ fn clickstack_tile_config_pie_raw_sql_variant() {
 }
 
 #[test]
-fn clickstack_tile_config_categorical_bar_novel_shape_falls_to_sub_union_unknown() {
-    // A "bar" body matching neither the categorical bar builder nor raw SQL shape
-    // lands in the categorical bar sub-union's Unknown(Value) and round-trips.
+fn clickstack_tile_config_categorical_bar_novel_shape_defaults_to_builder() {
+    // A "bar" body with no `configType` dispatches to the categorical bar builder
+    // variant, whose strict fields default rather than failing the response.
     let json = r#"{"displayType":"bar","somethingNew":true}"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match &cfg {
+    match cfg {
         ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
-            ClickStackCategoricalBarChartConfig::Unknown(v),
+            ClickStackCategoricalBarChartConfig::ClickStackCategoricalBarBuilderChartConfig(b),
         ) => {
-            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+            assert_eq!(b.source_id, "");
+            assert!(b.select.is_empty());
         }
-        other => panic!("expected categorical bar sub-union Unknown(Value), got {other}"),
+        other => panic!("expected categorical bar builder variant, got {other}"),
     }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
 }
 
 #[test]
-fn clickstack_tile_config_stacked_bar_novel_shape_falls_to_sub_union_unknown() {
-    // A "stacked_bar" body matching neither the bar builder nor raw SQL shape
-    // lands in the bar sub-union's Unknown(Value) and round-trips.
+fn clickstack_tile_config_categorical_bar_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` is the only route into the
+    // categorical bar sub-union's Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"bar","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+                ClickStackCategoricalBarChartConfig::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_novel_shape_defaults_to_builder() {
+    // A "stacked_bar" body with no `configType` dispatches to the bar builder
+    // variant, whose strict fields default rather than failing the response.
     let json = r#"{"displayType":"stacked_bar","somethingNew":true}"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match &cfg {
-        ClickStackTileConfig::ClickStackBarChartConfig(ClickStackBarChartConfig::Unknown(v)) => {
-            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+    match cfg {
+        ClickStackTileConfig::ClickStackBarChartConfig(
+            ClickStackBarChartConfig::ClickStackBarBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "");
+            assert!(b.select.is_empty());
         }
-        other => panic!("expected bar sub-union Unknown(Value), got {other}"),
+        other => panic!("expected bar builder variant, got {other}"),
     }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
 }
 
 #[test]
-fn clickstack_tile_config_table_novel_shape_falls_to_sub_union_unknown() {
-    // A "table" body matching neither the table builder nor raw SQL shape lands
-    // in the table sub-union's Unknown(Value) and round-trips.
+fn clickstack_tile_config_stacked_bar_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` is the only route into the bar
+    // sub-union's Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"stacked_bar","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackBarChartConfig(ClickStackBarChartConfig::Unknown(_))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_table_novel_shape_defaults_to_builder() {
+    // A "table" body with no `configType` dispatches to the table builder
+    // variant, whose strict fields default rather than failing the response.
     let json = r#"{"displayType":"table","somethingNew":true}"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match &cfg {
-        ClickStackTileConfig::ClickStackTableChartConfig(ClickStackTableChartConfig::Unknown(
-            v,
-        )) => {
-            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+    match cfg {
+        ClickStackTileConfig::ClickStackTableChartConfig(
+            ClickStackTableChartConfig::ClickStackTableBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "");
+            assert!(b.select.is_empty());
         }
-        other => panic!("expected table sub-union Unknown(Value), got {other}"),
+        other => panic!("expected table builder variant, got {other}"),
     }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
 }
 
 #[test]
-fn clickstack_tile_config_number_novel_shape_falls_to_sub_union_unknown() {
-    // A "number" body matching neither the number builder nor raw SQL shape lands
-    // in the number sub-union's Unknown(Value) and round-trips.
+fn clickstack_tile_config_table_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` is the only route into the table
+    // sub-union's Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"table","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackTableChartConfig(ClickStackTableChartConfig::Unknown(
+                _
+            ))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_number_novel_shape_defaults_to_builder() {
+    // A "number" body with no `configType` dispatches to the number builder
+    // variant, whose strict fields default rather than failing the response.
     let json = r#"{"displayType":"number","somethingNew":true}"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match &cfg {
+    match cfg {
         ClickStackTileConfig::ClickStackNumberChartConfig(
-            ClickStackNumberChartConfig::Unknown(v),
+            ClickStackNumberChartConfig::ClickStackNumberBuilderChartConfig(b),
         ) => {
-            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+            assert_eq!(b.source_id, "");
+            assert!(b.select.is_empty());
         }
-        other => panic!("expected number sub-union Unknown(Value), got {other}"),
+        other => panic!("expected number builder variant, got {other}"),
     }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
 }
 
 #[test]
-fn clickstack_tile_config_pie_novel_shape_falls_to_sub_union_unknown() {
-    // A "pie" body matching neither the pie builder nor raw SQL shape lands in
-    // the pie sub-union's Unknown(Value) and round-trips.
+fn clickstack_tile_config_number_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` is the only route into the number
+    // sub-union's Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"number","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackNumberChartConfig(
+                ClickStackNumberChartConfig::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_pie_novel_shape_defaults_to_builder() {
+    // A "pie" body with no `configType` dispatches to the pie builder variant,
+    // whose strict fields default rather than failing the response.
     let json = r#"{"displayType":"pie","somethingNew":true}"#;
     let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match &cfg {
-        ClickStackTileConfig::ClickStackPieChartConfig(ClickStackPieChartConfig::Unknown(v)) => {
-            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+    match cfg {
+        ClickStackTileConfig::ClickStackPieChartConfig(
+            ClickStackPieChartConfig::ClickStackPieBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "");
+            assert!(b.select.is_empty());
         }
-        other => panic!("expected pie sub-union Unknown(Value), got {other}"),
+        other => panic!("expected pie builder variant, got {other}"),
     }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_pie_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` is the only route into the pie
+    // sub-union's Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"pie","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackPieChartConfig(ClickStackPieChartConfig::Unknown(_))
+        )
+    });
 }
 
 #[test]
