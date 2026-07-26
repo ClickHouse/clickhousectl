@@ -7676,7 +7676,10 @@ pub enum BackupBucket {
     GcpBackupBucket(GcpBackupBucket),
     AzureBackupBucket(AzureBackupBucket),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl<'de> Deserialize<'de> for BackupBucket {
@@ -7695,7 +7698,7 @@ impl<'de> Deserialize<'de> for BackupBucket {
             Some("AZURE") => serde_json::from_value(value)
                 .map(BackupBucket::AzureBackupBucket)
                 .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucket::Unknown(value.to_string())),
+            _ => Ok(BackupBucket::Unknown(value)),
         }
     }
 }
@@ -7721,7 +7724,10 @@ pub enum BackupBucketPatchRequest {
     GcpBackupBucketPatchRequestV1(GcpBackupBucketPatchRequestV1),
     AzureBackupBucketPatchRequestV1(AzureBackupBucketPatchRequestV1),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl<'de> Deserialize<'de> for BackupBucketPatchRequest {
@@ -7740,7 +7746,7 @@ impl<'de> Deserialize<'de> for BackupBucketPatchRequest {
             Some("AZURE") => serde_json::from_value(value)
                 .map(BackupBucketPatchRequest::AzureBackupBucketPatchRequestV1)
                 .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketPatchRequest::Unknown(value.to_string())),
+            _ => Ok(BackupBucketPatchRequest::Unknown(value)),
         }
     }
 }
@@ -7768,7 +7774,10 @@ pub enum BackupBucketPostRequest {
     GcpBackupBucketPostRequestV1(GcpBackupBucketPostRequestV1),
     AzureBackupBucketPostRequestV1(AzureBackupBucketPostRequestV1),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl<'de> Deserialize<'de> for BackupBucketPostRequest {
@@ -7787,7 +7796,7 @@ impl<'de> Deserialize<'de> for BackupBucketPostRequest {
             Some("AZURE") => serde_json::from_value(value)
                 .map(BackupBucketPostRequest::AzureBackupBucketPostRequestV1)
                 .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketPostRequest::Unknown(value.to_string())),
+            _ => Ok(BackupBucketPostRequest::Unknown(value)),
         }
     }
 }
@@ -7813,7 +7822,10 @@ pub enum BackupBucketProperties {
     GcpBackupBucketProperties(GcpBackupBucketProperties),
     AzureBackupBucketProperties(AzureBackupBucketProperties),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl<'de> Deserialize<'de> for BackupBucketProperties {
@@ -7832,7 +7844,7 @@ impl<'de> Deserialize<'de> for BackupBucketProperties {
             Some("AZURE") => serde_json::from_value(value)
                 .map(BackupBucketProperties::AzureBackupBucketProperties)
                 .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketProperties::Unknown(value.to_string())),
+            _ => Ok(BackupBucketProperties::Unknown(value)),
         }
     }
 }
@@ -8007,6 +8019,9 @@ pub enum ClickStackNumberTileColorCondition {
     ClickStackBetweenColorCondition(ClickStackBetweenColorCondition),
     ClickStackEqualityColorCondition(ClickStackEqualityColorCondition),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
 }
 
@@ -8058,6 +8073,9 @@ pub enum ClickStackOnClick {
     ClickStackOnClickDashboard(ClickStackOnClickDashboard),
     ClickStackOnClickExternal(ClickStackOnClickExternal),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
 }
 
@@ -8164,6 +8182,9 @@ pub enum ClickStackSource {
     ClickStackSessionSource(ClickStackSessionSource),
     ClickStackPromqlSource(ClickStackPromqlSource),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
 }
 
@@ -8250,6 +8271,9 @@ pub enum ClickStackTileConfig {
     ClickStackEventPatternsChartConfig(ClickStackEventPatternsChartConfig),
     ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
 }
 
@@ -8330,6 +8354,9 @@ pub enum ClickStackWebhook {
     ClickStackSlackAPIWebhook(ClickStackSlackAPIWebhook),
     ClickStackPagerDutyAPIWebhook(ClickStackPagerDutyAPIWebhook),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
 }
 

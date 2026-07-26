@@ -1226,8 +1226,73 @@ fn deserialize_backup_bucket_unknown_provider() {
         "somefield": "somevalue",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
     let b: BackupBucket = serde_json::from_str(json).unwrap();
-    assert!(matches!(b, BackupBucket::Unknown(_)));
+    match &b {
+        BackupBucket::Unknown(v) => assert_eq!(*v, original),
+        other => panic!("expected unknown bucket, got {other}"),
+    }
+    // The Unknown payload round-trips losslessly as the original object, not a
+    // JSON string.
+    assert_eq!(serde_json::to_value(&b).unwrap(), original);
+    assert!(serde_json::to_value(&b).unwrap().is_object());
+}
+
+#[test]
+fn backup_bucket_patch_request_unknown_provider_round_trips() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue"
+    }"#;
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let b: BackupBucketPatchRequest = serde_json::from_str(json).unwrap();
+    match &b {
+        BackupBucketPatchRequest::Unknown(v) => assert_eq!(*v, original),
+        other => panic!("expected unknown patch request, got {other}"),
+    }
+    assert_eq!(serde_json::to_value(&b).unwrap(), original);
+    assert!(serde_json::to_value(&b).unwrap().is_object());
+}
+
+#[test]
+fn backup_bucket_post_request_unknown_provider_round_trips() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue"
+    }"#;
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let b: BackupBucketPostRequest = serde_json::from_str(json).unwrap();
+    match &b {
+        BackupBucketPostRequest::Unknown(v) => assert_eq!(*v, original),
+        other => panic!("expected unknown post request, got {other}"),
+    }
+    assert_eq!(serde_json::to_value(&b).unwrap(), original);
+    assert!(serde_json::to_value(&b).unwrap().is_object());
+}
+
+#[test]
+fn backup_bucket_properties_unknown_provider_round_trips() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue"
+    }"#;
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let b: BackupBucketProperties = serde_json::from_str(json).unwrap();
+    match &b {
+        BackupBucketProperties::Unknown(v) => assert_eq!(*v, original),
+        other => panic!("expected unknown properties, got {other}"),
+    }
+    assert_eq!(serde_json::to_value(&b).unwrap(), original);
+    assert!(serde_json::to_value(&b).unwrap().is_object());
+}
+
+#[test]
+fn backup_bucket_unknown_display_emits_compact_json() {
+    let json = r#"{"bucketProvider":"NEW_PROVIDER","somefield":"somevalue"}"#;
+    let b: BackupBucket = serde_json::from_str(json).unwrap();
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    // Display emits the raw compact-JSON payload carried by the Unknown variant.
+    assert_eq!(b.to_string(), value.to_string());
 }
 
 #[test]
