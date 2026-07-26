@@ -2812,6 +2812,231 @@ fn clickstack_tile_config_known_display_type_novel_shape_falls_to_sub_union_unkn
 }
 
 #[test]
+fn clickstack_tile_config_line_raw_sql_variant() {
+    // The Raw SQL line config (configType "sql") dispatches to the line
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "line",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t GROUP BY toStartOfMinute(ts)"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(
+                r.sql_template,
+                "SELECT count() FROM t GROUP BY toStartOfMinute(ts)"
+            );
+            assert_eq!(
+                r.display_type,
+                ClickStackLineRawSqlChartConfigDisplaytype::Line
+            );
+        }
+        other => panic!("expected line raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_raw_sql_variant() {
+    // The Raw SQL (stacked) bar config (configType "sql") dispatches to the bar
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "stacked_bar",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackBarChartConfig(
+            ClickStackBarChartConfig::ClickStackBarRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(r.sql_template, "SELECT count() FROM t GROUP BY service");
+            assert_eq!(
+                r.display_type,
+                ClickStackBarRawSqlChartConfigDisplaytype::Stacked_bar
+            );
+        }
+        other => panic!("expected stacked bar raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_table_raw_sql_variant() {
+    // The Raw SQL table config (configType "sql") dispatches to the table
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "table",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT service, count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackTableChartConfig(
+            ClickStackTableChartConfig::ClickStackTableRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(
+                r.sql_template,
+                "SELECT service, count() FROM t GROUP BY service"
+            );
+            assert_eq!(
+                r.display_type,
+                ClickStackTableRawSqlChartConfigDisplaytype::Table
+            );
+        }
+        other => panic!("expected table raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_number_raw_sql_variant() {
+    // The Raw SQL number config (configType "sql") dispatches to the number
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "number",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackNumberChartConfig(
+            ClickStackNumberChartConfig::ClickStackNumberRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(r.sql_template, "SELECT count() FROM t");
+            assert_eq!(
+                r.display_type,
+                ClickStackNumberRawSqlChartConfigDisplaytype::Number
+            );
+        }
+        other => panic!("expected number raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_pie_raw_sql_variant() {
+    // The Raw SQL pie config (configType "sql") dispatches to the pie
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "pie",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT service, count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackPieChartConfig(
+            ClickStackPieChartConfig::ClickStackPieRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(
+                r.sql_template,
+                "SELECT service, count() FROM t GROUP BY service"
+            );
+            assert_eq!(
+                r.display_type,
+                ClickStackPieRawSqlChartConfigDisplaytype::Pie
+            );
+        }
+        other => panic!("expected pie raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_categorical_bar_novel_shape_falls_to_sub_union_unknown() {
+    // A "bar" body matching neither the categorical bar builder nor raw SQL shape
+    // lands in the categorical bar sub-union's Unknown(Value) and round-trips.
+    let json = r#"{"displayType":"bar","somethingNew":true}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match &cfg {
+        ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+            ClickStackCategoricalBarChartConfig::Unknown(v),
+        ) => {
+            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        }
+        other => panic!("expected categorical bar sub-union Unknown(Value), got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_novel_shape_falls_to_sub_union_unknown() {
+    // A "stacked_bar" body matching neither the bar builder nor raw SQL shape
+    // lands in the bar sub-union's Unknown(Value) and round-trips.
+    let json = r#"{"displayType":"stacked_bar","somethingNew":true}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match &cfg {
+        ClickStackTileConfig::ClickStackBarChartConfig(ClickStackBarChartConfig::Unknown(v)) => {
+            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        }
+        other => panic!("expected bar sub-union Unknown(Value), got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_table_novel_shape_falls_to_sub_union_unknown() {
+    // A "table" body matching neither the table builder nor raw SQL shape lands
+    // in the table sub-union's Unknown(Value) and round-trips.
+    let json = r#"{"displayType":"table","somethingNew":true}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match &cfg {
+        ClickStackTileConfig::ClickStackTableChartConfig(ClickStackTableChartConfig::Unknown(
+            v,
+        )) => {
+            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        }
+        other => panic!("expected table sub-union Unknown(Value), got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_number_novel_shape_falls_to_sub_union_unknown() {
+    // A "number" body matching neither the number builder nor raw SQL shape lands
+    // in the number sub-union's Unknown(Value) and round-trips.
+    let json = r#"{"displayType":"number","somethingNew":true}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match &cfg {
+        ClickStackTileConfig::ClickStackNumberChartConfig(
+            ClickStackNumberChartConfig::Unknown(v),
+        ) => {
+            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        }
+        other => panic!("expected number sub-union Unknown(Value), got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_pie_novel_shape_falls_to_sub_union_unknown() {
+    // A "pie" body matching neither the pie builder nor raw SQL shape lands in
+    // the pie sub-union's Unknown(Value) and round-trips.
+    let json = r#"{"displayType":"pie","somethingNew":true}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match &cfg {
+        ClickStackTileConfig::ClickStackPieChartConfig(ClickStackPieChartConfig::Unknown(v)) => {
+            assert_eq!(*v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        }
+        other => panic!("expected pie sub-union Unknown(Value), got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
 fn clickstack_chart_color_known_and_unknown_round_trip() {
     // A known palette token maps to its typed variant and back.
     let known: ClickStackChartColor = serde_json::from_str("\"chart-light-blue\"").unwrap();
