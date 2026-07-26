@@ -1837,7 +1837,7 @@ fn deserialize_clickstack_log_source_without_id() {
 }
 
 #[test]
-fn deserialize_clickstack_trace_source_requires_default_table_select_expression() {
+fn deserialize_clickstack_trace_source_default_table_select_expression() {
     let json = r#"{
         "id": "trace-1",
         "kind": "trace",
@@ -1860,8 +1860,10 @@ fn deserialize_clickstack_trace_source_requires_default_table_select_expression(
     assert_eq!(v["defaultTableSelectExpression"], "Timestamp, SpanName");
 
     // `defaultTableSelectExpression` is in the spec `required[]` for trace
-    // sources, so omitting it must be rejected (no leftover `serde(default)`
-    // silently substituting ""). Mirrors ClickStackLogSource.
+    // sources, but responses stay tolerant of a server-side field drop: it
+    // carries `serde(default)`, so a missing field degrades to "" instead of
+    // failing the whole payload (and, via the `kind`-dispatched
+    // `ClickStackSource` union, the whole list response).
     let missing = r#"{
         "id": "trace-1",
         "kind": "trace",
@@ -1877,69 +1879,14 @@ fn deserialize_clickstack_trace_source_requires_default_table_select_expression(
         "spanNameExpression": "SpanName",
         "spanKindExpression": "SpanKind"
     }"#;
-    assert!(
-        serde_json::from_str::<ClickStackTraceSource>(missing).is_err(),
-        "trace source without defaultTableSelectExpression must fail to deserialize"
-    );
-}
-
-#[test]
-fn deserialize_clickstack_log_source_requires_default_table_select_expression() {
-    // `defaultTableSelectExpression` is in the spec `required[]` for log
-    // sources; omitting it must be rejected.
-    let missing = r#"{
-        "id": "src-1",
-        "kind": "log",
-        "name": "logs",
-        "connection": "conn-1",
-        "from": {"databaseName": "default", "tableName": "logs"},
-        "timestampValueExpression": "ts"
-    }"#;
-    assert!(
-        serde_json::from_str::<ClickStackLogSource>(missing).is_err(),
-        "log source without defaultTableSelectExpression must fail to deserialize"
-    );
-}
-
-#[test]
-fn clickstack_source_union_rejects_trace_missing_default_table_select_expression() {
-    // The `discriminated_union!` macro dispatches on `kind` and propagates the
-    // dispatched variant's deserialize failure via `serde::de::Error::custom`
-    // (it does NOT fall back to the `Unknown` catch-all). A kind:"trace"
-    // payload missing the required `defaultTableSelectExpression` must therefore
-    // fail at the union level too. Kept symmetric with the log case below.
-    let missing_trace = r#"{
-        "id": "trace-1",
-        "kind": "trace",
-        "name": "traces",
-        "connection": "conn-1",
-        "from": {"databaseName": "default", "tableName": "traces"},
-        "timestampValueExpression": "Timestamp",
-        "durationExpression": "Duration",
-        "durationPrecision": 9,
-        "traceIdExpression": "TraceId",
-        "spanIdExpression": "SpanId",
-        "parentSpanIdExpression": "ParentSpanId",
-        "spanNameExpression": "SpanName",
-        "spanKindExpression": "SpanKind"
-    }"#;
-    assert!(
-        serde_json::from_str::<ClickStackSource>(missing_trace).is_err(),
-        "ClickStackSource union must reject a trace payload missing defaultTableSelectExpression"
-    );
-
-    let missing_log = r#"{
-        "id": "src-1",
-        "kind": "log",
-        "name": "logs",
-        "connection": "conn-1",
-        "from": {"databaseName": "default", "tableName": "logs"},
-        "timestampValueExpression": "ts"
-    }"#;
-    assert!(
-        serde_json::from_str::<ClickStackSource>(missing_log).is_err(),
-        "ClickStackSource union must reject a log payload missing defaultTableSelectExpression"
-    );
+    let src: ClickStackTraceSource = serde_json::from_str(missing).unwrap();
+    assert_eq!(src.default_table_select_expression, "");
+    match serde_json::from_str::<ClickStackSource>(missing).unwrap() {
+        ClickStackSource::ClickStackTraceSource(src) => {
+            assert_eq!(src.default_table_select_expression, "");
+        }
+        other => panic!("expected trace variant, got {other:?}"),
+    }
 }
 
 #[test]
