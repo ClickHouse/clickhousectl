@@ -1780,10 +1780,37 @@ fn clickstack_alert_channel_known_variants_deserialize() {
 }
 
 #[test]
+fn clickstack_alert_channel_known_type_sparse_payload_defaults() {
+    // A recognized `type` dispatches hard to its variant, and the variant's own
+    // fields are tolerant: a server that drops `emailRecipients` degrades to the
+    // default rather than failing the response.
+    let json = r#"{"type":"email"}"#;
+    let channel: ClickStackAlertChannel = serde_json::from_str(json).unwrap();
+    match channel {
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(v) => {
+            assert_eq!(v.r#type, ClickStackAlertChannelEmailType::Email);
+            assert!(v.email_recipients.is_empty());
+        }
+        other => panic!("expected email variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_alert_channel_missing_type_key_is_unknown() {
+    // This union has no arm for an absent `type` key, in deliberate contrast to
+    // the chart-config unions where absence means the Builder variant, so a
+    // payload without the discriminator lands in the lossless Unknown catch-all.
+    let json = r#"{"webhookId":"wh-1"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannel| {
+        matches!(c, ClickStackAlertChannel::Unknown(_))
+    });
+}
+
+#[test]
 fn clickstack_alert_channel_unknown_shape_round_trips() {
-    // A payload matching neither the email nor webhook variant must land in the
-    // lossless Unknown catch-all and re-serialize to the same JSON object rather
-    // than erroring on deserialize.
+    // An unrecognized `type` value must land in the lossless Unknown catch-all
+    // and re-serialize to the same JSON object rather than erroring on
+    // deserialize.
     let json = r#"{
         "type": "future_channel",
         "foo": 1
