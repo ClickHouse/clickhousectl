@@ -1687,6 +1687,69 @@ fn deserialize_clickstack_on_click_target_template_variant() {
 }
 
 #[test]
+fn clickstack_on_click_target_unknown_shape_round_trips() {
+    // A payload matching neither the id nor template variant must land in the
+    // lossless Unknown catch-all and re-serialize to the same JSON object rather
+    // than erroring on deserialize.
+    let json = r#"{
+        "mode": "future_mode",
+        "foo": 1
+    }"#;
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let target: ClickStackOnClickTarget = serde_json::from_str(json).unwrap();
+    match &target {
+        ClickStackOnClickTarget::Unknown(v) => assert_eq!(*v, original),
+        other => panic!("expected unknown target, got {other}"),
+    }
+    let reserialized = serde_json::to_value(&target).unwrap();
+    assert_eq!(reserialized, original);
+    assert!(reserialized.is_object());
+}
+
+#[test]
+fn clickstack_alert_channel_known_variants_deserialize() {
+    let email_json = r#"{"emailRecipients": ["a@b.com"], "type": "email"}"#;
+    let email: ClickStackAlertChannel = serde_json::from_str(email_json).unwrap();
+    match email {
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(v) => {
+            assert_eq!(v.email_recipients, vec!["a@b.com".to_string()]);
+            assert_eq!(v.r#type, ClickStackAlertChannelEmailType::Email);
+        }
+        other => panic!("expected email variant, got {other}"),
+    }
+
+    let webhook_json = r#"{"webhookId": "wh-1", "type": "webhook"}"#;
+    let webhook: ClickStackAlertChannel = serde_json::from_str(webhook_json).unwrap();
+    match webhook {
+        ClickStackAlertChannel::ClickStackAlertChannelWebhook(v) => {
+            assert_eq!(v.webhook_id, "wh-1");
+            assert_eq!(v.r#type, ClickStackAlertChannelWebhookType::Webhook);
+        }
+        other => panic!("expected webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_alert_channel_unknown_shape_round_trips() {
+    // A payload matching neither the email nor webhook variant must land in the
+    // lossless Unknown catch-all and re-serialize to the same JSON object rather
+    // than erroring on deserialize.
+    let json = r#"{
+        "type": "future_channel",
+        "foo": 1
+    }"#;
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let channel: ClickStackAlertChannel = serde_json::from_str(json).unwrap();
+    match &channel {
+        ClickStackAlertChannel::Unknown(v) => assert_eq!(*v, original),
+        other => panic!("expected unknown channel, got {other}"),
+    }
+    let reserialized = serde_json::to_value(&channel).unwrap();
+    assert_eq!(reserialized, original);
+    assert!(reserialized.is_object());
+}
+
+#[test]
 fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
     let json = r#"{
         "id": "src-1",

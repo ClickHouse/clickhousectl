@@ -7875,7 +7875,10 @@ pub enum ClickStackAlertChannel {
     ClickStackAlertChannelEmail(ClickStackAlertChannelEmail),
     ClickStackAlertChannelWebhook(ClickStackAlertChannelWebhook),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackAlertChannel {
@@ -8122,12 +8125,15 @@ pub enum ClickStackOnClickTarget {
     ClickStackOnClickTargetIdVariant(ClickStackOnClickTargetIdVariant),
     ClickStackOnClickTargetTemplateVariant(ClickStackOnClickTargetTemplateVariant),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl Default for ClickStackOnClickTarget {
     fn default() -> Self {
-        Self::Unknown(String::new())
+        Self::Unknown(serde_json::Value::Null)
     }
 }
 
