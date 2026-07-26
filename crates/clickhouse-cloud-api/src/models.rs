@@ -12139,7 +12139,7 @@ pub struct ClickStackTimeChartSeries {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTraceSource {
     pub connection: String,
-    #[serde(rename = "defaultTableSelectExpression", default)]
+    #[serde(rename = "defaultTableSelectExpression")]
     pub default_table_select_expression: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub disabled: Option<bool>,
