@@ -8119,7 +8119,9 @@ impl std::fmt::Display for ClickStackOnClick {
 }
 
 /// `ClickStackOnClickTarget` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `mode` as a discriminator: `"id"` or `"template"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackOnClickTarget {
     ClickStackOnClickTargetIdVariant(ClickStackOnClickTargetIdVariant),
@@ -8129,6 +8131,13 @@ pub enum ClickStackOnClickTarget {
     /// Holds the raw payload as `serde_json::Value` so it round-trips
     /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackOnClickTarget, "mode" {
+        "id" => ClickStackOnClickTargetIdVariant,
+        "template" => ClickStackOnClickTargetTemplateVariant,
+    }
 }
 
 impl Default for ClickStackOnClickTarget {
