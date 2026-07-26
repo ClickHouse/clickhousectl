@@ -4,6 +4,66 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Generates the `Deserialize` impl for an externally-discriminated
+/// `#[serde(untagged)]` enum.
+///
+/// Every ClickHouse Cloud "one of multiple variants" model whose JSON carries a
+/// string discriminator field (e.g. `bucketProvider`, `type`, `kind`,
+/// `displayType`, `service`, `operator`) shares the same deserialization shape:
+/// buffer the payload as a [`serde_json::Value`], read the discriminator key,
+/// and route each known wire value to the matching variant via
+/// [`serde_json::from_value`]. Any unrecognized or missing discriminator falls
+/// through to the enum's `Unknown(serde_json::Value)` catch-all, so unknown
+/// payloads round-trip losslessly instead of failing to deserialize. This
+/// explicit dispatch avoids the greedy first-match misrouting that
+/// `#[serde(untagged)]` derives suffer when variants share a discriminator.
+///
+/// The macro emits **only** the `Deserialize` impl. The enum declaration, its
+/// derives/serde attributes, and its `Display` impl must remain literal source
+/// so the syn-based OpenAPI drift analyzer can inventory them structurally (it
+/// cannot expand macros).
+///
+/// Each arm lists one or more discriminator wire values mapping to a single
+/// variant, so several values can share a variant:
+///
+/// ```ignore
+/// discriminated_union! {
+///     ClickStackNumberTileColorCondition, "operator" {
+///         "gt" | "gte" | "lt" | "lte" => ClickStackNumericColorCondition,
+///         "between" => ClickStackBetweenColorCondition,
+///         "eq" | "neq" => ClickStackEqualityColorCondition,
+///     }
+/// }
+/// ```
+///
+/// New discriminated unions in this module should use this macro rather than
+/// hand-writing the impl. Enums whose variants need multi-level or nested
+/// dispatch do not fit this single-key shape and must stay hand-written.
+macro_rules! discriminated_union {
+    (
+        $enum:ident, $key:literal {
+            $( $( $wire:literal )|+ => $variant:ident ),+ $(,)?
+        }
+    ) => {
+        impl<'de> Deserialize<'de> for $enum {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = serde_json::Value::deserialize(deserializer)?;
+                match value.get($key).and_then(|v| v.as_str()) {
+                    $(
+                        $( Some($wire) )|+ => serde_json::from_value(value)
+                            .map($enum::$variant)
+                            .map_err(serde::de::Error::custom),
+                    )+
+                    _ => Ok($enum::Unknown(value)),
+                }
+            }
+        }
+    };
+}
+
 /// `pgHaType` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgHaType {
@@ -7682,24 +7742,11 @@ pub enum BackupBucket {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucket {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucket::AwsBackupBucket)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucket::GcpBackupBucket)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucket::AzureBackupBucket)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucket::Unknown(value)),
-        }
+discriminated_union! {
+    BackupBucket, "bucketProvider" {
+        "AWS" => AwsBackupBucket,
+        "GCP" => GcpBackupBucket,
+        "AZURE" => AzureBackupBucket,
     }
 }
 
@@ -7730,24 +7777,11 @@ pub enum BackupBucketPatchRequest {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucketPatchRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucketPatchRequest::GcpBackupBucketPatchRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucketPatchRequest::AzureBackupBucketPatchRequestV1)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketPatchRequest::Unknown(value)),
-        }
+discriminated_union! {
+    BackupBucketPatchRequest, "bucketProvider" {
+        "AWS" => AwsBackupBucketPatchRequestV1,
+        "GCP" => GcpBackupBucketPatchRequestV1,
+        "AZURE" => AzureBackupBucketPatchRequestV1,
     }
 }
 
@@ -7780,24 +7814,11 @@ pub enum BackupBucketPostRequest {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucketPostRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucketPostRequest::AwsBackupBucketPostRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucketPostRequest::GcpBackupBucketPostRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucketPostRequest::AzureBackupBucketPostRequestV1)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketPostRequest::Unknown(value)),
-        }
+discriminated_union! {
+    BackupBucketPostRequest, "bucketProvider" {
+        "AWS" => AwsBackupBucketPostRequestV1,
+        "GCP" => GcpBackupBucketPostRequestV1,
+        "AZURE" => AzureBackupBucketPostRequestV1,
     }
 }
 
@@ -7828,24 +7849,11 @@ pub enum BackupBucketProperties {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucketProperties {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucketProperties::AwsBackupBucketProperties)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucketProperties::GcpBackupBucketProperties)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucketProperties::AzureBackupBucketProperties)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketProperties::Unknown(value)),
-        }
+discriminated_union! {
+    BackupBucketProperties, "bucketProvider" {
+        "AWS" => AwsBackupBucketProperties,
+        "GCP" => GcpBackupBucketProperties,
+        "AZURE" => AzureBackupBucketProperties,
     }
 }
 
@@ -7953,30 +7961,13 @@ pub enum ClickStackDashboardChartSeries {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for ClickStackDashboardChartSeries {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("type").and_then(|v| v.as_str()) {
-            Some("time") => serde_json::from_value(value)
-                .map(ClickStackDashboardChartSeries::ClickStackTimeChartSeries)
-                .map_err(serde::de::Error::custom),
-            Some("table") => serde_json::from_value(value)
-                .map(ClickStackDashboardChartSeries::ClickStackTableChartSeries)
-                .map_err(serde::de::Error::custom),
-            Some("number") => serde_json::from_value(value)
-                .map(ClickStackDashboardChartSeries::ClickStackNumberChartSeries)
-                .map_err(serde::de::Error::custom),
-            Some("search") => serde_json::from_value(value)
-                .map(ClickStackDashboardChartSeries::ClickStackSearchChartSeries)
-                .map_err(serde::de::Error::custom),
-            Some("markdown") => serde_json::from_value(value)
-                .map(ClickStackDashboardChartSeries::ClickStackMarkdownChartSeries)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(ClickStackDashboardChartSeries::Unknown(value)),
-        }
+discriminated_union! {
+    ClickStackDashboardChartSeries, "type" {
+        "time" => ClickStackTimeChartSeries,
+        "table" => ClickStackTableChartSeries,
+        "number" => ClickStackNumberChartSeries,
+        "search" => ClickStackSearchChartSeries,
+        "markdown" => ClickStackMarkdownChartSeries,
     }
 }
 
@@ -8058,24 +8049,11 @@ pub enum ClickStackNumberTileColorCondition {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for ClickStackNumberTileColorCondition {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("operator").and_then(|v| v.as_str()) {
-            Some("gt") | Some("gte") | Some("lt") | Some("lte") => serde_json::from_value(value)
-                .map(ClickStackNumberTileColorCondition::ClickStackNumericColorCondition)
-                .map_err(serde::de::Error::custom),
-            Some("between") => serde_json::from_value(value)
-                .map(ClickStackNumberTileColorCondition::ClickStackBetweenColorCondition)
-                .map_err(serde::de::Error::custom),
-            Some("eq") | Some("neq") => serde_json::from_value(value)
-                .map(ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(ClickStackNumberTileColorCondition::Unknown(value)),
-        }
+discriminated_union! {
+    ClickStackNumberTileColorCondition, "operator" {
+        "gt" | "gte" | "lt" | "lte" => ClickStackNumericColorCondition,
+        "between" => ClickStackBetweenColorCondition,
+        "eq" | "neq" => ClickStackEqualityColorCondition,
     }
 }
 
@@ -8112,24 +8090,11 @@ pub enum ClickStackOnClick {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for ClickStackOnClick {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("type").and_then(|v| v.as_str()) {
-            Some("search") => serde_json::from_value(value)
-                .map(ClickStackOnClick::ClickStackOnClickSearch)
-                .map_err(serde::de::Error::custom),
-            Some("dashboard") => serde_json::from_value(value)
-                .map(ClickStackOnClick::ClickStackOnClickDashboard)
-                .map_err(serde::de::Error::custom),
-            Some("external") => serde_json::from_value(value)
-                .map(ClickStackOnClick::ClickStackOnClickExternal)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(ClickStackOnClick::Unknown(value)),
-        }
+discriminated_union! {
+    ClickStackOnClick, "type" {
+        "search" => ClickStackOnClickSearch,
+        "dashboard" => ClickStackOnClickDashboard,
+        "external" => ClickStackOnClickExternal,
     }
 }
 
@@ -8221,30 +8186,13 @@ pub enum ClickStackSource {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for ClickStackSource {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("kind").and_then(|v| v.as_str()) {
-            Some("log") => serde_json::from_value(value)
-                .map(ClickStackSource::ClickStackLogSource)
-                .map_err(serde::de::Error::custom),
-            Some("trace") => serde_json::from_value(value)
-                .map(ClickStackSource::ClickStackTraceSource)
-                .map_err(serde::de::Error::custom),
-            Some("metric") => serde_json::from_value(value)
-                .map(ClickStackSource::ClickStackMetricSource)
-                .map_err(serde::de::Error::custom),
-            Some("session") => serde_json::from_value(value)
-                .map(ClickStackSource::ClickStackSessionSource)
-                .map_err(serde::de::Error::custom),
-            Some("promql") => serde_json::from_value(value)
-                .map(ClickStackSource::ClickStackPromqlSource)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(ClickStackSource::Unknown(value)),
-        }
+discriminated_union! {
+    ClickStackSource, "kind" {
+        "log" => ClickStackLogSource,
+        "trace" => ClickStackTraceSource,
+        "metric" => ClickStackMetricSource,
+        "session" => ClickStackSessionSource,
+        "promql" => ClickStackPromqlSource,
     }
 }
 
@@ -8310,45 +8258,18 @@ pub enum ClickStackTileConfig {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for ClickStackTileConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("displayType").and_then(|v| v.as_str()) {
-            Some("line") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackLineChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("stacked_bar") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackBarChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("bar") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackCategoricalBarChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("table") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackTableChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("number") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackNumberChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("pie") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackPieChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("heatmap") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackHeatmapChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("search") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackSearchChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("event_patterns") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackEventPatternsChartConfig)
-                .map_err(serde::de::Error::custom),
-            Some("markdown") => serde_json::from_value(value)
-                .map(ClickStackTileConfig::ClickStackMarkdownChartConfig)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(ClickStackTileConfig::Unknown(value)),
-        }
+discriminated_union! {
+    ClickStackTileConfig, "displayType" {
+        "line" => ClickStackLineChartConfig,
+        "stacked_bar" => ClickStackBarChartConfig,
+        "bar" => ClickStackCategoricalBarChartConfig,
+        "table" => ClickStackTableChartConfig,
+        "number" => ClickStackNumberChartConfig,
+        "pie" => ClickStackPieChartConfig,
+        "heatmap" => ClickStackHeatmapChartConfig,
+        "search" => ClickStackSearchChartConfig,
+        "event_patterns" => ClickStackEventPatternsChartConfig,
+        "markdown" => ClickStackMarkdownChartConfig,
     }
 }
 
@@ -8393,30 +8314,13 @@ pub enum ClickStackWebhook {
     Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for ClickStackWebhook {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("service").and_then(|v| v.as_str()) {
-            Some("slack") => serde_json::from_value(value)
-                .map(ClickStackWebhook::ClickStackSlackWebhook)
-                .map_err(serde::de::Error::custom),
-            Some("incidentio") => serde_json::from_value(value)
-                .map(ClickStackWebhook::ClickStackIncidentIOWebhook)
-                .map_err(serde::de::Error::custom),
-            Some("generic") => serde_json::from_value(value)
-                .map(ClickStackWebhook::ClickStackGenericWebhook)
-                .map_err(serde::de::Error::custom),
-            Some("slack_api") => serde_json::from_value(value)
-                .map(ClickStackWebhook::ClickStackSlackAPIWebhook)
-                .map_err(serde::de::Error::custom),
-            Some("pagerduty_api") => serde_json::from_value(value)
-                .map(ClickStackWebhook::ClickStackPagerDutyAPIWebhook)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(ClickStackWebhook::Unknown(value)),
-        }
+discriminated_union! {
+    ClickStackWebhook, "service" {
+        "slack" => ClickStackSlackWebhook,
+        "incidentio" => ClickStackIncidentIOWebhook,
+        "generic" => ClickStackGenericWebhook,
+        "slack_api" => ClickStackSlackAPIWebhook,
+        "pagerduty_api" => ClickStackPagerDutyAPIWebhook,
     }
 }
 
