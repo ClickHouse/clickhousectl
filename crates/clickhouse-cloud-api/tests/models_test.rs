@@ -2348,6 +2348,201 @@ fn clickstack_tile_config_event_patterns_variant() {
 }
 
 #[test]
+fn clickstack_tile_config_line_variant() {
+    // `displayType: "line"` must dispatch to the line variant with a typed
+    // display_type, not be swallowed as an Unknown displayType by another
+    // structurally-identical builder variant.
+    let json = r#"{
+        "displayType": "line",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackLineBuilderChartConfigDisplaytype::Line
+            );
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_builder_variant() {
+    // `displayType: "stacked_bar"` must dispatch to the (stacked) bar variant
+    // with a typed display_type.
+    let json = r#"{
+        "displayType": "stacked_bar",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackBarChartConfig(
+            ClickStackBarChartConfig::ClickStackBarBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackBarBuilderChartConfigDisplaytype::Stacked_bar
+            );
+        }
+        other => panic!("expected stacked bar builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_table_variant() {
+    // `displayType: "table"` must dispatch to the table variant with a typed
+    // display_type (the legacy misdispatch parsed it as the first-listed
+    // variant with an Unknown display_type).
+    let json = r#"{
+        "displayType": "table",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackTableChartConfig(
+            ClickStackTableChartConfig::ClickStackTableBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackTableBuilderChartConfigDisplaytype::Table
+            );
+        }
+        other => panic!("expected table builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_number_variant() {
+    // `displayType: "number"` must dispatch to the number variant with a typed
+    // display_type.
+    let json = r#"{
+        "displayType": "number",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackNumberChartConfig(
+            ClickStackNumberChartConfig::ClickStackNumberBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackNumberBuilderChartConfigDisplaytype::Number
+            );
+        }
+        other => panic!("expected number builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_pie_variant() {
+    // `displayType: "pie"` must dispatch to the pie variant with a typed
+    // display_type.
+    let json = r#"{
+        "displayType": "pie",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackPieChartConfig(
+            ClickStackPieChartConfig::ClickStackPieBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackPieBuilderChartConfigDisplaytype::Pie
+            );
+        }
+        other => panic!("expected pie builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_search_variant() {
+    // `displayType: "search"` must dispatch to the search variant with a typed
+    // display_type.
+    let json = r#"{
+        "displayType": "search",
+        "sourceId": "src-1",
+        "select": "*",
+        "whereLanguage": "lucene"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackSearchChartConfig(s) => {
+            assert_eq!(s.source_id, "src-1");
+            assert_eq!(s.select, "*");
+            assert_eq!(
+                s.display_type,
+                ClickStackSearchChartConfigDisplaytype::Search
+            );
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_markdown_variant() {
+    // `displayType: "markdown"` must dispatch to the markdown variant with a
+    // typed display_type rather than being absorbed by an earlier variant.
+    let json = r#"{
+        "displayType": "markdown",
+        "markdown": "hello world"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackMarkdownChartConfig(m) => {
+            assert_eq!(m.markdown.as_deref(), Some("hello world"));
+            assert_eq!(
+                m.display_type,
+                ClickStackMarkdownChartConfigDisplaytype::Markdown
+            );
+        }
+        other => panic!("expected markdown variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_unknown_display_type_round_trips() {
+    // An unrecognized `displayType` falls to the Unknown catch-all, which now
+    // stores the raw object and round-trips it faithfully.
+    let json = r#"{"displayType":"sankey","sourceId":"src-1"}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match &cfg {
+        ClickStackTileConfig::Unknown(_) => {}
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_known_display_type_novel_shape_falls_to_sub_union_unknown() {
+    // A known `displayType` whose body matches neither the builder nor the raw
+    // SQL shape must land in the sub-union's Unknown(Value) rather than error.
+    let json = r#"{"displayType":"line","somethingNew":true}"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(v)) => {
+            assert_eq!(v, serde_json::from_str::<serde_json::Value>(json).unwrap());
+        }
+        other => panic!("expected line sub-union Unknown(Value), got {other}"),
+    }
+}
+
+#[test]
 fn clickstack_chart_color_known_and_unknown_round_trip() {
     // A known palette token maps to its typed variant and back.
     let known: ClickStackChartColor = serde_json::from_str("\"chart-light-blue\"").unwrap();

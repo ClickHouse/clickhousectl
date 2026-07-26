@@ -3179,22 +3179,21 @@ impl std::fmt::Display for ClickStackBetweenColorConditionOperator {
 }
 
 /// Inline enum for `ClickStackCategoricalBarBuilderChartConfig.displayType`.
-///
-/// Intentionally has no `Unknown(String)` catch-all: it discriminates the
-/// categorical bar variant (`bar`) from the stacked bar variant
-/// (`stacked_bar`) inside the untagged `ClickStackTileConfig` union, so a
-/// non-`bar` display type must fail this variant.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackCategoricalBarBuilderChartConfigDisplaytype {
     #[serde(rename = "bar")]
     #[default]
     Bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 impl std::fmt::Display for ClickStackCategoricalBarBuilderChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bar => write!(f, "bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
@@ -3220,22 +3219,21 @@ impl std::fmt::Display for ClickStackCategoricalBarRawSqlChartConfigConfigtype {
 }
 
 /// Inline enum for `ClickStackCategoricalBarRawSqlChartConfig.displayType`.
-///
-/// Intentionally has no `Unknown(String)` catch-all: it discriminates the
-/// categorical bar variant (`bar`) from the stacked bar variant
-/// (`stacked_bar`) inside the untagged `ClickStackTileConfig` union, so a
-/// non-`bar` display type must fail this variant.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackCategoricalBarRawSqlChartConfigDisplaytype {
     #[serde(rename = "bar")]
     #[default]
     Bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 impl std::fmt::Display for ClickStackCategoricalBarRawSqlChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Bar => write!(f, "bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
@@ -3476,21 +3474,21 @@ impl std::fmt::Display for ClickStackEqualityColorConditionOperator {
 }
 
 /// Inline enum for `ClickStackEventPatternsChartConfig.displayType`.
-///
-/// Intentionally has no `Unknown(String)` catch-all: it discriminates the
-/// event-patterns variant inside the untagged `ClickStackTileConfig` union,
-/// so a non-`event_patterns` display type must fail this variant.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackEventPatternsChartConfigDisplaytype {
     #[serde(rename = "event_patterns")]
     #[default]
     Event_patterns,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 impl std::fmt::Display for ClickStackEventPatternsChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Event_patterns => write!(f, "event_patterns"),
+            Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
@@ -7880,7 +7878,7 @@ pub enum ClickStackBarChartConfig {
     ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfig),
     ClickStackBarRawSqlChartConfig(ClickStackBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackBarChartConfig {
@@ -7902,7 +7900,7 @@ pub enum ClickStackCategoricalBarChartConfig {
     ClickStackCategoricalBarBuilderChartConfig(ClickStackCategoricalBarBuilderChartConfig),
     ClickStackCategoricalBarRawSqlChartConfig(ClickStackCategoricalBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl Default for ClickStackCategoricalBarChartConfig {
@@ -7960,7 +7958,7 @@ pub enum ClickStackLineChartConfig {
     ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfig),
     ClickStackLineRawSqlChartConfig(ClickStackLineRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackLineChartConfig {
@@ -7984,7 +7982,7 @@ pub enum ClickStackNumberChartConfig {
     ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfig),
     ClickStackNumberRawSqlChartConfig(ClickStackNumberRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackNumberChartConfig {
@@ -8094,7 +8092,7 @@ pub enum ClickStackPieChartConfig {
     ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfig),
     ClickStackPieRawSqlChartConfig(ClickStackPieRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackPieChartConfig {
@@ -8172,7 +8170,7 @@ pub enum ClickStackTableChartConfig {
     ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfig),
     ClickStackTableRawSqlChartConfig(ClickStackTableRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackTableChartConfig {
@@ -8190,15 +8188,13 @@ impl std::fmt::Display for ClickStackTableChartConfig {
 }
 
 /// `ClickStackTileConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `displayType` as a discriminator: `"line"`, `"stacked_bar"`, `"bar"`,
+/// `"table"`, `"number"`, `"pie"`, `"heatmap"`, `"search"`,
+/// `"event_patterns"`, or `"markdown"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackTileConfig {
-    // Ordered first: the categorical bar variant's `displayType` is strictly
-    // `bar`, whereas the builder configs below (Line, Bar, Table, Number, Pie)
-    // share identical required fields and catch-all `displayType` enums, so the
-    // first of them would otherwise swallow any `bar` payload. Listing the
-    // strict variant first lets a `bar` payload reach it; every other display
-    // type is rejected by the strict enum and falls through unchanged.
     ClickStackCategoricalBarChartConfig(ClickStackCategoricalBarChartConfig),
     ClickStackLineChartConfig(ClickStackLineChartConfig),
     ClickStackBarChartConfig(ClickStackBarChartConfig),
@@ -8207,12 +8203,52 @@ pub enum ClickStackTileConfig {
     ClickStackPieChartConfig(ClickStackPieChartConfig),
     ClickStackHeatmapChartConfig(ClickStackHeatmapChartConfig),
     ClickStackSearchChartConfig(ClickStackSearchChartConfig),
-    // Ordered before the markdown variant, whose `displayType` catch-all would
-    // otherwise absorb an `event_patterns` payload.
     ClickStackEventPatternsChartConfig(ClickStackEventPatternsChartConfig),
     ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ClickStackTileConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("displayType").and_then(|v| v.as_str()) {
+            Some("line") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackLineChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("stacked_bar") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackBarChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("bar") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackCategoricalBarChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("table") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackTableChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("number") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackNumberChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("pie") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackPieChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("heatmap") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackHeatmapChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("search") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackSearchChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("event_patterns") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackEventPatternsChartConfig)
+                .map_err(serde::de::Error::custom),
+            Some("markdown") => serde_json::from_value(value)
+                .map(ClickStackTileConfig::ClickStackMarkdownChartConfig)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(ClickStackTileConfig::Unknown(value)),
+        }
+    }
 }
 
 impl std::fmt::Display for ClickStackTileConfig {
