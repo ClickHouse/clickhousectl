@@ -52,3 +52,15 @@ pub fn analyze(
         OpenApiInventory::build(&snapshot, config).map_err(AnalyzeError::SnapshotInventory)?;
     Ok(compare::compare(&rust, &spec, &snapshot, config))
 }
+
+/// Lists every public model struct field in `models_rs` that lacks a field-level
+/// `#[serde(default)]`, as `StructName.rust_field_name`.
+///
+/// This backs the tolerant-deserialization policy test in `clickhouse-cloud-api` (see
+/// AGENTS.md); it is intentionally not a drift `FindingKind`, because it compares Rust
+/// source against a repository policy rather than against the OpenAPI spec. The parsing
+/// stays behind this narrow function so `syn` never enters the `clickhouse-cloud-api`
+/// dependency graph.
+pub fn model_fields_missing_serde_default(models_rs: &str) -> Result<Vec<String>, AnalyzeError> {
+    rust_inventory::model_fields_missing_serde_default(models_rs).map_err(AnalyzeError::RustSource)
+}

@@ -89,6 +89,7 @@ pub(crate) struct FieldInfo {
     pub(crate) rust_name: String,
     pub(crate) rust_type: TypeNode,
     pub(crate) deprecated_marker: bool,
+    pub(crate) serde_default: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +213,7 @@ impl RustInventory {
                                     rust_name,
                                     rust_type: TypeNode::from_syn(&field.ty),
                                     deprecated_marker: has_deprecated_cfg(&field.attrs)?,
+                                    serde_default: options.default,
                                 },
                             );
                         }
@@ -344,11 +346,32 @@ impl RustInventory {
     }
 }
 
+/// Lists every public model struct field that lacks a field-level `#[serde(default)]`,
+/// as `StructName.rust_field_name`, sorted by struct name then wire field name.
+///
+/// Both `T` and `Option<T>` fields are reported, including `cfg`-gated deprecated-marker
+/// fields. Only the field-level attribute counts: a container-level `#[serde(default)]` is
+/// not honored, because `models.rs` has none and relying on it would hide per-field gaps.
+pub(crate) fn model_fields_missing_serde_default(models: &str) -> syn::Result<Vec<String>> {
+    let inventory = RustInventory::parse("", models, "")?;
+    Ok(inventory
+        .structs
+        .iter()
+        .flat_map(|(struct_name, info)| {
+            info.fields
+                .values()
+                .filter(|field| !field.serde_default)
+                .map(move |field| format!("{struct_name}.{}", field.rust_name))
+        })
+        .collect())
+}
+
 #[derive(Default)]
 struct SerdeOptions {
     rename: Option<String>,
     untagged: bool,
     other: bool,
+    default: bool,
 }
 
 fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
@@ -381,6 +404,13 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
                 options.untagged = true;
             } else if meta.path.is_ident("other") {
                 options.other = true;
+            } else if meta.path.is_ident("default") {
+                // Both `default` and `default = "path"` opt the field into tolerant
+                // deserialization, so this must precede the generic `key = value` arm below.
+                options.default = true;
+                if meta.input.peek(syn::Token![=]) {
+                    let _: Expr = meta.value()?.parse()?;
+                }
             } else if meta.input.peek(syn::Token![=]) {
                 let _: Expr = meta.value()?.parse()?;
             }
@@ -521,6 +551,71 @@ mod tests {
             Some("WidgetType".to_string())
         );
         assert!(inventory.metadata.beta_operations.contains("list_widgets"));
+    }
+
+    #[test]
+    fn tracks_serde_default_in_all_attribute_forms() {
+        let models = r#"
+            pub struct Widget {
+                #[serde(default)]
+                pub bare: String,
+                #[serde(rename = "renamedWithDefault", default)]
+                pub renamed: String,
+                #[serde(default = "some::path")]
+                pub with_path: String,
+                pub plain: String,
+            }
+        "#;
+
+        let inventory = RustInventory::parse("", models, "").unwrap();
+        let fields = &inventory.structs["Widget"].fields;
+        assert!(fields["bare"].serde_default);
+        assert!(fields["renamedWithDefault"].serde_default);
+        assert!(fields["with_path"].serde_default);
+        assert!(!fields["plain"].serde_default);
+    }
+
+    #[test]
+    fn model_fields_missing_serde_default_lists_offenders_sorted() {
+        let models = r#"
+            pub struct Widget {
+                #[serde(default)]
+                pub name: String,
+                pub description: Option<String>,
+                pub r#type: String,
+                #[serde(rename = "createdAt", default)]
+                pub created_at: String,
+            }
+            pub struct Gadget {
+                pub id: Option<String>,
+            }
+            pub enum State { Ready }
+        "#;
+
+        assert_eq!(
+            model_fields_missing_serde_default(models).unwrap(),
+            vec![
+                "Gadget.id".to_string(),
+                "Widget.description".to_string(),
+                "Widget.type".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_fields_missing_serde_default_reports_deprecated_gated_fields() {
+        let models = r#"
+            pub struct Widget {
+                #[cfg(feature = "deprecated-fields")]
+                #[serde(rename = "legacyName")]
+                pub legacy_name: Option<String>,
+            }
+        "#;
+
+        assert_eq!(
+            model_fields_missing_serde_default(models).unwrap(),
+            vec!["Widget.legacy_name".to_string()]
+        );
     }
 
     #[test]
