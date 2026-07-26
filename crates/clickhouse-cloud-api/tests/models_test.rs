@@ -3935,3 +3935,76 @@ fn deserialize_clickstack_dashboard_chart_series_unknown_type_round_trip() {
     let expected: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(serde_json::to_value(&series).unwrap(), expected);
 }
+
+// ===========================================================================
+// Tolerant response deserialization (issue #312)
+// ===========================================================================
+
+#[test]
+fn scim_user_tolerates_dropped_response_fields() {
+    // Every field of every model carries `serde(default)`, so a spec-required
+    // response field the server stops sending degrades to that field's default
+    // rather than failing the whole payload.
+    let json = r#"{"id":"user-1"}"#;
+    let user: ScimUser = serde_json::from_str(json).unwrap();
+    assert_eq!(user.id, "user-1");
+    assert_eq!(user.user_name, "");
+    assert!(!user.active);
+    assert!(user.emails.is_empty());
+    assert!(user.schemas.is_empty());
+    assert_eq!(user.name, ScimUserName::default());
+    assert_eq!(user.meta, ScimUserMeta::default());
+
+    // Serialization is unaffected: wire names and `None` omission are unchanged.
+    let value = serde_json::to_value(&user).unwrap();
+    assert_eq!(value["id"], "user-1");
+    assert_eq!(value["userName"], "");
+    assert_eq!(value["active"], false);
+    assert_eq!(value["emails"], serde_json::json!([]));
+    assert_eq!(value["name"]["familyName"], "");
+    assert_eq!(value["meta"]["resourceType"], "");
+    assert!(value.get("displayName").is_none());
+}
+
+#[test]
+fn clickpipe_post_pubsub_source_tolerates_dropped_response_fields() {
+    // `topic`, `projectId` and `serviceAccountKey` are all spec-required, but a
+    // sparse response still deserializes with their defaults.
+    let json = r#"{"seekType":"earliest"}"#;
+    let src: ClickPipePostPubSubSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.seek_type, ClickPipePostPubSubSourceSeektype::Earliest);
+    assert_eq!(src.topic, "");
+    assert_eq!(src.project_id, "");
+    assert_eq!(src.service_account_key, ServiceAccount::default());
+    assert_eq!(
+        src.authentication,
+        ClickPipePostPubSubSourceAuthentication::default()
+    );
+    assert_eq!(src.format, ClickPipePostPubSubSourceFormat::default());
+    assert_eq!(src.ack_deadline, None);
+
+    let value = serde_json::to_value(&src).unwrap();
+    assert_eq!(value["seekType"], "earliest");
+    assert_eq!(value["topic"], "");
+    assert_eq!(value["projectId"], "");
+    assert!(value.get("ackDeadline").is_none());
+}
+
+#[test]
+fn organization_quota_tolerates_dropped_response_fields() {
+    let json = r#"{"name":"maxServices","value":10}"#;
+    let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
+    assert_eq!(quota.name, "maxServices");
+    assert_eq!(quota.value, 10);
+    assert_eq!(quota.description, "");
+    assert!(!quota.adjustable);
+    assert_eq!(quota.quota_code, OrganizationQuotaQuotacode::default());
+    assert_eq!(quota.scope, OrganizationQuotaScope::default());
+    assert_eq!(quota.usage, None);
+
+    let value = serde_json::to_value(&quota).unwrap();
+    assert_eq!(value["name"], "maxServices");
+    assert_eq!(value["value"], 10);
+    assert_eq!(value["adjustable"], false);
+    assert!(value.get("usage").is_none());
+}

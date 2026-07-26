@@ -32,6 +32,23 @@ fn vendored_openapi_snapshot_matches_rust_api() {
     );
 }
 
+/// Enforces the tolerant-response deserialization policy documented in AGENTS.md: every
+/// public model field carries a field-level `#[serde(default)]`, so a response field the
+/// server stops sending degrades to that field's default instead of failing the whole
+/// response. There is deliberately no exception list — requests stay strict through the
+/// type system (required fields are `T`, not `Option<T>`), not through missing defaults.
+#[test]
+fn every_model_field_carries_serde_default() {
+    let offenders = clickhouse_openapi_analyzer::model_fields_missing_serde_default(MODELS_RS)
+        .expect("models.rs must parse");
+    assert!(
+        offenders.is_empty(),
+        "these model fields lack #[serde(default)], violating the tolerant-deserialization \
+         policy in AGENTS.md:\n{}",
+        offenders.join("\n")
+    );
+}
+
 #[tokio::test]
 #[ignore = "hits the live published ClickHouse OpenAPI spec"]
 async fn live_openapi_spec_matches_rust_api() {
