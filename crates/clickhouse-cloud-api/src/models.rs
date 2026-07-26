@@ -8238,7 +8238,10 @@ impl std::fmt::Display for ClickStackTileConfig {
 }
 
 /// `ClickStackWebhook` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `service` as a discriminator: `"slack"`, `"incidentio"`, `"generic"`,
+/// `"slack_api"`, or `"pagerduty_api"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackWebhook {
     ClickStackSlackWebhook(ClickStackSlackWebhook),
@@ -8247,7 +8250,34 @@ pub enum ClickStackWebhook {
     ClickStackSlackAPIWebhook(ClickStackSlackAPIWebhook),
     ClickStackPagerDutyAPIWebhook(ClickStackPagerDutyAPIWebhook),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ClickStackWebhook {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("service").and_then(|v| v.as_str()) {
+            Some("slack") => serde_json::from_value(value)
+                .map(ClickStackWebhook::ClickStackSlackWebhook)
+                .map_err(serde::de::Error::custom),
+            Some("incidentio") => serde_json::from_value(value)
+                .map(ClickStackWebhook::ClickStackIncidentIOWebhook)
+                .map_err(serde::de::Error::custom),
+            Some("generic") => serde_json::from_value(value)
+                .map(ClickStackWebhook::ClickStackGenericWebhook)
+                .map_err(serde::de::Error::custom),
+            Some("slack_api") => serde_json::from_value(value)
+                .map(ClickStackWebhook::ClickStackSlackAPIWebhook)
+                .map_err(serde::de::Error::custom),
+            Some("pagerduty_api") => serde_json::from_value(value)
+                .map(ClickStackWebhook::ClickStackPagerDutyAPIWebhook)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(ClickStackWebhook::Unknown(value)),
+        }
+    }
 }
 
 impl std::fmt::Display for ClickStackWebhook {

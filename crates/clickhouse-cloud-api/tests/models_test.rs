@@ -2792,6 +2792,125 @@ fn serialize_clickstack_webhook_input_minimal_omits_optionals() {
 }
 
 #[test]
+fn deserialize_clickstack_webhook_dispatches_slack() {
+    let json = r#"{
+        "id": "webhook-1",
+        "name": "Slack Alerts",
+        "service": "slack",
+        "url": "https://hooks.slack.com/services/T/B/X",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackSlackWebhook(s) => {
+            assert_eq!(s.id, "webhook-1");
+            assert_eq!(s.name, "Slack Alerts");
+        }
+        other => panic!("expected Slack webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_incidentio() {
+    let json = r#"{
+        "id": "webhook-2",
+        "name": "Incident Alerts",
+        "service": "incidentio",
+        "url": "https://api.incident.io/v2/alert_events/http/abc",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackIncidentIOWebhook(i) => {
+            assert_eq!(i.id, "webhook-2");
+            assert_eq!(i.name, "Incident Alerts");
+        }
+        other => panic!("expected IncidentIO webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_generic_preserves_body() {
+    let json = r#"{
+        "id": "webhook-3",
+        "name": "Generic Alerts",
+        "service": "generic",
+        "url": "https://example.com/hook",
+        "body": "{\"text\": \"{{ message }}\"}",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackGenericWebhook(g) => {
+            assert_eq!(g.id, "webhook-3");
+            assert_eq!(g.body.as_deref(), Some("{\"text\": \"{{ message }}\"}"));
+        }
+        other => panic!("expected Generic webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_slack_api() {
+    let json = r#"{
+        "id": "webhook-4",
+        "name": "Slack API Alerts",
+        "service": "slack_api",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackSlackAPIWebhook(s) => {
+            assert_eq!(s.id, "webhook-4");
+            assert_eq!(s.name, "Slack API Alerts");
+        }
+        other => panic!("expected SlackAPI webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_pagerduty_api() {
+    let json = r#"{
+        "id": "webhook-5",
+        "name": "PagerDuty Alerts",
+        "service": "pagerduty_api",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackPagerDutyAPIWebhook(p) => {
+            assert_eq!(p.id, "webhook-5");
+            assert_eq!(p.name, "PagerDuty Alerts");
+        }
+        other => panic!("expected PagerDutyAPI webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_unknown_service_round_trips() {
+    let json = r#"{
+        "id": "webhook-6",
+        "name": "Future Alerts",
+        "service": "future_service",
+        "extraField": "kept",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match &w {
+        ClickStackWebhook::Unknown(_) => {}
+        other => panic!("expected Unknown webhook variant, got {other}"),
+    }
+    let round_trip = serde_json::to_value(&w).unwrap();
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(round_trip, original);
+}
+
+#[test]
 fn clickstack_validate_dashboard_response_round_trip() {
     let json = r#"{
         "valid": false,

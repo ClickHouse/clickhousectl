@@ -2718,6 +2718,87 @@ async fn update_webhook() {
 }
 
 #[tokio::test]
+async fn create_webhook_incidentio_response() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-2",
+            "name": "Incident Alerts",
+            "service": "incidentio",
+            "url": "https://api.incident.io/v2/alert_events/http/abc",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Incident Alerts".to_string(),
+        service: ClickStackWebhookInputService::Incidentio,
+        url: "https://api.incident.io/v2/alert_events/http/abc".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    // The response union resolves to a concrete IncidentIO webhook variant
+    // rather than greedily matching the structurally-identical Slack variant.
+    match resp.result.unwrap() {
+        ClickStackWebhook::ClickStackIncidentIOWebhook(w) => {
+            assert_eq!(w.id, "webhook-2");
+            assert_eq!(w.name, "Incident Alerts");
+        }
+        other => panic!("expected IncidentIO webhook variant, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn update_webhook_generic_response() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/webhook-3",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-3",
+            "name": "Generic Alerts",
+            "service": "generic",
+            "url": "https://example.com/hook",
+            "body": "{\"text\": \"{{ message }}\"}",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Generic Alerts".to_string(),
+        service: ClickStackWebhookInputService::Generic,
+        url: "https://example.com/hook".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_webhook("org-1", "svc-1", "webhook-3", &body)
+        .await
+        .unwrap();
+    // The response union resolves to the Generic variant and preserves its
+    // optional `body` field, which the greedy Slack match would have discarded.
+    match resp.result.unwrap() {
+        ClickStackWebhook::ClickStackGenericWebhook(w) => {
+            assert_eq!(w.id, "webhook-3");
+            assert_eq!(w.body.as_deref(), Some("{\"text\": \"{{ message }}\"}"));
+        }
+        other => panic!("expected Generic webhook variant, got {other}"),
+    }
+}
+
+#[tokio::test]
 async fn delete_webhook() {
     let (s, c) = setup().await;
 
