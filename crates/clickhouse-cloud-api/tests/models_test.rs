@@ -2462,6 +2462,63 @@ fn clickstack_number_tile_color_condition_equality_numeric_value() {
 }
 
 #[test]
+fn clickstack_number_tile_color_condition_dispatches_every_operator() {
+    // Exhaustive guard over the `operator`-keyed dispatch: every wire value in the
+    // discriminated_union! invocation must route to its concrete variant, never the
+    // Unknown catch-all. A typo in any operator literal in the macro ("gte"/"lt"/
+    // "lte"/"neq"/...) would silently misroute a valid payload to Unknown, and this
+    // table would fail on that operator. The seven values are cross-checked against
+    // the enum members of the three constituent schemas in the OpenAPI snapshot.
+    #[derive(Debug, PartialEq)]
+    enum Variant {
+        Numeric,
+        Between,
+        Equality,
+    }
+
+    let cases: &[(&str, serde_json::Value, Variant)] = &[
+        ("gt", serde_json::json!(100), Variant::Numeric),
+        ("gte", serde_json::json!(100), Variant::Numeric),
+        ("lt", serde_json::json!(100), Variant::Numeric),
+        ("lte", serde_json::json!(100), Variant::Numeric),
+        ("between", serde_json::json!([100, 500]), Variant::Between),
+        ("eq", serde_json::json!(42), Variant::Equality),
+        ("neq", serde_json::json!("healthy"), Variant::Equality),
+    ];
+
+    for (operator, value, expected) in cases {
+        let json = serde_json::json!({
+            "operator": operator,
+            "value": value,
+            "color": "chart-red",
+        });
+        let cond: ClickStackNumberTileColorCondition = serde_json::from_value(json)
+            .unwrap_or_else(|e| panic!("operator {operator:?} failed to deserialize: {e}"));
+        match (&cond, expected) {
+            (
+                ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(c),
+                Variant::Numeric,
+            ) => assert_eq!(c.operator.to_string(), *operator),
+            (
+                ClickStackNumberTileColorCondition::ClickStackBetweenColorCondition(c),
+                Variant::Between,
+            ) => assert_eq!(c.operator.to_string(), *operator),
+            (
+                ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition(c),
+                Variant::Equality,
+            ) => assert_eq!(c.operator.to_string(), *operator),
+            (other, _) => {
+                panic!("operator {operator:?} expected {expected:?} variant, got {other}")
+            }
+        }
+        assert!(
+            !matches!(cond, ClickStackNumberTileColorCondition::Unknown(_)),
+            "operator {operator:?} misrouted to the Unknown catch-all"
+        );
+    }
+}
+
+#[test]
 fn clickstack_tile_config_categorical_bar_builder_variant() {
     // `displayType: "bar"` must dispatch to the categorical bar variant, not the
     // stacked bar variant (whose discriminator is "stacked_bar").
