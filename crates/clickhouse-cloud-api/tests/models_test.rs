@@ -3317,3 +3317,127 @@ fn organization_quota_quota_code_unknown_catch_all() {
     assert_eq!(parsed.to_string(), "queries-per-second");
     assert_eq!(serde_json::to_value(&parsed).unwrap(), "queries-per-second");
 }
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_time() {
+    // The manual `type`-keyed dispatch routes "time" to the time-series variant.
+    let json = r#"{
+        "aggFn": "count",
+        "groupBy": ["service"],
+        "sourceId": "src-1",
+        "type": "time",
+        "where": "x = 1",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackTimeChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackTimeChartSeriesType::Time);
+            assert_eq!(s.agg_fn, ClickStackTimeChartSeriesAggfn::Count);
+        }
+        other => panic!("expected time variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_table() {
+    // Regression: Time and Table share every required field (aggFn, groupBy,
+    // sourceId, type, where, whereLanguage), so before manual discriminator
+    // dispatch a `type: "table"` payload greedily resolved to the Time variant
+    // and silently dropped table-only fields like `sortOrder`. The union now
+    // routes on the `type` discriminator and preserves `sortOrder`.
+    let json = r#"{
+        "aggFn": "count",
+        "groupBy": ["service"],
+        "sortOrder": "desc",
+        "sourceId": "src-2",
+        "type": "table",
+        "where": "y = 2",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackTableChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackTableChartSeriesType::Table);
+            assert_eq!(
+                s.sort_order,
+                Some(ClickStackTableChartSeriesSortorder::Desc)
+            );
+        }
+        other => panic!("expected table variant, got {other}"),
+    }
+    // The table-only `sortOrder` survives the round-trip through the union.
+    let v = serde_json::to_value(&series).unwrap();
+    assert_eq!(v["type"], "table");
+    assert_eq!(v["sortOrder"], "desc");
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_number() {
+    // The manual `type`-keyed dispatch routes "number" to the number-series variant.
+    let json = r#"{
+        "aggFn": "count",
+        "sourceId": "src-3",
+        "type": "number",
+        "where": "z = 3",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackNumberChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackNumberChartSeriesType::Number);
+        }
+        other => panic!("expected number variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_search() {
+    // The manual `type`-keyed dispatch routes "search" to the search-series variant.
+    let json = r#"{
+        "fields": ["message"],
+        "sourceId": "src-4",
+        "type": "search",
+        "where": "w = 4",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackSearchChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackSearchChartSeriesType::Search);
+            assert_eq!(s.fields, vec!["message".to_string()]);
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_markdown() {
+    // The manual `type`-keyed dispatch routes "markdown" to the markdown-series variant.
+    let json = r##"{"content": "# Title", "type": "markdown"}"##;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackMarkdownChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackMarkdownChartSeriesType::Markdown);
+            assert_eq!(s.content, "# Title");
+        }
+        other => panic!("expected markdown variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_unknown_type_round_trip() {
+    // An unrecognized `type` discriminator falls back to the Unknown variant,
+    // which stores the raw JSON so it round-trips faithfully.
+    let json = r#"{"type":"heatmap","payload":{"nested":[1,2,3]}}"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::Unknown(v) => {
+            assert_eq!(v["type"], "heatmap");
+            assert_eq!(v["payload"]["nested"][2], 3);
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&series).unwrap(), expected);
+}

@@ -7935,7 +7935,10 @@ impl std::fmt::Display for ClickStackCategoricalBarChartConfig {
 }
 
 /// `ClickStackDashboardChartSeries` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `type` as a discriminator: `"time"`, `"table"`, `"number"`,
+/// `"search"`, or `"markdown"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackDashboardChartSeries {
     ClickStackTimeChartSeries(ClickStackTimeChartSeries),
@@ -7944,7 +7947,37 @@ pub enum ClickStackDashboardChartSeries {
     ClickStackSearchChartSeries(ClickStackSearchChartSeries),
     ClickStackMarkdownChartSeries(ClickStackMarkdownChartSeries),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ClickStackDashboardChartSeries {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("time") => serde_json::from_value(value)
+                .map(ClickStackDashboardChartSeries::ClickStackTimeChartSeries)
+                .map_err(serde::de::Error::custom),
+            Some("table") => serde_json::from_value(value)
+                .map(ClickStackDashboardChartSeries::ClickStackTableChartSeries)
+                .map_err(serde::de::Error::custom),
+            Some("number") => serde_json::from_value(value)
+                .map(ClickStackDashboardChartSeries::ClickStackNumberChartSeries)
+                .map_err(serde::de::Error::custom),
+            Some("search") => serde_json::from_value(value)
+                .map(ClickStackDashboardChartSeries::ClickStackSearchChartSeries)
+                .map_err(serde::de::Error::custom),
+            Some("markdown") => serde_json::from_value(value)
+                .map(ClickStackDashboardChartSeries::ClickStackMarkdownChartSeries)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(ClickStackDashboardChartSeries::Unknown(value)),
+        }
+    }
 }
 
 impl std::fmt::Display for ClickStackDashboardChartSeries {
