@@ -3158,22 +3158,21 @@ impl std::fmt::Display for ClickStackBarRawSqlChartConfigDisplaytype {
 }
 
 /// Inline enum for `ClickStackBetweenColorCondition.operator`.
-///
-/// Intentionally has no `Unknown(String)` catch-all: the operator is the
-/// discriminator that lets the untagged `ClickStackNumberTileColorCondition`
-/// union route payloads to the correct condition variant, so an unrecognized
-/// operator must fail this variant rather than be silently absorbed.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackBetweenColorConditionOperator {
     #[serde(rename = "between")]
     #[default]
     Between,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 impl std::fmt::Display for ClickStackBetweenColorConditionOperator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Between => write!(f, "between"),
+            Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
@@ -3450,11 +3449,6 @@ impl std::fmt::Display for ClickStackDashboardResponseSavedquerylanguage {
 }
 
 /// Inline enum for `ClickStackEqualityColorCondition.operator`.
-///
-/// Intentionally has no `Unknown(String)` catch-all: the operator is the
-/// discriminator that lets the untagged `ClickStackNumberTileColorCondition`
-/// union route a numeric-valued `eq`/`neq` payload to this equality variant
-/// rather than to the numeric variant it structurally resembles.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackEqualityColorConditionOperator {
     #[serde(rename = "eq")]
@@ -3462,6 +3456,9 @@ pub enum ClickStackEqualityColorConditionOperator {
     Eq,
     #[serde(rename = "neq")]
     Neq,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 impl std::fmt::Display for ClickStackEqualityColorConditionOperator {
@@ -3469,6 +3466,7 @@ impl std::fmt::Display for ClickStackEqualityColorConditionOperator {
         match self {
             Self::Eq => write!(f, "eq"),
             Self::Neq => write!(f, "neq"),
+            Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
@@ -4386,11 +4384,6 @@ impl std::fmt::Display for ClickStackNumberRawSqlChartConfigDisplaytype {
 }
 
 /// Inline enum for `ClickStackNumericColorCondition.operator`.
-///
-/// Intentionally has no `Unknown(String)` catch-all: the operator is the
-/// discriminator that lets the untagged `ClickStackNumberTileColorCondition`
-/// union reject an `eq`/`neq`/`between` payload here so it can be routed to
-/// the matching condition variant instead.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackNumericColorConditionOperator {
     #[serde(rename = "gt")]
@@ -4402,6 +4395,9 @@ pub enum ClickStackNumericColorConditionOperator {
     Lt,
     #[serde(rename = "lte")]
     Lte,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
 }
 
 impl std::fmt::Display for ClickStackNumericColorConditionOperator {
@@ -4411,6 +4407,7 @@ impl std::fmt::Display for ClickStackNumericColorConditionOperator {
             Self::Gte => write!(f, "gte"),
             Self::Lt => write!(f, "lt"),
             Self::Lte => write!(f, "lte"),
+            Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
@@ -8000,14 +7997,38 @@ impl std::fmt::Display for ClickStackNumberChartConfig {
 }
 
 /// `ClickStackNumberTileColorCondition` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `operator` as a discriminator: `"gt"`, `"gte"`, `"lt"`, `"lte"`,
+/// `"between"`, `"eq"`, or `"neq"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackNumberTileColorCondition {
     ClickStackNumericColorCondition(ClickStackNumericColorCondition),
     ClickStackBetweenColorCondition(ClickStackBetweenColorCondition),
     ClickStackEqualityColorCondition(ClickStackEqualityColorCondition),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ClickStackNumberTileColorCondition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("operator").and_then(|v| v.as_str()) {
+            Some("gt") | Some("gte") | Some("lt") | Some("lte") => serde_json::from_value(value)
+                .map(ClickStackNumberTileColorCondition::ClickStackNumericColorCondition)
+                .map_err(serde::de::Error::custom),
+            Some("between") => serde_json::from_value(value)
+                .map(ClickStackNumberTileColorCondition::ClickStackBetweenColorCondition)
+                .map_err(serde::de::Error::custom),
+            Some("eq") | Some("neq") => serde_json::from_value(value)
+                .map(ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(ClickStackNumberTileColorCondition::Unknown(value)),
+        }
+    }
 }
 
 impl std::fmt::Display for ClickStackNumberTileColorCondition {
@@ -8028,19 +8049,42 @@ impl std::fmt::Display for ClickStackNumberTileColorCondition {
 }
 
 /// `ClickStackOnClick` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `type` as a discriminator: `"search"`, `"dashboard"`, or `"external"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackOnClick {
     ClickStackOnClickSearch(ClickStackOnClickSearch),
     ClickStackOnClickDashboard(ClickStackOnClickDashboard),
     ClickStackOnClickExternal(ClickStackOnClickExternal),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ClickStackOnClick {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("search") => serde_json::from_value(value)
+                .map(ClickStackOnClick::ClickStackOnClickSearch)
+                .map_err(serde::de::Error::custom),
+            Some("dashboard") => serde_json::from_value(value)
+                .map(ClickStackOnClick::ClickStackOnClickDashboard)
+                .map_err(serde::de::Error::custom),
+            Some("external") => serde_json::from_value(value)
+                .map(ClickStackOnClick::ClickStackOnClickExternal)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(ClickStackOnClick::Unknown(value)),
+        }
+    }
 }
 
 impl Default for ClickStackOnClick {
     fn default() -> Self {
-        Self::Unknown(String::new())
+        Self::Unknown(serde_json::Value::Null)
     }
 }
 

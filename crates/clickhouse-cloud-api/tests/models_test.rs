@@ -1570,17 +1570,21 @@ fn deserialize_clickstack_on_click_search_variant() {
 
 #[test]
 fn deserialize_clickstack_on_click_dashboard_struct() {
-    // We deserialize directly into ClickStackOnClickDashboard rather than the
-    // untagged parent because the parent's first variant catches anything
-    // with the search/dashboard shape (both inline `type` enums have an
-    // Unknown(String) catch-all).
+    // Regression: Search and Dashboard are structurally identical (both require
+    // `target` + `type`), so before manual discriminator dispatch a
+    // `type: "dashboard"` payload misdispatched to the Search variant. The union
+    // now routes on the `type` discriminator.
     let json = r#"{
         "type": "dashboard",
         "target": {"mode": "template", "template": "{{x}}"},
         "whereLanguage": "sql",
         "whereTemplate": "x = {{y}}"
     }"#;
-    let dash: ClickStackOnClickDashboard = serde_json::from_str(json).unwrap();
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    let dash = match on_click {
+        ClickStackOnClick::ClickStackOnClickDashboard(dash) => dash,
+        other => panic!("expected dashboard variant, got {other}"),
+    };
     assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
     assert_eq!(dash.where_template.as_deref(), Some("x = {{y}}"));
     match dash.target {
@@ -2182,8 +2186,8 @@ fn clickstack_alert_response_state_pending() {
 
 #[test]
 fn clickstack_number_tile_color_condition_numeric_variant() {
-    // A `gt`/`gte`/`lt`/`lte` operator with a scalar value dispatches to the
-    // numeric variant (the first arm of the untagged union).
+    // The manual `operator`-keyed dispatch routes `gt`/`gte`/`lt`/`lte` to the
+    // numeric variant.
     let json = r#"{"operator": "gt", "value": 100, "color": "chart-red"}"#;
     let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
     match cond {
@@ -2198,8 +2202,8 @@ fn clickstack_number_tile_color_condition_numeric_variant() {
 
 #[test]
 fn clickstack_number_tile_color_condition_between_variant() {
-    // The `between` operator carries an inclusive [min, max] array value, so it
-    // fails the numeric (scalar) variant and lands on the between variant.
+    // The manual dispatch routes the `between` operator, with its inclusive
+    // [min, max] array value, to the between variant.
     let json = r#"{"operator": "between", "value": [100, 500], "color": "chart-warning"}"#;
     let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
     match cond {
@@ -2214,8 +2218,8 @@ fn clickstack_number_tile_color_condition_between_variant() {
 
 #[test]
 fn clickstack_number_tile_color_condition_equality_string_value() {
-    // A string-valued `eq` fails the numeric and between variants (their values
-    // are number/array) and lands on the equality variant.
+    // The manual dispatch routes `eq` to the equality variant, whose value
+    // accepts strings as well as numbers.
     let json =
         r#"{"operator": "eq", "value": "healthy", "color": "chart-success", "label": "Healthy"}"#;
     let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
@@ -2232,9 +2236,9 @@ fn clickstack_number_tile_color_condition_equality_string_value() {
 
 #[test]
 fn clickstack_number_tile_color_condition_equality_numeric_value() {
-    // A numeric-valued `eq` is structurally identical to a numeric condition; it
-    // is the strict operator enum (no `eq` in the numeric operator set) that
-    // routes it to the equality variant rather than the numeric one.
+    // A numeric-valued `eq` is structurally identical to a numeric condition;
+    // only the `operator`-keyed dispatch routes it to the equality variant
+    // rather than the numeric one.
     let json = r#"{"operator": "eq", "value": 42, "color": "chart-error"}"#;
     let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
     match cond {
@@ -2300,10 +2304,9 @@ fn clickstack_tile_config_categorical_bar_raw_sql_variant() {
 
 #[test]
 fn clickstack_tile_config_stacked_bar_not_categorical_bar() {
-    // The categorical bar variant is ordered first but its `displayType` is
-    // strictly "bar", so a "stacked_bar" payload is rejected by it and falls
-    // through to the other builder variants unchanged (i.e. dispatch of the
-    // stacked bar payload is not captured by the new variant).
+    // The manual `displayType`-keyed dispatch routes "stacked_bar" to the
+    // stacked-bar variant, never to the structurally identical categorical
+    // bar variant (whose displayType is "bar").
     let json = r#"{
         "displayType": "stacked_bar",
         "sourceId": "src-1",
@@ -2321,8 +2324,7 @@ fn clickstack_tile_config_stacked_bar_not_categorical_bar() {
 
 #[test]
 fn clickstack_tile_config_event_patterns_variant() {
-    // `displayType: "event_patterns"` dispatches to the event-patterns variant;
-    // it requires only sourceId (no select), so it is ordered before markdown.
+    // `displayType: "event_patterns"` dispatches to the event-patterns variant.
     let json = r#"{
         "displayType": "event_patterns",
         "sourceId": "src-9",
@@ -2683,18 +2685,54 @@ fn deserialize_clickstack_on_click_dispatches_search() {
 
 #[test]
 fn deserialize_clickstack_on_click_dashboard_still_parses() {
-    // Regression: adding the External variant must not disturb dashboard
-    // parsing. As documented on deserialize_clickstack_on_click_dashboard_struct,
-    // the untagged parent's first (Search) variant catches the dashboard shape
-    // because ClickStackOnClickSearchType has an Unknown(String) catch-all, so
-    // we deserialize directly into ClickStackOnClickDashboard. The External
-    // variant is inserted after Search/Dashboard, so it changes neither.
+    // Regression: a `type: "dashboard"` payload dispatches to the Dashboard
+    // variant through the union rather than being greedily absorbed by the
+    // structurally identical Search variant.
     let json = r#"{
         "type": "dashboard",
         "target": {"mode": "template", "template": "{{x}}"}
     }"#;
-    let dash: ClickStackOnClickDashboard = serde_json::from_str(json).unwrap();
-    assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickDashboard(dash) => {
+            assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
+        }
+        other => panic!("expected dashboard variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_unknown_type_round_trip() {
+    // An unrecognized `type` discriminator falls back to the Unknown variant,
+    // which stores the raw JSON so it round-trips faithfully.
+    let json = r#"{"type":"popover","payload":{"nested":[1,2,3]}}"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match &on_click {
+        ClickStackOnClick::Unknown(v) => {
+            assert_eq!(v["type"], "popover");
+            assert_eq!(v["payload"]["nested"][2], 3);
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&on_click).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_unknown_operator_round_trip() {
+    // An unrecognized `operator` discriminator falls back to the Unknown
+    // variant, which now stores the raw JSON object and round-trips faithfully.
+    let json = r#"{"operator":"contains","value":"warn","color":"chart-red"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match &cond {
+        ClickStackNumberTileColorCondition::Unknown(v) => {
+            assert_eq!(v["operator"], "contains");
+            assert_eq!(v["value"], "warn");
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cond).unwrap(), expected);
 }
 
 #[test]
