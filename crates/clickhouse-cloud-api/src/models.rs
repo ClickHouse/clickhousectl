@@ -7873,7 +7873,10 @@ impl std::fmt::Display for BackupBucketProperties {
 }
 
 /// `ClickStackAlertChannel` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertChannel {
     ClickStackAlertChannelEmail(ClickStackAlertChannelEmail),
@@ -7883,6 +7886,13 @@ pub enum ClickStackAlertChannel {
     /// Holds the raw payload as `serde_json::Value` so it round-trips
     /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertChannel, "type" {
+        "email" => ClickStackAlertChannelEmail,
+        "webhook" => ClickStackAlertChannelWebhook,
+    }
 }
 
 impl std::fmt::Display for ClickStackAlertChannel {
@@ -10464,8 +10474,9 @@ pub struct ClickStackAggregatedColumn {
 /// `ClickStackAlertChannelEmail` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertChannelEmail {
-    #[serde(rename = "emailRecipients")]
+    #[serde(rename = "emailRecipients", default)]
     pub email_recipients: Vec<String>,
+    #[serde(default)]
     pub r#type: ClickStackAlertChannelEmailType,
 }
 
@@ -10480,8 +10491,9 @@ pub struct ClickStackAlertChannelWebhook {
         default
     )]
     pub slack_channel_id: Option<String>,
+    #[serde(default)]
     pub r#type: ClickStackAlertChannelWebhookType,
-    #[serde(rename = "webhookId")]
+    #[serde(rename = "webhookId", default)]
     pub webhook_id: String,
     #[serde(
         rename = "webhookService",
