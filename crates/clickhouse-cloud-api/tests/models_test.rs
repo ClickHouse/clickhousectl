@@ -19,6 +19,53 @@ where
     assert!(reserialized.is_object());
 }
 
+/// Every `discriminated_union!` enum with a `Default` is reachable from a
+/// response that drops a field carrying that union, so its default must be a
+/// fixed point of its own `Deserialize`: it has to come back as the same
+/// variant. It is not automatic — variants of one union can share the same
+/// inline `enum` values for the discriminating field (both alert channels
+/// declare `["webhook", "email"]`), so a variant defaulting its discriminator to
+/// another variant's value would silently retype the value on the next
+/// deserialize. Add new unions with a `Default` impl here.
+#[test]
+fn discriminated_union_defaults_round_trip_to_the_same_variant() {
+    macro_rules! assert_default_round_trips {
+        ($($union:ty),+ $(,)?) => {
+            $({
+                let default = <$union>::default();
+                let json = serde_json::to_string(&default).unwrap();
+                let parsed: $union = serde_json::from_str(&json).unwrap();
+                assert_eq!(
+                    parsed,
+                    default,
+                    "{} default deserialized as another variant from {json}",
+                    stringify!($union),
+                );
+            })+
+        };
+    }
+
+    assert_default_round_trips!(
+        BackupBucket,
+        BackupBucketPatchRequest,
+        BackupBucketPostRequest,
+        BackupBucketProperties,
+        ClickStackAlertChannel,
+        ClickStackBarChartConfig,
+        ClickStackCategoricalBarChartConfig,
+        ClickStackDashboardChartSeries,
+        ClickStackLineChartConfig,
+        ClickStackNumberChartConfig,
+        ClickStackOnClick,
+        ClickStackOnClickTarget,
+        ClickStackPieChartConfig,
+        ClickStackSource,
+        ClickStackTableChartConfig,
+        ClickStackTileConfig,
+        ClickStackWebhook,
+    );
+}
+
 #[test]
 fn deserialize_organization() {
     let json = r#"{
@@ -1821,6 +1868,40 @@ fn clickstack_alert_channel_unknown_shape_round_trips() {
 }
 
 #[test]
+fn clickstack_alert_channel_changed_field_shape_is_unknown() {
+    // A recognized `type` whose payload no longer fits the variant — here
+    // `emailRecipients` as a string instead of an array — must not fail the
+    // response. `list_alerts` returns a Vec, so one such element would otherwise
+    // take down the whole call; instead the element lands in Unknown intact.
+    let json = r#"{"type":"email","emailRecipients":"a@b.c"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannel| {
+        matches!(c, ClickStackAlertChannel::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_alert_channel_default_round_trips_to_the_same_variant() {
+    // Both alert-channel variants declare the same `enum: ["webhook", "email"]`
+    // for their discriminating `type`, so the email variant's default must name
+    // `email`: `channel` carries #[serde(default)], and a default that named
+    // `webhook` would come back from its own union as the webhook variant and
+    // could be PUT back as a webhook channel with no `webhookId`.
+    let default = ClickStackAlertChannel::default();
+    assert!(matches!(
+        default,
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(_)
+    ));
+    let json = serde_json::to_string(&default).unwrap();
+    assert_eq!(json, r#"{"emailRecipients":[],"type":"email"}"#);
+    let round_tripped: ClickStackAlertChannel = serde_json::from_str(&json).unwrap();
+    assert_eq!(round_tripped, default);
+
+    // A response that drops `channel` entirely lands on that same default.
+    let response: ClickStackAlertResponse = serde_json::from_str(r#"{"name":"my-alert"}"#).unwrap();
+    assert_eq!(response.channel, default);
+}
+
+#[test]
 fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
     let json = r#"{
         "id": "src-1",
@@ -2901,10 +2982,61 @@ fn clickstack_tile_config_non_string_config_type_defaults_to_builder() {
 
 #[test]
 fn clickstack_tile_config_line_unrecognized_config_type_falls_to_sub_union_unknown() {
-    // With the builder variant total, an unrecognized *string* `configType` is
-    // the only route into the line sub-union's Unknown(Value); it round-trips.
+    // An unrecognized *string* `configType` reaches the line sub-union's
+    // Unknown(Value); it round-trips losslessly.
     let json = r#"{"displayType":"line","configType":"future"}"#;
     assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_raw_sql_body_without_config_type_falls_to_sub_union_unknown() {
+    // `configType` is spec-required on the Raw SQL configs, so a server that
+    // stops sending it must not silently retype the tile: the builder variant is
+    // total and would otherwise absorb the body and drop `connectionId` and
+    // `sqlTemplate`. The `unless` guard routes it to Unknown, which keeps the
+    // payload verbatim.
+    let json = r#"{"displayType":"line","connectionId":"conn-1","sqlTemplate":"SELECT 1"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+
+    // Either guard key on its own disqualifies the builder variant, and the
+    // guard is wired on every chart-config sub-union, not just the line one.
+    let json = r#"{"displayType":"number","connectionId":"conn-1"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackNumberChartConfig(
+                ClickStackNumberChartConfig::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_changed_field_shape_falls_to_sub_union_unknown() {
+    // `#[serde(default)]` only covers a field the API stops sending. A field
+    // whose *shape* changes cannot deserialize into the dispatched variant, so
+    // the union hands the payload to its lossless Unknown catch-all rather than
+    // failing the whole dashboard response.
+    let builder = r#"{"displayType":"line","sourceId":123}"#;
+    assert_unknown_variant_round_trips(builder, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+
+    let raw_sql = r#"{"displayType":"line","configType":"sql","sqlTemplate":123}"#;
+    assert_unknown_variant_round_trips(raw_sql, |cfg: &ClickStackTileConfig| {
         matches!(
             cfg,
             ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
@@ -3070,8 +3202,8 @@ fn clickstack_tile_config_categorical_bar_novel_shape_defaults_to_builder() {
 
 #[test]
 fn clickstack_tile_config_categorical_bar_unrecognized_config_type_falls_to_sub_union_unknown() {
-    // An unrecognized *string* `configType` is the only route into the
-    // categorical bar sub-union's Unknown(Value); it round-trips losslessly.
+    // An unrecognized *string* `configType` reaches the categorical bar
+    // sub-union's Unknown(Value); it round-trips losslessly.
     let json = r#"{"displayType":"bar","configType":"future"}"#;
     assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
         matches!(
@@ -3102,8 +3234,8 @@ fn clickstack_tile_config_stacked_bar_novel_shape_defaults_to_builder() {
 
 #[test]
 fn clickstack_tile_config_stacked_bar_unrecognized_config_type_falls_to_sub_union_unknown() {
-    // An unrecognized *string* `configType` is the only route into the bar
-    // sub-union's Unknown(Value); it round-trips losslessly.
+    // An unrecognized *string* `configType` reaches the bar sub-union's
+    // Unknown(Value); it round-trips losslessly.
     let json = r#"{"displayType":"stacked_bar","configType":"future"}"#;
     assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
         matches!(
@@ -3132,8 +3264,8 @@ fn clickstack_tile_config_table_novel_shape_defaults_to_builder() {
 
 #[test]
 fn clickstack_tile_config_table_unrecognized_config_type_falls_to_sub_union_unknown() {
-    // An unrecognized *string* `configType` is the only route into the table
-    // sub-union's Unknown(Value); it round-trips losslessly.
+    // An unrecognized *string* `configType` reaches the table sub-union's
+    // Unknown(Value); it round-trips losslessly.
     let json = r#"{"displayType":"table","configType":"future"}"#;
     assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
         matches!(
@@ -3164,8 +3296,8 @@ fn clickstack_tile_config_number_novel_shape_defaults_to_builder() {
 
 #[test]
 fn clickstack_tile_config_number_unrecognized_config_type_falls_to_sub_union_unknown() {
-    // An unrecognized *string* `configType` is the only route into the number
-    // sub-union's Unknown(Value); it round-trips losslessly.
+    // An unrecognized *string* `configType` reaches the number sub-union's
+    // Unknown(Value); it round-trips losslessly.
     let json = r#"{"displayType":"number","configType":"future"}"#;
     assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
         matches!(
@@ -3196,8 +3328,8 @@ fn clickstack_tile_config_pie_novel_shape_defaults_to_builder() {
 
 #[test]
 fn clickstack_tile_config_pie_unrecognized_config_type_falls_to_sub_union_unknown() {
-    // An unrecognized *string* `configType` is the only route into the pie
-    // sub-union's Unknown(Value); it round-trips losslessly.
+    // An unrecognized *string* `configType` reaches the pie sub-union's
+    // Unknown(Value); it round-trips losslessly.
     let json = r#"{"displayType":"pie","configType":"future"}"#;
     assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
         matches!(

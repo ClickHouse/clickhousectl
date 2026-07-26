@@ -19,22 +19,33 @@
 //! ## Tolerant deserialization
 //!
 //! Every field on every model carries `#[serde(default)]`, and unknown fields are
-//! ignored. A response that drops, renames, or changes a field therefore degrades to
-//! that field's default instead of failing the whole call, so a Cloud API change cannot
-//! break a deployed consumer. Requests stay strict through the type system: fields the
-//! API requires are `T`, not `Option<T>`, and the defaults never change what is
-//! serialized.
+//! ignored, so a Cloud API change should not break a deployed consumer. Concretely, a
+//! response that:
+//!
+//! * **adds** a field is accepted and the field ignored;
+//! * **drops or renames** a field degrades to that field's default instead of failing
+//!   the whole call;
+//! * carries an **unrecognized enum value or union shape** lands in that type's
+//!   `Unknown` catch-all, which holds the value verbatim and re-serializes losslessly.
+//!
+//! The residual case is a field whose *type* changes — an array that becomes a string,
+//! say. `#[serde(default)]` fills in a missing key and cannot help there, so such a
+//! change still fails the response for the model that holds the field. Enums and
+//! discriminated unions absorb it into `Unknown`; a plain struct field does not.
+//!
+//! Requests stay strict through the type system: fields the API requires are `T`, not
+//! `Option<T>`, and the defaults never change what is serialized.
 //!
 //! The caveat is read-modify-write. A consumer that `GET`s an object, changes one field,
 //! and writes the whole thing back can persist a defaulted value — an empty string, say —
 //! for a field the server stopped sending. Callers doing read-modify-write should send an
 //! explicit set of the fields they mean to change rather than echoing back a deserialized
-//! response. `clickhousectl` itself does not round-trip: update commands build request
-//! bodies from CLI flags, and the `Patch` request types are separate and all-optional.
+//! response. `clickhousectl` itself does not round-trip: request types are separate from
+//! response models and its update commands build bodies from CLI flags.
 //!
-//! Exposure to a silently defaulted field is bounded by the daily OpenAPI drift job,
-//! which compares the live spec against these models and files an issue when they
-//! diverge.
+//! Exposure to a silently defaulted field, and to the residual type-change case, is
+//! bounded by the daily OpenAPI drift job, which compares the live spec against these
+//! models and files an issue when they diverge.
 
 pub mod client;
 pub mod error;
