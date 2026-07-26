@@ -1,5 +1,24 @@
 use clickhouse_cloud_api::models::*;
 
+/// Shared assertion for the discriminated-union `Unknown` catch-all: an
+/// unrecognized payload must deserialize into the union's lossless `Unknown`
+/// variant (confirmed by `is_unknown`) and re-serialize to the byte-identical
+/// JSON object it came from.
+fn assert_unknown_variant_round_trips<T>(json: &str, is_unknown: impl FnOnce(&T) -> bool)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let parsed: T = serde_json::from_str(json).unwrap();
+    assert!(
+        is_unknown(&parsed),
+        "payload did not deserialize to the Unknown variant"
+    );
+    let reserialized = serde_json::to_value(&parsed).unwrap();
+    assert_eq!(reserialized, original);
+    assert!(reserialized.is_object());
+}
+
 #[test]
 fn deserialize_organization() {
     let json = r#"{
@@ -1221,21 +1240,16 @@ fn deserialize_backup_bucket_dispatches_azure() {
 
 #[test]
 fn deserialize_backup_bucket_unknown_provider() {
+    // The Unknown payload round-trips losslessly as the original object, not a
+    // JSON string.
     let json = r#"{
         "bucketProvider": "NEW_PROVIDER",
         "somefield": "somevalue",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    let b: BackupBucket = serde_json::from_str(json).unwrap();
-    match &b {
-        BackupBucket::Unknown(v) => assert_eq!(*v, original),
-        other => panic!("expected unknown bucket, got {other}"),
-    }
-    // The Unknown payload round-trips losslessly as the original object, not a
-    // JSON string.
-    assert_eq!(serde_json::to_value(&b).unwrap(), original);
-    assert!(serde_json::to_value(&b).unwrap().is_object());
+    assert_unknown_variant_round_trips(json, |b: &BackupBucket| {
+        matches!(b, BackupBucket::Unknown(_))
+    });
 }
 
 #[test]
@@ -1244,14 +1258,9 @@ fn backup_bucket_patch_request_unknown_provider_round_trips() {
         "bucketProvider": "NEW_PROVIDER",
         "somefield": "somevalue"
     }"#;
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    let b: BackupBucketPatchRequest = serde_json::from_str(json).unwrap();
-    match &b {
-        BackupBucketPatchRequest::Unknown(v) => assert_eq!(*v, original),
-        other => panic!("expected unknown patch request, got {other}"),
-    }
-    assert_eq!(serde_json::to_value(&b).unwrap(), original);
-    assert!(serde_json::to_value(&b).unwrap().is_object());
+    assert_unknown_variant_round_trips(json, |b: &BackupBucketPatchRequest| {
+        matches!(b, BackupBucketPatchRequest::Unknown(_))
+    });
 }
 
 #[test]
@@ -1260,14 +1269,9 @@ fn backup_bucket_post_request_unknown_provider_round_trips() {
         "bucketProvider": "NEW_PROVIDER",
         "somefield": "somevalue"
     }"#;
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    let b: BackupBucketPostRequest = serde_json::from_str(json).unwrap();
-    match &b {
-        BackupBucketPostRequest::Unknown(v) => assert_eq!(*v, original),
-        other => panic!("expected unknown post request, got {other}"),
-    }
-    assert_eq!(serde_json::to_value(&b).unwrap(), original);
-    assert!(serde_json::to_value(&b).unwrap().is_object());
+    assert_unknown_variant_round_trips(json, |b: &BackupBucketPostRequest| {
+        matches!(b, BackupBucketPostRequest::Unknown(_))
+    });
 }
 
 #[test]
@@ -1276,14 +1280,9 @@ fn backup_bucket_properties_unknown_provider_round_trips() {
         "bucketProvider": "NEW_PROVIDER",
         "somefield": "somevalue"
     }"#;
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    let b: BackupBucketProperties = serde_json::from_str(json).unwrap();
-    match &b {
-        BackupBucketProperties::Unknown(v) => assert_eq!(*v, original),
-        other => panic!("expected unknown properties, got {other}"),
-    }
-    assert_eq!(serde_json::to_value(&b).unwrap(), original);
-    assert!(serde_json::to_value(&b).unwrap().is_object());
+    assert_unknown_variant_round_trips(json, |b: &BackupBucketProperties| {
+        matches!(b, BackupBucketProperties::Unknown(_))
+    });
 }
 
 #[test]
@@ -1551,7 +1550,7 @@ fn deserialize_clickpipe_source_with_pubsub() {
 }
 
 // ===========================================================================
-// ClickStack dashboard containers, heatmap, on-click (issue #203 drift)
+// ClickStack dashboard containers, on-click (issue #203 drift)
 // ===========================================================================
 
 #[test]
@@ -1589,31 +1588,6 @@ fn deserialize_clickstack_dashboard_with_containers() {
     assert_eq!(tabs[0].title, "Tab 1");
     assert_eq!(dash.tiles[0].container_id.as_deref(), Some("c-1"));
     assert_eq!(dash.tiles[0].tab_id.as_deref(), Some("t-1"));
-}
-
-#[test]
-fn deserialize_clickstack_tile_config_heatmap_variant() {
-    // Untagged-enum dispatch must reach the new ClickStackHeatmapChartConfig
-    // arm. The discriminator is `displayType: "heatmap"` plus the heatmap-
-    // specific `select` shape with `valueExpression`.
-    let json = r#"{
-        "displayType": "heatmap",
-        "sourceId": "src-1",
-        "select": [{"valueExpression": "latency_ms"}]
-    }"#;
-    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match cfg {
-        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
-            assert_eq!(h.source_id, "src-1");
-            assert_eq!(
-                h.display_type,
-                ClickStackHeatmapChartConfigDisplaytype::Heatmap
-            );
-            assert_eq!(h.select.len(), 1);
-            assert_eq!(h.select[0].value_expression, "latency_ms");
-        }
-        other => panic!("expected heatmap variant, got {other}"),
-    }
 }
 
 #[test]
@@ -1687,7 +1661,7 @@ fn deserialize_clickstack_on_click_target_template_variant() {
 }
 
 #[test]
-fn clickstack_on_click_target_unknown_shape_round_trips() {
+fn deserialize_clickstack_on_click_target_unknown_shape_round_trips() {
     // A payload matching neither the id nor template variant must land in the
     // lossless Unknown catch-all and re-serialize to the same JSON object rather
     // than erroring on deserialize.
@@ -1695,15 +1669,91 @@ fn clickstack_on_click_target_unknown_shape_round_trips() {
         "mode": "future_mode",
         "foo": 1
     }"#;
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    let target: ClickStackOnClickTarget = serde_json::from_str(json).unwrap();
-    match &target {
-        ClickStackOnClickTarget::Unknown(v) => assert_eq!(*v, original),
-        other => panic!("expected unknown target, got {other}"),
+    assert_unknown_variant_round_trips(json, |t: &ClickStackOnClickTarget| {
+        matches!(t, ClickStackOnClickTarget::Unknown(_))
+    });
+}
+
+#[test]
+fn deserialize_clickstack_on_click_external_round_trip() {
+    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{ServiceName}}"}"#;
+    let ext: ClickStackOnClickExternal = serde_json::from_str(json).unwrap();
+    assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
+    assert_eq!(ext.url_template, "https://example.com/{{ServiceName}}");
+    let v = serde_json::to_value(&ext).unwrap();
+    assert_eq!(v["type"], "external");
+    assert_eq!(v["urlTemplate"], "https://example.com/{{ServiceName}}");
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dispatches_external() {
+    // An "external" on-click payload has no `target`, so it cannot match the
+    // Search or Dashboard variants (both require `target`) and dispatches
+    // through the untagged union to the External variant.
+    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{value}}"}"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match &on_click {
+        ClickStackOnClick::ClickStackOnClickExternal(ext) => {
+            assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
+            assert_eq!(ext.url_template, "https://example.com/{{value}}");
+        }
+        other => panic!("expected external variant, got {other}"),
     }
-    let reserialized = serde_json::to_value(&target).unwrap();
-    assert_eq!(reserialized, original);
-    assert!(reserialized.is_object());
+    // Round-trips back to the same wire shape through the union.
+    let v = serde_json::to_value(&on_click).unwrap();
+    assert_eq!(v["type"], "external");
+    assert_eq!(v["urlTemplate"], "https://example.com/{{value}}");
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dispatches_search() {
+    // Regression: adding the External variant must not steal the Search shape.
+    let json = r#"{
+        "type": "search",
+        "target": {"mode": "id", "id": "search-1"}
+    }"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickSearch(s) => {
+            assert_eq!(s.r#type, ClickStackOnClickSearchType::Search);
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dashboard_still_parses() {
+    // Regression: a `type: "dashboard"` payload dispatches to the Dashboard
+    // variant through the union rather than being greedily absorbed by the
+    // structurally identical Search variant.
+    let json = r#"{
+        "type": "dashboard",
+        "target": {"mode": "template", "template": "{{x}}"}
+    }"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickDashboard(dash) => {
+            assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
+        }
+        other => panic!("expected dashboard variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_unknown_type_round_trip() {
+    // An unrecognized `type` discriminator falls back to the Unknown variant,
+    // which stores the raw JSON so it round-trips faithfully.
+    let json = r#"{"type":"popover","payload":{"nested":[1,2,3]}}"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match &on_click {
+        ClickStackOnClick::Unknown(v) => {
+            assert_eq!(v["type"], "popover");
+            assert_eq!(v["payload"]["nested"][2], 3);
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&on_click).unwrap(), expected);
 }
 
 #[test]
@@ -1738,15 +1788,9 @@ fn clickstack_alert_channel_unknown_shape_round_trips() {
         "type": "future_channel",
         "foo": 1
     }"#;
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    let channel: ClickStackAlertChannel = serde_json::from_str(json).unwrap();
-    match &channel {
-        ClickStackAlertChannel::Unknown(v) => assert_eq!(*v, original),
-        other => panic!("expected unknown channel, got {other}"),
-    }
-    let reserialized = serde_json::to_value(&channel).unwrap();
-    assert_eq!(reserialized, original);
-    assert!(reserialized.is_object());
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannel| {
+        matches!(c, ClickStackAlertChannel::Unknown(_))
+    });
 }
 
 #[test]
@@ -2074,13 +2118,9 @@ fn clickstack_source_dispatches_session_variant() {
 #[test]
 fn clickstack_source_unknown_kind_round_trips() {
     let json = r#"{"kind":"future_kind","name":"x"}"#;
-    let source: ClickStackSource = serde_json::from_str(json).unwrap();
-    match &source {
-        ClickStackSource::Unknown(_) => {}
-        other => panic!("expected unknown source, got {other}"),
-    }
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&source).unwrap(), original);
+    assert_unknown_variant_round_trips(json, |s: &ClickStackSource| {
+        matches!(s, ClickStackSource::Unknown(_))
+    });
 }
 
 #[test]
@@ -2519,6 +2559,23 @@ fn clickstack_number_tile_color_condition_dispatches_every_operator() {
 }
 
 #[test]
+fn clickstack_number_tile_color_condition_unknown_operator_round_trip() {
+    // An unrecognized `operator` discriminator falls back to the Unknown
+    // variant, which now stores the raw JSON object and round-trips faithfully.
+    let json = r#"{"operator":"contains","value":"warn","color":"chart-red"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match &cond {
+        ClickStackNumberTileColorCondition::Unknown(v) => {
+            assert_eq!(v["operator"], "contains");
+            assert_eq!(v["value"], "warn");
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cond).unwrap(), expected);
+}
+
+#[test]
 fn clickstack_tile_config_categorical_bar_builder_variant() {
     // `displayType: "bar"` must dispatch to the categorical bar variant, not the
     // stacked bar variant (whose discriminator is "stacked_bar").
@@ -2784,17 +2841,38 @@ fn clickstack_tile_config_markdown_variant() {
 }
 
 #[test]
+fn clickstack_tile_config_heatmap_variant() {
+    // Untagged-enum dispatch must reach the new ClickStackHeatmapChartConfig
+    // arm. The discriminator is `displayType: "heatmap"` plus the heatmap-
+    // specific `select` shape with `valueExpression`.
+    let json = r#"{
+        "displayType": "heatmap",
+        "sourceId": "src-1",
+        "select": [{"valueExpression": "latency_ms"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
+            assert_eq!(h.source_id, "src-1");
+            assert_eq!(
+                h.display_type,
+                ClickStackHeatmapChartConfigDisplaytype::Heatmap
+            );
+            assert_eq!(h.select.len(), 1);
+            assert_eq!(h.select[0].value_expression, "latency_ms");
+        }
+        other => panic!("expected heatmap variant, got {other}"),
+    }
+}
+
+#[test]
 fn clickstack_tile_config_unknown_display_type_round_trips() {
     // An unrecognized `displayType` falls to the Unknown catch-all, which now
     // stores the raw object and round-trips it faithfully.
     let json = r#"{"displayType":"sankey","sourceId":"src-1"}"#;
-    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match &cfg {
-        ClickStackTileConfig::Unknown(_) => {}
-        other => panic!("expected unknown variant, got {other}"),
-    }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cfg).unwrap(), expected);
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(cfg, ClickStackTileConfig::Unknown(_))
+    });
 }
 
 #[test]
@@ -3126,105 +3204,6 @@ fn clickstack_number_raw_sql_chart_config_color_round_trip() {
 
     let v = serde_json::to_value(ClickStackNumberRawSqlChartConfig::default()).unwrap();
     assert!(v.get("color").is_none());
-}
-
-#[test]
-fn clickstack_on_click_external_round_trip() {
-    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{ServiceName}}"}"#;
-    let ext: ClickStackOnClickExternal = serde_json::from_str(json).unwrap();
-    assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
-    assert_eq!(ext.url_template, "https://example.com/{{ServiceName}}");
-    let v = serde_json::to_value(&ext).unwrap();
-    assert_eq!(v["type"], "external");
-    assert_eq!(v["urlTemplate"], "https://example.com/{{ServiceName}}");
-}
-
-#[test]
-fn deserialize_clickstack_on_click_dispatches_external() {
-    // An "external" on-click payload has no `target`, so it cannot match the
-    // Search or Dashboard variants (both require `target`) and dispatches
-    // through the untagged union to the External variant.
-    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{value}}"}"#;
-    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
-    match &on_click {
-        ClickStackOnClick::ClickStackOnClickExternal(ext) => {
-            assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
-            assert_eq!(ext.url_template, "https://example.com/{{value}}");
-        }
-        other => panic!("expected external variant, got {other}"),
-    }
-    // Round-trips back to the same wire shape through the union.
-    let v = serde_json::to_value(&on_click).unwrap();
-    assert_eq!(v["type"], "external");
-    assert_eq!(v["urlTemplate"], "https://example.com/{{value}}");
-}
-
-#[test]
-fn deserialize_clickstack_on_click_dispatches_search() {
-    // Regression: adding the External variant must not steal the Search shape.
-    let json = r#"{
-        "type": "search",
-        "target": {"mode": "id", "id": "search-1"}
-    }"#;
-    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
-    match on_click {
-        ClickStackOnClick::ClickStackOnClickSearch(s) => {
-            assert_eq!(s.r#type, ClickStackOnClickSearchType::Search);
-        }
-        other => panic!("expected search variant, got {other}"),
-    }
-}
-
-#[test]
-fn deserialize_clickstack_on_click_dashboard_still_parses() {
-    // Regression: a `type: "dashboard"` payload dispatches to the Dashboard
-    // variant through the union rather than being greedily absorbed by the
-    // structurally identical Search variant.
-    let json = r#"{
-        "type": "dashboard",
-        "target": {"mode": "template", "template": "{{x}}"}
-    }"#;
-    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
-    match on_click {
-        ClickStackOnClick::ClickStackOnClickDashboard(dash) => {
-            assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
-        }
-        other => panic!("expected dashboard variant, got {other}"),
-    }
-}
-
-#[test]
-fn deserialize_clickstack_on_click_unknown_type_round_trip() {
-    // An unrecognized `type` discriminator falls back to the Unknown variant,
-    // which stores the raw JSON so it round-trips faithfully.
-    let json = r#"{"type":"popover","payload":{"nested":[1,2,3]}}"#;
-    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
-    match &on_click {
-        ClickStackOnClick::Unknown(v) => {
-            assert_eq!(v["type"], "popover");
-            assert_eq!(v["payload"]["nested"][2], 3);
-        }
-        other => panic!("expected unknown variant, got {other}"),
-    }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&on_click).unwrap(), expected);
-}
-
-#[test]
-fn clickstack_number_tile_color_condition_unknown_operator_round_trip() {
-    // An unrecognized `operator` discriminator falls back to the Unknown
-    // variant, which now stores the raw JSON object and round-trips faithfully.
-    let json = r#"{"operator":"contains","value":"warn","color":"chart-red"}"#;
-    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
-    match &cond {
-        ClickStackNumberTileColorCondition::Unknown(v) => {
-            assert_eq!(v["operator"], "contains");
-            assert_eq!(v["value"], "warn");
-        }
-        other => panic!("expected unknown variant, got {other}"),
-    }
-    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(serde_json::to_value(&cond).unwrap(), expected);
 }
 
 #[test]
@@ -3625,14 +3604,9 @@ fn deserialize_clickstack_webhook_unknown_service_round_trips() {
         "createdAt": "2025-01-01T00:00:00.000Z",
         "updatedAt": "2025-06-15T10:30:00.000Z"
     }"#;
-    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
-    match &w {
-        ClickStackWebhook::Unknown(_) => {}
-        other => panic!("expected Unknown webhook variant, got {other}"),
-    }
-    let round_trip = serde_json::to_value(&w).unwrap();
-    let original: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_eq!(round_trip, original);
+    assert_unknown_variant_round_trips(json, |w: &ClickStackWebhook| {
+        matches!(w, ClickStackWebhook::Unknown(_))
+    });
 }
 
 #[test]
