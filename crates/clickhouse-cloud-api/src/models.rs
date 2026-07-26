@@ -8110,7 +8110,10 @@ impl std::fmt::Display for ClickStackPieChartConfig {
 }
 
 /// `ClickStackSource` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Uses `kind` as a discriminator: `"log"`, `"trace"`, `"metric"`,
+/// `"session"`, or `"promql"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackSource {
     ClickStackLogSource(ClickStackLogSource),
@@ -8119,7 +8122,34 @@ pub enum ClickStackSource {
     ClickStackSessionSource(ClickStackSessionSource),
     ClickStackPromqlSource(ClickStackPromqlSource),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
+}
+
+impl<'de> Deserialize<'de> for ClickStackSource {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value.get("kind").and_then(|v| v.as_str()) {
+            Some("log") => serde_json::from_value(value)
+                .map(ClickStackSource::ClickStackLogSource)
+                .map_err(serde::de::Error::custom),
+            Some("trace") => serde_json::from_value(value)
+                .map(ClickStackSource::ClickStackTraceSource)
+                .map_err(serde::de::Error::custom),
+            Some("metric") => serde_json::from_value(value)
+                .map(ClickStackSource::ClickStackMetricSource)
+                .map_err(serde::de::Error::custom),
+            Some("session") => serde_json::from_value(value)
+                .map(ClickStackSource::ClickStackSessionSource)
+                .map_err(serde::de::Error::custom),
+            Some("promql") => serde_json::from_value(value)
+                .map(ClickStackSource::ClickStackPromqlSource)
+                .map_err(serde::de::Error::custom),
+            _ => Ok(ClickStackSource::Unknown(value)),
+        }
+    }
 }
 
 impl std::fmt::Display for ClickStackSource {

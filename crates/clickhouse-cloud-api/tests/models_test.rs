@@ -1766,6 +1766,131 @@ fn clickstack_source_dispatches_log_variant() {
 }
 
 #[test]
+fn clickstack_source_dispatches_trace_variant() {
+    // Regression (PR #311 review P1-1): a spec-valid trace payload shares every
+    // Log-required field (defaultTableSelectExpression et al.), so untagged
+    // matching would greedily resolve it to the Log variant and drop trace-only
+    // fields. Discriminator dispatch on `kind` must route it to the Trace
+    // variant with its trace-only fields intact.
+    let json = r#"{
+        "id": "trace-1",
+        "kind": "trace",
+        "name": "traces",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "traces"},
+        "timestampValueExpression": "Timestamp",
+        "defaultTableSelectExpression": "Timestamp, SpanName",
+        "durationExpression": "Duration",
+        "durationPrecision": 9,
+        "parentSpanIdExpression": "ParentSpanId",
+        "spanIdExpression": "SpanId",
+        "spanKindExpression": "SpanKind",
+        "spanNameExpression": "SpanName",
+        "traceIdExpression": "TraceId"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackTraceSource(src) => {
+            assert_eq!(src.kind, ClickStackTraceSourceKind::Trace);
+            assert_eq!(src.name, "traces");
+            assert_eq!(src.default_table_select_expression, "Timestamp, SpanName");
+            assert_eq!(src.duration_expression, "Duration");
+            assert_eq!(src.duration_precision, 9);
+            assert_eq!(src.parent_span_id_expression, "ParentSpanId");
+            assert_eq!(src.span_id_expression, "SpanId");
+            assert_eq!(src.span_kind_expression, "SpanKind");
+            assert_eq!(src.span_name_expression, "SpanName");
+            assert_eq!(src.trace_id_expression, "TraceId");
+        }
+        other => panic!("expected trace source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_metric_variant() {
+    let json = r#"{
+        "id": "metric-1",
+        "kind": "metric",
+        "name": "metrics",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "TimeUnix",
+        "resourceAttributesExpression": "ResourceAttributes",
+        "metricTables": {
+            "gauge": "otel_metrics_gauge",
+            "histogram": "otel_metrics_histogram",
+            "sum": "otel_metrics_sum",
+            "summary": "otel_metrics_summary",
+            "exponential histogram": "otel_metrics_exponential_histogram"
+        }
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackMetricSource(src) => {
+            assert_eq!(src.kind, ClickStackMetricSourceKind::Metric);
+            assert_eq!(src.name, "metrics");
+            assert_eq!(src.resource_attributes_expression, "ResourceAttributes");
+            assert_eq!(src.metric_tables.gauge, "otel_metrics_gauge");
+        }
+        other => panic!("expected metric source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_session_variant() {
+    let json = r#"{
+        "id": "session-1",
+        "kind": "session",
+        "name": "sessions",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "sessions"},
+        "traceSourceId": "trace-1"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackSessionSource(src) => {
+            assert_eq!(src.kind, ClickStackSessionSourceKind::Session);
+            assert_eq!(src.name, "sessions");
+            assert_eq!(src.trace_source_id, "trace-1");
+        }
+        other => panic!("expected session source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_unknown_kind_round_trips() {
+    let json = r#"{"kind":"future_kind","name":"x"}"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match &source {
+        ClickStackSource::Unknown(_) => {}
+        other => panic!("expected unknown source, got {other}"),
+    }
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&source).unwrap(), original);
+}
+
+#[test]
+fn clickstack_source_serializes_as_inner_log_struct() {
+    let log = ClickStackLogSource {
+        kind: ClickStackLogSourceKind::Log,
+        name: "logs".to_string(),
+        connection: "conn-1".to_string(),
+        default_table_select_expression: "*".to_string(),
+        from: ClickStackSourceFrom {
+            database_name: "default".to_string(),
+            table_name: "logs".to_string(),
+        },
+        timestamp_value_expression: "ts".to_string(),
+        ..Default::default()
+    };
+    let source = ClickStackSource::ClickStackLogSource(log.clone());
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::to_value(&log).unwrap()
+    );
+}
+
+#[test]
 fn deserialize_clickstack_alert_with_note() {
     let json = r#"{
         "id": "alert-1",
