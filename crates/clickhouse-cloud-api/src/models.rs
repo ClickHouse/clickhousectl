@@ -7728,7 +7728,8 @@ impl std::fmt::Display for PgConfigWalCompression {
 
 /// `BackupBucket` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucket {
@@ -7763,7 +7764,8 @@ impl std::fmt::Display for BackupBucket {
 
 /// `BackupBucketPatchRequest` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketPatchRequest {
@@ -7800,7 +7802,8 @@ impl std::fmt::Display for BackupBucketPatchRequest {
 
 /// `BackupBucketPostRequest` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketPostRequest {
@@ -7835,7 +7838,8 @@ impl std::fmt::Display for BackupBucketPostRequest {
 
 /// `BackupBucketProperties` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketProperties {
@@ -7947,8 +7951,8 @@ impl std::fmt::Display for ClickStackCategoricalBarChartConfig {
 
 /// `ClickStackDashboardChartSeries` - one of multiple variants.
 ///
-/// Uses `type` as a discriminator: `"time"`, `"table"`, `"number"`,
-/// `"search"`, or `"markdown"`.
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackDashboardChartSeries {
@@ -8037,8 +8041,8 @@ impl std::fmt::Display for ClickStackNumberChartConfig {
 
 /// `ClickStackNumberTileColorCondition` - one of multiple variants.
 ///
-/// Uses `operator` as a discriminator: `"gt"`, `"gte"`, `"lt"`, `"lte"`,
-/// `"between"`, `"eq"`, or `"neq"`.
+/// Dispatched on the `operator` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackNumberTileColorCondition {
@@ -8079,7 +8083,8 @@ impl std::fmt::Display for ClickStackNumberTileColorCondition {
 
 /// `ClickStackOnClick` - one of multiple variants.
 ///
-/// Uses `type` as a discriminator: `"search"`, `"dashboard"`, or `"external"`.
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackOnClick {
@@ -8120,7 +8125,8 @@ impl std::fmt::Display for ClickStackOnClick {
 
 /// `ClickStackOnClickTarget` - one of multiple variants.
 ///
-/// Uses `mode` as a discriminator: `"id"` or `"template"`.
+/// Dispatched on the `mode` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackOnClickTarget {
@@ -8184,8 +8190,8 @@ impl std::fmt::Display for ClickStackPieChartConfig {
 
 /// `ClickStackSource` - one of multiple variants.
 ///
-/// Uses `kind` as a discriminator: `"log"`, `"trace"`, `"metric"`,
-/// `"session"`, or `"promql"`.
+/// Dispatched on the `kind` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackSource {
@@ -8250,9 +8256,8 @@ impl std::fmt::Display for ClickStackTableChartConfig {
 
 /// `ClickStackTileConfig` - one of multiple variants.
 ///
-/// Uses `displayType` as a discriminator: `"line"`, `"stacked_bar"`, `"bar"`,
-/// `"table"`, `"number"`, `"pie"`, `"heatmap"`, `"search"`,
-/// `"event_patterns"`, or `"markdown"`.
+/// Dispatched on the `displayType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackTileConfig {
@@ -8312,8 +8317,8 @@ impl std::fmt::Display for ClickStackTileConfig {
 
 /// `ClickStackWebhook` - one of multiple variants.
 ///
-/// Uses `service` as a discriminator: `"slack"`, `"incidentio"`, `"generic"`,
-/// `"slack_api"`, or `"pagerduty_api"`.
+/// Dispatched on the `service` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackWebhook {
