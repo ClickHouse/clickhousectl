@@ -1,6 +1,13 @@
 //! Typed models for ClickHouse Cloud API schemas.
 //!
-//! Auto-generated from the OpenAPI specification.
+//! Derived from the OpenAPI specification and kept in step with it by the drift
+//! analyzer, which parses this file — every model struct, enum and type alias
+//! must be declared here as literal source.
+//!
+//! Request models are strict and response models have every field `Option<T>`; a
+//! schema used in both directions appears twice, as `{Name}` and
+//! `{Name}Response`. `#[serde(default)]` is banned. See the crate-level docs for
+//! the policy and the reasoning behind it.
 
 use serde::{Deserialize, Serialize};
 
