@@ -1714,7 +1714,7 @@ async fn list_reverse_private_endpoints() {
         .unwrap();
     let endpoints = resp.result.unwrap();
     assert_eq!(endpoints.len(), 1);
-    assert_eq!(endpoints[0].description, "MSK endpoint");
+    assert_eq!(endpoints[0].description.as_deref(), Some("MSK endpoint"));
 }
 
 #[tokio::test]
@@ -1745,7 +1745,7 @@ async fn create_reverse_private_endpoint() {
         .await
         .unwrap();
     let rpe = resp.result.unwrap();
-    assert_eq!(rpe.description, "New RPE");
+    assert_eq!(rpe.description.as_deref(), Some("New RPE"));
 }
 
 #[tokio::test]
@@ -1769,7 +1769,7 @@ async fn get_reverse_private_endpoint() {
         .await
         .unwrap();
     let rpe = resp.result.unwrap();
-    assert_eq!(rpe.description, "My RPE");
+    assert_eq!(rpe.description.as_deref(), Some("My RPE"));
 }
 
 #[tokio::test]
@@ -2885,9 +2885,9 @@ async fn list_quotas() {
     assert_eq!(quotas.len(), 1);
     assert_eq!(
         quotas[0].quota_code,
-        OrganizationQuotaQuotacode::Services_per_organization
+        Some(OrganizationQuotaQuotacode::Services_per_organization)
     );
-    assert_eq!(quotas[0].scope, OrganizationQuotaScope::Organization);
+    assert_eq!(quotas[0].scope, Some(OrganizationQuotaScope::Organization));
     assert_eq!(quotas[0].usage, Some(3));
 }
 
@@ -2917,9 +2917,9 @@ async fn get_quota() {
     let quota = resp.result.unwrap();
     assert_eq!(
         quota.quota_code,
-        OrganizationQuotaQuotacode::Replicas_per_warehouse
+        Some(OrganizationQuotaQuotacode::Replicas_per_warehouse)
     );
-    assert_eq!(quota.scope, OrganizationQuotaScope::Warehouse);
+    assert_eq!(quota.scope, Some(OrganizationQuotaScope::Warehouse));
     assert_eq!(quota.usage, None);
 }
 

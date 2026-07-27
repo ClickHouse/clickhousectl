@@ -1363,6 +1363,101 @@ fn shared_leaves_stay_strict_on_the_request_side() {
 }
 
 #[test]
+fn infrastructure_responses_tolerate_dropped_and_null_fields() {
+    // Reverse private endpoints and quotas are response-only, so every field is
+    // `Option<T>`: a dropped key and an explicit `null` both land as `None`.
+    // `null` is the case `#[serde(default)]` never covered.
+    let dropped: ReversePrivateEndpoint = serde_json::from_str("{}").unwrap();
+    let nulled: ReversePrivateEndpoint = serde_json::from_str(
+        r#"{"id":null,"description":null,"status":null,"type":null,"dnsNames":null,
+            "privateDnsNames":null,"endpointId":null,"serviceId":null,
+            "customPrivateDnsMappings":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, ReversePrivateEndpoint::default());
+    assert_eq!(nulled, ReversePrivateEndpoint::default());
+    // A `null` on a list field is the residual case the previous
+    // `#[serde(default)]` policy still failed on.
+    assert_eq!(nulled.dns_names, None);
+    assert_eq!(nulled.custom_private_dns_mappings, None);
+
+    let quota: OrganizationQuota = serde_json::from_str(r#"{"name":"Services"}"#).unwrap();
+    assert_eq!(quota.name.as_deref(), Some("Services"));
+    assert_eq!(quota.quota_code, None);
+    assert_eq!(quota.value, None);
+    assert_eq!(quota.adjustable, None);
+}
+
+#[test]
+fn reverse_private_endpoint_omits_absent_fields_when_serialized() {
+    // Absence stays absent in `--json` output, including inside the nested
+    // response variant of the shared `customPrivateDnsMapping` schema.
+    let rpe = ReversePrivateEndpoint {
+        description: Some("MSK endpoint".to_string()),
+        custom_private_dns_mappings: Some(vec![CustomPrivateDnsMappingResponse {
+            private_dns_name: None,
+        }]),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&rpe).unwrap(),
+        serde_json::json!({
+            "description": "MSK endpoint",
+            "customPrivateDnsMappings": [{}],
+        })
+    );
+}
+
+#[test]
+fn infrastructure_shared_leaves_stay_strict_on_the_request_side() {
+    // `customPrivateDnsMapping` and `RBACPolicyTags` are sent as well as
+    // returned, so each splits: only the `{Name}Response` variant is used by a
+    // response type, and neither variant fabricates a value for a missing key.
+    let mapping = CustomPrivateDnsMapping {
+        private_dns_name: Some("db.internal".to_string()),
+    };
+    assert_eq!(
+        serde_json::to_value(&mapping).unwrap(),
+        serde_json::json!({ "privateDnsName": "db.internal" })
+    );
+    // Both schemas are all-optional upstream, so the request variants accept an
+    // empty object too — what the split guarantees is that the response variant
+    // can never regain a required field.
+    assert_eq!(
+        serde_json::from_str::<CustomPrivateDnsMappingResponse>("{}").unwrap(),
+        CustomPrivateDnsMappingResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<RBACPolicyTagsResponse>(r#"{"grants":null,"roleV2":null}"#).unwrap(),
+        RBACPolicyTagsResponse::default()
+    );
+    let policy: RBACPolicy = serde_json::from_str(r#"{"tags":{"grants":["select"]}}"#).unwrap();
+    assert_eq!(
+        policy.tags,
+        Some(RBACPolicyTagsResponse {
+            grants: Some(vec!["select".to_string()]),
+            role_v2: None,
+        })
+    );
+}
+
+#[test]
+fn reverse_private_endpoint_request_rejects_a_missing_required_field() {
+    // The request side is strict: without `#[serde(default)]` a payload missing
+    // `description` or `type` is rejected rather than silently defaulted.
+    assert!(serde_json::from_str::<CreateReversePrivateEndpoint>("{}").is_err());
+    let body = CreateReversePrivateEndpoint {
+        description: "New RPE".to_string(),
+        r#type: CreateReversePrivateEndpointType::MSK_MULTI_VPC,
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&body).unwrap(),
+        serde_json::json!({ "description": "New RPE", "type": "MSK_MULTI_VPC" })
+    );
+}
+
+#[test]
 fn resource_tag_response_converts_back_into_a_request_tag() {
     let tag = ResourceTagsV1::try_from(ResourceTagsV1Response {
         key: Some("env".to_string()),
@@ -1652,10 +1747,10 @@ fn deserialize_reverse_private_endpoint() {
         "status": "available"
     }"#;
     let rpe: ReversePrivateEndpoint = serde_json::from_str(json).unwrap();
-    assert_eq!(rpe.description, "MSK endpoint");
+    assert_eq!(rpe.description.as_deref(), Some("MSK endpoint"));
     assert_eq!(
         rpe.status,
-        ReversePrivateEndpointStatus::Other("available".to_string())
+        Some(ReversePrivateEndpointStatus::Other("available".to_string()))
     );
 }
 
@@ -4100,12 +4195,12 @@ fn organization_quota_typed_enums_round_trip() {
     let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
     assert_eq!(
         quota.quota_code,
-        OrganizationQuotaQuotacode::Replicas_per_warehouse
+        Some(OrganizationQuotaQuotacode::Replicas_per_warehouse)
     );
-    assert_eq!(quota.scope, OrganizationQuotaScope::Warehouse);
-    assert_eq!(quota.value, 20);
+    assert_eq!(quota.scope, Some(OrganizationQuotaScope::Warehouse));
+    assert_eq!(quota.value, Some(20));
     assert_eq!(quota.usage, Some(3));
-    assert!(quota.adjustable);
+    assert_eq!(quota.adjustable, Some(true));
 
     let v = serde_json::to_value(&quota).unwrap();
     assert_eq!(v["quotaCode"], "replicas-per-warehouse");
@@ -4130,9 +4225,9 @@ fn organization_quota_usage_optional_omitted() {
     let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
     assert_eq!(
         quota.quota_code,
-        OrganizationQuotaQuotacode::Services_per_organization
+        Some(OrganizationQuotaQuotacode::Services_per_organization)
     );
-    assert_eq!(quota.scope, OrganizationQuotaScope::Organization);
+    assert_eq!(quota.scope, Some(OrganizationQuotaScope::Organization));
     assert_eq!(quota.usage, None);
 
     let v = serde_json::to_value(&quota).unwrap();

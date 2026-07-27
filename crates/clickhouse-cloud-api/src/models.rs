@@ -8778,7 +8778,7 @@ pub struct AzureBackupBucketProperties {
 /// `AzureEventHub` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureEventHub {
-    #[serde(rename = "connectionString", default)]
+    #[serde(rename = "connectionString")]
     pub connection_string: String,
 }
 
@@ -12613,48 +12613,33 @@ pub struct ClickStackWebhookInput {
 pub struct CreateReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
-    #[serde(default)]
     pub description: String,
     #[serde(
         rename = "gcpServiceAttachment",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub gcp_service_attachment: Option<String>,
-    #[serde(
-        rename = "mskAuthentication",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "mskAuthentication", skip_serializing_if = "Option::is_none")]
     pub msk_authentication: Option<CreateReversePrivateEndpointMskauthentication>,
-    #[serde(
-        rename = "mskClusterArn",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "mskClusterArn", skip_serializing_if = "Option::is_none")]
     pub msk_cluster_arn: Option<String>,
-    #[serde(default)]
     pub r#type: CreateReversePrivateEndpointType,
     #[serde(
         rename = "vpcEndpointServiceName",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_endpoint_service_name: Option<String>,
     #[serde(
         rename = "vpcResourceConfigurationId",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_configuration_id: Option<String>,
     #[serde(
         rename = "vpcResourceShareArn",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_share_arn: Option<String>,
 }
@@ -12704,11 +12689,19 @@ pub struct CurrentScaling {
 /// `CustomPrivateDnsMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CustomPrivateDnsMapping {
-    #[serde(
-        rename = "privateDnsName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
+    pub private_dns_name: Option<String>,
+}
+
+/// `CustomPrivateDnsMapping` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`CustomPrivateDnsMapping`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CustomPrivateDnsMappingResponse {
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
     pub private_dns_name: Option<String>,
 }
 
@@ -12859,15 +12852,11 @@ pub struct IpAccessListPatch {
 /// `License` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct License {
-    #[serde(rename = "environmentFingerprint", default)]
+    #[serde(rename = "environmentFingerprint")]
     pub environment_fingerprint: String,
-    #[serde(default)]
     pub expiration: String,
-    #[serde(default)]
     pub id: String,
-    #[serde(default)]
     pub memory: String,
-    #[serde(default)]
     pub name: String,
 }
 
@@ -12902,18 +12891,17 @@ pub struct MemberPatchRequest {
 /// `MskIamUser` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MskIamUser {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "secretKey", default)]
+    #[serde(rename = "secretKey")]
     pub secret_key: String,
 }
 
 /// `MutualTLS` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MutualTLS {
-    #[serde(default)]
     pub certificate: String,
-    #[serde(rename = "privateKey", default)]
+    #[serde(rename = "privateKey")]
     pub private_key: String,
 }
 
@@ -12988,23 +12976,26 @@ pub struct OrganizationPrivateEndpointsPatch {
 /// `OrganizationQuota` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationQuota {
-    pub adjustable: bool,
-    pub description: String,
-    pub name: String,
-    #[serde(rename = "quotaCode")]
-    pub quota_code: OrganizationQuotaQuotacode,
-    pub scope: OrganizationQuotaScope,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adjustable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "quotaCode", skip_serializing_if = "Option::is_none")]
+    pub quota_code: Option<OrganizationQuotaQuotacode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<OrganizationQuotaScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<i64>,
-    pub value: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<i64>,
 }
 
 /// `PLAIN` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PLAIN {
-    #[serde(default)]
     pub password: String,
-    #[serde(default)]
     pub username: String,
 }
 
@@ -13376,7 +13367,7 @@ pub struct RBACPolicy {
     #[serde(rename = "roleId", skip_serializing_if = "Option::is_none")]
     pub role_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<RBACPolicyTags>,
+    pub tags: Option<RBACPolicyTagsResponse>,
     #[serde(rename = "tenantId", skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
 }
@@ -13395,9 +13386,22 @@ pub struct RBACPolicyCreateRequest {
 /// `RBACPolicyTags` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RBACPolicyTags {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub grants: Option<Vec<String>>,
-    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none")]
+    pub role_v2: Option<RBACPolicyTagsRolev2>,
+}
+
+/// `RBACPolicyTags` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`RBACPolicyTags`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RBACPolicyTagsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Vec<String>>,
+    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none")]
     pub role_v2: Option<RBACPolicyTagsRolev2>,
 }
 
@@ -13452,60 +13456,47 @@ pub struct ResourceTagsV1Response {
 pub struct ReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
-    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
-    #[serde(default)]
-    pub description: String,
-    #[serde(rename = "dnsNames", default)]
-    pub dns_names: Vec<String>,
-    #[serde(rename = "endpointId", default)]
-    pub endpoint_id: String,
+    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMappingResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "dnsNames", skip_serializing_if = "Option::is_none")]
+    pub dns_names: Option<Vec<String>>,
+    #[serde(rename = "endpointId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_id: Option<String>,
     #[serde(
         rename = "gcpServiceAttachment",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub gcp_service_attachment: Option<String>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(
-        rename = "mskAuthentication",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "mskAuthentication", skip_serializing_if = "Option::is_none")]
     pub msk_authentication: Option<ReversePrivateEndpointMskauthentication>,
-    #[serde(
-        rename = "mskClusterArn",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "mskClusterArn", skip_serializing_if = "Option::is_none")]
     pub msk_cluster_arn: Option<String>,
-    #[serde(rename = "privateDnsNames", default)]
-    pub private_dns_names: Vec<String>,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: uuid::Uuid,
-    #[serde(default)]
-    pub status: ReversePrivateEndpointStatus,
-    #[serde(default)]
-    pub r#type: ReversePrivateEndpointType,
+    #[serde(rename = "privateDnsNames", skip_serializing_if = "Option::is_none")]
+    pub private_dns_names: Option<Vec<String>>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ReversePrivateEndpointStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ReversePrivateEndpointType>,
     #[serde(
         rename = "vpcEndpointServiceName",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_endpoint_service_name: Option<String>,
     #[serde(
         rename = "vpcResourceConfigurationId",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_configuration_id: Option<String>,
     #[serde(
         rename = "vpcResourceShareArn",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_share_arn: Option<String>,
 }
@@ -13623,26 +13614,21 @@ pub struct ScalingSchedulePostRequest {
 /// `ScimEnterpriseManager` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimEnterpriseManager {
-    #[serde(rename = "displayName", default)]
+    #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimEnterpriseUser` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimEnterpriseUser {
-    #[serde(rename = "costCenter", default)]
+    #[serde(rename = "costCenter")]
     pub cost_center: String,
-    #[serde(default)]
     pub department: String,
-    #[serde(default)]
     pub division: String,
-    #[serde(rename = "employeeNumber", default)]
+    #[serde(rename = "employeeNumber")]
     pub employee_number: String,
-    #[serde(default)]
     pub manager: ScimEnterpriseManager,
-    #[serde(default)]
     pub organization: String,
 }
 
@@ -13651,14 +13637,10 @@ pub struct ScimEnterpriseUser {
 pub struct ScimGroup {
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
     pub id: uuid::Uuid,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
     pub meta: ScimGroupMeta,
     pub schemas: Vec<String>,
@@ -13681,9 +13663,9 @@ pub struct ScimGroupListResponse {
 /// `ScimGroupMember` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimGroupMember {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
     pub value: String,
 }
@@ -13694,7 +13676,7 @@ pub struct ScimGroupMeta {
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "lastModified")]
     pub last_modified: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(rename = "resourceType")]
     pub resource_type: String,
@@ -13705,13 +13687,9 @@ pub struct ScimGroupMeta {
 pub struct ScimGroupPostRequest {
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
     pub schemas: Vec<String>,
 }
@@ -13721,17 +13699,13 @@ pub struct ScimGroupPostRequest {
 pub struct ScimGroupPutRequest {
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<ScimGroupMeta>,
     pub schemas: Vec<String>,
 }
@@ -13762,9 +13736,9 @@ pub struct ScimPatchOp {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimPatchOperation {
     pub op: ScimPatchOperationOp,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
 }
 
@@ -13772,100 +13746,70 @@ pub struct ScimPatchOperation {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUser {
     pub active: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<ScimUserAddress>>,
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub emails: Vec<ScimUserEmail>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub entitlements: Option<Vec<ScimUserEntitlement>>,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
     pub meta: ScimUserMeta,
     pub name: ScimUserName,
-    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]
     pub nick_name: Option<String>,
-    #[serde(
-        rename = "phoneNumbers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "phoneNumbers", skip_serializing_if = "Option::is_none")]
     pub phone_numbers: Option<Vec<ScimUserPhoneNumber>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub photos: Option<Vec<ScimUserPhoto>>,
-    #[serde(
-        rename = "preferredLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "preferredLanguage", skip_serializing_if = "Option::is_none")]
     pub preferred_language: Option<String>,
-    #[serde(
-        rename = "profileUrl",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "profileUrl", skip_serializing_if = "Option::is_none")]
     pub profile_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<ScimUserRole>>,
     pub schemas: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(rename = "userName")]
     pub user_name: String,
-    #[serde(rename = "userType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "userType", skip_serializing_if = "Option::is_none")]
     pub user_type: Option<String>,
-    #[serde(
-        rename = "x509Certificates",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "x509Certificates", skip_serializing_if = "Option::is_none")]
     pub x509_certificates: Option<Vec<ScimX509Certificate>>,
 }
 
 /// `ScimUserAddress` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserAddress {
-    #[serde(default)]
     pub country: String,
-    #[serde(default)]
     pub formatted: String,
-    #[serde(default)]
     pub locality: String,
-    #[serde(rename = "postalCode", default)]
+    #[serde(rename = "postalCode")]
     pub postal_code: String,
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub region: String,
-    #[serde(rename = "streetAddress", default)]
+    #[serde(rename = "streetAddress")]
     pub street_address: String,
-    #[serde(default)]
     pub r#type: String,
 }
 
 /// `ScimUserEmail` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserEmail {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
     pub value: String,
 }
@@ -13873,35 +13817,25 @@ pub struct ScimUserEmail {
 /// `ScimUserEntitlement` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserEntitlement {
-    #[serde(default)]
     pub display: String,
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserGroup` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserGroup {
-    #[serde(default)]
     pub display: String,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserIm` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserIm {
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
@@ -13911,7 +13845,7 @@ pub struct ScimUserMeta {
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "lastModified")]
     pub last_modified: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(rename = "resourceType")]
     pub resource_type: String,
@@ -13920,221 +13854,159 @@ pub struct ScimUserMeta {
 /// `ScimUserName` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserName {
-    #[serde(rename = "familyName", default)]
+    #[serde(rename = "familyName")]
     pub family_name: String,
-    #[serde(default)]
     pub formatted: String,
-    #[serde(rename = "givenName", default)]
+    #[serde(rename = "givenName")]
     pub given_name: String,
-    #[serde(rename = "honorificPrefix", default)]
+    #[serde(rename = "honorificPrefix")]
     pub honorific_prefix: String,
-    #[serde(rename = "honorificSuffix", default)]
+    #[serde(rename = "honorificSuffix")]
     pub honorific_suffix: String,
-    #[serde(rename = "middleName", default)]
+    #[serde(rename = "middleName")]
     pub middle_name: String,
 }
 
 /// `ScimUserPhoneNumber` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPhoneNumber {
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserPhoto` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPhoto {
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPostRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<ScimUserAddress>>,
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub emails: Vec<ScimUserEmail>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub entitlements: Option<Vec<ScimUserEntitlement>>,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<ScimUserName>,
-    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]
     pub nick_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    #[serde(
-        rename = "phoneNumbers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "phoneNumbers", skip_serializing_if = "Option::is_none")]
     pub phone_numbers: Option<Vec<ScimUserPhoneNumber>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub photos: Option<Vec<ScimUserPhoto>>,
-    #[serde(
-        rename = "preferredLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "preferredLanguage", skip_serializing_if = "Option::is_none")]
     pub preferred_language: Option<String>,
-    #[serde(
-        rename = "profileUrl",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "profileUrl", skip_serializing_if = "Option::is_none")]
     pub profile_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<ScimUserRole>>,
     pub schemas: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(
         rename = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub urn_ietf_params_scim_schemas_extension_enterprise_2_0_user: Option<ScimEnterpriseUser>,
     #[serde(rename = "userName")]
     pub user_name: String,
-    #[serde(rename = "userType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "userType", skip_serializing_if = "Option::is_none")]
     pub user_type: Option<String>,
-    #[serde(
-        rename = "x509Certificates",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "x509Certificates", skip_serializing_if = "Option::is_none")]
     pub x509_certificates: Option<Vec<ScimX509Certificate>>,
 }
 
 /// `ScimUserPutRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPutRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<ScimUserAddress>>,
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub emails: Vec<ScimUserEmail>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub entitlements: Option<Vec<ScimUserEntitlement>>,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<ScimUserMeta>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<ScimUserName>,
-    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]
     pub nick_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    #[serde(
-        rename = "phoneNumbers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "phoneNumbers", skip_serializing_if = "Option::is_none")]
     pub phone_numbers: Option<Vec<ScimUserPhoneNumber>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub photos: Option<Vec<ScimUserPhoto>>,
-    #[serde(
-        rename = "preferredLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "preferredLanguage", skip_serializing_if = "Option::is_none")]
     pub preferred_language: Option<String>,
-    #[serde(
-        rename = "profileUrl",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "profileUrl", skip_serializing_if = "Option::is_none")]
     pub profile_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<ScimUserRole>>,
     pub schemas: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(
         rename = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub urn_ietf_params_scim_schemas_extension_enterprise_2_0_user: Option<ScimEnterpriseUser>,
     #[serde(rename = "userName")]
     pub user_name: String,
-    #[serde(rename = "userType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "userType", skip_serializing_if = "Option::is_none")]
     pub user_type: Option<String>,
-    #[serde(
-        rename = "x509Certificates",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "x509Certificates", skip_serializing_if = "Option::is_none")]
     pub x509_certificates: Option<Vec<ScimX509Certificate>>,
 }
 
 /// `ScimUserRole` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserRole {
-    #[serde(default)]
     pub display: String,
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimX509Certificate` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimX509Certificate {
-    #[serde(default)]
     pub value: String,
 }
 
@@ -14143,9 +14015,9 @@ pub struct ScimX509Certificate {
 pub struct ScimAuthenticationScheme {
     pub description: String,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<bool>,
-    #[serde(rename = "specUri", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "specUri", skip_serializing_if = "Option::is_none")]
     pub spec_uri: Option<String>,
     #[serde(rename = "type")]
     pub r#type: String,
@@ -14207,36 +14079,24 @@ pub struct ScimSchema {
 /// `ScimSchemaAttribute` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimSchemaAttribute {
-    #[serde(
-        rename = "canonicalValues",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "canonicalValues", skip_serializing_if = "Option::is_none")]
     pub canonical_values: Option<Vec<String>>,
-    #[serde(rename = "caseExact", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "caseExact", skip_serializing_if = "Option::is_none")]
     pub case_exact: Option<bool>,
     pub description: String,
     #[serde(rename = "multiValued")]
     pub multi_valued: bool,
     pub mutability: String,
     pub name: String,
-    #[serde(
-        rename = "referenceTypes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "referenceTypes", skip_serializing_if = "Option::is_none")]
     pub reference_types: Option<Vec<String>>,
     pub required: bool,
     pub returned: String,
-    #[serde(
-        rename = "subAttributes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "subAttributes", skip_serializing_if = "Option::is_none")]
     pub sub_attributes: Option<Vec<ScimSchemaAttribute>>,
     #[serde(rename = "type")]
     pub r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uniqueness: Option<String>,
 }
 
@@ -14277,11 +14137,7 @@ pub struct ScimServiceProviderConfig {
     pub bulk: ScimServiceProviderConfigBulk,
     #[serde(rename = "changePassword")]
     pub change_password: ScimBooleanFeature,
-    #[serde(
-        rename = "documentationUri",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "documentationUri", skip_serializing_if = "Option::is_none")]
     pub documentation_uri: Option<String>,
     pub etag: ScimBooleanFeature,
     pub filter: ScimServiceProviderConfigFilter,
@@ -14433,7 +14289,7 @@ pub struct Service {
 /// `ServiceAccount` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceAccount {
-    #[serde(rename = "serviceAccountFile", default)]
+    #[serde(rename = "serviceAccountFile")]
     pub service_account_file: String,
 }
 
@@ -14830,8 +14686,7 @@ pub struct UpgradeWindowPutRequest {
 pub struct UpdateReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
 }
@@ -15096,12 +14951,13 @@ pub struct PostgresInstanceUpdateConfigResponse {
 /// Standard API response wrapper.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default, rename = "requestId")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "requestId")]
     pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<T>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
