@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use clickhouse_openapi_analyzer::config::clickhouse_cloud_config;
-use clickhouse_openapi_analyzer::{AnalysisInput, analyze};
+use clickhouse_openapi_analyzer::{AnalysisInput, analyze, response_tree};
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
 const CLIENT_RS: &str = include_str!("../src/client.rs");
@@ -29,6 +29,32 @@ fn vendored_openapi_snapshot_matches_rust_api() {
     assert_eq!(
         reported_pointers, config.acknowledged_unsupported_enum_pointers,
         "the snapshot's unsupported enum inventory must exactly match analyzer configuration"
+    );
+}
+
+/// The SCIM models stay strict because they are in neither direction's tree: the
+/// spec defines 40 `Scim*` schemas but no SCIM path, so no `Client` method sends
+/// or returns one. Operation-unreferenced schemas resolve in request position, so
+/// making a SCIM list/response envelope all-`Option` reports
+/// `FieldOptionalityMismatch` drift while protecting no actual response.
+///
+/// If this fails, SCIM operations were added to `client.rs`: split the envelopes
+/// they return into all-`Option` `{Name}Response` variants before wiring them up.
+#[test]
+fn scim_models_are_outside_the_response_tree() {
+    assert!(
+        MODELS_RS.matches("\npub struct Scim").count() >= 30,
+        "vacuous test: the SCIM model family is no longer named `Scim*`"
+    );
+    let tree = response_tree(CLIENT_RS, MODELS_RS).unwrap();
+    let scim_response_types = tree
+        .types
+        .iter()
+        .filter(|name| name.starts_with("Scim"))
+        .collect::<Vec<_>>();
+    assert!(
+        scim_response_types.is_empty(),
+        "SCIM types became response-reachable and must be split: {scim_response_types:?}"
     );
 }
 

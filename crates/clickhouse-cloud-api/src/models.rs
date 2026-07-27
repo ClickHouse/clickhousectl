@@ -13611,6 +13611,16 @@ pub struct ScalingSchedulePostRequest {
     pub entries: Vec<ScalingScheduleEntryRequest>,
 }
 
+// The `Scim*` family below is strict in both directions, deliberately. The spec
+// defines the SCIM schemas but declares no SCIM path, so no `Client` method
+// sends or returns one: the family is reachable from neither a request root nor
+// a response root, and the analyzer resolves such operation-unreferenced schemas
+// in request position. Making the SCIM list/response envelopes all-`Option`
+// would therefore report `FieldOptionalityMismatch` drift while protecting no
+// actual response. `scim_models_are_outside_the_response_tree` in
+// `tests/spec_coverage_test.rs` pins that premise: if SCIM operations are ever
+// added to `client.rs`, the envelopes they return must be split first.
+
 /// `ScimEnterpriseManager` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimEnterpriseManager {

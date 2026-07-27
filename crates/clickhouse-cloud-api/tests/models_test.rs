@@ -4235,6 +4235,56 @@ fn organization_quota_usage_optional_omitted() {
 }
 
 #[test]
+fn organization_quota_tolerates_explicit_null_fields() {
+    // `OrganizationQuota` is response-only, so every field is `Option<T>` and an
+    // explicit `null` lands as `None` exactly like a dropped key — the case the
+    // superseded `#[serde(default)]` policy never covered.
+    let quota: OrganizationQuota = serde_json::from_str(
+        r#"{"quotaCode":null,"name":null,"description":null,"scope":null,
+            "value":null,"usage":null,"adjustable":null}"#,
+    )
+    .unwrap();
+    assert_eq!(quota, OrganizationQuota::default());
+
+    // Absence is omitted on the way out, never re-emitted as `null`.
+    assert_eq!(
+        serde_json::to_value(&quota).unwrap(),
+        serde_json::json!({}),
+        "absent response fields must be omitted from --json output"
+    );
+}
+
+#[test]
+fn scim_request_models_stay_strict() {
+    // The spec defines the SCIM schemas but no SCIM path, so the family is in
+    // neither direction's tree and stays strict (see the comment above
+    // `ScimEnterpriseManager` in models.rs and
+    // `scim_models_are_outside_the_response_tree` in spec_coverage_test.rs).
+    // Required fields are therefore `T` and a dropped one is a hard error.
+    let err = serde_json::from_str::<ScimGroupPostRequest>(r#"{"schemas":[]}"#).unwrap_err();
+    assert!(
+        err.to_string().contains("displayName"),
+        "unexpected error: {err}"
+    );
+
+    // Absent optional fields are still omitted rather than sent as `null`.
+    let group = ScimGroupPostRequest {
+        display_name: "Engineering".to_string(),
+        external_id: None,
+        members: None,
+        schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:Group".to_string()],
+    };
+    let v = serde_json::to_value(&group).unwrap();
+    assert_eq!(v["displayName"], "Engineering");
+    assert_eq!(
+        v["schemas"][0],
+        "urn:ietf:params:scim:schemas:core:2.0:Group"
+    );
+    assert!(v.get("externalId").is_none());
+    assert!(v.get("members").is_none());
+}
+
+#[test]
 fn organization_quota_quota_code_unknown_catch_all() {
     let parsed: OrganizationQuotaQuotacode =
         serde_json::from_str("\"queries-per-second\"").unwrap();
