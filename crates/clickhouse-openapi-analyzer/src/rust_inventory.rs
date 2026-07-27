@@ -93,6 +93,16 @@ pub(crate) struct FieldInfo {
     /// (e.g. map values). Used for response-tree reachability.
     pub(crate) type_names: BTreeSet<String>,
     pub(crate) deprecated_marker: bool,
+    /// Whether the field carries a field-level `#[serde(default)]` (bare or
+    /// `default = "path"`). Banned repository-wide: on a required request
+    /// field it fabricates a value the server never sent, and on `Option`
+    /// response fields it is meaningless (see the policy test in
+    /// `clickhouse-cloud-api/tests/spec_coverage_test.rs`).
+    pub(crate) serde_default: bool,
+    /// Whether the field carries `#[serde(skip_serializing_if = "...")]`.
+    /// Response-tree `Option` fields must all carry it so an absent field is
+    /// omitted from serialized output rather than emitted as `null`.
+    pub(crate) skip_serializing_if: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -212,8 +222,8 @@ impl RustInventory {
                 Item::Struct(item_struct) if matches!(item_struct.vis, Visibility::Public(_)) => {
                     let name = item_struct.ident.unraw().to_string();
                     self.model_types.insert(name.clone());
-                    // Rejects a banned `rename_all` on the struct container.
-                    serde_options(&item_struct.attrs)?;
+                    // Also rejects a banned `rename_all` on the struct container.
+                    let container = serde_options(&item_struct.attrs)?;
                     let mut fields = BTreeMap::new();
                     if let Fields::Named(named) = &item_struct.fields {
                         for field in &named.named {
@@ -235,6 +245,12 @@ impl RustInventory {
                                     rust_type: TypeNode::from_syn(&field.ty),
                                     type_names,
                                     deprecated_marker: has_deprecated_cfg(&field.attrs)?,
+                                    // A container-level `#[serde(default)]` fills every
+                                    // missing field, so it marks each field individually —
+                                    // the serde(default) ban cannot be dodged by moving
+                                    // the attribute up to the struct.
+                                    serde_default: options.default || container.default,
+                                    skip_serializing_if: options.skip_serializing_if,
                                 },
                             );
                         }
@@ -413,6 +429,27 @@ impl RustInventory {
     }
 }
 
+/// Lists every public model struct field that carries a field-level
+/// `#[serde(default)]` (bare or `default = "path"`), as
+/// `StructName.rust_field_name`, sorted by struct name then wire field name.
+///
+/// `cfg`-gated deprecated-marker fields are included, and a container-level
+/// `#[serde(default)]` reports every field of its struct — the ban cannot be
+/// dodged by moving the attribute up to the container.
+pub(crate) fn model_fields_with_serde_default(models: &str) -> syn::Result<Vec<String>> {
+    let inventory = RustInventory::parse("", models, "")?;
+    Ok(inventory
+        .structs
+        .iter()
+        .flat_map(|(struct_name, info)| {
+            info.fields
+                .values()
+                .filter(|field| field.serde_default)
+                .map(move |field| format!("{struct_name}.{}", field.rust_name))
+        })
+        .collect())
+}
+
 /// Collects every named type appearing anywhere in `ty`, including inside
 /// generic arguments of wrappers [`TypeNode`] does not model (`Result`, maps,
 /// tuples). Used for reachability, where dropping a nested name would silently
@@ -452,6 +489,8 @@ struct SerdeOptions {
     rename: Option<String>,
     untagged: bool,
     other: bool,
+    default: bool,
+    skip_serializing_if: bool,
 }
 
 fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
@@ -484,6 +523,16 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
                 options.untagged = true;
             } else if meta.path.is_ident("other") {
                 options.other = true;
+            } else if meta.path.is_ident("default") {
+                // Both `default` and `default = "path"` opt the field into value
+                // fabrication, so this must precede the generic `key = value` arm below.
+                options.default = true;
+                if meta.input.peek(syn::Token![=]) {
+                    let _: Expr = meta.value()?.parse()?;
+                }
+            } else if meta.path.is_ident("skip_serializing_if") {
+                options.skip_serializing_if = true;
+                let _: Expr = meta.value()?.parse()?;
             } else if meta.input.peek(syn::Token![=]) {
                 let _: Expr = meta.value()?.parse()?;
             }
@@ -679,6 +728,77 @@ mod tests {
                 "MapValue".to_string(),
             ]),
             "request-only and unrelated types must stay out of the response tree"
+        );
+    }
+
+    #[test]
+    fn tracks_serde_default_and_skip_serializing_if_in_all_attribute_forms() {
+        let models = r#"
+            pub struct Widget {
+                #[serde(default)]
+                pub bare: String,
+                #[serde(rename = "renamedWithDefault", default)]
+                pub renamed: String,
+                #[serde(default = "some::path")]
+                pub with_path: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                pub skipped: Option<String>,
+                pub plain: String,
+            }
+        "#;
+
+        let inventory = RustInventory::parse("", models, "").unwrap();
+        let fields = &inventory.structs["Widget"].fields;
+        assert!(fields["bare"].serde_default);
+        assert!(fields["renamedWithDefault"].serde_default);
+        assert!(fields["with_path"].serde_default);
+        assert!(!fields["plain"].serde_default);
+        assert!(fields["skipped"].skip_serializing_if);
+        assert!(!fields["plain"].skip_serializing_if);
+    }
+
+    #[test]
+    fn model_fields_with_serde_default_lists_carriers_sorted() {
+        let models = r#"
+            pub struct Widget {
+                #[serde(default)]
+                pub name: String,
+                pub description: Option<String>,
+                #[serde(rename = "createdAt", default)]
+                pub created_at: String,
+                #[cfg(feature = "deprecated-fields")]
+                #[serde(rename = "legacyName", default)]
+                pub legacy_name: Option<String>,
+            }
+            pub struct Gadget {
+                pub id: Option<String>,
+            }
+            pub enum State { Ready }
+        "#;
+
+        assert_eq!(
+            model_fields_with_serde_default(models).unwrap(),
+            vec![
+                "Widget.created_at".to_string(),
+                "Widget.legacy_name".to_string(),
+                "Widget.name".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn container_level_serde_default_marks_every_field() {
+        let models = r#"
+            #[serde(default)]
+            pub struct Widget {
+                pub name: String,
+                pub description: Option<String>,
+            }
+        "#;
+
+        assert_eq!(
+            model_fields_with_serde_default(models).unwrap(),
+            vec!["Widget.description".to_string(), "Widget.name".to_string()]
         );
     }
 

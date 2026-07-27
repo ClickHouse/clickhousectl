@@ -14068,7 +14068,7 @@ pub struct ClickStackValidateDashboardError {
 pub struct ClickStackValidateDashboardResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<ClickStackValidateDashboardError>>,
-
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub normalized: Option<ClickStackValidateDashboardResponseNormalized>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid: Option<bool>,

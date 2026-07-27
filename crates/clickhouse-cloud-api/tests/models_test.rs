@@ -4956,10 +4956,13 @@ fn clickstack_validate_dashboard_response_valid_null_normalized() {
     assert_eq!(resp.errors.as_deref(), Some(&[][..]));
     assert_eq!(resp.normalized, None);
 
-    // The nullable free-form field still serializes (as null), not omitted.
+    // An explicit `null` lands as `None` and, like every absent response
+    // field, is omitted on the way out rather than re-emitted as `null`.
     let v = serde_json::to_value(&resp).unwrap();
-    assert!(v.get("normalized").is_some());
-    assert!(v["normalized"].is_null());
+    assert!(
+        v.get("normalized").is_none(),
+        "absent response fields must be omitted from --json output"
+    );
 }
 
 #[test]
