@@ -103,6 +103,52 @@ fn compare_models_and_refs(
     }
 }
 
+/// The direction a schema usage was reached from. Requiredness/optionality is
+/// request-position-only semantics: response-position types are all-`Option`
+/// by policy, so optionality findings are suppressed there and field presence
+/// (plus enum values) is the retained drift signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Request,
+    Response,
+}
+
+/// The Rust struct name a schema resolves to in response position: the split
+/// `{Name}Response` variant when such a Rust type exists (and is not itself
+/// the model of a spec schema literally named `{Name}Response`), otherwise
+/// the unsplit `{Name}` type.
+fn response_position_type(rust: &RustInventory, spec: &OpenApiInventory, base: &str) -> String {
+    let candidate = format!("{base}Response");
+    if rust.model_types.contains(&candidate) && !spec.rust_schema_names.contains(&candidate) {
+        candidate
+    } else {
+        base.to_string()
+    }
+}
+
+/// Rust struct targets for a schema's field checks, one per direction the
+/// schema is used in. A bidirectional schema maps to two Rust types once the
+/// split `{Name}Response` variant exists; until then both directions collapse
+/// onto `{Name}` and only the request-direction target is kept.
+fn field_check_targets(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    schema_name: &str,
+) -> Vec<(String, Direction)> {
+    let base = pascalize(schema_name);
+    let mut targets = Vec::new();
+    if spec.is_request_position(schema_name) {
+        targets.push((base.clone(), Direction::Request));
+    }
+    if spec.is_response_position(schema_name) {
+        let response_name = response_position_type(rust, spec, &base);
+        if targets.iter().all(|(name, _)| *name != response_name) {
+            targets.push((response_name, Direction::Response));
+        }
+    }
+    targets
+}
+
 fn compare_fields(
     rust: &RustInventory,
     spec: &OpenApiInventory,
@@ -111,51 +157,59 @@ fn compare_fields(
 ) {
     let mut optionality_hits = BTreeSet::new();
     for ((schema_name, property_name), property) in &spec.properties {
-        let rust_name = pascalize(schema_name);
-        let Some(struct_info) = rust.structs.get(&rust_name) else {
-            continue;
-        };
-        let Some(field) = struct_info.fields.get(property_name) else {
-            report.findings.push(
-                Finding::new(
-                    FindingKind::MissingStructField,
-                    format!("{rust_name}.{property_name} is missing from models.rs"),
-                )
-                .at_spec(&property.pointer)
-                .at_rust(format!("models.rs::{rust_name}::{property_name}"))
-                .detail("schema", &rust_name)
-                .detail("field", property_name),
-            );
-            continue;
-        };
-        let mismatch = property.required_non_nullable == field.rust_type.is_option();
-        if mismatch {
-            let key = (rust_name.clone(), property_name.clone());
-            if config.optionality_exemptions.contains(&key) {
-                optionality_hits.insert(key);
-            } else {
-                let expected = if property.required_non_nullable {
-                    "T"
-                } else {
-                    "Option<T>"
-                };
-                let actual = if field.rust_type.is_option() {
-                    "Option<T>"
-                } else {
-                    "T"
-                };
+        for (rust_name, direction) in field_check_targets(rust, spec, schema_name) {
+            let Some(struct_info) = rust.structs.get(&rust_name) else {
+                continue;
+            };
+            let Some(field) = struct_info.fields.get(property_name) else {
                 report.findings.push(
                     Finding::new(
-                        FindingKind::FieldOptionalityMismatch,
-                        format!("{rust_name}.{property_name} should be {expected}, found {actual}"),
+                        FindingKind::MissingStructField,
+                        format!("{rust_name}.{property_name} is missing from models.rs"),
                     )
                     .at_spec(&property.pointer)
-                    .at_rust(format!("models.rs::{rust_name}::{}", field.rust_name))
+                    .at_rust(format!("models.rs::{rust_name}::{property_name}"))
                     .detail("schema", &rust_name)
-                    .detail("field", property_name)
-                    .detail("expected", expected)
-                    .detail("actual", actual),
+                    .detail("field", property_name),
                 );
+                continue;
+            };
+            if direction == Direction::Response {
+                // Every response field is Option<T> by policy, so requiredness
+                // drift is invisible in response position by design.
+                continue;
+            }
+            let mismatch = property.required_non_nullable == field.rust_type.is_option();
+            if mismatch {
+                let key = (rust_name.clone(), property_name.clone());
+                if config.optionality_exemptions.contains(&key) {
+                    optionality_hits.insert(key);
+                } else {
+                    let expected = if property.required_non_nullable {
+                        "T"
+                    } else {
+                        "Option<T>"
+                    };
+                    let actual = if field.rust_type.is_option() {
+                        "Option<T>"
+                    } else {
+                        "T"
+                    };
+                    report.findings.push(
+                        Finding::new(
+                            FindingKind::FieldOptionalityMismatch,
+                            format!(
+                                "{rust_name}.{property_name} should be {expected}, found {actual}"
+                            ),
+                        )
+                        .at_spec(&property.pointer)
+                        .at_rust(format!("models.rs::{rust_name}::{}", field.rust_name))
+                        .detail("schema", &rust_name)
+                        .detail("field", property_name)
+                        .detail("expected", expected)
+                        .detail("actual", actual),
+                    );
+                }
             }
         }
     }
@@ -178,28 +232,29 @@ fn compare_fields(
         if property_names.is_empty() {
             continue;
         }
-        let rust_name = pascalize(schema_name);
-        let Some(struct_info) = rust.structs.get(&rust_name) else {
-            continue;
-        };
-        for (spec_name, field) in &struct_info.fields {
-            if property_names.contains(spec_name.as_str()) {
+        for (rust_name, _direction) in field_check_targets(rust, spec, schema_name) {
+            let Some(struct_info) = rust.structs.get(&rust_name) else {
                 continue;
-            }
-            let key = (rust_name.clone(), spec_name.clone());
-            if config.extra_field_exemptions.contains(&key) {
-                extra_hits.insert(key);
-            } else {
-                report.findings.push(
-                    Finding::new(
-                        FindingKind::ExtraStructField,
-                        format!("{rust_name}.{spec_name} has no matching OpenAPI property"),
-                    )
-                    .at_spec(&spec.schemas[schema_name])
-                    .at_rust(format!("models.rs::{rust_name}::{}", field.rust_name))
-                    .detail("schema", &rust_name)
-                    .detail("field", spec_name),
-                );
+            };
+            for (spec_name, field) in &struct_info.fields {
+                if property_names.contains(spec_name.as_str()) {
+                    continue;
+                }
+                let key = (rust_name.clone(), spec_name.clone());
+                if config.extra_field_exemptions.contains(&key) {
+                    extra_hits.insert(key);
+                } else {
+                    report.findings.push(
+                        Finding::new(
+                            FindingKind::ExtraStructField,
+                            format!("{rust_name}.{spec_name} has no matching OpenAPI property"),
+                        )
+                        .at_spec(&spec.schemas[schema_name])
+                        .at_rust(format!("models.rs::{rust_name}::{}", field.rust_name))
+                        .detail("schema", &rust_name)
+                        .detail("field", spec_name),
+                    );
+                }
             }
         }
     }
@@ -243,20 +298,22 @@ fn compare_beta_and_deprecation(
         }
     }
 
+    // A deprecated property is expected once per Rust type the schema maps to:
+    // just `{Name}` today, and additionally `{Name}Response` once a schema used
+    // in both directions is split, doubling the DEPRECATED_FIELDS bookkeeping.
     let mut deprecated_exemption_hits = BTreeSet::new();
-    let expected: BTreeSet<_> = spec
-        .deprecated_fields
-        .keys()
-        .filter(|key| {
-            if config.deprecated_field_exemptions.contains(*key) {
-                deprecated_exemption_hits.insert((*key).clone());
-                false
+    let mut expected_pointers: BTreeMap<(String, String), &String> = BTreeMap::new();
+    for ((schema_name, field), pointer) in &spec.deprecated_fields {
+        for (rust_name, _direction) in field_check_targets(rust, spec, schema_name) {
+            let key = (rust_name, field.clone());
+            if config.deprecated_field_exemptions.contains(&key) {
+                deprecated_exemption_hits.insert(key);
             } else {
-                true
+                expected_pointers.insert(key, pointer);
             }
-        })
-        .cloned()
-        .collect();
+        }
+    }
+    let expected: BTreeSet<(String, String)> = expected_pointers.keys().cloned().collect();
     stale_pairs(
         "deprecated_field",
         &config.deprecated_field_exemptions,
@@ -265,7 +322,7 @@ fn compare_beta_and_deprecation(
     );
 
     for (schema, field) in expected.difference(&rust.metadata.deprecated_fields) {
-        let pointer = &spec.deprecated_fields[&(schema.clone(), field.clone())];
+        let pointer = expected_pointers[&(schema.clone(), field.clone())];
         report.findings.push(
             Finding::new(
                 FindingKind::NewlyDeprecatedField,
@@ -786,6 +843,286 @@ mod tests {
         .unwrap();
         let openapi = OpenApiInventory::build(&spec, &config).unwrap();
         compare(&rust, &openapi, &openapi, &config)
+    }
+
+    /// A minimal spec with one operation that sends `Widget` as the request
+    /// body when `request` is set, and returns `Widget` when `response` is set,
+    /// so fixtures can place the schema in either or both positions.
+    fn directional_spec(
+        schema: serde_json::Value,
+        request: bool,
+        response: bool,
+    ) -> serde_json::Value {
+        let mut operation = serde_json::json!({"operationId": "mutateWidget"});
+        if request {
+            operation["requestBody"] = serde_json::json!({"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Widget"}
+            }}});
+        }
+        if response {
+            operation["responses"] = serde_json::json!({"200": {"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Widget"}
+            }}}});
+        }
+        serde_json::json!({
+            "paths": {
+                "/widgets": {"post": operation},
+                // Matches the fixture Client's second method so no-drift
+                // assertions are not polluted by ExtraClientMethod.
+                "/widgets/{id}": {"get": {"operationId": "getWidget"}}
+            },
+            "components": {"schemas": {"Widget": schema}}
+        })
+    }
+
+    fn analyze_directional(
+        models: &str,
+        spec: serde_json::Value,
+        config: AnalyzerConfig,
+    ) -> DriftReport {
+        let rust = RustInventory::parse(
+            r#"
+                pub struct Client;
+                impl Client {
+                    pub async fn mutate_widget(&self) {}
+                    pub async fn get_widget(&self) {}
+                }
+            "#,
+            models,
+            "pub const BETA_OPERATIONS: &[&str] = &[]; pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[];",
+        )
+        .unwrap();
+        let openapi = OpenApiInventory::build(&spec, &config).unwrap();
+        compare(&rust, &openapi, &openapi, &config)
+    }
+
+    #[test]
+    fn suppresses_optionality_but_keeps_presence_checks_in_response_position() {
+        // Response-only schema: `name` is required in the spec but Option<T>
+        // in Rust (all-Option response policy) — no optionality finding.
+        // Presence drift (missing `gone`, extra `extraCode`) still fires.
+        let report = analyze_directional(
+            r#"
+                pub struct Widget {
+                    pub name: Option<String>,
+                    #[serde(rename = "extraCode")]
+                    pub extra_code: Option<String>,
+                }
+            "#,
+            directional_spec(
+                serde_json::json!({
+                    "required": ["name", "gone"],
+                    "properties": {"name": {"type": "string"}, "gone": {"type": "string"}}
+                }),
+                false,
+                true,
+            ),
+            AnalyzerConfig::default(),
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == FindingKind::FieldOptionalityMismatch),
+            "{}",
+            report.render_text()
+        );
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::MissingStructField
+                && finding.details.get("field").map(String::as_str) == Some("gone")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::ExtraStructField
+                && finding.details.get("field").map(String::as_str) == Some("extraCode")
+        }));
+    }
+
+    #[test]
+    fn keeps_optionality_checks_in_request_position() {
+        let report = analyze_directional(
+            "pub struct Widget { pub name: Option<String> }",
+            directional_spec(
+                serde_json::json!({
+                    "required": ["name"],
+                    "properties": {"name": {"type": "string"}}
+                }),
+                true,
+                false,
+            ),
+            AnalyzerConfig::default(),
+        );
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::FieldOptionalityMismatch
+                && finding.rust_item.as_deref() == Some("models.rs::Widget::name")
+        }));
+    }
+
+    #[test]
+    fn bidirectional_schema_checks_both_split_variants() {
+        // `Widget` is used in both directions and the split `WidgetResponse`
+        // exists: the request variant is checked strictly, the response
+        // variant gets presence checks only.
+        let models = r#"
+            pub struct Widget {
+                pub name: String,
+                pub mode: Option<String>,
+            }
+            pub struct WidgetResponse {
+                pub name: Option<String>,
+                #[serde(rename = "extraCode")]
+                pub extra_code: Option<String>,
+            }
+        "#;
+        let schema = serde_json::json!({
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string"},
+                "mode": {"type": "string", "description": "Optional mode"}
+            }
+        });
+        let report = analyze_directional(
+            models,
+            directional_spec(schema, true, true),
+            AnalyzerConfig::default(),
+        );
+        // The strict request variant is compliant and the response variant is
+        // all-Option: no optionality findings anywhere.
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == FindingKind::FieldOptionalityMismatch),
+            "{}",
+            report.render_text()
+        );
+        // Presence drift is reported per variant: `mode` is missing from the
+        // response variant, `extraCode` exists only there.
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::MissingStructField
+                && finding.rust_item.as_deref() == Some("models.rs::WidgetResponse::mode")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::ExtraStructField
+                && finding.details.get("schema").map(String::as_str) == Some("WidgetResponse")
+                && finding.details.get("field").map(String::as_str) == Some("extraCode")
+        }));
+        assert!(!report.findings.iter().any(|finding| {
+            finding.details.get("schema").map(String::as_str) == Some("Widget")
+        }));
+    }
+
+    #[test]
+    fn bidirectional_schema_without_split_type_falls_back_to_the_shared_struct() {
+        // models.rs not yet split: both directions collapse onto `Widget`,
+        // which is checked once under request-position rules.
+        let report = analyze_directional(
+            "pub struct Widget { pub name: String }",
+            directional_spec(
+                serde_json::json!({
+                    "required": ["name"],
+                    "properties": {"name": {"type": "string"}}
+                }),
+                true,
+                true,
+            ),
+            AnalyzerConfig::default(),
+        );
+        assert!(!report.has_drift(), "{}", report.render_text());
+    }
+
+    #[test]
+    fn response_mapping_does_not_hijack_a_type_modeling_a_response_named_schema() {
+        // The spec defines both `Widget` (response-only) and `WidgetResponse`.
+        // Rust `WidgetResponse` models the latter, so schema `Widget` must
+        // keep resolving to Rust `Widget` — `mode` missing from Rust
+        // `WidgetResponse` must be attributed to schema `WidgetResponse`,
+        // and Rust `Widget` must satisfy schema `Widget`.
+        let spec = serde_json::json!({
+            "paths": {"/widgets": {"get": {
+                "operationId": "getWidget",
+                "responses": {"200": {"content": {"application/json": {"schema": {
+                    "properties": {
+                        "plain": {"$ref": "#/components/schemas/Widget"},
+                        "named": {"$ref": "#/components/schemas/WidgetResponse"}
+                    }
+                }}}}}
+            }}},
+            "components": {"schemas": {
+                "Widget": {"required": ["name"], "properties": {"name": {"type": "string"}}},
+                "WidgetResponse": {
+                    "required": ["name", "mode"],
+                    "properties": {"name": {"type": "string"}, "mode": {"type": "string"}}
+                }
+            }}
+        });
+        let report = analyze_directional(
+            r#"
+                pub struct Widget { pub name: Option<String> }
+                pub struct WidgetResponse { pub name: Option<String> }
+            "#,
+            spec,
+            AnalyzerConfig::default(),
+        );
+        let missing: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == FindingKind::MissingStructField)
+            .collect();
+        assert_eq!(missing.len(), 1, "{}", report.render_text());
+        assert_eq!(
+            missing[0].rust_item.as_deref(),
+            Some("models.rs::WidgetResponse::mode")
+        );
+        assert_eq!(
+            missing[0].spec_pointer.as_deref(),
+            Some("/components/schemas/WidgetResponse/properties/mode")
+        );
+    }
+
+    #[test]
+    fn deprecated_fields_are_expected_on_both_split_variants() {
+        let schema = serde_json::json!({
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string"},
+                "old": {"type": "string", "description": "Optional legacy", "deprecated": true}
+            }
+        });
+        let models = r#"
+            pub struct Widget {
+                pub name: String,
+                #[cfg(feature = "deprecated-fields")]
+                pub old: Option<String>,
+            }
+            pub struct WidgetResponse {
+                pub name: Option<String>,
+                #[cfg(feature = "deprecated-fields")]
+                pub old: Option<String>,
+            }
+        "#;
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client {}",
+            models,
+            r#"
+                pub const BETA_OPERATIONS: &[&str] = &[];
+                pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[("Widget", "old")];
+            "#,
+        )
+        .unwrap();
+        let config = AnalyzerConfig::default();
+        let openapi =
+            OpenApiInventory::build(&directional_spec(schema, true, true), &config).unwrap();
+        let report = compare(&rust, &openapi, &openapi, &config);
+        // The split response variant carries the marker but is missing from
+        // DEPRECATED_FIELDS: the doubled bookkeeping is enforced.
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::NewlyDeprecatedField
+                && finding.details.get("schema").map(String::as_str) == Some("WidgetResponse")
+        }));
+        assert!(!report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::NewlyDeprecatedField
+                && finding.details.get("schema").map(String::as_str) == Some("Widget")
+        }));
     }
 
     #[test]

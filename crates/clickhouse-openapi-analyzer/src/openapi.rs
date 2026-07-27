@@ -69,9 +69,21 @@ pub(crate) struct EnumConstraint {
 pub(crate) struct OpenApiInventory {
     pub(crate) operations: BTreeMap<String, OperationInfo>,
     pub(crate) schemas: BTreeMap<String, String>,
+    /// Pascalized Rust type names of every named spec schema. Used to
+    /// distinguish a split `{Name}Response` Rust variant from a Rust type that
+    /// models a spec schema literally named `{Name}Response`.
+    pub(crate) rust_schema_names: BTreeSet<String>,
     pub(crate) properties: BTreeMap<(String, String), PropertyInfo>,
     pub(crate) referenced_schemas: BTreeMap<String, String>,
+    /// Schemas transitively reachable from a request body or an operation
+    /// parameter. Requiredness/optionality drift is checked only here.
+    pub(crate) request_position_schemas: BTreeSet<String>,
+    /// Schemas transitively reachable from an operation response. Optionality
+    /// findings are suppressed here by policy (every response field is
+    /// `Option<T>`); presence and enum-value checks still apply.
+    pub(crate) response_position_schemas: BTreeSet<String>,
     pub(crate) beta_operations: BTreeMap<String, String>,
+    /// Deprecated spec properties keyed by (spec schema name, property name).
     pub(crate) deprecated_fields: BTreeMap<(String, String), String>,
     pub(crate) enum_constraints: Vec<EnumConstraint>,
 }
@@ -81,12 +93,26 @@ impl OpenApiInventory {
         let mut inventory = Self::default();
         inventory.collect_operations(spec)?;
         inventory.collect_schemas(spec, config)?;
+        inventory.collect_schema_positions(spec);
         collect_refs(spec, &mut Vec::new(), &mut inventory.referenced_schemas);
         collect_enums(spec, &mut inventory.enum_constraints);
         inventory
             .enum_constraints
             .sort_by(|left, right| left.pointer.cmp(&right.pointer));
         Ok(inventory)
+    }
+
+    /// Request-position semantics apply when the schema is reachable from a
+    /// request body or parameter, and also when it is reachable from neither
+    /// direction (e.g. defined but unused schemas), so unclassified schemas
+    /// keep the historical strict checks.
+    pub(crate) fn is_request_position(&self, schema_name: &str) -> bool {
+        self.request_position_schemas.contains(schema_name)
+            || !self.response_position_schemas.contains(schema_name)
+    }
+
+    pub(crate) fn is_response_position(&self, schema_name: &str) -> bool {
+        self.response_position_schemas.contains(schema_name)
     }
 
     fn collect_operations(&mut self, spec: &Value) -> Result<(), String> {
@@ -145,7 +171,7 @@ impl OpenApiInventory {
             .and_then(Value::as_object)
             .ok_or_else(|| "OpenAPI document has no components.schemas object".to_string())?;
         for (schema_name, schema) in schemas {
-            let rust_name = pascalize(schema_name);
+            self.rust_schema_names.insert(pascalize(schema_name));
             let schema_pointer = json_pointer(&[
                 "components".to_string(),
                 "schemas".to_string(),
@@ -171,12 +197,105 @@ impl OpenApiInventory {
                 );
                 if property.get("deprecated").and_then(Value::as_bool) == Some(true) {
                     self.deprecated_fields
-                        .insert((rust_name.clone(), property_name.clone()), pointer);
+                        .insert((schema_name.clone(), property_name.clone()), pointer);
                 }
             }
         }
         Ok(())
     }
+
+    /// Classifies every named schema as request-position and/or
+    /// response-position by walking `$ref`s from each operation's parameters
+    /// and request body (request roots) and responses (response roots), then
+    /// taking the transitive closure through the schema reference graph. A
+    /// schema can be in both positions.
+    fn collect_schema_positions(&mut self, spec: &Value) {
+        let mut request_roots = BTreeSet::new();
+        let mut response_roots = BTreeSet::new();
+        if let Some(paths) = spec.get("paths").and_then(Value::as_object) {
+            for (path_name, path_item) in paths {
+                if path_name.starts_with("x-") {
+                    continue;
+                }
+                let Some(path_object) = path_item.as_object() else {
+                    continue;
+                };
+                if let Some(parameters) = path_object.get("parameters") {
+                    referenced_schema_names(parameters, &mut request_roots);
+                }
+                for (method, operation) in path_object {
+                    if !HTTP_METHODS.contains(&method.as_str()) {
+                        continue;
+                    }
+                    if let Some(parameters) = operation.get("parameters") {
+                        referenced_schema_names(parameters, &mut request_roots);
+                    }
+                    if let Some(request_body) = operation.get("requestBody") {
+                        referenced_schema_names(request_body, &mut request_roots);
+                    }
+                    if let Some(responses) = operation.get("responses") {
+                        referenced_schema_names(responses, &mut response_roots);
+                    }
+                }
+            }
+        }
+
+        let mut schema_refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        if let Some(schemas) = spec
+            .pointer("/components/schemas")
+            .and_then(Value::as_object)
+        {
+            for (schema_name, schema) in schemas {
+                let mut refs = BTreeSet::new();
+                referenced_schema_names(schema, &mut refs);
+                schema_refs.insert(schema_name.clone(), refs);
+            }
+        }
+        self.request_position_schemas = transitive_schema_closure(request_roots, &schema_refs);
+        self.response_position_schemas = transitive_schema_closure(response_roots, &schema_refs);
+    }
+}
+
+fn referenced_schema_names(value: &Value, output: &mut BTreeSet<String>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str)
+                && let Some(name) = reference.strip_prefix("#/components/schemas/")
+            {
+                output.insert(name.to_string());
+            }
+            for child in object.values() {
+                referenced_schema_names(child, output);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                referenced_schema_names(child, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn transitive_schema_closure(
+    roots: BTreeSet<String>,
+    schema_refs: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<String> = roots.into_iter().collect();
+    while let Some(name) = stack.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(references) = schema_refs.get(&name) {
+            for reference in references {
+                if !seen.contains(reference) {
+                    stack.push(reference.clone());
+                }
+            }
+        }
+    }
+    seen
 }
 
 fn required_fields(schema_name: &str, schema: &Value, config: &AnalyzerConfig) -> BTreeSet<String> {
@@ -1015,6 +1134,71 @@ mod tests {
             ),
             other => panic!("expected property context, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classifies_schema_positions_transitively_per_direction() {
+        let spec = serde_json::json!({
+            "paths": {
+                "/widgets": {
+                    "parameters": [{"name": "f", "schema": {"$ref": "#/components/schemas/PathParamFilter"}}],
+                    "post": {
+                        "operationId": "createWidget",
+                        "parameters": [{"name": "sort", "schema": {"$ref": "#/components/schemas/SortOrder"}}],
+                        "requestBody": {"content": {"application/json": {
+                            "schema": {"$ref": "#/components/schemas/WidgetPostRequest"}
+                        }}},
+                        "responses": {"200": {"content": {"application/json": {
+                            "schema": {"$ref": "#/components/schemas/WidgetPostResponse"}
+                        }}}}
+                    }
+                }
+            },
+            "components": {"schemas": {
+                "PathParamFilter": {"type": "string"},
+                "SortOrder": {"type": "string"},
+                "WidgetPostRequest": {"properties": {
+                    "shared": {"$ref": "#/components/schemas/SharedNested"}
+                }},
+                "WidgetPostResponse": {"properties": {
+                    "shared": {"$ref": "#/components/schemas/SharedNested"},
+                    "detail": {"$ref": "#/components/schemas/ResponseOnlyDetail"}
+                }},
+                "SharedNested": {"properties": {
+                    "leaf": {"$ref": "#/components/schemas/SharedLeaf"}
+                }},
+                "SharedLeaf": {"type": "string"},
+                "ResponseOnlyDetail": {"type": "string"},
+                "Unreferenced": {"type": "string"}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        assert_eq!(
+            inventory.request_position_schemas,
+            BTreeSet::from([
+                "PathParamFilter".to_string(),
+                "SortOrder".to_string(),
+                "WidgetPostRequest".to_string(),
+                "SharedNested".to_string(),
+                "SharedLeaf".to_string(),
+            ])
+        );
+        assert_eq!(
+            inventory.response_position_schemas,
+            BTreeSet::from([
+                "WidgetPostResponse".to_string(),
+                "SharedNested".to_string(),
+                "SharedLeaf".to_string(),
+                "ResponseOnlyDetail".to_string(),
+            ])
+        );
+        // Shared schemas are in both positions; unclassified schemas keep
+        // request-position semantics.
+        assert!(inventory.is_request_position("SharedNested"));
+        assert!(inventory.is_response_position("SharedNested"));
+        assert!(inventory.is_request_position("Unreferenced"));
+        assert!(!inventory.is_response_position("Unreferenced"));
+        assert!(!inventory.is_request_position("ResponseOnlyDetail"));
     }
 
     #[test]

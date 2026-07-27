@@ -86,6 +86,8 @@ Work from the issue's typed findings. `spec_pointer` is an RFC 6901 location in 
 
 ##### Field optionality and the OpenAPI spec
 
+Checking is direction-aware: the analyzer classifies every spec schema by the position(s) it is used in — request position (reachable from a request body or operation parameter) and/or response position (reachable from an operation response). Requiredness applies in request position only; response-side optionality drift is invisible by design (every response field is `Option<T>` by policy), while field *presence* (missing/extra fields) and enum values are checked in both directions. A schema used in both directions resolves to Rust `{Name}` in request position and, once the split type exists, `{Name}Response` in response position (falling back to `{Name}` until then). Response-tree membership is exposed via `clickhouse_openapi_analyzer::response_tree()` for policy enforcement tests.
+
 Requiredness has repository-specific semantics implemented in `openapi.rs`: PATCH request schemas are all-optional; nullable fields are always `Option<T>`; ordinary schemas with `required[]` use it; schemas without it use the `"Optional"` description convention. A schema whose `required[]` is known to be partial uses the union of that array and the description heuristic and must be listed in `partial_required_schemas`. `scripts/resolve-field-requirements.py` is a code-generation aid, not a comparison implementation or policy source.
 
 ##### Analyzer configuration and exemptions
@@ -93,11 +95,11 @@ Requiredness has repository-specific semantics implemented in `openapi.rs`: PATC
 All analyzer policy lives in `crates/clickhouse-openapi-analyzer/src/config.rs`; edit `clickhouse_cloud_config()` or its backing constants. Introduce a named, documented constant when an empty policy list first gains entries. Keys use Rust type names but spec/wire field and enum values:
 
 - `non_openapi_client_methods`: intentional `Client` helpers with no operation, keyed by snake-case method name.
-- `optionality_exemptions`: fields deliberately kept optional despite the resolved spec, keyed by `(RustStructName, specFieldName)`.
+- `optionality_exemptions`: fields deliberately kept optional despite the resolved spec, keyed by `(RustStructName, specFieldName)`. Request-position-only: optionality findings are suppressed in response position, so a response-only entry can never hit and surfaces as stale.
 - `extra_field_exemptions`: deliberate code-only fields, keyed by `(RustStructName, specFieldName)`.
 - `deprecated_field_exemptions`: spec-deprecated fields deliberately excluded from the hiding mechanism, keyed by `(RustStructName, specFieldName)`.
 - `extra_enum_value_exemptions`: intentional Rust-only wire values, keyed by `(RustEnumName, wireValue)`.
-- `partial_required_schemas`: upstream schemas whose `required[]` is non-exhaustive, keyed by spec schema name. This changes requiredness resolution; it is not a shortcut for one optionality mismatch.
+- `partial_required_schemas`: upstream schemas whose `required[]` is non-exhaustive, keyed by spec schema name. This changes requiredness resolution — request-position-only semantics — and is not a shortcut for one optionality mismatch.
 - `acknowledged_unsupported_enum_pointers`: exact RFC 6901 pointers the analyzer inventories but cannot map to a concrete Rust value enum.
 
 Add an exemption only for intentional, verified runtime behavior, with a nearby comment stating why the spec cannot be followed. Never exempt missing API surface or ordinary model drift. Pair a new unsupported-enum acknowledgement with a tracking issue to make the Rust type checkable; do not acknowledge it merely to make CI green. Pair-keyed field/enum exemptions and unsupported acknowledgements produce actionable stale findings when no longer needed, so remove them during normal remediation.

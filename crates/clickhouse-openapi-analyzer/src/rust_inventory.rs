@@ -88,6 +88,10 @@ impl TypeNode {
 pub(crate) struct FieldInfo {
     pub(crate) rust_name: String,
     pub(crate) rust_type: TypeNode,
+    /// Every named type mentioned anywhere in the field's type, including
+    /// inside generic arguments the [`TypeNode`] shape model does not follow
+    /// (e.g. map values). Used for response-tree reachability.
+    pub(crate) type_names: BTreeSet<String>,
     pub(crate) deprecated_marker: bool,
 }
 
@@ -101,11 +105,17 @@ pub(crate) struct EnumInfo {
     pub(crate) values: BTreeSet<String>,
     pub(crate) is_value_enum: bool,
     pub(crate) values_const: Option<BTreeSet<String>>,
+    /// Named types carried by any variant's payload (union arms), so
+    /// response-tree reachability can traverse data-carrying enums.
+    pub(crate) variant_type_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct MethodInfo {
     pub(crate) arguments: BTreeMap<String, TypeNode>,
+    /// Every named type mentioned anywhere in the method's return type
+    /// (e.g. `ApiResponse` and `Service` in `Result<ApiResponse<Vec<Service>>, Error>`).
+    pub(crate) return_type_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,6 +131,9 @@ pub(crate) struct RustInventory {
     pub(crate) structs: BTreeMap<String, StructInfo>,
     pub(crate) enums: BTreeMap<String, EnumInfo>,
     pub(crate) aliases: BTreeMap<String, TypeNode>,
+    /// Named types mentioned anywhere in each alias's target type, for
+    /// response-tree reachability (parallel to `aliases`).
+    pub(crate) alias_type_names: BTreeMap<String, BTreeSet<String>>,
     pub(crate) metadata: MetadataInventory,
 }
 
@@ -177,9 +190,16 @@ impl RustInventory {
                         TypeNode::from_syn(&argument.ty),
                     );
                 }
+                let mut return_type_names = BTreeSet::new();
+                if let syn::ReturnType::Type(_, ty) = &function.sig.output {
+                    collect_type_names(ty, &mut return_type_names);
+                }
                 self.client_methods.insert(
                     function.sig.ident.unraw().to_string(),
-                    MethodInfo { arguments },
+                    MethodInfo {
+                        arguments,
+                        return_type_names,
+                    },
                 );
             }
         }
@@ -206,11 +226,14 @@ impl RustInventory {
                             let rust_name = ident.unraw().to_string();
                             let options = serde_options(&field.attrs)?;
                             let spec_name = options.rename.unwrap_or_else(|| rust_name.clone());
+                            let mut type_names = BTreeSet::new();
+                            collect_type_names(&field.ty, &mut type_names);
                             fields.insert(
                                 spec_name,
                                 FieldInfo {
                                     rust_name,
                                     rust_type: TypeNode::from_syn(&field.ty),
+                                    type_names,
                                     deprecated_marker: has_deprecated_cfg(&field.attrs)?,
                                 },
                             );
@@ -223,8 +246,12 @@ impl RustInventory {
                     self.model_types.insert(name.clone());
                     let container = serde_options(&item_enum.attrs)?;
                     let mut values = BTreeSet::new();
+                    let mut variant_type_names = BTreeSet::new();
                     let mut is_value_enum = !container.untagged;
                     for variant in &item_enum.variants {
+                        for field in variant.fields.iter() {
+                            collect_type_names(&field.ty, &mut variant_type_names);
+                        }
                         let options = serde_options(&variant.attrs)?;
                         if options.untagged || options.other {
                             continue;
@@ -242,12 +269,16 @@ impl RustInventory {
                             values,
                             is_value_enum,
                             values_const: None,
+                            variant_type_names,
                         },
                     );
                 }
                 Item::Type(item_type) if matches!(item_type.vis, Visibility::Public(_)) => {
                     let name = item_type.ident.unraw().to_string();
                     self.model_types.insert(name.clone());
+                    let mut type_names = BTreeSet::new();
+                    collect_type_names(&item_type.ty, &mut type_names);
+                    self.alias_type_names.insert(name.clone(), type_names);
                     self.aliases.insert(name, TypeNode::from_syn(&item_type.ty));
                 }
                 _ => {}
@@ -301,6 +332,44 @@ impl RustInventory {
         }
     }
 
+    /// The set of model types transitively reachable from `Client` method
+    /// return types, traversing struct fields, enum variant payloads, and
+    /// type aliases. This is the "response tree": the types the library
+    /// deserializes API responses into.
+    pub(crate) fn response_reachable_types(&self) -> BTreeSet<String> {
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<String> = self
+            .client_methods
+            .values()
+            .flat_map(|method| method.return_type_names.iter())
+            .filter(|name| self.model_types.contains(*name))
+            .cloned()
+            .collect();
+        while let Some(name) = stack.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let mut neighbours = BTreeSet::new();
+            if let Some(struct_info) = self.structs.get(&name) {
+                for field in struct_info.fields.values() {
+                    neighbours.extend(field.type_names.iter().cloned());
+                }
+            }
+            if let Some(enum_info) = self.enums.get(&name) {
+                neighbours.extend(enum_info.variant_type_names.iter().cloned());
+            }
+            if let Some(alias_names) = self.alias_type_names.get(&name) {
+                neighbours.extend(alias_names.iter().cloned());
+            }
+            for neighbour in neighbours {
+                if self.model_types.contains(&neighbour) && !seen.contains(&neighbour) {
+                    stack.push(neighbour);
+                }
+            }
+        }
+        seen
+    }
+
     pub(crate) fn terminal_type(&self, ty: &TypeNode) -> Option<String> {
         self.resolve_terminal(ty, &mut BTreeSet::new())
     }
@@ -341,6 +410,40 @@ impl RustInventory {
             }
             TypeNode::Other(_) => None,
         }
+    }
+}
+
+/// Collects every named type appearing anywhere in `ty`, including inside
+/// generic arguments of wrappers [`TypeNode`] does not model (`Result`, maps,
+/// tuples). Used for reachability, where dropping a nested name would silently
+/// shrink the response tree.
+fn collect_type_names(ty: &Type, output: &mut BTreeSet<String>) {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                output.insert(segment.ident.unraw().to_string());
+            }
+            for segment in &type_path.path.segments {
+                if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                    for argument in &arguments.args {
+                        if let GenericArgument::Type(inner) = argument {
+                            collect_type_names(inner, output);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Reference(reference) => collect_type_names(&reference.elem, output),
+        Type::Slice(slice) => collect_type_names(&slice.elem, output),
+        Type::Array(array) => collect_type_names(&array.elem, output),
+        Type::Tuple(tuple) => {
+            for element in &tuple.elems {
+                collect_type_names(element, output);
+            }
+        }
+        Type::Paren(paren) => collect_type_names(&paren.elem, output),
+        Type::Group(group) => collect_type_names(&group.elem, output),
+        _ => {}
     }
 }
 
@@ -521,6 +624,62 @@ mod tests {
             Some("WidgetType".to_string())
         );
         assert!(inventory.metadata.beta_operations.contains("list_widgets"));
+    }
+
+    #[test]
+    fn response_reachability_walks_returns_fields_variants_and_aliases() {
+        let client = r#"
+            pub struct Client;
+            impl Client {
+                pub async fn get_widget(&self) -> Result<ApiResponse<Vec<Widget>>, Error> {
+                    unimplemented!()
+                }
+                pub async fn mutate_widget(&self, body: WidgetPostRequest) {}
+            }
+        "#;
+        let models = r#"
+            pub struct ApiResponse<T> { pub result: Option<T> }
+            pub struct Widget {
+                pub union: Option<WidgetUnion>,
+                pub rows: WidgetRows,
+                pub map: std::collections::BTreeMap<String, MapValue>,
+            }
+            pub enum WidgetUnion {
+                Known(WidgetVariant),
+                #[serde(untagged)]
+                Unknown(serde_json::Value),
+            }
+            pub struct WidgetVariant { pub leaf: Option<String> }
+            pub type WidgetRows = Vec<WidgetRow>;
+            pub struct WidgetRow { pub cell: Option<String> }
+            pub struct MapValue { pub value: Option<String> }
+            pub struct WidgetPostRequest { pub name: String }
+            pub struct Unrelated { pub other: String }
+        "#;
+        let inventory = RustInventory::parse(client, models, "").unwrap();
+        assert_eq!(
+            inventory.client_methods["get_widget"].return_type_names,
+            BTreeSet::from([
+                "Result".to_string(),
+                "ApiResponse".to_string(),
+                "Vec".to_string(),
+                "Widget".to_string(),
+                "Error".to_string(),
+            ])
+        );
+        assert_eq!(
+            inventory.response_reachable_types(),
+            BTreeSet::from([
+                "ApiResponse".to_string(),
+                "Widget".to_string(),
+                "WidgetUnion".to_string(),
+                "WidgetVariant".to_string(),
+                "WidgetRows".to_string(),
+                "WidgetRow".to_string(),
+                "MapValue".to_string(),
+            ]),
+            "request-only and unrelated types must stay out of the response tree"
+        );
     }
 
     #[test]
