@@ -12,11 +12,19 @@ use serde::{Deserialize, Serialize};
 /// `displayType`, `service`, `operator`) shares the same deserialization shape:
 /// buffer the payload as a [`serde_json::Value`], read the discriminator key,
 /// and route each known wire value to the matching variant via
-/// [`serde_json::from_value`]. Any unrecognized discriminator falls through to
-/// the enum's `Unknown(serde_json::Value)` catch-all, so unknown payloads
-/// round-trip losslessly instead of failing to deserialize. This explicit
-/// dispatch avoids the greedy first-match misrouting that `#[serde(untagged)]`
-/// derives suffer when variants share a discriminator.
+/// [`serde_json::from_value`]. This explicit dispatch avoids the greedy
+/// first-match misrouting that `#[serde(untagged)]` derives suffer when variants
+/// share a discriminator.
+///
+/// Once the payload buffers into a `Value`, deserialization cannot fail. Two
+/// routes reach the enum's `Unknown(serde_json::Value)` catch-all, which holds
+/// the payload verbatim so it round-trips losslessly:
+///
+/// * an unrecognized discriminator value, through the final catch-all arm;
+/// * a recognized discriminator whose payload does not fit the selected variant
+///   — e.g. the API changes a field from an array to a string — through
+///   [`crate::serde_helpers::deserialize_or_raw`]. Field-level tolerance covers
+///   a field the API stops sending; this covers a field whose shape it changes.
 ///
 /// The macro emits **only** the `Deserialize` impl. The enum declaration, its
 /// derives/serde attributes, and its `Display` impl must remain literal source
@@ -40,13 +48,14 @@ use serde::{Deserialize, Serialize};
 /// by a wire value of it (e.g. a ClickStack chart config carries
 /// `configType: "sql"` when it is a raw-SQL config and carries no `configType`
 /// at all when it is a builder config). Such a union adds a trailing `none` arm
-/// naming the variant the key's absence selects:
+/// naming the variant the key's absence selects, plus the keys whose presence
+/// disqualifies that variant:
 ///
 /// ```ignore
 /// discriminated_union! {
 ///     ClickStackLineChartConfig, "configType" {
 ///         "sql" => ClickStackLineRawSqlChartConfig,
-///         none => ClickStackLineBuilderChartConfig,
+///         none unless "connectionId" | "sqlTemplate" => ClickStackLineBuilderChartConfig,
 ///     }
 /// }
 /// ```
@@ -54,11 +63,16 @@ use serde::{Deserialize, Serialize};
 /// The `none` arm pins two semantics:
 ///
 /// * It deliberately conflates "key absent" and "key present but not a string":
-///   both produce a `None` scrutinee, so both dispatch to the absence variant.
-/// * When the absence variant is total — every field either `Option<T>` or
-///   `#[serde(default)]`, so it cannot fail to deserialize — the arm always
-///   succeeds. `Unknown` is then reachable only via unrecognized *string*
-///   values of the key.
+///   both produce a `None` scrutinee, so both take the arm.
+/// * The `unless` keys guard against a *dropped* discriminator. A total absence
+///   variant — one that cannot fail to deserialize, because none of its fields
+///   is required — would otherwise absorb any keyless payload, silently
+///   retyping a raw-SQL config as an empty builder config and discarding its
+///   `connectionId`/`sqlTemplate`. Listing keys that only the other variants
+///   carry routes such a payload to `Unknown` instead, where it survives
+///   intact. Unknown *added* keys are not listed and stay ignored. If the spec
+///   ever gives the absence variant one of the guard keys, drop that key from
+///   the list.
 ///
 /// Without a `none` arm, an absent or non-string discriminator falls to
 /// `Unknown` through the final catch-all.
@@ -70,7 +84,7 @@ macro_rules! discriminated_union {
     (
         $enum:ident, $key:literal {
             $( $( $wire:literal )|+ => $variant:ident, )+
-            $( none => $absent:ident, )?
+            $( none unless $( $guard:literal )|+ => $absent:ident, )?
         }
     ) => {
         impl<'de> Deserialize<'de> for $enum {
@@ -81,14 +95,22 @@ macro_rules! discriminated_union {
                 let value = serde_json::Value::deserialize(deserializer)?;
                 match value.get($key).and_then(|v| v.as_str()) {
                     $(
-                        $( Some($wire) )|+ => serde_json::from_value(value)
-                            .map($enum::$variant)
-                            .map_err(serde::de::Error::custom),
+                        $( Some($wire) )|+ => Ok(
+                            crate::serde_helpers::deserialize_or_raw(value)
+                                .map($enum::$variant)
+                                .unwrap_or_else($enum::Unknown),
+                        ),
                     )+
                     $(
-                        None => serde_json::from_value(value)
-                            .map($enum::$absent)
-                            .map_err(serde::de::Error::custom),
+                        None => Ok(
+                            if [$($guard),+].iter().any(|key| value.get(key).is_some()) {
+                                $enum::Unknown(value)
+                            } else {
+                                crate::serde_helpers::deserialize_or_raw(value)
+                                    .map($enum::$absent)
+                                    .unwrap_or_else($enum::Unknown)
+                            },
+                        ),
                     )?
                     _ => Ok($enum::Unknown(value)),
                 }
@@ -2936,12 +2958,18 @@ impl std::fmt::Display for ClickPipeStatePatchRequestCommand {
 }
 
 /// Inline enum for `ClickStackAlertChannelEmail.type`.
+///
+/// The spec gives both alert-channel variants the same `enum: ["webhook",
+/// "email"]`, so `#[default]` sits on `Email` rather than on the first value:
+/// this field discriminates the `ClickStackAlertChannel` union, and defaulting
+/// it to `webhook` would make `ClickStackAlertChannelEmail::default()`
+/// deserialize back as the webhook variant.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackAlertChannelEmailType {
     #[serde(rename = "webhook")]
-    #[default]
     Webhook,
     #[serde(rename = "email")]
+    #[default]
     Email,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -7941,8 +7969,8 @@ impl std::fmt::Display for ClickStackAlertChannel {
 /// `ClickStackBarChartConfig` - one of multiple variants.
 ///
 /// Dispatched on the `configType` field (absent or non-string dispatches to the
-/// builder variant); see the `discriminated_union!` invocation below for the
-/// wire values.
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackBarChartConfig {
@@ -7958,7 +7986,7 @@ pub enum ClickStackBarChartConfig {
 discriminated_union! {
     ClickStackBarChartConfig, "configType" {
         "sql" => ClickStackBarRawSqlChartConfig,
-        none => ClickStackBarBuilderChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackBarBuilderChartConfig,
     }
 }
 
@@ -7977,8 +8005,8 @@ impl std::fmt::Display for ClickStackBarChartConfig {
 /// `ClickStackCategoricalBarChartConfig` - one of multiple variants.
 ///
 /// Dispatched on the `configType` field (absent or non-string dispatches to the
-/// builder variant); see the `discriminated_union!` invocation below for the
-/// wire values.
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackCategoricalBarChartConfig {
@@ -7994,7 +8022,7 @@ pub enum ClickStackCategoricalBarChartConfig {
 discriminated_union! {
     ClickStackCategoricalBarChartConfig, "configType" {
         "sql" => ClickStackCategoricalBarRawSqlChartConfig,
-        none => ClickStackCategoricalBarBuilderChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackCategoricalBarBuilderChartConfig,
     }
 }
 
@@ -8065,8 +8093,8 @@ impl std::fmt::Display for ClickStackDashboardChartSeries {
 /// `ClickStackLineChartConfig` - one of multiple variants.
 ///
 /// Dispatched on the `configType` field (absent or non-string dispatches to the
-/// builder variant); see the `discriminated_union!` invocation below for the
-/// wire values.
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackLineChartConfig {
@@ -8082,7 +8110,7 @@ pub enum ClickStackLineChartConfig {
 discriminated_union! {
     ClickStackLineChartConfig, "configType" {
         "sql" => ClickStackLineRawSqlChartConfig,
-        none => ClickStackLineBuilderChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackLineBuilderChartConfig,
     }
 }
 
@@ -8103,8 +8131,8 @@ impl std::fmt::Display for ClickStackLineChartConfig {
 /// `ClickStackNumberChartConfig` - one of multiple variants.
 ///
 /// Dispatched on the `configType` field (absent or non-string dispatches to the
-/// builder variant); see the `discriminated_union!` invocation below for the
-/// wire values.
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackNumberChartConfig {
@@ -8120,7 +8148,7 @@ pub enum ClickStackNumberChartConfig {
 discriminated_union! {
     ClickStackNumberChartConfig, "configType" {
         "sql" => ClickStackNumberRawSqlChartConfig,
-        none => ClickStackNumberBuilderChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackNumberBuilderChartConfig,
     }
 }
 
@@ -8268,8 +8296,8 @@ impl std::fmt::Display for ClickStackOnClickTarget {
 /// `ClickStackPieChartConfig` - one of multiple variants.
 ///
 /// Dispatched on the `configType` field (absent or non-string dispatches to the
-/// builder variant); see the `discriminated_union!` invocation below for the
-/// wire values.
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackPieChartConfig {
@@ -8285,7 +8313,7 @@ pub enum ClickStackPieChartConfig {
 discriminated_union! {
     ClickStackPieChartConfig, "configType" {
         "sql" => ClickStackPieRawSqlChartConfig,
-        none => ClickStackPieBuilderChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackPieBuilderChartConfig,
     }
 }
 
@@ -8346,8 +8374,8 @@ impl std::fmt::Display for ClickStackSource {
 /// `ClickStackTableChartConfig` - one of multiple variants.
 ///
 /// Dispatched on the `configType` field (absent or non-string dispatches to the
-/// builder variant); see the `discriminated_union!` invocation below for the
-/// wire values.
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackTableChartConfig {
@@ -8363,7 +8391,7 @@ pub enum ClickStackTableChartConfig {
 discriminated_union! {
     ClickStackTableChartConfig, "configType" {
         "sql" => ClickStackTableRawSqlChartConfig,
-        none => ClickStackTableBuilderChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackTableBuilderChartConfig,
     }
 }
 
