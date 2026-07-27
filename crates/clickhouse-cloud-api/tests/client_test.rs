@@ -2716,8 +2716,8 @@ async fn update_webhook() {
     // The response union resolves to a concrete Slack webhook variant.
     match resp.result.unwrap() {
         ClickStackWebhook::ClickStackSlackWebhook(w) => {
-            assert_eq!(w.id, "webhook-1");
-            assert_eq!(w.name, "Updated Alerts");
+            assert_eq!(w.id.as_deref(), Some("webhook-1"));
+            assert_eq!(w.name.as_deref(), Some("Updated Alerts"));
         }
         other => panic!("expected Slack webhook variant, got {other}"),
     }
@@ -2756,8 +2756,8 @@ async fn create_webhook_incidentio_response() {
     // rather than greedily matching the structurally-identical Slack variant.
     match resp.result.unwrap() {
         ClickStackWebhook::ClickStackIncidentIOWebhook(w) => {
-            assert_eq!(w.id, "webhook-2");
-            assert_eq!(w.name, "Incident Alerts");
+            assert_eq!(w.id.as_deref(), Some("webhook-2"));
+            assert_eq!(w.name.as_deref(), Some("Incident Alerts"));
         }
         other => panic!("expected IncidentIO webhook variant, got {other}"),
     }
@@ -2797,7 +2797,7 @@ async fn update_webhook_generic_response() {
     // optional `body` field, which the greedy Slack match would have discarded.
     match resp.result.unwrap() {
         ClickStackWebhook::ClickStackGenericWebhook(w) => {
-            assert_eq!(w.id, "webhook-3");
+            assert_eq!(w.id.as_deref(), Some("webhook-3"));
             assert_eq!(w.body.as_deref(), Some("{\"text\": \"{{ message }}\"}"));
         }
         other => panic!("expected Generic webhook variant, got {other}"),
@@ -2853,9 +2853,10 @@ async fn validate_dashboard() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert!(!result.valid);
-    assert_eq!(result.errors.len(), 1);
-    assert_eq!(result.errors[0].path, "tiles.0.config");
+    assert_eq!(result.valid, Some(false));
+    let errors = result.errors.as_ref().expect("errors should populate");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].path.as_deref(), Some("tiles.0.config"));
     assert_eq!(result.normalized, None);
 }
 
