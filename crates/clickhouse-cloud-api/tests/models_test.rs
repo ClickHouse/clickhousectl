@@ -2224,13 +2224,13 @@ fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
             "kvRollupTable": "logs_kv_1h"
         }
     }"#;
-    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    let src: ClickStackLogSourceResponse = serde_json::from_str(json).unwrap();
     let mv = src
         .metadata_materialized_views
         .expect("metadataMaterializedViews should populate");
-    assert_eq!(mv.granularity, "1 hour");
-    assert_eq!(mv.key_rollup_table, "logs_keys_1h");
-    assert_eq!(mv.kv_rollup_table, "logs_kv_1h");
+    assert_eq!(mv.granularity.as_deref(), Some("1 hour"));
+    assert_eq!(mv.key_rollup_table.as_deref(), Some("logs_keys_1h"));
+    assert_eq!(mv.kv_rollup_table.as_deref(), Some("logs_kv_1h"));
 }
 
 #[test]
@@ -2275,10 +2275,11 @@ fn deserialize_clickstack_trace_source_default_table_select_expression() {
     assert_eq!(v["defaultTableSelectExpression"], "Timestamp, SpanName");
 
     // `defaultTableSelectExpression` is in the spec `required[]` for trace
-    // sources, but responses stay tolerant of a server-side field drop: it
-    // carries `serde(default)`, so a missing field degrades to "" instead of
+    // sources, so the request variant types it as `String`. Responses stay
+    // tolerant of a server-side field drop through the response variant, where
+    // it is `Option<String>`: a missing field lands as `None` instead of
     // failing the whole payload (and, via the `kind`-dispatched
-    // `ClickStackSource` union, the whole list response).
+    // `ClickStackSourceResponse` union, the whole list response).
     let missing = r#"{
         "id": "trace-1",
         "kind": "trace",
@@ -2294,14 +2295,18 @@ fn deserialize_clickstack_trace_source_default_table_select_expression() {
         "spanNameExpression": "SpanName",
         "spanKindExpression": "SpanKind"
     }"#;
-    let src: ClickStackTraceSource = serde_json::from_str(missing).unwrap();
-    assert_eq!(src.default_table_select_expression, "");
-    match serde_json::from_str::<ClickStackSource>(missing).unwrap() {
-        ClickStackSource::ClickStackTraceSource(src) => {
-            assert_eq!(src.default_table_select_expression, "");
+    let src: ClickStackTraceSourceResponse = serde_json::from_str(missing).unwrap();
+    assert_eq!(src.default_table_select_expression, None);
+    match serde_json::from_str::<ClickStackSourceResponse>(missing).unwrap() {
+        ClickStackSourceResponse::ClickStackTraceSource(src) => {
+            assert_eq!(src.default_table_select_expression, None);
         }
         other => panic!("expected trace variant, got {other:?}"),
     }
+    // The dropped field is absent from the re-serialized payload rather than
+    // sent back as `null`.
+    let v = serde_json::to_value(&src).unwrap();
+    assert!(v.get("defaultTableSelectExpression").is_none());
 }
 
 #[test]
@@ -2504,6 +2509,357 @@ fn clickstack_source_serializes_as_inner_log_struct() {
         serde_json::to_value(&source).unwrap(),
         serde_json::to_value(&log).unwrap()
     );
+}
+
+#[test]
+fn clickstack_source_response_dispatches_on_kind_alone() {
+    // The response variants are all-`Option`, so every one of them matches any
+    // JSON object: under `untagged` shape matching the first arm would swallow
+    // all five kinds. Dispatch reads `kind` off the raw JSON instead, so a
+    // payload carrying nothing but its discriminator still resolves to the right
+    // variant.
+    for (kind, expected) in [
+        ("log", "ClickStackLogSource"),
+        ("trace", "ClickStackTraceSource"),
+        ("metric", "ClickStackMetricSource"),
+        ("session", "ClickStackSessionSource"),
+        ("promql", "ClickStackPromqlSource"),
+    ] {
+        let json = format!(r#"{{"kind":"{kind}"}}"#);
+        let source: ClickStackSourceResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(source.to_string(), expected, "wrong variant for {kind}");
+    }
+}
+
+#[test]
+fn clickstack_source_response_treats_dropped_and_null_fields_as_absent() {
+    // Both halves of the tolerance contract on one payload: `connection` is sent
+    // as an explicit `null` (which `serde(default)` would not have absorbed) and
+    // every other field of the schema is dropped outright.
+    let json = r#"{"kind":"log","connection":null,"name":"logs"}"#;
+    let source: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let ClickStackSourceResponse::ClickStackLogSource(log) = source else {
+        panic!("expected the log variant");
+    };
+    assert_eq!(log.connection, None);
+    assert_eq!(log.from, None);
+    assert_eq!(log.timestamp_value_expression, None);
+    assert_eq!(log.name.as_deref(), Some("logs"));
+
+    // Absent fields are omitted on the way out, not re-emitted as `null`.
+    let v = serde_json::to_value(&log).unwrap();
+    assert_eq!(v, serde_json::json!({"kind": "log", "name": "logs"}));
+}
+
+#[test]
+fn clickstack_source_response_unknown_kind_round_trips() {
+    let json = r#"{"kind":"future_kind","name":"x"}"#;
+    assert_unknown_variant_round_trips(json, |s: &ClickStackSourceResponse| {
+        matches!(s, ClickStackSourceResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_source_response_nested_objects_are_tolerant() {
+    // The nested objects of a source are response variants too, so a dropped
+    // field inside `from`, `filterSettings` or `materializedViews` does not fail
+    // the source.
+    let json = r#"{
+        "kind": "log",
+        "from": {"databaseName": "default"},
+        "filterSettings": {"columns": [{"name": "ServiceName"}]},
+        "materializedViews": [{"tableName": "logs_1h", "aggregatedColumns": [{"aggFn": "sum"}]}],
+        "querySettings": [{"setting": "max_threads"}]
+    }"#;
+    let source: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let ClickStackSourceResponse::ClickStackLogSource(log) = source else {
+        panic!("expected the log variant");
+    };
+    let from = log.from.expect("from present");
+    assert_eq!(from.database_name.as_deref(), Some("default"));
+    assert_eq!(from.table_name, None);
+    let filter_settings = log.filter_settings.expect("filterSettings present");
+    assert_eq!(filter_settings.table_name, None);
+    let columns = filter_settings.columns.expect("columns present");
+    assert_eq!(columns[0].name.as_deref(), Some("ServiceName"));
+    assert_eq!(columns[0].label, None);
+    let views = log.materialized_views.expect("materializedViews present");
+    assert_eq!(views[0].min_granularity, None);
+    let aggregated = views[0]
+        .aggregated_columns
+        .as_deref()
+        .expect("aggregatedColumns present");
+    assert_eq!(aggregated[0].agg_fn.as_deref(), Some("sum"));
+    assert_eq!(aggregated[0].mv_column, None);
+    let query_settings = log.query_settings.expect("querySettings present");
+    assert_eq!(query_settings[0].value, None);
+}
+
+#[test]
+fn clickstack_source_try_from_response_converts_every_kind() {
+    // One spec-complete payload per kind, each carrying the nested objects that
+    // kind owns, so every conversion in the source tree is exercised: a source
+    // fetched and written back unchanged must produce the JSON it came from.
+    let payloads = [
+        serde_json::json!({
+            "kind": "log",
+            "name": "logs",
+            "connection": "conn-1",
+            "defaultTableSelectExpression": "*",
+            "from": {"databaseName": "default", "tableName": "logs"},
+            "timestampValueExpression": "ts",
+            "filterSettings": {
+                "columns": [{"label": "Service", "name": "ServiceName"}],
+                "databaseName": "default",
+                "tableName": "logs_filters",
+            },
+            "highlightedRowAttributeExpressions": [{"sqlExpression": "ServiceName"}],
+            "materializedViews": [{
+                "aggregatedColumns": [{"aggFn": "sum", "mvColumn": "count"}],
+                "databaseName": "default",
+                "dimensionColumns": "ServiceName",
+                "minGranularity": "1 hour",
+                "tableName": "logs_1h",
+                "timestampColumn": "ts",
+            }],
+            "metadataMaterializedViews": {
+                "granularity": "1 hour",
+                "keyRollupTable": "logs_keys_1h",
+                "kvRollupTable": "logs_kv_1h",
+            },
+            "querySettings": [{"setting": "max_threads", "value": "4"}],
+        }),
+        serde_json::json!({
+            "kind": "trace",
+            "name": "traces",
+            "connection": "conn-1",
+            "defaultTableSelectExpression": "*",
+            "durationExpression": "Duration",
+            "durationPrecision": 9,
+            "from": {"databaseName": "default", "tableName": "traces"},
+            "parentSpanIdExpression": "ParentSpanId",
+            "spanIdExpression": "SpanId",
+            "spanKindExpression": "SpanKind",
+            "spanNameExpression": "SpanName",
+            "timestampValueExpression": "Timestamp",
+            "traceIdExpression": "TraceId",
+            "metadataMaterializedViews": {
+                "granularity": "1 hour",
+                "keyRollupTable": "traces_keys_1h",
+                "kvRollupTable": "traces_kv_1h",
+            },
+        }),
+        serde_json::json!({
+            "kind": "metric",
+            "name": "metrics",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "metricTables": {
+                "exponential histogram": "otel_metrics_exponential_histogram",
+                "gauge": "otel_metrics_gauge",
+                "histogram": "otel_metrics_histogram",
+                "sum": "otel_metrics_sum",
+                "summary": "otel_metrics_summary",
+            },
+            "resourceAttributesExpression": "ResourceAttributes",
+            "timestampValueExpression": "TimeUnix",
+        }),
+        serde_json::json!({
+            "kind": "session",
+            "name": "sessions",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "sessions"},
+            "traceSourceId": "trace-1",
+        }),
+        serde_json::json!({
+            "kind": "promql",
+            "name": "prometheus",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp",
+        }),
+    ];
+
+    for payload in payloads {
+        let response: ClickStackSourceResponse = serde_json::from_value(payload.clone()).unwrap();
+        let request = ClickStackSource::try_from(response)
+            .unwrap_or_else(|e| panic!("{} should convert: {e}", payload["kind"]));
+        assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+    }
+}
+
+#[test]
+fn clickstack_source_try_from_response_converts_a_complete_source() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "querySettings": [{"setting": "max_threads", "value": "4"}]
+    }"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let request = ClickStackSource::try_from(response).expect("conversion should succeed");
+    let ClickStackSource::ClickStackLogSource(log) = &request else {
+        panic!("expected the log variant");
+    };
+    assert_eq!(log.connection, "conn-1");
+    assert_eq!(log.from.table_name, "logs");
+    assert_eq!(
+        log.query_settings.as_deref(),
+        Some(
+            [ClickStackQuerySetting {
+                setting: "max_threads".to_string(),
+                value: "4".to_string(),
+            }]
+            .as_slice()
+        )
+    );
+    // A write-back of an untouched source is byte-identical to what was fetched.
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    );
+}
+
+#[test]
+fn clickstack_source_try_from_response_names_every_missing_required_field() {
+    let response: ClickStackSourceResponse =
+        serde_json::from_str(r#"{"kind":"log","name":"logs"}"#).unwrap();
+    let error = ClickStackSource::try_from(response).expect_err("conversion should fail");
+    assert_eq!(
+        error.fields(),
+        [
+            "connection",
+            "defaultTableSelectExpression",
+            "from",
+            "timestampValueExpression"
+        ]
+    );
+    assert_eq!(
+        error.to_string(),
+        "the API response is missing required field(s): connection, \
+         defaultTableSelectExpression, from, timestampValueExpression"
+    );
+}
+
+#[test]
+fn clickstack_source_try_from_response_reports_a_nested_missing_field() {
+    // A nested object reports its own wire name: `from` is present, so the
+    // failure is `tableName` inside it.
+    let json = r#"{
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default"},
+        "timestampValueExpression": "ts"
+    }"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let error = ClickStackSource::try_from(response).expect_err("conversion should fail");
+    assert_eq!(error.fields(), ["tableName"]);
+
+    // The same holds for an element of a nested list.
+    let json = r#"{
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "querySettings": [{"setting": "max_threads"}]
+    }"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let error = ClickStackSource::try_from(response).expect_err("conversion should fail");
+    assert_eq!(error.fields(), ["value"]);
+}
+
+#[test]
+fn clickstack_source_try_from_response_passes_an_unknown_kind_through() {
+    // A source kind this crate does not model must still be writable back: the
+    // request union's `Unknown` arm holds the raw payload and serializes it
+    // verbatim.
+    let json = r#"{"kind":"future_kind","name":"x"}"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let request = ClickStackSource::try_from(response).expect("Unknown converts losslessly");
+    assert!(matches!(request, ClickStackSource::Unknown(_)));
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    );
+}
+
+#[test]
+fn shared_clickstack_source_types_stay_strict_on_the_request_side() {
+    // Sources are sent as well as returned, so each type in the source tree
+    // splits: the request variant keeps the schema's required fields as `T` and
+    // rejects a payload that omits one, while the response variant accepts any
+    // object.
+    macro_rules! assert_split_strictness {
+        ($($request:ty => $response:ty),+ $(,)?) => {
+            $(
+                assert!(
+                    serde_json::from_str::<$request>("{}").is_err(),
+                    "{} accepted a payload missing its required fields",
+                    stringify!($request),
+                );
+                assert_eq!(
+                    serde_json::from_str::<$response>("{}").unwrap(),
+                    <$response>::default(),
+                    "{} rejected an empty payload",
+                    stringify!($response),
+                );
+            )+
+        };
+    }
+
+    assert_split_strictness!(
+        ClickStackAggregatedColumn => ClickStackAggregatedColumnResponse,
+        ClickStackCASLPermission => ClickStackCASLPermissionResponse,
+        ClickStackFilter => ClickStackFilterResponse,
+        ClickStackFilterSettingsColumn => ClickStackFilterSettingsColumnResponse,
+        ClickStackHighlightedAttributeExpression => ClickStackHighlightedAttributeExpressionResponse,
+        ClickStackLogSource => ClickStackLogSourceResponse,
+        ClickStackLogSourceMetadataMaterializedViews => ClickStackLogSourceMetadataMaterializedViewsResponse,
+        ClickStackMaterializedView => ClickStackMaterializedViewResponse,
+        ClickStackMetricSource => ClickStackMetricSourceResponse,
+        ClickStackMetricSourceFrom => ClickStackMetricSourceFromResponse,
+        ClickStackMetricTables => ClickStackMetricTablesResponse,
+        ClickStackPromqlSource => ClickStackPromqlSourceResponse,
+        ClickStackQuerySetting => ClickStackQuerySettingResponse,
+        ClickStackSavedFilterValue => ClickStackSavedFilterValueResponse,
+        ClickStackSavedSearchFilter => ClickStackSavedSearchFilterResponse,
+        ClickStackSessionSource => ClickStackSessionSourceResponse,
+        ClickStackSourceFilterSettings => ClickStackSourceFilterSettingsResponse,
+        ClickStackSourceFrom => ClickStackSourceFromResponse,
+        ClickStackTraceSource => ClickStackTraceSourceResponse,
+        ClickStackTraceSourceMetadataMaterializedViews => ClickStackTraceSourceMetadataMaterializedViewsResponse,
+    );
+}
+
+#[test]
+fn clickstack_response_only_models_accept_an_empty_payload() {
+    // Connections, roles and saved searches are only ever returned — the create
+    // and update bodies are separate schemas — so they are all-`Option` in place
+    // instead of splitting, and none of their fields can fail a response.
+    assert_eq!(
+        serde_json::from_str::<ClickStackConnection>("{}").unwrap(),
+        ClickStackConnection::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackRole>("{}").unwrap(),
+        ClickStackRole::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackSavedSearch>("{}").unwrap(),
+        ClickStackSavedSearch::default()
+    );
+    // Their request counterparts stay strict.
+    assert!(serde_json::from_str::<ClickStackCreateConnectionRequest>("{}").is_err());
+    assert!(serde_json::from_str::<ClickStackCreateRoleRequest>("{}").is_err());
+    assert!(serde_json::from_str::<ClickStackSavedSearchInput>("{}").is_err());
 }
 
 #[test]
@@ -3893,10 +4249,13 @@ fn deserialize_clickstack_connection_with_null_prefix() {
         "updatedAt": "2025-06-15T10:30:00.000Z"
     }"#;
     let conn: ClickStackConnection = serde_json::from_str(json).unwrap();
-    assert_eq!(conn.id, "507f1f77bcf86cd799439012");
-    assert_eq!(conn.name, "Production ClickHouse");
-    assert_eq!(conn.host, "https://clickhouse.example.com:8443");
-    assert_eq!(conn.username, "default");
+    assert_eq!(conn.id.as_deref(), Some("507f1f77bcf86cd799439012"));
+    assert_eq!(conn.name.as_deref(), Some("Production ClickHouse"));
+    assert_eq!(
+        conn.host.as_deref(),
+        Some("https://clickhouse.example.com:8443")
+    );
+    assert_eq!(conn.username.as_deref(), Some("default"));
     assert_eq!(conn.hyperdx_setting_prefix, None);
     assert_eq!(conn.is_prometheus_endpoint, Some(false));
     assert!(conn.created_at.is_some());
@@ -3948,14 +4307,15 @@ fn deserialize_clickstack_role_with_nested_conditions() {
         ]
     }"#;
     let role: ClickStackRole = serde_json::from_str(json).unwrap();
-    assert_eq!(role.id, "role-1");
-    assert_eq!(role.name, "Deploy Bot");
-    assert!(!role.is_predefined);
-    assert_eq!(role.permissions.len(), 1);
+    assert_eq!(role.id.as_deref(), Some("role-1"));
+    assert_eq!(role.name.as_deref(), Some("Deploy Bot"));
+    assert_eq!(role.is_predefined, Some(false));
+    let permissions = role.permissions.as_deref().expect("permissions present");
+    assert_eq!(permissions.len(), 1);
 
-    let perm = &role.permissions[0];
-    assert_eq!(perm.action, "read");
-    assert_eq!(perm.subject, "dashboard");
+    let perm = &permissions[0];
+    assert_eq!(perm.action.as_deref(), Some("read"));
+    assert_eq!(perm.subject.as_deref(), Some("dashboard"));
     assert_eq!(perm.inverted, Some(false));
     assert_eq!(perm.integration, Some("mongodb".to_string()));
 
@@ -3969,15 +4329,15 @@ fn deserialize_clickstack_role_with_nested_conditions() {
 #[test]
 fn clickstack_role_round_trip() {
     let role = ClickStackRole {
-        id: "role-1".to_string(),
-        name: "Deploy Bot".to_string(),
-        is_predefined: false,
-        permissions: vec![ClickStackCASLPermission {
-            action: "manage".to_string(),
-            subject: "all".to_string(),
+        id: Some("role-1".to_string()),
+        name: Some("Deploy Bot".to_string()),
+        is_predefined: Some(false),
+        permissions: Some(vec![ClickStackCASLPermissionResponse {
+            action: Some("manage".to_string()),
+            subject: Some("all".to_string()),
             conditions: Some(serde_json::json!({ "teamId": "team-1" })),
             ..Default::default()
-        }],
+        }]),
         ..Default::default()
     };
     let v = serde_json::to_value(&role).unwrap();
@@ -4063,9 +4423,12 @@ fn deserialize_clickstack_saved_search_full_round_trip() {
         "updatedAt": "2025-06-15T10:30:00.000Z"
     }"#;
     let search: ClickStackSavedSearch = serde_json::from_str(json).unwrap();
-    assert_eq!(search.id, "507f1f77bcf86cd799439011");
-    assert_eq!(search.name, "Production Errors");
-    assert_eq!(search.source_id, "507f1f77bcf86cd799439012");
+    assert_eq!(search.id.as_deref(), Some("507f1f77bcf86cd799439011"));
+    assert_eq!(search.name.as_deref(), Some("Production Errors"));
+    assert_eq!(
+        search.source_id.as_deref(),
+        Some("507f1f77bcf86cd799439012")
+    );
     assert_eq!(
         search.where_language,
         Some(ClickStackSavedSearchWherelanguage::Lucene)
@@ -4077,8 +4440,8 @@ fn deserialize_clickstack_saved_search_full_round_trip() {
         Some(ClickStackSavedSearchFilterType::Sql)
     );
     assert_eq!(
-        filters[0].condition,
-        "ServiceName IN ('checkout', 'payments')"
+        filters[0].condition.as_deref(),
+        Some("ServiceName IN ('checkout', 'payments')")
     );
     assert_eq!(search.team_id, Some("507f1f77bcf86cd799439013".to_string()));
 

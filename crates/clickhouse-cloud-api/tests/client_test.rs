@@ -1944,7 +1944,7 @@ async fn list_saved_searches() {
         .unwrap();
     let searches = resp.result.unwrap();
     assert_eq!(searches.len(), 1);
-    assert_eq!(searches[0].source_id, "source-1");
+    assert_eq!(searches[0].source_id.as_deref(), Some("source-1"));
 }
 
 #[tokio::test]
@@ -1976,7 +1976,7 @@ async fn create_saved_search() {
         .click_stack_create_saved_search("org-1", "svc-1", &body)
         .await
         .unwrap();
-    assert_eq!(resp.result.unwrap().id, "search-1");
+    assert_eq!(resp.result.unwrap().id.as_deref(), Some("search-1"));
 }
 
 #[tokio::test]
@@ -2405,8 +2405,8 @@ async fn create_connection() {
         .await
         .unwrap();
     let conn = resp.result.unwrap();
-    assert_eq!(conn.id, "conn-1");
-    assert_eq!(conn.name, "Production ClickHouse");
+    assert_eq!(conn.id.as_deref(), Some("conn-1"));
+    assert_eq!(conn.name.as_deref(), Some("Production ClickHouse"));
 }
 
 #[tokio::test]
@@ -2431,7 +2431,7 @@ async fn get_connection() {
         .await
         .unwrap();
     let conn = resp.result.unwrap();
-    assert_eq!(conn.id, "conn-1");
+    assert_eq!(conn.id.as_deref(), Some("conn-1"));
 }
 
 #[tokio::test]
@@ -2465,7 +2465,7 @@ async fn update_connection() {
         .await
         .unwrap();
     let conn = resp.result.unwrap();
-    assert_eq!(conn.name, "Updated Connection");
+    assert_eq!(conn.name.as_deref(), Some("Updated Connection"));
 }
 
 #[tokio::test]
@@ -2552,9 +2552,9 @@ async fn create_role() {
         .await
         .unwrap();
     let role = resp.result.unwrap();
-    assert_eq!(role.id, "role-1");
-    assert_eq!(role.name, "Deploy Bot");
-    assert!(!role.is_predefined);
+    assert_eq!(role.id.as_deref(), Some("role-1"));
+    assert_eq!(role.name.as_deref(), Some("Deploy Bot"));
+    assert_eq!(role.is_predefined, Some(false));
 }
 
 #[tokio::test]
@@ -2579,8 +2579,8 @@ async fn get_role() {
         .await
         .unwrap();
     let role = resp.result.unwrap();
-    assert_eq!(role.id, "role-1");
-    assert!(role.is_predefined);
+    assert_eq!(role.id.as_deref(), Some("role-1"));
+    assert_eq!(role.is_predefined, Some(true));
 }
 
 #[tokio::test]
@@ -2616,8 +2616,9 @@ async fn update_role() {
         .await
         .unwrap();
     let role = resp.result.unwrap();
-    assert_eq!(role.permissions.len(), 1);
-    assert_eq!(role.permissions[0].action, "manage");
+    let permissions = role.permissions.unwrap_or_default();
+    assert_eq!(permissions.len(), 1);
+    assert_eq!(permissions[0].action.as_deref(), Some("manage"));
 }
 
 #[tokio::test]
