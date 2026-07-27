@@ -87,7 +87,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         let services = resp.result.ok_or("postgres list returned no result")?;
                         let leftover: Vec<_> = services
                             .into_iter()
-                            .filter(|s| filters_match_tags(&filters, &s.tags))
+                            .filter(|s| {
+                                filters_match_tags(&filters, s.tags.as_deref().unwrap_or_default())
+                            })
                             .collect();
                         Ok(leftover)
                     }
@@ -151,27 +153,31 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         let pg_created = pg_create_resp?
             .result
             .ok_or("postgres create returned no result")?;
-        let postgres_id = pg_created.id.to_string();
+        let postgres_id = pg_created
+            .id
+            .ok_or("postgres create returned no id")?
+            .to_string();
         // The create response is the only API surface guaranteed to return
         // credentials: from July 31, 2026 the get endpoint stops echoing
         // `password` and `connectionString`, so capture everything
         // credential-derived here rather than from the polled get below.
-        let pg_username = pg_created.username.clone();
-        let pg_password = pg_created.password.clone();
+        let pg_username = pg_created.username.clone().unwrap_or_default();
+        let pg_password = pg_created.password.clone().unwrap_or_default();
+        let pg_connection_string = pg_created.connection_string.clone().unwrap_or_default();
         assert!(
-            !pg_created.connection_string.is_empty(),
-            "postgres create returned empty connection string"
+            !pg_connection_string.is_empty(),
+            "postgres create returned no connection string"
         );
-        let pg_port = parse_pg_port(&pg_created.connection_string).unwrap_or(5432);
-        let pg_database = parse_pg_database(&pg_created.connection_string)
-            .unwrap_or_else(|| "postgres".to_string());
+        let pg_port = parse_pg_port(&pg_connection_string).unwrap_or(5432);
+        let pg_database =
+            parse_pg_database(&pg_connection_string).unwrap_or_else(|| "postgres".to_string());
         assert!(
             !pg_username.is_empty(),
-            "postgres create returned empty username"
+            "postgres create returned no username"
         );
         assert!(
             !pg_password.is_empty(),
-            "postgres create returned empty password"
+            "postgres create returned no password"
         );
         cleanup.register_postgres(postgres_id.clone());
         eprintln!("  provisioned postgres id <redacted>");
@@ -197,7 +203,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 async move {
                     let resp = client.postgres_service_get(&org_id, &postgres_id).await?;
                     let svc = resp.result.ok_or("postgres get returned no result")?;
-                    if svc.state.to_string() == "running" {
+                    if svc
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.to_string() == "running")
+                    {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -227,7 +237,8 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         );
         let (pg_ready, ch_ready) = tokio::try_join!(pg_ready_fut, ch_ready_fut)?;
 
-        assert!(!pg_ready.hostname.is_empty(), "empty pg hostname");
+        let pg_hostname = pg_ready.hostname.clone().unwrap_or_default();
+        assert!(!pg_hostname.is_empty(), "postgres get returned no hostname");
         let ch_endpoint = ch_ready
             .endpoints
             .iter()
@@ -248,7 +259,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             .await
             .ok();
         let pg_client = connect_postgres(
-            &pg_ready.hostname,
+            &pg_hostname,
             pg_port,
             &pg_database,
             &pg_username,
@@ -280,7 +291,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         password: pg_password.clone(),
                     },
                     database: pg_database.clone(),
-                    host: pg_ready.hostname.clone(),
+                    host: pg_hostname.clone(),
                     port: pg_port as i64,
                     settings: ClickPipePostgresPipeSettings {
                         // `cdc` does snapshot + ongoing replication. The API

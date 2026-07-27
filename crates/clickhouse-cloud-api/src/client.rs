@@ -1155,7 +1155,7 @@ impl Client {
         &self,
         organization_id: &str,
         postgres_id: &str,
-    ) -> Result<ApiResponse<PostgresInstanceConfig>, Error> {
+    ) -> Result<ApiResponse<PostgresInstanceConfigResponse>, Error> {
         let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;

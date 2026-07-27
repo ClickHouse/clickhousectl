@@ -2951,8 +2951,8 @@ async fn create_postgres_service() {
     };
     let resp = c.postgres_service_create("org-1", &body).await.unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, "pg-svc");
-    assert_eq!(pg.password, "generated-pw");
+    assert_eq!(pg.name.as_deref(), Some("pg-svc"));
+    assert_eq!(pg.password.as_deref(), Some("generated-pw"));
 }
 
 #[tokio::test]
@@ -2974,7 +2974,7 @@ async fn list_postgres_services() {
     let resp = c.postgres_service_get_list("org-1").await.unwrap();
     let services = resp.result.unwrap();
     assert_eq!(services.len(), 1);
-    assert_eq!(services[0].name, "pg-1");
+    assert_eq!(services[0].name.as_deref(), Some("pg-1"));
 }
 
 #[tokio::test]
@@ -2994,8 +2994,11 @@ async fn get_postgres_service() {
 
     let resp = c.postgres_service_get("org-1", "pg-1").await.unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, "pg-1");
-    assert_eq!(pg.connection_string, "postgres://user@host/db");
+    assert_eq!(pg.name.as_deref(), Some("pg-1"));
+    assert_eq!(
+        pg.connection_string.as_deref(),
+        Some("postgres://user@host/db")
+    );
 }
 
 #[tokio::test]
@@ -3021,7 +3024,7 @@ async fn update_postgres_service() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, "pg-1");
+    assert_eq!(pg.name.as_deref(), Some("pg-1"));
 }
 
 #[tokio::test]
@@ -3061,7 +3064,7 @@ async fn update_postgres_service_state() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, "pg-1");
+    assert_eq!(pg.name.as_deref(), Some("pg-1"));
 }
 
 #[tokio::test]
@@ -3087,7 +3090,7 @@ async fn set_postgres_password() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.password, "new-pg-password");
+    assert_eq!(result.password.as_deref(), Some("new-pg-password"));
 }
 
 #[tokio::test]
@@ -3129,7 +3132,10 @@ async fn get_postgres_config() {
         .unwrap();
     let config = resp.result.unwrap();
     assert_eq!(
-        config.pg_config.max_connections,
+        config
+            .pg_config
+            .expect("pgConfig in response")
+            .max_connections,
         Some(serde_json::json!(100))
     );
 }
@@ -3165,7 +3171,10 @@ async fn replace_postgres_config() {
     let result = resp.result.unwrap();
     assert_eq!(result.message, Some("Configuration updated".to_string()));
     assert_eq!(
-        result.pg_config.max_connections,
+        result
+            .pg_config
+            .expect("pgConfig in response")
+            .max_connections,
         Some(serde_json::json!(200))
     );
 }
@@ -3200,7 +3209,10 @@ async fn patch_postgres_config() {
         .unwrap();
     let result = resp.result.unwrap();
     assert_eq!(
-        result.pg_config.max_connections,
+        result
+            .pg_config
+            .expect("pgConfig in response")
+            .max_connections,
         Some(serde_json::json!(150))
     );
 }
@@ -3231,7 +3243,7 @@ async fn create_postgres_read_replica() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert!(!pg.is_primary);
+    assert_eq!(pg.is_primary, Some(false));
 }
 
 #[tokio::test]
@@ -3263,7 +3275,7 @@ async fn restore_postgres_service() {
         .await
         .unwrap();
     let pg = resp.result.unwrap();
-    assert_eq!(pg.name, "pg-1-restored");
+    assert_eq!(pg.name.as_deref(), Some("pg-1-restored"));
 }
 
 // ===========================================================================

@@ -511,7 +511,7 @@ fn deserialize_postgres_service() {
         "state": "running"
     }"#;
     let pg: PostgresService = serde_json::from_str(json).unwrap();
-    assert_eq!(pg.name, "my-postgres");
+    assert_eq!(pg.name.as_deref(), Some("my-postgres"));
 }
 
 #[test]
@@ -1067,7 +1067,7 @@ fn invitation_ignores_extra_fields() {
 fn postgres_service_ignores_extra_fields() {
     let json = r#"{"name":"pg","state":"running","maintenanceWindow":"sun-02:00"}"#;
     let pg: PostgresService = serde_json::from_str(json).unwrap();
-    assert_eq!(pg.name, "pg");
+    assert_eq!(pg.name.as_deref(), Some("pg"));
 }
 
 #[test]
@@ -1195,8 +1195,79 @@ fn clickpipe_minimal_response() {
 fn postgres_service_minimal_response() {
     let pg: PostgresService =
         serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
-    assert_eq!(pg.name, "");
-    assert_eq!(pg.state, PgStateProperty::default());
+    // Every response field is `Option<T>`: an omitted key is `None`, not a
+    // fabricated zero value.
+    assert_eq!(pg.name, None);
+    assert_eq!(pg.state, None);
+}
+
+#[test]
+fn postgres_service_response_tolerates_dropped_and_null_fields() {
+    // A response field the API stops sending, and one it sends as an explicit
+    // `null`, must both land as `None` rather than failing the response. `null`
+    // is the case `#[serde(default)]` never covered: it only fills a missing
+    // key.
+    let dropped: PostgresService = serde_json::from_str("{}").unwrap();
+    let nulled: PostgresService = serde_json::from_str(
+        r#"{"id":null,"name":null,"state":null,"tags":null,"storageSize":null,"createdAt":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, PostgresService::default());
+    assert_eq!(nulled, PostgresService::default());
+    assert_eq!(nulled.tags, None);
+    assert_eq!(nulled.storage_size, None);
+}
+
+#[test]
+fn postgres_service_response_omits_absent_fields_when_serialized() {
+    // Absent means absent: a response field that was not returned is omitted
+    // from `--json` output rather than emitted as `null`.
+    let pg = PostgresService {
+        name: Some("pg-1".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&pg).unwrap();
+    assert_eq!(json, serde_json::json!({ "name": "pg-1" }));
+}
+
+#[test]
+fn postgres_instance_config_response_converts_back_into_a_request_body() {
+    let response = PostgresInstanceConfigResponse {
+        pg_config: Some(PgConfigResponse {
+            max_connections: Some(serde_json::json!(200)),
+            ..Default::default()
+        }),
+        pg_bouncer_config: Some(PgBouncerConfigResponse {}),
+    };
+    let request = PostgresInstanceConfig::try_from(response).unwrap();
+    assert_eq!(
+        request.pg_config.max_connections,
+        Some(serde_json::json!(200))
+    );
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({ "pgConfig": { "max_connections": 200 }, "pgBouncerConfig": {} })
+    );
+}
+
+#[test]
+fn postgres_instance_config_response_conversion_reports_missing_required_fields() {
+    // Both nested objects are required in a write body, so the write-back
+    // conversion must fail loudly instead of inventing empty objects.
+    let missing_bouncer = PostgresInstanceConfig::try_from(PostgresInstanceConfigResponse {
+        pg_config: Some(PgConfigResponse::default()),
+        pg_bouncer_config: None,
+    })
+    .unwrap_err();
+    assert_eq!(missing_bouncer.fields(), ["pgBouncerConfig"]);
+
+    let missing_both =
+        PostgresInstanceConfig::try_from(PostgresInstanceConfigResponse::default()).unwrap_err();
+    assert_eq!(missing_both.fields(), ["pgBouncerConfig", "pgConfig"]);
+    assert_eq!(
+        missing_both.to_string(),
+        "the API response is missing required field(s): pgBouncerConfig, pgConfig"
+    );
 }
 
 #[test]
@@ -1386,9 +1457,9 @@ fn deserialize_postgres_instance_config() {
         },
         "pgBouncerConfig": {}
     }"#;
-    let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
+    let config: PostgresInstanceConfigResponse = serde_json::from_str(json).unwrap();
     assert_eq!(
-        config.pg_config.max_connections,
+        config.pg_config.unwrap().max_connections,
         Some(serde_json::json!(200))
     );
 }
@@ -1410,31 +1481,17 @@ fn deserialize_postgres_instance_config_string_wrapped_numbers() {
         },
         "pgBouncerConfig": {}
     }"#;
-    let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
+    let config: PostgresInstanceConfigResponse = serde_json::from_str(json).unwrap();
+    let pg_config = config.pg_config.expect("pgConfig present in the payload");
+    assert_eq!(pg_config.max_connections, Some(serde_json::json!("100")));
+    assert_eq!(pg_config.random_page_cost, Some(serde_json::json!("1.1")));
+    assert_eq!(pg_config.max_worker_processes, Some(serde_json::json!(8)));
+    assert_eq!(pg_config.autovacuum_naptime, Some(serde_json::json!("5s")));
     assert_eq!(
-        config.pg_config.max_connections,
-        Some(serde_json::json!("100"))
-    );
-    assert_eq!(
-        config.pg_config.random_page_cost,
-        Some(serde_json::json!("1.1"))
-    );
-    assert_eq!(
-        config.pg_config.max_worker_processes,
-        Some(serde_json::json!(8))
-    );
-    assert_eq!(
-        config.pg_config.autovacuum_naptime,
-        Some(serde_json::json!("5s"))
-    );
-    assert_eq!(
-        config.pg_config.autovacuum_vacuum_scale_factor,
+        pg_config.autovacuum_vacuum_scale_factor,
         Some(serde_json::json!("0.2"))
     );
-    assert_eq!(
-        config.pg_config.autovacuum_max_workers,
-        Some(serde_json::json!(3))
-    );
+    assert_eq!(pg_config.autovacuum_max_workers, Some(serde_json::json!(3)));
 }
 
 #[test]

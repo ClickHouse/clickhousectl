@@ -8854,19 +8854,14 @@ pub struct BackupConfigurationPatchRequest {
 /// `BasePostgresService` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BasePostgresService {
-    #[serde(rename = "haType", default)]
+    #[serde(rename = "haType")]
     pub ha_type: PgHaType,
-    #[serde(default)]
     pub name: PgNameProperty,
-    #[serde(rename = "postgresVersion", default)]
+    #[serde(rename = "postgresVersion")]
     pub postgres_version: PgVersion,
-    #[serde(default)]
     pub provider: PgProvider,
-    #[serde(default)]
     pub region: PgRegion,
-    #[serde(default)]
     pub size: PgSize,
-    #[serde(default)]
     pub tags: PgTags,
 }
 
@@ -13020,111 +13015,103 @@ pub struct PLAIN {
 /// `PostgresService` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresService {
-    #[serde(rename = "connectionString", default)]
-    pub connection_string: String,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: PgCreatedAtProperty,
-    #[serde(rename = "haType", default)]
-    pub ha_type: PgHaType,
-    #[serde(default)]
-    pub hostname: String,
-    #[serde(default)]
-    pub id: PgIdProperty,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: PgIsPrimaryProperty,
-    #[serde(default)]
-    pub name: PgNameProperty,
-    #[serde(default)]
-    pub password: String,
-    #[serde(rename = "postgresVersion", default)]
-    pub postgres_version: PgVersion,
-    #[serde(default)]
-    pub provider: PgProvider,
-    #[serde(default)]
-    pub region: PgRegion,
-    #[serde(default)]
-    pub size: PgSize,
-    #[serde(default)]
-    pub state: PgStateProperty,
-    #[serde(rename = "storageSize", default)]
-    pub storage_size: PgStorageSize,
-    #[serde(default)]
-    pub tags: PgTags,
-    #[serde(default)]
-    pub username: String,
+    #[serde(rename = "connectionString", skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<PgCreatedAtProperty>,
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
+    pub ha_type: Option<PgHaType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<PgIdProperty>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<PgIsPrimaryProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<PgNameProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none")]
+    pub postgres_version: Option<PgVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PgProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<PgRegion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<PgSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<PgStateProperty>,
+    #[serde(rename = "storageSize", skip_serializing_if = "Option::is_none")]
+    pub storage_size: Option<PgStorageSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<PgTags>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 /// `PostgresServiceListItem` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceListItem {
-    #[serde(rename = "createdAt", default)]
-    pub created_at: PgCreatedAtProperty,
-    #[serde(rename = "haType", default)]
-    pub ha_type: PgHaType,
-    #[serde(default)]
-    pub id: PgIdProperty,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: PgIsPrimaryProperty,
-    #[serde(default)]
-    pub name: PgNameProperty,
-    #[serde(rename = "postgresVersion", default)]
-    pub postgres_version: PgVersion,
-    #[serde(default)]
-    pub provider: PgProvider,
-    #[serde(default)]
-    pub region: PgRegion,
-    #[serde(default)]
-    pub size: PgSize,
-    #[serde(default)]
-    pub state: PgStateProperty,
-    #[serde(default)]
-    pub tags: PgTags,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<PgCreatedAtProperty>,
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
+    pub ha_type: Option<PgHaType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<PgIdProperty>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<PgIsPrimaryProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<PgNameProperty>,
+    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none")]
+    pub postgres_version: Option<PgVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PgProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<PgRegion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<PgSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<PgStateProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<PgTags>,
 }
 
 /// `PostgresServicePasswordResource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePasswordResource {
-    #[serde(default)]
-    pub password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// `PostgresServicePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePatchRequest {
-    #[serde(rename = "haType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<PgNameProperty>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PgSize>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
 /// `PostgresServicePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePostRequest {
-    #[serde(rename = "haType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     pub name: PgNameProperty,
-    #[serde(
-        rename = "pgBouncerConfig",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfig>,
-    #[serde(
-        rename = "postgresVersion",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none")]
     pub postgres_version: Option<PgVersion>,
     pub provider: PgProvider,
     pub region: PgRegion,
     pub size: PgSize,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
@@ -13132,15 +13119,11 @@ pub struct PostgresServicePostRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceReadReplicaRequest {
     pub name: PgNameProperty,
-    #[serde(
-        rename = "pgBouncerConfig",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfig>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
@@ -13148,223 +13131,230 @@ pub struct PostgresServiceReadReplicaRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceRestoreRequest {
     pub name: PgNameProperty,
-    #[serde(
-        rename = "pgBouncerConfig",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfig>,
     #[serde(rename = "restoreTarget")]
     pub restore_target: PgPitrRestoreTargetProperty,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
 /// `PostgresServiceSetPassword` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceSetPassword {
-    #[serde(default)]
     pub password: PgPassword,
 }
 
 /// `PostgresServiceSetState` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceSetState {
-    #[serde(default)]
     pub command: PostgresServiceSetStateCommand,
 }
 
 /// `PostgresMetricDataPoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetricDataPoint {
-    #[serde(default)]
-    pub timestamp: i64,
-    #[serde(default)]
-    pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
 }
 
 /// `PostgresMetricSeries` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetricSeries {
-    #[serde(rename = "dataPoints", default)]
-    pub data_points: Vec<PostgresMetricDataPoint>,
-    #[serde(default)]
-    pub label: String,
+    #[serde(rename = "dataPoints", skip_serializing_if = "Option::is_none")]
+    pub data_points: Option<Vec<PostgresMetricDataPoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// `PostgresMetric` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetric {
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub key: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub series: Vec<PostgresMetricSeries>,
-    #[serde(default)]
-    pub unit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series: Option<Vec<PostgresMetricSeries>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 /// `PostgresMetrics` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetrics {
-    #[serde(default)]
-    pub metrics: Vec<PostgresMetric>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Vec<PostgresMetric>>,
 }
 
 /// `PostgresQueryExecution` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresQueryExecution {
-    #[serde(default)]
-    pub app: String,
-    #[serde(rename = "cpuSysTimeUs", default)]
-    pub cpu_sys_time_us: i64,
-    #[serde(rename = "cpuUserTimeUs", default)]
-    pub cpu_user_time_us: i64,
-    #[serde(rename = "dbName", default)]
-    pub db_name: String,
-    #[serde(rename = "dbOperation", default)]
-    pub db_operation: String,
-    #[serde(rename = "dbUser", default)]
-    pub db_user: String,
-    #[serde(rename = "durationUs", default)]
-    pub duration_us: i64,
-    #[serde(rename = "errElevel", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(rename = "cpuSysTimeUs", skip_serializing_if = "Option::is_none")]
+    pub cpu_sys_time_us: Option<i64>,
+    #[serde(rename = "cpuUserTimeUs", skip_serializing_if = "Option::is_none")]
+    pub cpu_user_time_us: Option<i64>,
+    #[serde(rename = "dbName", skip_serializing_if = "Option::is_none")]
+    pub db_name: Option<String>,
+    #[serde(rename = "dbOperation", skip_serializing_if = "Option::is_none")]
+    pub db_operation: Option<String>,
+    #[serde(rename = "dbUser", skip_serializing_if = "Option::is_none")]
+    pub db_user: Option<String>,
+    #[serde(rename = "durationUs", skip_serializing_if = "Option::is_none")]
+    pub duration_us: Option<i64>,
+    #[serde(rename = "errElevel", skip_serializing_if = "Option::is_none")]
     pub err_elevel: Option<i64>,
-    #[serde(
-        rename = "errMessage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "errMessage", skip_serializing_if = "Option::is_none")]
     pub err_message: Option<String>,
-    #[serde(
-        rename = "errSqlstate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "errSqlstate", skip_serializing_if = "Option::is_none")]
     pub err_sqlstate: Option<String>,
-    #[serde(rename = "jitDeformTimeUs", default)]
-    pub jit_deform_time_us: i64,
-    #[serde(rename = "jitEmissionTimeUs", default)]
-    pub jit_emission_time_us: i64,
-    #[serde(rename = "jitFunctions", default)]
-    pub jit_functions: i64,
-    #[serde(rename = "jitGenerationTimeUs", default)]
-    pub jit_generation_time_us: i64,
-    #[serde(rename = "jitInliningTimeUs", default)]
-    pub jit_inlining_time_us: i64,
-    #[serde(rename = "jitOptimizationTimeUs", default)]
-    pub jit_optimization_time_us: i64,
-    #[serde(rename = "localBlksDirtied", default)]
-    pub local_blks_dirtied: i64,
-    #[serde(rename = "localBlksHit", default)]
-    pub local_blks_hit: i64,
-    #[serde(rename = "localBlksRead", default)]
-    pub local_blks_read: i64,
-    #[serde(rename = "localBlksWritten", default)]
-    pub local_blks_written: i64,
-    #[serde(rename = "parallelWorkersLaunched", default)]
-    pub parallel_workers_launched: i64,
-    #[serde(rename = "parallelWorkersPlanned", default)]
-    pub parallel_workers_planned: i64,
-    #[serde(default)]
-    pub pid: String,
-    #[serde(rename = "queryId", default)]
-    pub query_id: String,
-    #[serde(rename = "queryText", default)]
-    pub query_text: String,
-    #[serde(default)]
-    pub rows: i64,
-    #[serde(rename = "serverRole", default)]
-    pub server_role: String,
-    #[serde(rename = "sharedBlkReadTimeUs", default)]
-    pub shared_blk_read_time_us: i64,
-    #[serde(rename = "sharedBlkWriteTimeUs", default)]
-    pub shared_blk_write_time_us: i64,
-    #[serde(rename = "sharedBlksDirtied", default)]
-    pub shared_blks_dirtied: i64,
-    #[serde(rename = "sharedBlksHit", default)]
-    pub shared_blks_hit: i64,
-    #[serde(rename = "sharedBlksRead", default)]
-    pub shared_blks_read: i64,
-    #[serde(rename = "sharedBlksWritten", default)]
-    pub shared_blks_written: i64,
-    #[serde(rename = "spanId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "jitDeformTimeUs", skip_serializing_if = "Option::is_none")]
+    pub jit_deform_time_us: Option<i64>,
+    #[serde(rename = "jitEmissionTimeUs", skip_serializing_if = "Option::is_none")]
+    pub jit_emission_time_us: Option<i64>,
+    #[serde(rename = "jitFunctions", skip_serializing_if = "Option::is_none")]
+    pub jit_functions: Option<i64>,
+    #[serde(
+        rename = "jitGenerationTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub jit_generation_time_us: Option<i64>,
+    #[serde(rename = "jitInliningTimeUs", skip_serializing_if = "Option::is_none")]
+    pub jit_inlining_time_us: Option<i64>,
+    #[serde(
+        rename = "jitOptimizationTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub jit_optimization_time_us: Option<i64>,
+    #[serde(rename = "localBlksDirtied", skip_serializing_if = "Option::is_none")]
+    pub local_blks_dirtied: Option<i64>,
+    #[serde(rename = "localBlksHit", skip_serializing_if = "Option::is_none")]
+    pub local_blks_hit: Option<i64>,
+    #[serde(rename = "localBlksRead", skip_serializing_if = "Option::is_none")]
+    pub local_blks_read: Option<i64>,
+    #[serde(rename = "localBlksWritten", skip_serializing_if = "Option::is_none")]
+    pub local_blks_written: Option<i64>,
+    #[serde(
+        rename = "parallelWorkersLaunched",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parallel_workers_launched: Option<i64>,
+    #[serde(
+        rename = "parallelWorkersPlanned",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parallel_workers_planned: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<String>,
+    #[serde(rename = "queryId", skip_serializing_if = "Option::is_none")]
+    pub query_id: Option<String>,
+    #[serde(rename = "queryText", skip_serializing_if = "Option::is_none")]
+    pub query_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<i64>,
+    #[serde(rename = "serverRole", skip_serializing_if = "Option::is_none")]
+    pub server_role: Option<String>,
+    #[serde(
+        rename = "sharedBlkReadTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shared_blk_read_time_us: Option<i64>,
+    #[serde(
+        rename = "sharedBlkWriteTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shared_blk_write_time_us: Option<i64>,
+    #[serde(rename = "sharedBlksDirtied", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_dirtied: Option<i64>,
+    #[serde(rename = "sharedBlksHit", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_hit: Option<i64>,
+    #[serde(rename = "sharedBlksRead", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_read: Option<i64>,
+    #[serde(rename = "sharedBlksWritten", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_written: Option<i64>,
+    #[serde(rename = "spanId", skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
-    #[serde(rename = "tempBlkReadTimeUs", default)]
-    pub temp_blk_read_time_us: i64,
-    #[serde(rename = "tempBlkWriteTimeUs", default)]
-    pub temp_blk_write_time_us: i64,
-    #[serde(rename = "tempBlksRead", default)]
-    pub temp_blks_read: i64,
-    #[serde(rename = "tempBlksWritten", default)]
-    pub temp_blks_written: i64,
-    #[serde(default)]
-    pub timestamp: String,
-    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tempBlkReadTimeUs", skip_serializing_if = "Option::is_none")]
+    pub temp_blk_read_time_us: Option<i64>,
+    #[serde(rename = "tempBlkWriteTimeUs", skip_serializing_if = "Option::is_none")]
+    pub temp_blk_write_time_us: Option<i64>,
+    #[serde(rename = "tempBlksRead", skip_serializing_if = "Option::is_none")]
+    pub temp_blks_read: Option<i64>,
+    #[serde(rename = "tempBlksWritten", skip_serializing_if = "Option::is_none")]
+    pub temp_blks_written: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
-    #[serde(rename = "walBytes", default)]
-    pub wal_bytes: i64,
-    #[serde(rename = "walFpi", default)]
-    pub wal_fpi: i64,
-    #[serde(rename = "walRecords", default)]
-    pub wal_records: i64,
+    #[serde(rename = "walBytes", skip_serializing_if = "Option::is_none")]
+    pub wal_bytes: Option<i64>,
+    #[serde(rename = "walFpi", skip_serializing_if = "Option::is_none")]
+    pub wal_fpi: Option<i64>,
+    #[serde(rename = "walRecords", skip_serializing_if = "Option::is_none")]
+    pub wal_records: Option<i64>,
 }
 
 /// `PostgresSlowQueryPattern` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresSlowQueryPattern {
-    #[serde(default)]
-    pub app: String,
-    #[serde(rename = "avgDurationUs", default)]
-    pub avg_duration_us: i64,
-    #[serde(rename = "callCount", default)]
-    pub call_count: i64,
-    #[serde(rename = "dbName", default)]
-    pub db_name: String,
-    #[serde(rename = "dbOperation", default)]
-    pub db_operation: String,
-    #[serde(rename = "dbUser", default)]
-    pub db_user: String,
-    #[serde(rename = "errorCount", default)]
-    pub error_count: i64,
-    #[serde(rename = "maxDurationUs", default)]
-    pub max_duration_us: i64,
-    #[serde(rename = "p50DurationUs", default)]
-    pub p50_duration_us: i64,
-    #[serde(rename = "p95DurationUs", default)]
-    pub p95_duration_us: i64,
-    #[serde(rename = "p99DurationUs", default)]
-    pub p99_duration_us: i64,
-    #[serde(rename = "queryId", default)]
-    pub query_id: String,
-    #[serde(rename = "queryText", default)]
-    pub query_text: String,
-    #[serde(rename = "totalCpuTimeUs", default)]
-    pub total_cpu_time_us: i64,
-    #[serde(rename = "totalDurationUs", default)]
-    pub total_duration_us: i64,
-    #[serde(rename = "totalRows", default)]
-    pub total_rows: i64,
-    #[serde(rename = "totalSharedBlksHit", default)]
-    pub total_shared_blks_hit: i64,
-    #[serde(rename = "totalSharedBlksRead", default)]
-    pub total_shared_blks_read: i64,
-    #[serde(rename = "totalWalBytes", default)]
-    pub total_wal_bytes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(rename = "avgDurationUs", skip_serializing_if = "Option::is_none")]
+    pub avg_duration_us: Option<i64>,
+    #[serde(rename = "callCount", skip_serializing_if = "Option::is_none")]
+    pub call_count: Option<i64>,
+    #[serde(rename = "dbName", skip_serializing_if = "Option::is_none")]
+    pub db_name: Option<String>,
+    #[serde(rename = "dbOperation", skip_serializing_if = "Option::is_none")]
+    pub db_operation: Option<String>,
+    #[serde(rename = "dbUser", skip_serializing_if = "Option::is_none")]
+    pub db_user: Option<String>,
+    #[serde(rename = "errorCount", skip_serializing_if = "Option::is_none")]
+    pub error_count: Option<i64>,
+    #[serde(rename = "maxDurationUs", skip_serializing_if = "Option::is_none")]
+    pub max_duration_us: Option<i64>,
+    #[serde(rename = "p50DurationUs", skip_serializing_if = "Option::is_none")]
+    pub p50_duration_us: Option<i64>,
+    #[serde(rename = "p95DurationUs", skip_serializing_if = "Option::is_none")]
+    pub p95_duration_us: Option<i64>,
+    #[serde(rename = "p99DurationUs", skip_serializing_if = "Option::is_none")]
+    pub p99_duration_us: Option<i64>,
+    #[serde(rename = "queryId", skip_serializing_if = "Option::is_none")]
+    pub query_id: Option<String>,
+    #[serde(rename = "queryText", skip_serializing_if = "Option::is_none")]
+    pub query_text: Option<String>,
+    #[serde(rename = "totalCpuTimeUs", skip_serializing_if = "Option::is_none")]
+    pub total_cpu_time_us: Option<i64>,
+    #[serde(rename = "totalDurationUs", skip_serializing_if = "Option::is_none")]
+    pub total_duration_us: Option<i64>,
+    #[serde(rename = "totalRows", skip_serializing_if = "Option::is_none")]
+    pub total_rows: Option<i64>,
+    #[serde(rename = "totalSharedBlksHit", skip_serializing_if = "Option::is_none")]
+    pub total_shared_blks_hit: Option<i64>,
+    #[serde(
+        rename = "totalSharedBlksRead",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub total_shared_blks_read: Option<i64>,
+    #[serde(rename = "totalWalBytes", skip_serializing_if = "Option::is_none")]
+    pub total_wal_bytes: Option<i64>,
 }
 
 /// `PostgresSlowQueryPatternDetail` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresSlowQueryPatternDetail {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<PostgresSlowQueryPattern>,
-    #[serde(rename = "recentExecutions", default)]
-    pub recent_executions: Vec<PostgresQueryExecution>,
+    #[serde(rename = "recentExecutions", skip_serializing_if = "Option::is_none")]
+    pub recent_executions: Option<Vec<PostgresQueryExecution>>,
 }
 
 /// `PrivateEndpointConfig` from the ClickHouse Cloud API.
@@ -15110,91 +15100,185 @@ pub struct UsageCostRecord {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PgBouncerConfig {}
 
+/// `pgBouncerConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`PgBouncerConfig`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing. The schema currently declares no properties.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PgBouncerConfigResponse {}
+
 /// `pgConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PgConfig {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_max_workers: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_naptime: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_cost_delay: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_cost_limit: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_cache_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_io_concurrency: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub maintenance_work_mem: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_maintenance_workers: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_wal_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_worker_processes: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_wal_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub random_page_cost: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_compression: Option<PgConfigWalCompression>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_keep_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_sender_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_mem: Option<serde_json::Value>,
+}
+
+/// `pgConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`PgConfig`]: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PgConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_max_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_naptime: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_cost_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_cost_limit: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_cache_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_io_concurrency: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_session_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel_maintenance_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel_workers_per_gather: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_wal_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_worker_processes: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_wal_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub random_page_cost: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statement_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_compression: Option<PgConfigWalCompression>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_sender_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub work_mem: Option<serde_json::Value>,
 }
 
 /// `postgresInstanceConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresInstanceConfig {
-    #[serde(rename = "pgBouncerConfig", default)]
+    #[serde(rename = "pgBouncerConfig")]
     pub pg_bouncer_config: PgBouncerConfig,
-    #[serde(rename = "pgConfig", default)]
+    #[serde(rename = "pgConfig")]
     pub pg_config: PgConfig,
+}
+
+/// `postgresInstanceConfig` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`PostgresInstanceConfig`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing. Writing a fetched configuration back to the API goes through
+/// `TryFrom<PostgresInstanceConfigResponse>` (see [`crate::convert`]), which
+/// forces every absent required field to be resolved explicitly.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresInstanceConfigResponse {
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_bouncer_config: Option<PgBouncerConfigResponse>,
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_config: Option<PgConfigResponse>,
 }
 
 /// `postgresInstanceUpdateConfigResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresInstanceUpdateConfigResponse {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(rename = "pgBouncerConfig")]
-    pub pg_bouncer_config: PgBouncerConfig,
-    #[serde(rename = "pgConfig")]
-    pub pg_config: PgConfig,
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_bouncer_config: Option<PgBouncerConfigResponse>,
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_config: Option<PgConfigResponse>,
 }
 
 /// Standard API response wrapper.

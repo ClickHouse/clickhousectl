@@ -17,6 +17,7 @@
 //! ```
 
 pub mod client;
+pub mod convert;
 pub mod error;
 pub mod meta;
 #[allow(non_camel_case_types)]
@@ -24,6 +25,7 @@ pub mod models;
 pub mod serde_helpers;
 
 pub use client::Client;
+pub use convert::MissingRequiredFields;
 pub use error::Error;
 pub use meta::{BETA_OPERATIONS, DEPRECATED_FIELDS, is_beta_operation, is_deprecated_field};
 pub use models::*;
