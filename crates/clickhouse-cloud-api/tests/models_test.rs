@@ -77,29 +77,31 @@ fn deserialize_organization() {
         "enableCoreDumps": false
     }"#;
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.name, "My Organization");
+    assert_eq!(org.name.as_deref(), Some("My Organization"));
     assert_eq!(
         org.id,
-        "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-            .parse::<uuid::Uuid>()
-            .unwrap()
+        Some(
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        )
     );
-    assert!(!org.enable_core_dumps);
+    assert_eq!(org.enable_core_dumps, Some(false));
 }
 
 #[test]
 fn serialize_organization() {
     let org = Organization {
-        id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap(),
-        name: "Test Org".to_string(),
+        id: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap()),
+        name: Some("Test Org".to_string()),
         ..Default::default()
     };
     let json = serde_json::to_value(&org).unwrap();
     assert_eq!(json["name"], "Test Org");
     assert_eq!(json["id"], "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
-    // Default fields are still serialized (no skip_serializing_if on required fields)
-    assert!(json.get("createdAt").is_some());
-    assert!(json.get("enableCoreDumps").is_some());
+    // Absent response fields are omitted, not emitted as `null`.
+    assert!(json.get("createdAt").is_none());
+    assert!(json.get("enableCoreDumps").is_none());
 }
 
 #[test]
@@ -123,8 +125,8 @@ fn deserialize_api_response_with_org_list() {
     assert_eq!(resp.request_id, Some("req-uuid-123".to_string()));
     let result = resp.result.unwrap();
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].name, "Org 1");
-    assert_eq!(result[1].name, "Org 2");
+    assert_eq!(result[0].name.as_deref(), Some("Org 1"));
+    assert_eq!(result[1].name.as_deref(), Some("Org 2"));
 }
 
 #[test]
@@ -174,15 +176,15 @@ fn deserialize_service() {
         "tags": []
     }"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.name, "my-service");
-    assert_eq!(svc.provider, ServiceProvider::Aws);
-    assert_eq!(svc.region, ServiceRegion::Us_east_1);
-    assert_eq!(svc.state, ServiceState::Running);
+    assert_eq!(svc.name.as_deref(), Some("my-service"));
+    assert_eq!(svc.provider, Some(ServiceProvider::Aws));
+    assert_eq!(svc.region, Some(ServiceRegion::Us_east_1));
+    assert_eq!(svc.state, Some(ServiceState::Running));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(svc.tier, ServiceTier::Production);
-    assert_eq!(svc.num_replicas, 3.0);
-    assert!(svc.idle_scaling);
-    assert!(svc.is_primary);
+    assert_eq!(svc.tier, Some(ServiceTier::Production));
+    assert_eq!(svc.num_replicas, Some(3.0));
+    assert_eq!(svc.idle_scaling, Some(true));
+    assert_eq!(svc.is_primary, Some(true));
 }
 
 #[test]
@@ -253,10 +255,10 @@ fn deserialize_backup() {
         "backupName": "backup-2024-06-01"
     }"#;
     let backup: Backup = serde_json::from_str(json).unwrap();
-    assert_eq!(backup.status, BackupStatus::Done);
-    assert_eq!(backup.r#type, BackupType::Full);
-    assert_eq!(backup.size_in_bytes, 1073741824.0);
-    assert_eq!(backup.duration_in_seconds, 300.0);
+    assert_eq!(backup.status, Some(BackupStatus::Done));
+    assert_eq!(backup.r#type, Some(BackupType::Full));
+    assert_eq!(backup.size_in_bytes, Some(1073741824.0));
+    assert_eq!(backup.duration_in_seconds, Some(300.0));
 }
 
 #[test]
@@ -270,8 +272,8 @@ fn deserialize_api_key() {
         "expireAt": "2025-01-01T00:00:00Z"
     }"#;
     let key: ApiKey = serde_json::from_str(json).unwrap();
-    assert_eq!(key.name, "My API Key");
-    assert_eq!(key.state, ApiKeyState::Enabled);
+    assert_eq!(key.name.as_deref(), Some("My API Key"));
+    assert_eq!(key.state, Some(ApiKeyState::Enabled));
 }
 
 #[test]
@@ -299,10 +301,10 @@ fn deserialize_member() {
         "joinedAt": "2024-01-01T00:00:00Z"
     }"#;
     let member: Member = serde_json::from_str(json).unwrap();
-    assert_eq!(member.name, "John Doe");
-    assert_eq!(member.email, "john@example.com");
+    assert_eq!(member.name.as_deref(), Some("John Doe"));
+    assert_eq!(member.email.as_deref(), Some("john@example.com"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(member.role, MemberRole::Admin);
+    assert_eq!(member.role, Some(MemberRole::Admin));
 }
 
 #[test]
@@ -314,9 +316,9 @@ fn deserialize_invitation() {
         "createdAt": "2024-06-01T00:00:00Z"
     }"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
-    assert_eq!(inv.email, "new@example.com");
+    assert_eq!(inv.email.as_deref(), Some("new@example.com"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(inv.role, InvitationRole::Developer);
+    assert_eq!(inv.role, Some(InvitationRole::Developer));
 }
 
 #[test]
@@ -327,9 +329,9 @@ fn deserialize_backup_configuration() {
         "backupStartTime": "02:00"
     }"#;
     let config: BackupConfiguration = serde_json::from_str(json).unwrap();
-    assert_eq!(config.backup_period_in_hours, 24.0);
-    assert_eq!(config.backup_retention_period_in_hours, 168.0);
-    assert_eq!(config.backup_start_time, "02:00");
+    assert_eq!(config.backup_period_in_hours, Some(24.0));
+    assert_eq!(config.backup_retention_period_in_hours, Some(168.0));
+    assert_eq!(config.backup_start_time.as_deref(), Some("02:00"));
 }
 
 #[test]
@@ -352,7 +354,7 @@ fn deserialize_usage_cost() {
         "grandTotalCHC": 50.25
     }"#;
     let cost: UsageCost = serde_json::from_str(json).unwrap();
-    assert_eq!(cost.grand_total_chc, 50.25);
+    assert_eq!(cost.grand_total_chc, Some(50.25));
 }
 
 #[test]
@@ -375,20 +377,22 @@ fn deserialize_private_endpoint_config() {
         "privateDnsHostname": "abc.vpce.clickhouse.cloud"
     }"#;
     let config: PrivateEndpointConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.endpoint_service_id, "vpce-svc-123456");
+    assert_eq!(
+        config.endpoint_service_id.as_deref(),
+        Some("vpce-svc-123456")
+    );
 }
 
 #[test]
-fn required_fields_always_serialized() {
+fn absent_response_fields_are_omitted_when_serialized() {
     let org = Organization {
-        name: "Test".to_string(),
+        name: Some("Test".to_string()),
         ..Default::default()
     };
     let json = serde_json::to_value(&org).unwrap();
-    // Required fields are always present (even with default values)
-    assert!(json.get("id").is_some());
-    assert!(json.get("createdAt").is_some());
-    assert_eq!(json["name"], "Test");
+    // Absent means absent: a field the API did not return is omitted from
+    // `--json` output rather than emitted as `null`.
+    assert_eq!(json, serde_json::json!({ "name": "Test" }));
 }
 
 #[test]
@@ -399,9 +403,9 @@ fn deserialize_service_endpoint() {
         "port": 9440
     }"#;
     let ep: ServiceEndpoint = serde_json::from_str(json).unwrap();
-    assert_eq!(ep.protocol, ServiceEndpointProtocol::Nativesecure);
-    assert_eq!(ep.host, "abc123.clickhouse.cloud");
-    assert_eq!(ep.port, 9440.0);
+    assert_eq!(ep.protocol, Some(ServiceEndpointProtocol::Nativesecure));
+    assert_eq!(ep.host.as_deref(), Some("abc123.clickhouse.cloud"));
+    assert_eq!(ep.port, Some(9440.0));
 }
 
 #[test]
@@ -489,16 +493,18 @@ fn deserialize_activity() {
         "createdAt": "2024-06-01T00:00:00Z"
     }"#;
     let activity: Activity = serde_json::from_str(json).unwrap();
-    assert_eq!(activity.actor_type, ActivityActortype::Api);
+    assert_eq!(activity.actor_type, Some(ActivityActortype::Api));
 }
 
 #[test]
-fn default_struct_has_defaults() {
+fn default_response_struct_has_no_values() {
+    // A response model's `Default` means "nothing was returned", not a set of
+    // fabricated zero values.
     let svc = Service::default();
-    assert_eq!(svc.id, uuid::Uuid::default());
-    assert_eq!(svc.name, "");
-    assert_eq!(svc.provider, ServiceProvider::default());
-    assert_eq!(svc.state, ServiceState::default());
+    assert_eq!(svc.id, None);
+    assert_eq!(svc.name, None);
+    assert_eq!(svc.provider, None);
+    assert_eq!(svc.state, None);
 }
 
 #[test]
@@ -521,7 +527,7 @@ fn unknown_enum_variant_deserializes() {
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(
         svc.state,
-        ServiceState::Unknown("brand-new-state".to_string())
+        Some(ServiceState::Unknown("brand-new-state".to_string()))
     );
 }
 
@@ -584,7 +590,7 @@ fn api_response_extra_fields_ignored() {
     let resp: ApiResponse<Organization> = serde_json::from_str(json).unwrap();
     assert_eq!(resp.status, Some(200.0));
     let org = resp.result.unwrap();
-    assert_eq!(org.name, "Test");
+    assert_eq!(org.name.as_deref(), Some("Test"));
 }
 
 #[test]
@@ -975,20 +981,13 @@ fn deserialize_scaling_schedule_entry_fixed_scaling_fields() {
         "maxReplicaMemoryGb": 32
     }"#;
     let entry: ScalingScheduleEntry = serde_json::from_str(json).unwrap();
-    assert_eq!(entry.autoscaling_mode, AutoscalingMode::Vertical);
+    assert_eq!(entry.autoscaling_mode, Some(AutoscalingMode::Vertical));
     assert_eq!(entry.min_replica_memory_gb, Some(16.0));
     assert_eq!(entry.max_replica_memory_gb, Some(32.0));
 
-    let req = ScalingScheduleEntryRequest {
-        name: entry.name.clone(),
-        weekdays: entry.weekdays.clone(),
-        start_hour_utc: entry.start_hour_utc,
-        end_hour_utc: entry.end_hour_utc,
-        autoscaling_mode: Some(entry.autoscaling_mode.clone()),
-        min_replica_memory_gb: entry.min_replica_memory_gb,
-        max_replica_memory_gb: entry.max_replica_memory_gb,
-        ..Default::default()
-    };
+    // Writing a fetched entry back goes through the explicit conversion, which
+    // resolves the fields the request requires.
+    let req = ScalingScheduleEntryRequest::try_from(entry).unwrap();
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["autoscalingMode"], "vertical");
     assert_eq!(json["minReplicaMemoryGb"], 16.0);
@@ -1013,15 +1012,15 @@ fn serialize_postgres_instance_config_default_envelope() {
 fn organization_ignores_extra_fields() {
     let json = r#"{"name":"Test","brandNewField":"surprise","anotherNew":42}"#;
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.name, "Test");
+    assert_eq!(org.name.as_deref(), Some("Test"));
 }
 
 #[test]
 fn service_ignores_extra_fields() {
     let json = r#"{"name":"svc","state":"running","futureField":"v2","nested":{"a":1}}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.name, "svc");
-    assert_eq!(svc.state, ServiceState::Running);
+    assert_eq!(svc.name.as_deref(), Some("svc"));
+    assert_eq!(svc.state, Some(ServiceState::Running));
 }
 
 #[test]
@@ -1036,31 +1035,31 @@ fn clickpipe_ignores_extra_fields() {
 fn backup_ignores_extra_fields() {
     let json = r#"{"status":"done","type":"full","compressionRatio":0.85}"#;
     let backup: Backup = serde_json::from_str(json).unwrap();
-    assert_eq!(backup.status, BackupStatus::Done);
+    assert_eq!(backup.status, Some(BackupStatus::Done));
 }
 
 #[test]
 fn api_key_ignores_extra_fields() {
     let json = r#"{"name":"key","state":"enabled","rotationPolicy":"weekly"}"#;
     let key: ApiKey = serde_json::from_str(json).unwrap();
-    assert_eq!(key.name, "key");
-    assert_eq!(key.state, ApiKeyState::Enabled);
+    assert_eq!(key.name.as_deref(), Some("key"));
+    assert_eq!(key.state, Some(ApiKeyState::Enabled));
 }
 
 #[test]
 fn member_ignores_extra_fields() {
     let json = r#"{"name":"Alice","role":"admin","department":"eng","mfa":true}"#;
     let m: Member = serde_json::from_str(json).unwrap();
-    assert_eq!(m.name, "Alice");
+    assert_eq!(m.name.as_deref(), Some("Alice"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(m.role, MemberRole::Admin);
+    assert_eq!(m.role, Some(MemberRole::Admin));
 }
 
 #[test]
 fn invitation_ignores_extra_fields() {
     let json = r#"{"email":"a@b.com","role":"developer","expiresIn":"7d"}"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
-    assert_eq!(inv.email, "a@b.com");
+    assert_eq!(inv.email.as_deref(), Some("a@b.com"));
 }
 
 #[test]
@@ -1074,14 +1073,14 @@ fn postgres_service_ignores_extra_fields() {
 fn activity_ignores_extra_fields() {
     let json = r#"{"actorType":"user","sourceIp":"1.2.3.4"}"#;
     let a: Activity = serde_json::from_str(json).unwrap();
-    assert_eq!(a.actor_type, ActivityActortype::User);
+    assert_eq!(a.actor_type, Some(ActivityActortype::User));
 }
 
 #[test]
 fn backup_configuration_ignores_extra_fields() {
     let json = r#"{"backupPeriodInHours":24,"backupRetentionPeriodInHours":168,"compressionEnabled":true}"#;
     let c: BackupConfiguration = serde_json::from_str(json).unwrap();
-    assert_eq!(c.backup_period_in_hours, 24.0);
+    assert_eq!(c.backup_period_in_hours, Some(24.0));
 }
 
 // ===========================================================================
@@ -1094,15 +1093,18 @@ fn service_minimal_response() {
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(
         svc.id,
-        "11111111-2222-3333-4444-555555555555"
-            .parse::<uuid::Uuid>()
-            .unwrap()
+        Some(
+            "11111111-2222-3333-4444-555555555555"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        )
     );
-    // Missing fields get their default values
-    assert_eq!(svc.name, "");
-    assert_eq!(svc.provider, ServiceProvider::default());
-    assert_eq!(svc.state, ServiceState::default());
-    assert!(svc.endpoints.is_empty());
+    // Every response field is `Option<T>`: an omitted key is `None`, not a
+    // fabricated zero value.
+    assert_eq!(svc.name, None);
+    assert_eq!(svc.provider, None);
+    assert_eq!(svc.state, None);
+    assert_eq!(svc.endpoints, None);
 }
 
 #[cfg(feature = "deprecated-fields")]
@@ -1113,8 +1115,8 @@ fn service_deserializes_deprecated_fields() {
     // the struct entirely (see `deprecated_fields_absent_by_default`).
     let json = r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.min_total_memory_gb, 24.0);
-    assert_eq!(svc.max_total_memory_gb, 48.0);
+    assert_eq!(svc.min_total_memory_gb, Some(24.0));
+    assert_eq!(svc.max_total_memory_gb, Some(48.0));
 }
 
 /// In the default build (no `deprecated-fields` feature) deprecated response
@@ -1171,16 +1173,17 @@ fn service_shows_deprecated_fields_with_feature() {
 #[test]
 fn service_empty_object() {
     let svc: Service = serde_json::from_str("{}").unwrap();
-    assert_eq!(svc.id, uuid::Uuid::default());
-    assert_eq!(svc.name, "");
+    assert_eq!(svc, Service::default());
+    assert_eq!(svc.id, None);
+    assert_eq!(svc.name, None);
 }
 
 #[test]
 fn organization_minimal_response() {
     let org: Organization = serde_json::from_str(r#"{"name":"X"}"#).unwrap();
-    assert_eq!(org.name, "X");
-    assert_eq!(org.id, uuid::Uuid::default());
-    assert_eq!(org.created_at, chrono::DateTime::<chrono::Utc>::default());
+    assert_eq!(org.name.as_deref(), Some("X"));
+    assert_eq!(org.id, None);
+    assert_eq!(org.created_at, None);
 }
 
 #[test]
@@ -1273,17 +1276,154 @@ fn postgres_instance_config_response_conversion_reports_missing_required_fields(
 #[test]
 fn backup_minimal_response() {
     let b: Backup = serde_json::from_str("{}").unwrap();
-    assert_eq!(b.id, uuid::Uuid::default());
-    assert_eq!(b.status, BackupStatus::default());
-    assert_eq!(b.size_in_bytes, 0.0);
+    assert_eq!(b.id, None);
+    assert_eq!(b.status, None);
+    assert_eq!(b.size_in_bytes, None);
 }
 
 #[test]
 fn api_key_minimal_response() {
     let k: ApiKey = serde_json::from_str(r#"{"name":"k"}"#).unwrap();
-    assert_eq!(k.name, "k");
-    assert_eq!(k.id, uuid::Uuid::default());
-    assert_eq!(k.state, ApiKeyState::default());
+    assert_eq!(k.name.as_deref(), Some("k"));
+    assert_eq!(k.id, None);
+    assert_eq!(k.state, None);
+}
+
+#[test]
+fn service_response_tolerates_dropped_and_null_fields() {
+    // A response field the API stops sending, and one it sends as an explicit
+    // `null`, must both land as `None` rather than failing the response. `null`
+    // is the case `#[serde(default)]` never covered: it only fills a missing
+    // key.
+    let dropped: Service = serde_json::from_str("{}").unwrap();
+    let nulled: Service = serde_json::from_str(
+        r#"{"id":null,"name":null,"state":null,"endpoints":null,"ipAccessList":null,
+            "tags":null,"currentScaling":null,"scalingSchedule":null,"numReplicas":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, Service::default());
+    assert_eq!(nulled, Service::default());
+    assert_eq!(nulled.endpoints, None);
+    assert_eq!(nulled.ip_access_list, None);
+    assert_eq!(nulled.tags, None);
+}
+
+#[test]
+fn service_response_omits_absent_fields_when_serialized() {
+    // Absent means absent, at every level of the response tree: a field that
+    // was not returned is omitted from `--json` output, never emitted as
+    // `null`.
+    let svc = Service {
+        name: Some("svc".to_string()),
+        ip_access_list: Some(vec![IpAccessListEntryResponse {
+            source: Some("0.0.0.0/0".to_string()),
+            description: None,
+        }]),
+        tags: Some(vec![ResourceTagsV1Response {
+            key: Some("env".to_string()),
+            value: None,
+        }]),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&svc).unwrap(),
+        serde_json::json!({
+            "name": "svc",
+            "ipAccessList": [{ "source": "0.0.0.0/0" }],
+            "tags": [{ "key": "env" }],
+        })
+    );
+}
+
+#[test]
+fn shared_leaves_stay_strict_on_the_request_side() {
+    // `ipAccessListEntry` and `resourceTagsV1` are sent as well as returned, so
+    // each splits: the request variant keeps the schema's required fields as
+    // `T`, and only the response variant is all-`Option`.
+    let entry = IpAccessListEntry {
+        source: "0.0.0.0/0".to_string(),
+        description: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        serde_json::json!({ "source": "0.0.0.0/0" })
+    );
+    // A request payload missing a required field is rejected, not defaulted.
+    assert!(serde_json::from_str::<IpAccessListEntry>("{}").is_err());
+    assert!(serde_json::from_str::<ResourceTagsV1>("{}").is_err());
+    // The response variants accept the same payload.
+    assert_eq!(
+        serde_json::from_str::<IpAccessListEntryResponse>("{}").unwrap(),
+        IpAccessListEntryResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ResourceTagsV1Response>("{}").unwrap(),
+        ResourceTagsV1Response::default()
+    );
+}
+
+#[test]
+fn resource_tag_response_converts_back_into_a_request_tag() {
+    let tag = ResourceTagsV1::try_from(ResourceTagsV1Response {
+        key: Some("env".to_string()),
+        value: Some("dev".to_string()),
+    })
+    .unwrap();
+    assert_eq!(tag.key, "env");
+    assert_eq!(tag.value.as_deref(), Some("dev"));
+
+    // A tag is identified by its key, so a keyless response tag cannot be
+    // written back.
+    let missing = ResourceTagsV1::try_from(ResourceTagsV1Response {
+        key: None,
+        value: Some("dev".to_string()),
+    })
+    .unwrap_err();
+    assert_eq!(missing.fields(), ["key"]);
+}
+
+#[test]
+fn scaling_schedule_entry_response_converts_back_into_a_request_entry() {
+    let entry = ScalingScheduleEntry {
+        name: Some("weekday-peak".to_string()),
+        weekdays: Some(vec![1, 2, 3]),
+        start_hour_utc: Some(8),
+        end_hour_utc: Some(18),
+        autoscaling_mode: Some(AutoscalingMode::Vertical),
+        min_replica_memory_gb: Some(16.0),
+        ..Default::default()
+    };
+    let request = ScalingScheduleEntryRequest::try_from(entry).unwrap();
+    assert_eq!(request.name, "weekday-peak");
+    assert_eq!(request.weekdays, vec![1, 2, 3]);
+    assert_eq!(request.start_hour_utc, 8);
+    assert_eq!(request.end_hour_utc, 18);
+    assert_eq!(request.min_replica_memory_gb, Some(16.0));
+
+    // An upsert replaces the whole schedule, so an entry the API returned
+    // without its window bounds, weekdays or name cannot be re-sent.
+    let missing =
+        ScalingScheduleEntryRequest::try_from(ScalingScheduleEntry::default()).unwrap_err();
+    assert_eq!(
+        missing.fields(),
+        ["endHourUtc", "name", "startHourUtc", "weekdays"]
+    );
+}
+
+#[test]
+fn upgrade_window_response_converts_back_into_a_put_body() {
+    let request = UpgradeWindowPutRequest::try_from(UpgradeWindow {
+        // `duration` is response-only and does not cross over.
+        duration: Some(21600),
+        start_hour_utc: Some(6),
+        weekday: Some(2),
+    })
+    .unwrap();
+    assert_eq!(request.start_hour_utc, 6);
+    assert_eq!(request.weekday, 2);
+
+    let missing = UpgradeWindowPutRequest::try_from(UpgradeWindow::default()).unwrap_err();
+    assert_eq!(missing.fields(), ["startHourUtc", "weekday"]);
 }
 
 #[test]
@@ -1306,8 +1446,11 @@ fn deserialize_aws_backup_bucket() {
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
     let b: AwsBackupBucket = serde_json::from_str(json).unwrap();
-    assert_eq!(b.bucket_path, "s3://my-bucket/prefix");
-    assert_eq!(b.iam_role_arn, "arn:aws:iam::123:role/backup");
+    assert_eq!(b.bucket_path.as_deref(), Some("s3://my-bucket/prefix"));
+    assert_eq!(
+        b.iam_role_arn.as_deref(),
+        Some("arn:aws:iam::123:role/backup")
+    );
 }
 
 #[test]
@@ -1321,8 +1464,11 @@ fn deserialize_backup_bucket_dispatches_aws() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::AwsBackupBucket(_)));
     if let BackupBucket::AwsBackupBucket(aws) = b {
-        assert_eq!(aws.bucket_path, "s3://my-bucket/prefix");
-        assert_eq!(aws.iam_role_arn, "arn:aws:iam::123:role/backup");
+        assert_eq!(aws.bucket_path.as_deref(), Some("s3://my-bucket/prefix"));
+        assert_eq!(
+            aws.iam_role_arn.as_deref(),
+            Some("arn:aws:iam::123:role/backup")
+        );
     }
 }
 
@@ -1337,8 +1483,11 @@ fn deserialize_backup_bucket_dispatches_gcp() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::GcpBackupBucket(_)));
     if let BackupBucket::GcpBackupBucket(gcp) = b {
-        assert_eq!(gcp.access_key_id, "GOOG1234567890");
-        assert_eq!(gcp.bucket_path, "gs://my-gcp-bucket/prefix");
+        assert_eq!(gcp.access_key_id.as_deref(), Some("GOOG1234567890"));
+        assert_eq!(
+            gcp.bucket_path.as_deref(),
+            Some("gs://my-gcp-bucket/prefix")
+        );
     }
 }
 
@@ -1352,7 +1501,7 @@ fn deserialize_backup_bucket_dispatches_azure() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::AzureBackupBucket(_)));
     if let BackupBucket::AzureBackupBucket(azure) = b {
-        assert_eq!(azure.container_name, "my-container");
+        assert_eq!(azure.container_name.as_deref(), Some("my-container"));
     }
 }
 
@@ -1423,9 +1572,10 @@ fn deserialize_service_post_response() {
         "password": "gen-pw-123"
     }"#;
     let resp: ServicePostResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.password, "gen-pw-123");
-    assert_eq!(resp.service.name, "new-svc");
-    assert_eq!(resp.service.state, ServiceState::Provisioning);
+    assert_eq!(resp.password.as_deref(), Some("gen-pw-123"));
+    let service = resp.service.unwrap();
+    assert_eq!(service.name.as_deref(), Some("new-svc"));
+    assert_eq!(service.state, Some(ServiceState::Provisioning));
 }
 
 #[test]
@@ -1444,8 +1594,8 @@ fn deserialize_usage_cost_with_records() {
         "grandTotalCHC": 35.5
     }"#;
     let cost: UsageCost = serde_json::from_str(json).unwrap();
-    assert_eq!(cost.grand_total_chc, 35.5);
-    assert_eq!(cost.costs.len(), 2);
+    assert_eq!(cost.grand_total_chc, Some(35.5));
+    assert_eq!(cost.costs.as_deref().map(<[_]>::len), Some(2));
 }
 
 #[test]
@@ -1564,9 +1714,9 @@ fn deserialize_upgrade_window() {
         "duration": 21600
     }"#;
     let w: UpgradeWindow = serde_json::from_str(json).unwrap();
-    assert_eq!(w.weekday, 2);
-    assert_eq!(w.start_hour_utc, 6);
-    assert_eq!(w.duration, 21600);
+    assert_eq!(w.weekday, Some(2));
+    assert_eq!(w.start_hour_utc, Some(6));
+    assert_eq!(w.duration, Some(21600));
 
     let round_tripped = serde_json::to_value(&w).unwrap();
     assert_eq!(round_tripped["startHourUtc"], 6);

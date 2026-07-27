@@ -57,7 +57,7 @@ async fn list_organizations() {
     assert_eq!(resp.status, Some(200.0));
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
-    assert_eq!(orgs[0].name, "Test Org");
+    assert_eq!(orgs[0].name.as_deref(), Some("Test Org"));
 }
 
 #[tokio::test]
@@ -81,7 +81,7 @@ async fn get_organization() {
     let client = Client::with_base_url(mock_server.uri(), "my-key", "my-secret");
     let resp = client.organization_get("org-123").await.unwrap();
     let org = resp.result.unwrap();
-    assert_eq!(org.name, "My Org");
+    assert_eq!(org.name.as_deref(), Some("My Org"));
 }
 
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn update_organization() {
     };
     let resp = c.organization_update("org-1", &body).await.unwrap();
     let org = resp.result.unwrap();
-    assert_eq!(org.name, "Renamed Org");
+    assert_eq!(org.name.as_deref(), Some("Renamed Org"));
 }
 
 #[tokio::test]
@@ -133,7 +133,7 @@ async fn get_usage_cost_with_query_params() {
         .await
         .unwrap();
     let cost = resp.result.unwrap();
-    assert_eq!(cost.grand_total_chc, 50.25);
+    assert_eq!(cost.grand_total_chc, Some(50.25));
 }
 
 #[tokio::test]
@@ -178,8 +178,8 @@ async fn get_private_endpoint_config() {
         .unwrap();
     let config = resp.result.unwrap();
     assert_eq!(
-        config.endpoint_service_id,
-        "com.amazonaws.vpce.us-east-1.vpce-svc-abc"
+        config.endpoint_service_id.as_deref(),
+        Some("com.amazonaws.vpce.us-east-1.vpce-svc-abc")
     );
 }
 
@@ -208,7 +208,7 @@ async fn list_activities() {
     let resp = c.activity_get_list("org-1", None, None).await.unwrap();
     let activities = resp.result.unwrap();
     assert_eq!(activities.len(), 1);
-    assert_eq!(activities[0].id, "act-1");
+    assert_eq!(activities[0].id.as_deref(), Some("act-1"));
 }
 
 #[tokio::test]
@@ -246,7 +246,7 @@ async fn get_activity() {
 
     let resp = c.activity_get("org-1", "act-1").await.unwrap();
     let activity = resp.result.unwrap();
-    assert_eq!(activity.id, "act-1");
+    assert_eq!(activity.id.as_deref(), Some("act-1"));
 }
 
 // ===========================================================================
@@ -280,7 +280,7 @@ async fn create_byoc_infrastructure() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.display_name, "My BYOC");
+    assert_eq!(config.display_name.as_deref(), Some("My BYOC"));
 }
 
 #[tokio::test]
@@ -307,7 +307,7 @@ async fn update_byoc_infrastructure() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.display_name, "Renamed BYOC");
+    assert_eq!(config.display_name.as_deref(), Some("Renamed BYOC"));
 }
 
 #[tokio::test]
@@ -350,7 +350,7 @@ async fn list_invitations() {
     let resp = c.invitation_get_list("org-1").await.unwrap();
     let invitations = resp.result.unwrap();
     assert_eq!(invitations.len(), 1);
-    assert_eq!(invitations[0].email, "alice@example.com");
+    assert_eq!(invitations[0].email.as_deref(), Some("alice@example.com"));
 }
 
 #[tokio::test]
@@ -382,7 +382,7 @@ async fn create_invitation() {
     };
     let resp = client.invitation_create("org-1", &body).await.unwrap();
     let inv = resp.result.unwrap();
-    assert_eq!(inv.email, "newuser@example.com");
+    assert_eq!(inv.email.as_deref(), Some("newuser@example.com"));
 }
 
 #[tokio::test]
@@ -401,7 +401,7 @@ async fn get_invitation() {
 
     let resp = c.invitation_get("org-1", "inv-1").await.unwrap();
     let inv = resp.result.unwrap();
-    assert_eq!(inv.email, "bob@example.com");
+    assert_eq!(inv.email.as_deref(), Some("bob@example.com"));
     #[cfg(feature = "deprecated-fields")]
     assert_eq!(inv.role, InvitationRole::Admin);
 }
@@ -447,7 +447,7 @@ async fn list_api_keys() {
     let resp = client.openapi_key_get_list("org-1").await.unwrap();
     let keys = resp.result.unwrap();
     assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0].name, "Production Key");
+    assert_eq!(keys[0].name.as_deref(), Some("Production Key"));
 }
 
 #[tokio::test]
@@ -475,9 +475,12 @@ async fn create_api_key() {
     };
     let resp = c.openapi_key_create("org-1", &body).await.unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.key_id, "key-id-abc");
-    assert_eq!(result.key_secret, "key-secret-xyz");
-    assert_eq!(result.key.name, "New Key");
+    assert_eq!(result.key_id.as_deref(), Some("key-id-abc"));
+    assert_eq!(result.key_secret.as_deref(), Some("key-secret-xyz"));
+    assert_eq!(
+        result.key.as_ref().and_then(|key| key.name.as_deref()),
+        Some("New Key")
+    );
 }
 
 #[tokio::test]
@@ -497,9 +500,9 @@ async fn get_api_key() {
 
     let resp = c.openapi_key_get("org-1", "key-1").await.unwrap();
     let key = resp.result.unwrap();
-    assert_eq!(key.name, "My Key");
-    assert_eq!(key.state, ApiKeyState::Enabled);
-    assert_eq!(key.key_suffix, "abc");
+    assert_eq!(key.name.as_deref(), Some("My Key"));
+    assert_eq!(key.state, Some(ApiKeyState::Enabled));
+    assert_eq!(key.key_suffix.as_deref(), Some("abc"));
 }
 
 #[tokio::test]
@@ -525,7 +528,7 @@ async fn update_api_key() {
     };
     let resp = c.openapi_key_update("org-1", "key-1", &body).await.unwrap();
     let key = resp.result.unwrap();
-    assert_eq!(key.name, "Renamed Key");
+    assert_eq!(key.name.as_deref(), Some("Renamed Key"));
 }
 
 #[tokio::test]
@@ -600,7 +603,7 @@ async fn get_member() {
 
     let resp = c.member_get("org-1", "user-1").await.unwrap();
     let member = resp.result.unwrap();
-    assert_eq!(member.name, "Alice");
+    assert_eq!(member.name.as_deref(), Some("Alice"));
     #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
@@ -627,7 +630,7 @@ async fn update_member() {
     };
     let resp = c.member_update("org-1", "user-1", &body).await.unwrap();
     let member = resp.result.unwrap();
-    assert_eq!(member.email, "alice@example.com");
+    assert_eq!(member.email.as_deref(), Some("alice@example.com"));
     #[cfg(feature = "deprecated-fields")]
     assert_eq!(member.role, MemberRole::Admin);
 }
@@ -676,9 +679,9 @@ async fn list_services() {
     let resp = client.instance_get_list("org-123", &[]).await.unwrap();
     let services = resp.result.unwrap();
     assert_eq!(services.len(), 1);
-    assert_eq!(services[0].name, "svc-1");
-    assert_eq!(services[0].provider, ServiceProvider::Aws);
-    assert_eq!(services[0].state, ServiceState::Running);
+    assert_eq!(services[0].name.as_deref(), Some("svc-1"));
+    assert_eq!(services[0].provider, Some(ServiceProvider::Aws));
+    assert_eq!(services[0].state, Some(ServiceState::Running));
 }
 
 #[tokio::test]
@@ -718,7 +721,7 @@ async fn create_service() {
     };
     let resp = client.instance_create("org-123", &body).await.unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.password, "generated-password-123");
+    assert_eq!(result.password.as_deref(), Some("generated-password-123"));
 }
 
 #[tokio::test]
@@ -752,9 +755,9 @@ async fn get_service_details() {
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let resp = client.instance_get("org-1", "svc-1").await.unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.name, "prod-service");
-    assert_eq!(svc.provider, ServiceProvider::Gcp);
-    assert_eq!(svc.num_replicas, 3.0);
+    assert_eq!(svc.name.as_deref(), Some("prod-service"));
+    assert_eq!(svc.provider, Some(ServiceProvider::Gcp));
+    assert_eq!(svc.num_replicas, Some(3.0));
 }
 
 #[tokio::test]
@@ -780,7 +783,7 @@ async fn update_service() {
     };
     let resp = c.instance_update("org-1", "svc-1", &body).await.unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.name, "renamed-svc");
+    assert_eq!(svc.name.as_deref(), Some("renamed-svc"));
 }
 
 #[tokio::test]
@@ -828,7 +831,7 @@ async fn update_service_state() {
         .await
         .unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.state, ServiceState::Stopping);
+    assert_eq!(svc.state, Some(ServiceState::Stopping));
 }
 
 #[tokio::test]
@@ -856,7 +859,7 @@ async fn update_service_password() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.password, "new-password-abc");
+    assert_eq!(result.password.as_deref(), Some("new-password-abc"));
 }
 
 // ===========================================================================
@@ -891,7 +894,7 @@ async fn update_replica_scaling() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.num_replicas, 5.0);
+    assert_eq!(result.num_replicas, Some(5.0));
 }
 
 #[tokio::test]
@@ -919,7 +922,7 @@ async fn update_scaling_deprecated() {
         .await
         .unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.num_replicas, 3.0);
+    assert_eq!(svc.num_replicas, Some(3.0));
 }
 
 #[tokio::test]
@@ -949,7 +952,7 @@ async fn create_private_endpoint() {
         .await
         .unwrap();
     let pe = resp.result.unwrap();
-    assert_eq!(pe.description, "My PE");
+    assert_eq!(pe.description.as_deref(), Some("My PE"));
 }
 
 #[tokio::test]
@@ -972,10 +975,10 @@ async fn get_private_endpoint_config_for_service() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.endpoint_service_id, "vpce-svc-abc");
+    assert_eq!(config.endpoint_service_id.as_deref(), Some("vpce-svc-abc"));
     assert_eq!(
-        config.private_dns_hostname,
-        "svc-1.private.clickhouse.cloud"
+        config.private_dns_hostname.as_deref(),
+        Some("svc-1.private.clickhouse.cloud")
     );
 }
 
@@ -1037,8 +1040,8 @@ async fn get_query_endpoint() {
         .await
         .unwrap();
     let qe = resp.result.unwrap();
-    assert_eq!(qe.id, "qe-1");
-    assert_eq!(qe.allowed_origins, "*");
+    assert_eq!(qe.id.as_deref(), Some("qe-1"));
+    assert_eq!(qe.allowed_origins.as_deref(), Some("*"));
 }
 
 #[tokio::test]
@@ -1070,7 +1073,7 @@ async fn upsert_query_endpoint() {
         .await
         .unwrap();
     let qe = resp.result.unwrap();
-    assert_eq!(qe.allowed_origins, "https://example.com");
+    assert_eq!(qe.allowed_origins.as_deref(), Some("https://example.com"));
 }
 
 #[tokio::test]
@@ -1124,8 +1127,8 @@ async fn list_backups() {
     let resp = client.backup_get_list("org-1", "svc-1").await.unwrap();
     let backups = resp.result.unwrap();
     assert_eq!(backups.len(), 1);
-    assert_eq!(backups[0].status, BackupStatus::Done);
-    assert_eq!(backups[0].r#type, BackupType::Full);
+    assert_eq!(backups[0].status, Some(BackupStatus::Done));
+    assert_eq!(backups[0].r#type, Some(BackupType::Full));
 }
 
 #[tokio::test]
@@ -1145,8 +1148,8 @@ async fn get_single_backup() {
 
     let resp = c.backup_get("org-1", "svc-1", "bak-1").await.unwrap();
     let backup = resp.result.unwrap();
-    assert_eq!(backup.status, BackupStatus::Done);
-    assert_eq!(backup.size_in_bytes, 2048.0);
+    assert_eq!(backup.status, Some(BackupStatus::Done));
+    assert_eq!(backup.size_in_bytes, Some(2048.0));
 }
 
 #[tokio::test]
@@ -1167,8 +1170,8 @@ async fn get_backup_configuration() {
 
     let resp = c.backup_configuration_get("org-1", "svc-1").await.unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.backup_period_in_hours, 24.0);
-    assert_eq!(config.backup_start_time, "02:00");
+    assert_eq!(config.backup_period_in_hours, Some(24.0));
+    assert_eq!(config.backup_start_time.as_deref(), Some("02:00"));
 }
 
 #[tokio::test]
@@ -1202,7 +1205,7 @@ async fn update_backup_configuration() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
-    assert_eq!(config.backup_period_in_hours, 12.0);
+    assert_eq!(config.backup_period_in_hours, Some(12.0));
 }
 
 // ===========================================================================
@@ -3305,7 +3308,7 @@ async fn bearer_auth_sends_token() {
     let resp = client.organization_get_list().await.unwrap();
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
-    assert_eq!(orgs[0].name, "Bearer Org");
+    assert_eq!(orgs[0].name.as_deref(), Some("Bearer Org"));
 }
 
 #[tokio::test]
@@ -3737,7 +3740,7 @@ async fn usage_cost_with_filters() {
         .await
         .unwrap();
     let cost = resp.result.unwrap();
-    assert_eq!(cost.grand_total_chc, 10.0);
+    assert_eq!(cost.grand_total_chc, Some(10.0));
 }
 
 #[tokio::test]
@@ -3863,9 +3866,9 @@ async fn upgrade_window_get_returns_window() {
 
     let resp = c.upgrade_window_get("org-1", "svc-1").await.unwrap();
     let window = resp.result.unwrap();
-    assert_eq!(window.weekday, 2);
-    assert_eq!(window.start_hour_utc, 6);
-    assert_eq!(window.duration, 21600);
+    assert_eq!(window.weekday, Some(2));
+    assert_eq!(window.start_hour_utc, Some(6));
+    assert_eq!(window.duration, Some(21600));
 }
 
 #[tokio::test]
@@ -3895,8 +3898,8 @@ async fn upgrade_window_update_sends_body() {
         .await
         .unwrap();
     let window = resp.result.unwrap();
-    assert_eq!(window.weekday, 2);
-    assert_eq!(window.start_hour_utc, 6);
+    assert_eq!(window.weekday, Some(2));
+    assert_eq!(window.start_hour_utc, Some(6));
 }
 
 #[tokio::test]

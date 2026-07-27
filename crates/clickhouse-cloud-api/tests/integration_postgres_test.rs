@@ -448,7 +448,8 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                             .await?;
                         let svc = resp.result.ok_or("postgres get returned no result")?;
                         let has_phase_tag = svc.tags.iter().flatten().any(|t| {
-                            t.key == "phase" && t.value.as_deref() == Some("patched")
+                            t.key.as_deref() == Some("phase")
+                                && t.value.as_deref() == Some("patched")
                         });
                         if !has_phase_tag {
                             return Err("patched `phase=patched` tag not present on service after PATCH".into());
@@ -950,16 +951,16 @@ fn pg_config_value_as_i64(value: &serde_json::Value) -> Option<i64> {
     }
 }
 
-fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
+fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1Response]) -> bool {
     filters.iter().all(|filter| {
         let Some(expr) = filter.strip_prefix("tag:") else {
             return true;
         };
         let Some((key, value)) = expr.split_once('=') else {
-            return tags.iter().any(|t| t.key == expr);
+            return tags.iter().any(|t| t.key.as_deref() == Some(expr));
         };
         tags.iter()
-            .any(|t| t.key == key && t.value.as_deref() == Some(value))
+            .any(|t| t.key.as_deref() == Some(key) && t.value.as_deref() == Some(value))
     })
 }
 

@@ -1,6 +1,7 @@
 use crate::cloud::cli::parse_datetime;
 use crate::cloud::client::CloudClient;
 use crate::cloud::commands::{parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::output::{ABSENT, or_absent};
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgProvider, PgVersion,
@@ -378,16 +379,6 @@ fn apply_filter(item: &PostgresServiceListItem, filters: &[String]) -> bool {
     true
 }
 
-/// Placeholder for a field the API did not return.
-const ABSENT: &str = "-";
-
-/// Renders an absent (`None`) response field as [`ABSENT`].
-fn or_absent<T: std::fmt::Display>(value: Option<T>) -> String {
-    value
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| ABSENT.to_string())
-}
-
 fn state_label(s: Option<&clickhouse_cloud_api::models::PgStateProperty>) -> String {
     match s {
         Some(s) => serde_json::to_value(s)
@@ -431,9 +422,9 @@ fn render_postgres_service(svc: &PostgresService) {
     if let Some(svc_tags) = svc.tags.as_ref().filter(|t| !t.is_empty()) {
         let tags: Vec<String> = svc_tags
             .iter()
-            .map(|t| match &t.value {
-                Some(v) => format!("{}={}", t.key, v),
-                None => t.key.clone(),
+            .map(|t| match (t.key.as_deref(), t.value.as_deref()) {
+                (key, Some(value)) => format!("{}={}", or_absent(key), value),
+                (key, None) => or_absent(key).to_string(),
             })
             .collect();
         println!("  Tags: {}", tags.join(", "));
@@ -688,12 +679,16 @@ pub async fn postgres_update(
             .map_err(|e| client.convert_error(e))?;
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
-        // An omitted `tags` in the response means "no tags to merge with".
-        Some(merge_tags(
-            &current.tags.unwrap_or_default(),
-            &add,
-            opts.remove_tag,
-        ))
+        // An omitted `tags` in the response means "no tags to merge with"; a
+        // returned tag without a key cannot be sent back, so say so rather
+        // than dropping it from the merged set.
+        let existing = current
+            .tags
+            .unwrap_or_default()
+            .into_iter()
+            .map(ResourceTagsV1::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        Some(merge_tags(&existing, &add, opts.remove_tag))
     } else {
         None
     };

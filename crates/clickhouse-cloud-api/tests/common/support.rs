@@ -877,9 +877,11 @@ async fn restore_scaling_schedule(
         entries: restore
             .pre_state
             .entries
-            .iter()
-            .map(scaling_schedule_entry_to_request)
-            .collect(),
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(ScalingScheduleEntryRequest::try_from)
+            .collect::<Result<Vec<_>, _>>()?,
     };
     match client
         .scaling_schedule_upsert(org_id, &restore.service_id, &body)
@@ -898,10 +900,7 @@ async fn restore_upgrade_window(
     restore: &UpgradeWindowRestore,
 ) -> TestResult<()> {
     eprintln!("  cleanup: restoring upgrade window pre-state");
-    let body = UpgradeWindowPutRequest {
-        start_hour_utc: restore.pre_state.start_hour_utc,
-        weekday: restore.pre_state.weekday,
-    };
+    let body = UpgradeWindowPutRequest::try_from(restore.pre_state.clone())?;
     match client
         .upgrade_window_update(org_id, &restore.service_id, &body)
         .await
@@ -913,23 +912,42 @@ async fn restore_upgrade_window(
     }
 }
 
-pub fn scaling_schedule_entry_to_request(
-    entry: &ScalingScheduleEntry,
-) -> ScalingScheduleEntryRequest {
-    ScalingScheduleEntryRequest {
-        autoscaling_mode: Some(entry.autoscaling_mode.clone()),
-        end_hour_utc: entry.end_hour_utc,
-        idle_scaling: entry.idle_scaling,
-        idle_timeout_minutes: entry.idle_timeout_minutes,
-        max_replica_memory_gb: entry.max_replica_memory_gb,
-        max_replicas: entry.max_replicas,
-        min_replica_memory_gb: entry.min_replica_memory_gb,
-        min_replicas: entry.min_replicas,
-        name: entry.name.clone(),
-        num_replicas: None,
-        start_hour_utc: entry.start_hour_utc,
-        weekdays: entry.weekdays.clone(),
-    }
+/// Requires a response field a test cannot proceed without.
+///
+/// Every response model field is `Option<T>`, so a test that needs a value says
+/// so here instead of unwrapping and panicking on a field the API dropped.
+pub fn require_field<T>(value: Option<T>, field: &str) -> TestResult<T> {
+    value.ok_or_else(|| format!("the API response is missing required field '{field}'").into())
+}
+
+/// A response field rendered as a string, or an empty string when the API
+/// omitted it (which matches no real value).
+pub fn field_string<T: fmt::Display>(value: Option<T>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
+}
+
+/// A service's state as a string, or an empty string when the API omitted it
+/// (which matches no known state).
+pub fn service_state(service: &Service) -> String {
+    service
+        .state
+        .as_ref()
+        .map(|state| state.to_string())
+        .unwrap_or_default()
+}
+
+/// The service's HTTPS endpoint, which every query helper needs.
+pub fn https_endpoint(service: &Service) -> TestResult<ServiceEndpoint> {
+    service
+        .endpoints
+        .as_ref()
+        .and_then(|endpoints| {
+            endpoints
+                .iter()
+                .find(|e| e.protocol == Some(ServiceEndpointProtocol::Https))
+        })
+        .cloned()
+        .ok_or_else(|| "ClickHouse service has no https endpoint".into())
 }
 
 async fn ensure_service_gone(
@@ -945,7 +963,7 @@ async fn ensure_service_gone(
     match client.instance_get(org_id, service_id).await {
         Ok(resp) => {
             if let Some(svc) = resp.result {
-                let state = svc.state.to_string();
+                let state = service_state(&svc);
                 if matches!(state.as_str(), "running" | "idle" | "starting" | "awaking") {
                     eprintln!("  cleanup: stopping service before delete");
                     let _ = client
@@ -968,11 +986,8 @@ async fn ensure_service_gone(
                             let service_id = service_id.to_string();
                             async move {
                                 let resp = client.instance_get(&org_id, &service_id).await?;
-                                let state = resp
-                                    .result
-                                    .as_ref()
-                                    .map(|s| s.state.to_string())
-                                    .unwrap_or_default();
+                                let state =
+                                    resp.result.as_ref().map(service_state).unwrap_or_default();
                                 if matches!(
                                     state.as_str(),
                                     "stopped" | "idle" | "degraded" | "failed"
@@ -1344,8 +1359,9 @@ pub async fn provision_clickhouse(
         .await?
         .result
         .ok_or("service create returned no result")?;
-    let service_id = created.service.id.to_string();
-    let password = created.password.clone();
+    let service = require_field(created.service, "service")?;
+    let service_id = require_field(service.id, "service.id")?.to_string();
+    let password = require_field(created.password, "password")?;
     cleanup.register_service(service_id.clone());
     eprintln!("  provisioned clickhouse id <redacted>");
 
@@ -1360,7 +1376,7 @@ pub async fn provision_clickhouse(
             async move {
                 let resp = client.instance_get(&org_id, &service_id).await?;
                 let svc = resp.result.ok_or("service get returned no result")?;
-                let state = svc.state.to_string();
+                let state = service_state(&svc);
                 if matches!(state.as_str(), "running" | "idle") {
                     Ok(Some(svc))
                 } else {
@@ -1371,27 +1387,19 @@ pub async fn provision_clickhouse(
     )
     .await?;
 
-    if svc.iam_role.is_empty() {
-        return Err(
-            "provisioned service has no iamRole populated — cannot establish ClickPipes trust"
-                .into(),
-        );
-    }
+    let iam_role = svc.iam_role.clone().filter(|role| !role.is_empty()).ok_or(
+        "provisioned service has no iamRole populated — cannot establish ClickPipes trust",
+    )?;
 
-    let https_endpoint = svc
-        .endpoints
-        .iter()
-        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-        .ok_or("ClickHouse service has no https endpoint")?
-        .clone();
+    let https_endpoint = https_endpoint(&svc)?;
     let username = https_endpoint
         .username
         .clone()
         .unwrap_or_else(|| "default".to_string());
 
     let query = ClickHouseQuery::new(
-        &https_endpoint.host,
-        https_endpoint.port as u16,
+        &require_field(https_endpoint.host.clone(), "endpoints[].host")?,
+        require_field(https_endpoint.port, "endpoints[].port")? as u16,
         &username,
         &password,
     );
@@ -1399,7 +1407,7 @@ pub async fn provision_clickhouse(
     Ok(ProvisionedClickHouse {
         service_id,
         password,
-        iam_role: svc.iam_role,
+        iam_role,
         https_endpoint,
         username,
         query,
@@ -1425,19 +1433,20 @@ pub async fn attach_clickhouse(
     // a query is what actually triggers the wake. Send `SELECT 1` and poll
     // until the state field flips to `running` so subsequent pipe-creates
     // succeed.
-    let state = svc.state.to_string();
+    let state = service_state(&svc);
     if state == "idle" {
         eprintln!("  service is idle — sending wake query");
-        let https = svc
-            .endpoints
-            .iter()
-            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-            .ok_or("service has no https endpoint to wake")?;
+        let https = https_endpoint(&svc)?;
         let username = https
             .username
             .clone()
             .unwrap_or_else(|| "default".to_string());
-        let wake_query = ClickHouseQuery::new(&https.host, https.port as u16, &username, password);
+        let wake_query = ClickHouseQuery::new(
+            &require_field(https.host.clone(), "endpoints[].host")?,
+            require_field(https.port, "endpoints[].port")? as u16,
+            &username,
+            password,
+        );
         let _ = wake_query.run_query("SELECT 1 FORMAT TabSeparated").await?;
 
         svc = poll_until(
@@ -1451,7 +1460,7 @@ pub async fn attach_clickhouse(
                 async move {
                     let resp = client.instance_get(&org_id, &service_id).await?;
                     let svc = resp.result.ok_or("service get returned no result")?;
-                    if svc.state.to_string() == "running" {
+                    if service_state(&svc) == "running" {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -1465,26 +1474,20 @@ pub async fn attach_clickhouse(
             format!("service {service_id} is in state {state}, expected running or idle").into(),
         );
     }
-    if svc.iam_role.is_empty() {
-        return Err(
-            "attached service has no iamRole populated — cannot establish ClickPipes trust".into(),
-        );
-    }
+    let iam_role =
+        svc.iam_role.clone().filter(|role| !role.is_empty()).ok_or(
+            "attached service has no iamRole populated — cannot establish ClickPipes trust",
+        )?;
 
-    let https_endpoint = svc
-        .endpoints
-        .iter()
-        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-        .ok_or("ClickHouse service has no https endpoint")?
-        .clone();
+    let https_endpoint = https_endpoint(&svc)?;
     let username = https_endpoint
         .username
         .clone()
         .unwrap_or_else(|| "default".to_string());
 
     let query = ClickHouseQuery::new(
-        &https_endpoint.host,
-        https_endpoint.port as u16,
+        &require_field(https_endpoint.host.clone(), "endpoints[].host")?,
+        require_field(https_endpoint.port, "endpoints[].port")? as u16,
         &username,
         password,
     );
@@ -1493,7 +1496,7 @@ pub async fn attach_clickhouse(
     Ok(ProvisionedClickHouse {
         service_id: service_id.to_string(),
         password: password.to_string(),
-        iam_role: svc.iam_role,
+        iam_role,
         https_endpoint,
         username,
         query,

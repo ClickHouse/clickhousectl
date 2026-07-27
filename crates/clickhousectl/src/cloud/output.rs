@@ -16,6 +16,20 @@ use serde_json::{Map, Value};
 
 const INDENT: &str = "  ";
 
+/// Placeholder for a field the API did not return.
+///
+/// Every field of a response model is `Option<T>`, so absence is a normal
+/// outcome rather than an error: list tables and plain output render it as this
+/// placeholder instead of unwrapping or fabricating a value.
+pub(crate) const ABSENT: &str = "-";
+
+/// Renders an absent (`None`) response field as [`ABSENT`].
+pub(crate) fn or_absent<T: std::fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| ABSENT.to_string())
+}
+
 /// Serialize `value` and print it as an indented, human-readable tree.
 ///
 /// - Object keys are printed verbatim (camelCase, as the API returns them).

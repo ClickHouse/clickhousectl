@@ -1,6 +1,6 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials;
-use crate::cloud::output::print_human;
+use crate::cloud::output::{ABSENT, or_absent, print_human};
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
     AutoscalingMode, BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
@@ -8,7 +8,7 @@ use clickhouse_cloud_api::models::{
     IpAccessListPatch, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1,
-    ServicPrivateEndpointePostRequest, Service, ServiceEndpointChange,
+    ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
     ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
     ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
     ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
@@ -17,6 +17,32 @@ use clickhouse_cloud_api::models::{
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
+
+/// Comma-joins the rendered items of a response list.
+///
+/// An absent list renders as [`ABSENT`]; an absent field of an individual item
+/// renders as [`ABSENT`] inside the join, so a partially-returned list stays
+/// readable.
+fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String {
+    match items {
+        Some(items) => items.iter().map(render).collect::<Vec<_>>().join(", "),
+        None => ABSENT.to_string(),
+    }
+}
+
+/// `host:port` of a service's first endpoint, for list tables.
+///
+/// Renders [`ABSENT`] when the API returned no endpoints, or an endpoint
+/// without a host or port.
+fn first_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> String {
+    endpoints
+        .and_then(|endpoints| endpoints.first())
+        .and_then(|endpoint| match (endpoint.host.as_deref(), endpoint.port) {
+            (Some(host), Some(port)) => Some(format!("{host}:{port}")),
+            _ => None,
+        })
+        .unwrap_or_else(|| ABSENT.to_string())
+}
 
 /// Resolve org ID from explicit arg or auto-detect
 pub(super) async fn resolve_org_id(
@@ -40,7 +66,10 @@ async fn resolve_service(
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
-            let matches: Vec<_> = services.into_iter().filter(|s| s.name == name).collect();
+            let matches: Vec<_> = services
+                .into_iter()
+                .filter(|s| s.name.as_deref() == Some(name))
+                .collect();
             match matches.len() {
                 0 => Err(format!("no service found with name '{}'", name).into()),
                 1 => Ok(matches.into_iter().next().unwrap()),
@@ -382,8 +411,8 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
         let rows: Vec<Row> = orgs
             .into_iter()
             .map(|o| Row {
-                name: o.name.clone(),
-                id: o.id.to_string(),
+                name: or_absent(o.name.as_deref()),
+                id: or_absent(o.id),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -444,20 +473,13 @@ pub async fn service_list(
         }
         let rows: Vec<Row> = services
             .into_iter()
-            .map(|svc| {
-                let endpoint = svc
-                    .endpoints
-                    .first()
-                    .map(|e| format!("{}:{}", e.host, e.port))
-                    .unwrap_or_else(|| "-".to_string());
-                Row {
-                    name: svc.name.clone(),
-                    id: svc.id.to_string(),
-                    state: svc.state.to_string(),
-                    provider: svc.provider.to_string(),
-                    region: svc.region.to_string(),
-                    endpoint,
-                }
+            .map(|svc| Row {
+                name: or_absent(svc.name.as_deref()),
+                id: or_absent(svc.id),
+                state: or_absent(svc.state.as_ref()),
+                provider: or_absent(svc.provider.as_ref()),
+                region: or_absent(svc.region.as_ref()),
+                endpoint: first_endpoint(svc.endpoints.as_deref()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -856,18 +878,20 @@ pub async fn service_create(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let response = client.create_service(&org_id, &request).await?;
-    let svc_id = response.service.id.to_string();
+    let svc_id = or_absent(response.service.as_ref().and_then(|svc| svc.id));
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
         println!("Service created successfully!");
         println!();
-        print_human(&response.service)?;
+        if let Some(service) = &response.service {
+            print_human(service)?;
+        }
         println!();
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
-        println!("  Password: {}", response.password);
+        println!("  Password: {}", or_absent(response.password.as_deref()));
         println!();
         println!(
             "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"",
@@ -889,7 +913,9 @@ pub async fn service_delete(
 
     if force {
         let svc = client.get_service(&org_id, service_id).await?;
-        let state = svc.state.to_string();
+        // An absent state matches nothing: skip the stop and let the delete
+        // call decide, rather than guessing the service is running.
+        let state = or_absent(svc.state.as_ref());
         if matches!(state.as_str(), "running" | "idle" | "starting") {
             eprintln!("Stopping service {} before deletion...", service_id);
             client
@@ -900,7 +926,7 @@ pub async fn service_delete(
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let svc = client.get_service(&org_id, service_id).await?;
-                let state = svc.state.to_string();
+                let state = or_absent(svc.state.as_ref());
                 eprintln!("  state: {}", state);
                 if matches!(state.as_str(), "stopped" | "idle") {
                     break;
@@ -941,7 +967,11 @@ pub async fn service_start(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} starting (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} starting (state: {})",
+            or_absent(svc.name.as_deref()),
+            or_absent(svc.state.as_ref())
+        );
     }
     Ok(())
 }
@@ -961,7 +991,11 @@ pub async fn service_stop(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} stopping (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} stopping (state: {})",
+            or_absent(svc.name.as_deref()),
+            or_absent(svc.state.as_ref())
+        );
     }
     Ok(())
 }
@@ -1964,10 +1998,10 @@ pub async fn backup_list(
         let rows: Vec<Row> = backups
             .into_iter()
             .map(|b| Row {
-                id: b.id.to_string(),
-                status: b.status.to_string(),
-                size: format_bytes(b.size_in_bytes),
-                created: b.started_at.to_rfc3339(),
+                id: or_absent(b.id),
+                status: or_absent(b.status.as_ref()),
+                size: or_absent(b.size_in_bytes.map(format_bytes)),
+                created: or_absent(b.started_at.map(|at| at.to_rfc3339())),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2041,9 +2075,9 @@ pub async fn service_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} updated", svc.name);
-        println!("  ID: {}", svc.id);
-        println!("  State: {}", svc.state);
+        println!("Service {} updated", or_absent(svc.name.as_deref()));
+        println!("  ID: {}", or_absent(svc.id));
+        println!("  State: {}", or_absent(svc.state.as_ref()));
     }
     Ok(())
 }
@@ -2098,20 +2132,30 @@ pub async fn service_scale(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} scaling updated", svc.name);
-        println!("  Autoscaling Mode: {}", svc.autoscaling_mode);
+        println!("Service {} scaling updated", or_absent(svc.name.as_deref()));
+        println!(
+            "  Autoscaling Mode: {}",
+            or_absent(svc.autoscaling_mode.as_ref())
+        );
         match svc.autoscaling_mode {
-            AutoscalingMode::Horizontal => {
-                println!("  Min Replicas: {}", svc.min_replicas);
-                println!("  Max Replicas: {}", svc.max_replicas);
-                println!("  Memory/Replica: {} GB", svc.replica_memory_gb);
+            Some(AutoscalingMode::Horizontal) => {
+                println!("  Min Replicas: {}", or_absent(svc.min_replicas));
+                println!("  Max Replicas: {}", or_absent(svc.max_replicas));
+                println!("  Memory/Replica: {} GB", or_absent(svc.replica_memory_gb));
             }
-            AutoscalingMode::Vertical => {
-                println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
-                println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
-                println!("  Replicas: {}", svc.num_replicas);
+            Some(AutoscalingMode::Vertical) => {
+                println!(
+                    "  Min Memory/Replica: {} GB",
+                    or_absent(svc.min_replica_memory_gb)
+                );
+                println!(
+                    "  Max Memory/Replica: {} GB",
+                    or_absent(svc.max_replica_memory_gb)
+                );
+                println!("  Replicas: {}", or_absent(svc.num_replicas));
             }
-            // A mode this CLI version doesn't know; don't guess which fields apply.
+            // A mode this CLI version doesn't know, or one the API did not
+            // return; don't guess which fields apply.
             _ => {}
         }
     }
@@ -2132,10 +2176,11 @@ pub async fn service_reset_password(
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("Password reset for service {}", service_id);
-        if resp.password.is_empty() {
-            println!("  Password hash updated; no plaintext password returned");
-        } else {
-            println!("  New password: {}", resp.password);
+        match resp.password.as_deref() {
+            Some(password) if !password.is_empty() => {
+                println!("  New password: {}", password)
+            }
+            _ => println!("  Password hash updated; no plaintext password returned"),
         }
     }
     Ok(())
@@ -2176,8 +2221,11 @@ pub async fn query_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Query endpoint created for service {}", service_id);
-        println!("  ID: {}", ep.id);
-        println!("  Roles: {}", ep.roles.join(", "));
+        println!("  ID: {}", or_absent(ep.id.as_deref()));
+        println!(
+            "  Roles: {}",
+            or_absent(ep.roles.as_ref().map(|roles| roles.join(", ")))
+        );
     }
     Ok(())
 }
@@ -2219,7 +2267,17 @@ pub async fn service_query(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
     let service =
         resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref()).await?;
-    let service_id = service.id.to_string();
+    // The whole query path is keyed on the service id: prefer the one the API
+    // echoed, and fall back to the one the user passed if the response omitted
+    // it.
+    let service_id = match service.id {
+        Some(id) => id.to_string(),
+        None => opts
+            .id
+            .clone()
+            .ok_or("the API response is missing the service id")?,
+    };
+    let service_name = or_absent(service.name.as_deref());
 
     let format = opts.format.unwrap_or_else(default_query_format);
 
@@ -2241,12 +2299,12 @@ pub async fn service_query(
         };
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service.name);
+                eprint_waking_service(&service_name);
                 run(true).await
             }
             other => other,
         };
-        result.map_err(|e| convert_query_error(client, e, &service.name))?
+        result.map_err(|e| convert_query_error(client, e, &service_name))?
     } else {
         let key = match credentials::get_service_query_key(&service_id) {
             Some(k) => k,
@@ -2259,13 +2317,13 @@ pub async fn service_query(
             None => {
                 eprintln!(
                     "Provisioning Query API endpoint + key for service '{}'...",
-                    service.name
+                    service_name
                 );
                 crate::cloud::service_query::ensure_service_query_setup(
                     client,
                     &org_id,
                     &service_id,
-                    &service.name,
+                    &service_name,
                 )
                 .await?
             }
@@ -2287,12 +2345,12 @@ pub async fn service_query(
         };
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service.name);
+                eprint_waking_service(&service_name);
                 run(true).await
             }
             other => other,
         };
-        result.map_err(|e| convert_query_error(client, e, &service.name))?
+        result.map_err(|e| convert_query_error(client, e, &service_name))?
     };
 
     use futures_util::StreamExt;
@@ -2403,8 +2461,8 @@ pub async fn private_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Private endpoint created for service {}", service_id);
-        println!("  Endpoint ID: {}", ep.id);
-        println!("  Description: {}", ep.description);
+        println!("  Endpoint ID: {}", or_absent(ep.id.as_deref()));
+        println!("  Description: {}", or_absent(ep.description.as_deref()));
     }
     Ok(())
 }
@@ -2445,7 +2503,11 @@ pub async fn org_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!("Organization updated: {} ({})", org.name, org.id);
+        println!(
+            "Organization updated: {} ({})",
+            or_absent(org.name.as_deref()),
+            or_absent(org.id)
+        );
     }
     Ok(())
 }
@@ -2490,8 +2552,12 @@ pub async fn org_usage(
     if json {
         println!("{}", serde_json::to_string_pretty(&usage)?);
     } else {
-        println!("Grand Total: {:.2} CHC", usage.grand_total_chc);
-        if usage.costs.is_empty() {
+        println!(
+            "Grand Total: {} CHC",
+            or_absent(usage.grand_total_chc.map(|total| format!("{total:.2}")))
+        );
+        let costs = usage.costs.unwrap_or_default();
+        if costs.is_empty() {
             println!("No usage cost records found");
             return Ok(());
         }
@@ -2505,13 +2571,12 @@ pub async fn org_usage(
             #[tabled(rename = "Total (CHC)")]
             total: String,
         }
-        let rows: Vec<Row> = usage
-            .costs
+        let rows: Vec<Row> = costs
             .iter()
             .map(|cost| Row {
-                entity: cost.entity_name.clone(),
-                date: cost.date.clone(),
-                total: format!("{:.2}", cost.total_chc),
+                entity: or_absent(cost.entity_name.as_deref()),
+                date: or_absent(cost.date.as_deref()),
+                total: or_absent(cost.total_chc.map(|total| format!("{total:.2}"))),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2553,15 +2618,12 @@ pub async fn member_list(
         let rows: Vec<Row> = members
             .into_iter()
             .map(|m| Row {
-                email: m.email.clone(),
-                user_id: m.user_id.clone(),
-                roles: m
-                    .assigned_roles
-                    .iter()
-                    .map(|r| r.role_name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                name: m.name.clone(),
+                email: or_absent(m.email.as_deref()),
+                user_id: or_absent(m.user_id.as_deref()),
+                roles: join_absent(m.assigned_roles.as_deref(), |r| {
+                    or_absent(r.role_name.as_deref())
+                }),
+                name: or_absent(m.name.as_deref()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2611,7 +2673,7 @@ pub async fn member_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&member)?);
     } else {
-        println!("Member {} updated", member.email);
+        println!("Member {} updated", or_absent(member.email.as_deref()));
     }
     Ok(())
 }
@@ -2667,15 +2729,12 @@ pub async fn invitation_list(
         let rows: Vec<Row> = invitations
             .into_iter()
             .map(|inv| Row {
-                email: inv.email.clone(),
-                id: inv.id.to_string(),
-                roles: inv
-                    .assigned_roles
-                    .iter()
-                    .map(|r| r.role_name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                expires: inv.expire_at.to_rfc3339(),
+                email: or_absent(inv.email.as_deref()),
+                id: or_absent(inv.id),
+                roles: join_absent(inv.assigned_roles.as_deref(), |r| {
+                    or_absent(r.role_name.as_deref())
+                }),
+                expires: or_absent(inv.expire_at.map(|at| at.to_rfc3339())),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2704,7 +2763,11 @@ pub async fn invitation_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation sent to {} ({})", inv.email, inv.id);
+        println!(
+            "Invitation sent to {} ({})",
+            or_absent(inv.email.as_deref()),
+            or_absent(inv.id)
+        );
     }
     Ok(())
 }
@@ -2778,9 +2841,9 @@ pub async fn key_list(
         let rows: Vec<Row> = keys
             .into_iter()
             .map(|k| Row {
-                name: k.name.clone(),
-                id: k.id.to_string(),
-                state: k.state.to_string(),
+                name: or_absent(k.name.as_deref()),
+                id: or_absent(k.id),
+                state: or_absent(k.state.as_ref()),
                 expires: k
                     .expire_at
                     .map(|t| t.to_rfc3339())
@@ -2808,14 +2871,21 @@ pub async fn key_create(
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("API key created!");
-        println!("  Name: {}", resp.key.name);
-        if !resp.key_id.is_empty() {
-            println!("  Key ID: {}", resp.key_id);
+        println!(
+            "  Name: {}",
+            or_absent(resp.key.as_ref().and_then(|key| key.name.as_deref()))
+        );
+        // The API omits the generated pair when the caller supplied pre-hashed
+        // credentials, so absent and empty mean the same thing here.
+        let key_id = resp.key_id.unwrap_or_default();
+        let key_secret = resp.key_secret.unwrap_or_default();
+        if !key_id.is_empty() {
+            println!("  Key ID: {}", key_id);
         }
-        if !resp.key_secret.is_empty() {
-            println!("  Key Secret: {}", resp.key_secret);
+        if !key_secret.is_empty() {
+            println!("  Key Secret: {}", key_secret);
         }
-        if !resp.key_id.is_empty() || !resp.key_secret.is_empty() {
+        if !key_id.is_empty() || !key_secret.is_empty() {
             println!();
             println!("Save the key secret now — it will not be shown again.");
         } else {
@@ -2859,9 +2929,9 @@ pub async fn key_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&key)?);
     } else {
-        println!("API key {} updated", key.name);
-        println!("  ID: {}", key.id);
-        println!("  State: {}", key.state);
+        println!("API key {} updated", or_absent(key.name.as_deref()));
+        println!("  ID: {}", or_absent(key.id));
+        println!("  State: {}", or_absent(key.state.as_ref()));
     }
     Ok(())
 }
@@ -2917,9 +2987,9 @@ pub async fn activity_list(
         let rows: Vec<Row> = activities
             .into_iter()
             .map(|a| Row {
-                id: a.id.clone(),
-                activity_type: a.r#type.to_string(),
-                created: a.created_at.to_rfc3339(),
+                id: or_absent(a.id.as_deref()),
+                activity_type: or_absent(a.r#type.as_ref()),
+                created: or_absent(a.created_at.map(|at| at.to_rfc3339())),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2984,12 +3054,18 @@ pub async fn backup_config_update(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Backup configuration updated for service {}", service_id);
-        println!("  Backup period: {} hours", config.backup_period_in_hours);
+        println!(
+            "  Backup period: {} hours",
+            or_absent(config.backup_period_in_hours)
+        );
         println!(
             "  Retention: {} hours",
-            config.backup_retention_period_in_hours
+            or_absent(config.backup_retention_period_in_hours)
         );
-        println!("  Start time: {}", config.backup_start_time);
+        println!(
+            "  Start time: {}",
+            or_absent(config.backup_start_time.as_deref())
+        );
     }
     Ok(())
 }

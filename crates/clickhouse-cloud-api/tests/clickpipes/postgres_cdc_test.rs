@@ -185,8 +185,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         let ch_created = ch_create_resp?
             .result
             .ok_or("service create returned no result")?;
-        let clickhouse_id = ch_created.service.id.to_string();
-        let clickhouse_password = ch_created.password.clone();
+        let clickhouse_service = require_field(ch_created.service, "service")?;
+        let clickhouse_id = require_field(clickhouse_service.id, "service.id")?.to_string();
+        let clickhouse_password = require_field(ch_created.password.clone(), "password")?;
         cleanup.register_service(clickhouse_id.clone());
         eprintln!("  provisioned clickhouse id <redacted>");
 
@@ -226,7 +227,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 async move {
                     let resp = client.instance_get(&org_id, &clickhouse_id).await?;
                     let svc = resp.result.ok_or("service get returned no result")?;
-                    let state = svc.state.to_string();
+                    let state = service_state(&svc);
                     if matches!(state.as_str(), "running" | "idle") {
                         Ok(Some(svc))
                     } else {
@@ -239,12 +240,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
 
         let pg_hostname = pg_ready.hostname.clone().unwrap_or_default();
         assert!(!pg_hostname.is_empty(), "postgres get returned no hostname");
-        let ch_endpoint = ch_ready
-            .endpoints
-            .iter()
-            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-            .ok_or("ClickHouse service has no https endpoint")?
-            .clone();
+        let ch_endpoint = https_endpoint(&ch_ready)?;
         let ch_username = ch_endpoint
             .username
             .clone()
@@ -372,8 +368,8 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         log_phase("Verify seed rows in ClickHouse");
 
         let ch_query = ClickHouseQuery::new(
-            &ch_endpoint.host,
-            ch_endpoint.port as u16,
+            &require_field(ch_endpoint.host.clone(), "endpoints[].host")?,
+            require_field(ch_endpoint.port, "endpoints[].port")? as u16,
             &ch_username,
             &clickhouse_password,
         );
@@ -482,16 +478,16 @@ fn duration_from_env_or(name: &str, default_secs: u64) -> TestResult<Duration> {
     }
 }
 
-fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
+fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1Response]) -> bool {
     filters.iter().all(|filter| {
         let Some(expr) = filter.strip_prefix("tag:") else {
             return true;
         };
         let Some((key, value)) = expr.split_once('=') else {
-            return tags.iter().any(|t| t.key == expr);
+            return tags.iter().any(|t| t.key.as_deref() == Some(expr));
         };
         tags.iter()
-            .any(|t| t.key == key && t.value.as_deref() == Some(value))
+            .any(|t| t.key.as_deref() == Some(key) && t.value.as_deref() == Some(value))
     })
 }
 

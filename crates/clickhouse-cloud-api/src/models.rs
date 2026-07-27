@@ -8551,237 +8551,227 @@ pub type PgStorageSize = i64;
 /// Type alias for `pgTags`.
 pub type PgTags = Vec<ResourceTagsV1>;
 
+/// Type alias for `pgTags` in response position, over
+/// [`ResourceTagsV1Response`].
+pub type PgTagsResponse = Vec<ResourceTagsV1Response>;
+
 /// `Activity` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Activity {
-    #[serde(rename = "actorDetails", default)]
-    pub actor_details: String,
-    #[serde(rename = "actorId", default)]
-    pub actor_id: String,
-    #[serde(rename = "actorIpAddress", default)]
-    pub actor_ip_address: String,
-    #[serde(rename = "actorType", default)]
-    pub actor_type: ActivityActortype,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: String,
-    #[serde(rename = "keyUpdateType", default)]
-    pub key_update_type: ActivityKeyupdatetype,
-    #[serde(rename = "organizationId", default)]
-    pub organization_id: String,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: String,
-    #[serde(rename = "targetKeyId", default)]
-    pub target_key_id: String,
-    #[serde(default)]
-    pub r#type: ActivityType,
-    #[serde(rename = "userAgent", default)]
-    pub user_agent: String,
+    #[serde(rename = "actorDetails", skip_serializing_if = "Option::is_none")]
+    pub actor_details: Option<String>,
+    #[serde(rename = "actorId", skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    #[serde(rename = "actorIpAddress", skip_serializing_if = "Option::is_none")]
+    pub actor_ip_address: Option<String>,
+    #[serde(rename = "actorType", skip_serializing_if = "Option::is_none")]
+    pub actor_type: Option<ActivityActortype>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "keyUpdateType", skip_serializing_if = "Option::is_none")]
+    pub key_update_type: Option<ActivityKeyupdatetype>,
+    #[serde(rename = "organizationId", skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(rename = "targetKeyId", skip_serializing_if = "Option::is_none")]
+    pub target_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ActivityType>,
+    #[serde(rename = "userAgent", skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 /// `ApiKey` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKey {
-    #[serde(rename = "assignedRoles", default)]
-    pub assigned_roles: Vec<AssignedRole>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "ipAccessList", default)]
-    pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "keySuffix", default)]
-    pub key_suffix: String,
-    #[serde(default)]
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntryResponse>>,
+    #[serde(rename = "keySuffix", skip_serializing_if = "Option::is_none")]
+    pub key_suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub roles: Vec<String>,
-    #[serde(default)]
-    pub state: ApiKeyState,
-    #[serde(rename = "usedAt", default)]
-    pub used_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ApiKeyState>,
+    #[serde(rename = "usedAt", skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ApiKeyHashData` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyHashData {
-    #[serde(rename = "keyIdHash", default)]
+    #[serde(rename = "keyIdHash")]
     pub key_id_hash: String,
-    #[serde(rename = "keyIdSuffix", default)]
+    #[serde(rename = "keyIdSuffix")]
     pub key_id_suffix: String,
-    #[serde(rename = "keySecretHash", default)]
+    #[serde(rename = "keySecretHash")]
     pub key_secret_hash: String,
 }
 
 /// `ApiKeyPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPatchRequest {
-    #[serde(
-        rename = "assignedRoleIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<uuid::Uuid>>,
-    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(
-        rename = "ipAccessList",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessListEntry>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ApiKeyPatchRequestState>,
 }
 
 /// `ApiKeyPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPostRequest {
-    #[serde(rename = "assignedRoleIds", default)]
+    #[serde(rename = "assignedRoleIds")]
     pub assigned_role_ids: Vec<uuid::Uuid>,
-    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(rename = "hashData", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "hashData", skip_serializing_if = "Option::is_none")]
     pub hash_data: Option<ApiKeyHashData>,
-    #[serde(rename = "ipAccessList", default)]
+    #[serde(rename = "ipAccessList")]
     pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(default)]
     pub name: String,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    #[serde(default)]
     pub state: ApiKeyPostRequestState,
 }
 
 /// `ApiKeyPostResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPostResponse {
-    #[serde(default)]
-    pub key: ApiKey,
-    #[serde(rename = "keyId", default)]
-    pub key_id: String,
-    #[serde(rename = "keySecret", default)]
-    pub key_secret: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<ApiKey>,
+    #[serde(rename = "keyId", skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(rename = "keySecret", skip_serializing_if = "Option::is_none")]
+    pub key_secret: Option<String>,
 }
 
 /// `AssignedRole` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AssignedRole {
-    #[serde(rename = "roleId", default)]
-    pub role_id: uuid::Uuid,
-    #[serde(rename = "roleName", default)]
-    pub role_name: String,
-    #[serde(rename = "roleType", default)]
-    pub role_type: AssignedRoleRoletype,
+    #[serde(rename = "roleId", skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<uuid::Uuid>,
+    #[serde(rename = "roleName", skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    #[serde(rename = "roleType", skip_serializing_if = "Option::is_none")]
+    pub role_type: Option<AssignedRoleRoletype>,
 }
 
 /// `AwsBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucket {
-    #[serde(rename = "bucketPath", default)]
-    pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
-    pub bucket_provider: AwsBackupBucketBucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
-    pub iam_role_arn: String,
-    #[serde(rename = "iamRoleSessionName", default)]
-    pub iam_role_session_name: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "bucketPath", skip_serializing_if = "Option::is_none")]
+    pub bucket_path: Option<String>,
+    #[serde(rename = "bucketProvider", skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<AwsBackupBucketBucketprovider>,
+    #[serde(rename = "iamRoleArn", skip_serializing_if = "Option::is_none")]
+    pub iam_role_arn: Option<String>,
+    #[serde(rename = "iamRoleSessionName", skip_serializing_if = "Option::is_none")]
+    pub iam_role_session_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
 }
 
 /// `AwsBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucketPatchRequestV1 {
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AwsBackupBucketPatchRequestV1Bucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
+    #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(
-        rename = "iamRoleSessionName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "iamRoleSessionName", skip_serializing_if = "Option::is_none")]
     pub iam_role_session_name: Option<String>,
 }
 
 /// `AwsBackupBucketPostRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucketPostRequestV1 {
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AwsBackupBucketPostRequestV1Bucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
+    #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(rename = "iamRoleSessionName", default)]
+    #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }
 
 /// `AwsBackupBucketProperties` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucketProperties {
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AwsBackupBucketPropertiesBucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
+    #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(rename = "iamRoleSessionName", default)]
+    #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }
 
 /// `AzureBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucket {
-    #[serde(rename = "bucketProvider", default)]
-    pub bucket_provider: AzureBackupBucketBucketprovider,
-    #[serde(rename = "containerName", default)]
-    pub container_name: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "bucketProvider", skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<AzureBackupBucketBucketprovider>,
+    #[serde(rename = "containerName", skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
 }
 
 /// `AzureBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucketPatchRequestV1 {
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPatchRequestV1Bucketprovider,
-    #[serde(rename = "connectionString", default)]
+    #[serde(rename = "connectionString")]
     pub connection_string: String,
-    #[serde(rename = "containerName", default)]
+    #[serde(rename = "containerName")]
     pub container_name: String,
 }
 
 /// `AzureBackupBucketPostRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucketPostRequestV1 {
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPostRequestV1Bucketprovider,
-    #[serde(rename = "connectionString", default)]
+    #[serde(rename = "connectionString")]
     pub connection_string: String,
-    #[serde(rename = "containerName", default)]
+    #[serde(rename = "containerName")]
     pub container_name: String,
 }
 
 /// `AzureBackupBucketProperties` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucketProperties {
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPropertiesBucketprovider,
-    #[serde(rename = "containerName", default)]
+    #[serde(rename = "containerName")]
     pub container_name: String,
 }
 
@@ -8795,37 +8785,43 @@ pub struct AzureEventHub {
 /// `Backup` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Backup {
-    #[serde(rename = "backupName", default)]
-    pub backup_name: String,
-    #[serde(default)]
-    pub bucket: serde_json::Value,
-    #[serde(rename = "durationInSeconds", default)]
-    pub duration_in_seconds: f64,
-    #[serde(rename = "finishedAt", default)]
-    pub finished_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: String,
-    #[serde(rename = "sizeInBytes", default)]
-    pub size_in_bytes: f64,
-    #[serde(rename = "startedAt", default)]
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub status: BackupStatus,
-    #[serde(default)]
-    pub r#type: BackupType,
+    #[serde(rename = "backupName", skip_serializing_if = "Option::is_none")]
+    pub backup_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<serde_json::Value>,
+    #[serde(rename = "durationInSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_in_seconds: Option<f64>,
+    #[serde(rename = "finishedAt", skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(rename = "sizeInBytes", skip_serializing_if = "Option::is_none")]
+    pub size_in_bytes: Option<f64>,
+    #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<BackupStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<BackupType>,
 }
 
 /// `BackupConfiguration` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BackupConfiguration {
-    #[serde(rename = "backupPeriodInHours", default)]
-    pub backup_period_in_hours: f64,
-    #[serde(rename = "backupRetentionPeriodInHours", default)]
-    pub backup_retention_period_in_hours: f64,
-    #[serde(rename = "backupStartTime", default)]
-    pub backup_start_time: String,
+    #[serde(
+        rename = "backupPeriodInHours",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backup_period_in_hours: Option<f64>,
+    #[serde(
+        rename = "backupRetentionPeriodInHours",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backup_retention_period_in_hours: Option<f64>,
+    #[serde(rename = "backupStartTime", skip_serializing_if = "Option::is_none")]
+    pub backup_start_time: Option<String>,
 }
 
 /// `BackupConfigurationPatchRequest` from the ClickHouse Cloud API.
@@ -8833,21 +8829,15 @@ pub struct BackupConfiguration {
 pub struct BackupConfigurationPatchRequest {
     #[serde(
         rename = "backupPeriodInHours",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub backup_period_in_hours: Option<f64>,
     #[serde(
         rename = "backupRetentionPeriodInHours",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub backup_retention_period_in_hours: Option<f64>,
-    #[serde(
-        rename = "backupStartTime",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "backupStartTime", skip_serializing_if = "Option::is_none")]
     pub backup_start_time: Option<String>,
 }
 
@@ -8868,43 +8858,39 @@ pub struct BasePostgresService {
 /// `ByocConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocConfig {
-    #[serde(rename = "accountName", default)]
-    pub account_name: String,
-    #[serde(rename = "cloudProvider", default)]
-    pub cloud_provider: ByocConfigCloudprovider,
-    #[serde(rename = "displayName", default)]
-    pub display_name: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(rename = "regionId", default)]
-    pub region_id: ByocConfigRegionid,
-    #[serde(default)]
-    pub state: ByocConfigState,
+    #[serde(rename = "accountName", skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
+    #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<ByocConfigCloudprovider>,
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "regionId", skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<ByocConfigRegionid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ByocConfigState>,
 }
 
 /// `ByocInfrastructurePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocInfrastructurePatchRequest {
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }
 
 /// `ByocInfrastructurePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocInfrastructurePostRequest {
-    #[serde(rename = "accountId", default)]
+    #[serde(rename = "accountId")]
     pub account_id: String,
-    #[serde(rename = "availabilityZoneSuffixes", default)]
+    #[serde(rename = "availabilityZoneSuffixes")]
     pub availability_zone_suffixes: Vec<String>,
-    #[serde(rename = "displayName", default)]
+    #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(rename = "regionId", default)]
+    #[serde(rename = "regionId")]
     pub region_id: ByocInfrastructurePostRequestRegionid,
-    #[serde(rename = "vpcCidrRange", default)]
+    #[serde(rename = "vpcCidrRange")]
     pub vpc_cidr_range: String,
 }
 
@@ -12676,22 +12662,43 @@ pub struct CreateReversePrivateEndpoint {
 /// `CurrentScaling` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CurrentScaling {
-    #[serde(rename = "activeEntryId", default)]
-    pub active_entry_id: uuid::Uuid,
-    #[serde(rename = "effectiveAutoscalingMode", default)]
-    pub effective_autoscaling_mode: CurrentScalingEffectiveautoscalingmode,
-    #[serde(rename = "effectiveIdleScaling", default)]
-    pub effective_idle_scaling: bool,
-    #[serde(rename = "effectiveIdleTimeoutMinutes", default)]
-    pub effective_idle_timeout_minutes: i64,
-    #[serde(rename = "effectiveMaxReplicaMemoryGb", default)]
-    pub effective_max_replica_memory_gb: f64,
-    #[serde(rename = "effectiveMaxReplicas", default)]
-    pub effective_max_replicas: i64,
-    #[serde(rename = "effectiveMinReplicaMemoryGb", default)]
-    pub effective_min_replica_memory_gb: f64,
-    #[serde(rename = "effectiveMinReplicas", default)]
-    pub effective_min_replicas: i64,
+    #[serde(rename = "activeEntryId", skip_serializing_if = "Option::is_none")]
+    pub active_entry_id: Option<uuid::Uuid>,
+    #[serde(
+        rename = "effectiveAutoscalingMode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_autoscaling_mode: Option<CurrentScalingEffectiveautoscalingmode>,
+    #[serde(
+        rename = "effectiveIdleScaling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_idle_scaling: Option<bool>,
+    #[serde(
+        rename = "effectiveIdleTimeoutMinutes",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_idle_timeout_minutes: Option<i64>,
+    #[serde(
+        rename = "effectiveMaxReplicaMemoryGb",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_max_replica_memory_gb: Option<f64>,
+    #[serde(
+        rename = "effectiveMaxReplicas",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_max_replicas: Option<i64>,
+    #[serde(
+        rename = "effectiveMinReplicaMemoryGb",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_min_replica_memory_gb: Option<f64>,
+    #[serde(
+        rename = "effectiveMinReplicas",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_min_replicas: Option<i64>,
 }
 
 /// `CustomPrivateDnsMapping` from the ClickHouse Cloud API.
@@ -12708,140 +12715,144 @@ pub struct CustomPrivateDnsMapping {
 /// `GcpBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucket {
-    #[serde(rename = "accessKeyId", default)]
-    pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
-    pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
-    pub bucket_provider: GcpBackupBucketBucketprovider,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "accessKeyId", skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    #[serde(rename = "bucketPath", skip_serializing_if = "Option::is_none")]
+    pub bucket_path: Option<String>,
+    #[serde(rename = "bucketProvider", skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<GcpBackupBucketBucketprovider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
 }
 
 /// `GcpBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucketPatchRequestV1 {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: GcpBackupBucketPatchRequestV1Bucketprovider,
-    #[serde(rename = "secretAccessKey", default)]
+    #[serde(rename = "secretAccessKey")]
     pub secret_access_key: String,
 }
 
 /// `GcpBackupBucketPostRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucketPostRequestV1 {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: GcpBackupBucketPostRequestV1Bucketprovider,
-    #[serde(rename = "secretAccessKey", default)]
+    #[serde(rename = "secretAccessKey")]
     pub secret_access_key: String,
 }
 
 /// `GcpBackupBucketProperties` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucketProperties {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: GcpBackupBucketPropertiesBucketprovider,
 }
 
 /// `InstancePrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstancePrivateEndpoint {
-    #[serde(rename = "cloudProvider", default)]
-    pub cloud_provider: InstancePrivateEndpointCloudprovider,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub region: InstancePrivateEndpointRegion,
+    #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<InstancePrivateEndpointCloudprovider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<InstancePrivateEndpointRegion>,
 }
 
 /// `InstancePrivateEndpointsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstancePrivateEndpointsPatch {
-    #[serde(default)]
     pub add: Vec<String>,
-    #[serde(default)]
     pub remove: Vec<String>,
 }
 
 /// `InstanceServiceQueryApiEndpointsPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstanceServiceQueryApiEndpointsPostRequest {
-    #[serde(rename = "allowedOrigins", default)]
+    #[serde(rename = "allowedOrigins")]
     pub allowed_origins: String,
-    #[serde(rename = "openApiKeys", default)]
+    #[serde(rename = "openApiKeys")]
     pub open_api_keys: Vec<String>,
-    #[serde(default)]
     pub roles: Vec<String>,
 }
 
 /// `InstanceTagsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstanceTagsPatch {
-    #[serde(default)]
     pub add: Vec<ResourceTagsV1>,
-    #[serde(default)]
     pub remove: Vec<ResourceTagsV1>,
 }
 
 /// `Invitation` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Invitation {
-    #[serde(rename = "assignedRoles", default)]
-    pub assigned_roles: Vec<AssignedRole>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub email: String,
-    #[serde(rename = "expireAt", default)]
-    pub expire_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
+    pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub role: InvitationRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<InvitationRole>,
 }
 
 /// `InvitationPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InvitationPostRequest {
-    #[serde(rename = "assignedRoleIds", default)]
+    #[serde(rename = "assignedRoleIds")]
     pub assigned_role_ids: Vec<String>,
-    #[serde(default)]
     pub email: String,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<InvitationPostRequestRole>,
 }
 
 /// `IpAccessListEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct IpAccessListEntry {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
     pub source: String,
+}
+
+/// `IpAccessListEntry` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`IpAccessListEntry`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct IpAccessListEntryResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// `IpAccessListPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct IpAccessListPatch {
-    #[serde(default)]
     pub add: Vec<IpAccessListEntry>,
-    #[serde(default)]
     pub remove: Vec<IpAccessListEntry>,
 }
 
@@ -12863,32 +12874,28 @@ pub struct License {
 /// `Member` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Member {
-    #[serde(rename = "assignedRoles", default)]
-    pub assigned_roles: Vec<AssignedRole>,
-    #[serde(default)]
-    pub email: String,
-    #[serde(rename = "joinedAt", default)]
-    pub joined_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub name: String,
+    #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(rename = "joinedAt", skip_serializing_if = "Option::is_none")]
+    pub joined_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub role: MemberRole,
-    #[serde(rename = "userId", default)]
-    pub user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<MemberRole>,
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 /// `MemberPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MemberPatchRequest {
-    #[serde(
-        rename = "assignedRoleIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<MemberPatchRequestRole>,
 }
 
@@ -12913,79 +12920,68 @@ pub struct MutualTLS {
 /// `Organization` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Organization {
-    #[serde(rename = "byocConfig", default)]
-    pub byoc_config: Vec<ByocConfig>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "privateEndpoints", default)]
-    pub private_endpoints: Vec<OrganizationPrivateEndpoint>,
+    #[serde(rename = "byocConfig", skip_serializing_if = "Option::is_none")]
+    pub byoc_config: Option<Vec<ByocConfig>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]
+    pub private_endpoints: Option<Vec<OrganizationPrivateEndpoint>>,
 }
 
 /// `OrganizationCloudRegionPrivateEndpointConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationCloudRegionPrivateEndpointConfig {
-    #[serde(rename = "endpointServiceId", default)]
-    pub endpoint_service_id: String,
+    #[serde(rename = "endpointServiceId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_service_id: Option<String>,
 }
 
 /// `OrganizationPatchPrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPatchPrivateEndpoint {
-    #[serde(rename = "cloudProvider", default)]
+    #[serde(rename = "cloudProvider")]
     pub cloud_provider: OrganizationPatchPrivateEndpointCloudprovider,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
     pub id: String,
-    #[serde(default)]
     pub region: OrganizationPatchPrivateEndpointRegion,
 }
 
 /// `OrganizationPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPatchRequest {
-    #[serde(
-        rename = "enableCoreDumps",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        rename = "privateEndpoints",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]
     pub private_endpoints: Option<OrganizationPrivateEndpointsPatch>,
 }
 
 /// `OrganizationPrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPrivateEndpoint {
-    #[serde(rename = "cloudProvider", default)]
-    pub cloud_provider: OrganizationPrivateEndpointCloudprovider,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub region: OrganizationPrivateEndpointRegion,
+    #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<OrganizationPrivateEndpointCloudprovider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<OrganizationPrivateEndpointRegion>,
 }
 
 /// `OrganizationPrivateEndpointsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPrivateEndpointsPatch {
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
-    #[serde(default)]
     pub remove: Vec<OrganizationPatchPrivateEndpoint>,
 }
 
@@ -13044,7 +13040,7 @@ pub struct PostgresService {
     #[serde(rename = "storageSize", skip_serializing_if = "Option::is_none")]
     pub storage_size: Option<PgStorageSize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<PgTags>,
+    pub tags: Option<PgTagsResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
@@ -13073,7 +13069,7 @@ pub struct PostgresServiceListItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<PgStateProperty>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<PgTags>,
+    pub tags: Option<PgTagsResponse>,
 }
 
 /// `PostgresServicePasswordResource` from the ClickHouse Cloud API.
@@ -13360,29 +13356,29 @@ pub struct PostgresSlowQueryPatternDetail {
 /// `PrivateEndpointConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PrivateEndpointConfig {
-    #[serde(rename = "endpointServiceId", default)]
-    pub endpoint_service_id: String,
-    #[serde(rename = "privateDnsHostname", default)]
-    pub private_dns_hostname: String,
+    #[serde(rename = "endpointServiceId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_service_id: Option<String>,
+    #[serde(rename = "privateDnsHostname", skip_serializing_if = "Option::is_none")]
+    pub private_dns_hostname: Option<String>,
 }
 
 /// `RBACPolicy` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RBACPolicy {
-    #[serde(rename = "allowDeny", default)]
-    pub allow_deny: RBACPolicyAllowdeny,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub permissions: Vec<String>,
-    #[serde(default)]
-    pub resources: Vec<String>,
-    #[serde(rename = "roleId", default)]
-    pub role_id: String,
-    #[serde(default)]
-    pub tags: RBACPolicyTags,
-    #[serde(rename = "tenantId", default)]
-    pub tenant_id: String,
+    #[serde(rename = "allowDeny", skip_serializing_if = "Option::is_none")]
+    pub allow_deny: Option<RBACPolicyAllowdeny>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<String>>,
+    #[serde(rename = "roleId", skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<RBACPolicyTags>,
+    #[serde(rename = "tenantId", skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 /// `RBACPolicyCreateRequest` from the ClickHouse Cloud API.
@@ -13392,7 +13388,7 @@ pub struct RBACPolicyCreateRequest {
     pub allow_deny: RBACPolicyCreateRequestAllowdeny,
     pub permissions: Vec<String>,
     pub resources: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<RBACPolicyTags>,
 }
 
@@ -13408,31 +13404,46 @@ pub struct RBACPolicyTags {
 /// `RBACRole` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RBACRole {
-    #[serde(default)]
-    pub actors: Vec<String>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "ownerId", default)]
-    pub owner_id: String,
-    #[serde(default)]
-    pub policies: Vec<RBACPolicy>,
-    #[serde(rename = "tenantId", default)]
-    pub tenant_id: String,
-    #[serde(default)]
-    pub r#type: RBACRoleType,
-    #[serde(rename = "updatedAt", default)]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actors: Option<Vec<String>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "ownerId", skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<RBACPolicy>>,
+    #[serde(rename = "tenantId", skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<RBACRoleType>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ResourceTagsV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ResourceTagsV1 {
     pub key: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// `ResourceTagsV1` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ResourceTagsV1`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing. Writing a fetched tag back to the API goes through
+/// `TryFrom<ResourceTagsV1Response>` (see [`crate::convert`]), because a tag
+/// without a key cannot be sent.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ResourceTagsV1Response {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
 }
 
@@ -13510,168 +13521,102 @@ pub struct RoleCreateRequest {
 /// `RoleUpdateRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RoleUpdateRequest {
-    #[serde(default)]
     pub actors: Vec<String>,
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub policies: Vec<RBACPolicyCreateRequest>,
 }
 
 /// `ScalingSchedule` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingSchedule {
-    #[serde(
-        rename = "activeEntryId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "activeEntryId", skip_serializing_if = "Option::is_none")]
     pub active_entry_id: Option<uuid::Uuid>,
-    #[serde(rename = "baseConfig", default)]
-    pub base_config: ScalingScheduleBaseConfig,
-    #[serde(default)]
-    pub entries: Vec<ScalingScheduleEntry>,
+    #[serde(rename = "baseConfig", skip_serializing_if = "Option::is_none")]
+    pub base_config: Option<ScalingScheduleBaseConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<ScalingScheduleEntry>>,
 }
 
 /// `ScalingScheduleBaseConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleBaseConfig {
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: i64,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxReplicas", default)]
-    pub max_replicas: i64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minReplicas", default)]
-    pub min_replicas: i64,
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<i64>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
+    pub max_replicas: Option<i64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
+    pub min_replicas: Option<i64>,
 }
 
 /// `ScalingScheduleEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleEntry {
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "endHourUtc", default)]
-    pub end_hour_utc: i64,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "endHourUtc", skip_serializing_if = "Option::is_none")]
+    pub end_hour_utc: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<i64>,
-    #[serde(rename = "isActiveNow", default)]
-    pub is_active_now: bool,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "isActiveNow", skip_serializing_if = "Option::is_none")]
+    pub is_active_now: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<i64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<i64>,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "startHourUtc", default)]
-    pub start_hour_utc: i64,
-    #[serde(default)]
-    pub weekdays: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "startHourUtc", skip_serializing_if = "Option::is_none")]
+    pub start_hour_utc: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekdays: Option<Vec<i64>>,
 }
 
 /// `ScalingScheduleEntryRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleEntryRequest {
-    #[serde(
-        rename = "autoscalingMode",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
-    #[serde(rename = "endHourUtc", default)]
+    #[serde(rename = "endHourUtc")]
     pub end_hour_utc: i64,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<i64>,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<i64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<i64>,
-    #[serde(default)]
     pub name: String,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<i64>,
-    #[serde(rename = "startHourUtc", default)]
+    #[serde(rename = "startHourUtc")]
     pub start_hour_utc: i64,
-    #[serde(default)]
     pub weekdays: Vec<i64>,
 }
 
 /// `ScalingSchedulePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingSchedulePostRequest {
-    #[serde(default)]
     pub entries: Vec<ScalingScheduleEntryRequest>,
 }
 
@@ -14381,106 +14326,108 @@ pub struct ScimServiceProviderConfigPatch {
 /// `ServicPrivateEndpointePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicPrivateEndpointePostRequest {
-    #[serde(default)]
     pub description: String,
-    #[serde(default)]
     pub id: String,
 }
 
 /// `Service` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Service {
-    #[serde(rename = "availablePrivateEndpointIds", default)]
-    pub available_private_endpoint_ids: Vec<String>,
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "byocId", default)]
-    pub byoc_id: String,
-    #[serde(rename = "clickhouseVersion", default)]
-    pub clickhouse_version: String,
-    #[serde(rename = "complianceType", default)]
-    pub compliance_type: ServiceCompliancetype,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "currentScaling", default)]
-    pub current_scaling: CurrentScaling,
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: String,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
+    #[serde(
+        rename = "availablePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub available_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
+    #[serde(rename = "clickhouseVersion", skip_serializing_if = "Option::is_none")]
+    pub clickhouse_version: Option<String>,
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
+    pub compliance_type: Option<ServiceCompliancetype>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "currentScaling", skip_serializing_if = "Option::is_none")]
+    pub current_scaling: Option<CurrentScaling>,
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<String>,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
     #[serde(
         rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(
-        rename = "encryptionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
-    #[serde(rename = "encryptionRoleId", default)]
-    pub encryption_role_id: String,
-    #[serde(default)]
-    pub endpoints: Vec<ServiceEndpoint>,
-    #[serde(rename = "hasTransparentDataEncryption", default)]
-    pub has_transparent_data_encryption: bool,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: f64,
-    #[serde(rename = "ipAccessList", default)]
-    pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: bool,
-    #[serde(rename = "isReadonly", default)]
-    pub is_readonly: bool,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxReplicas", default)]
-    pub max_replicas: f64,
+    #[serde(rename = "encryptionRoleId", skip_serializing_if = "Option::is_none")]
+    pub encryption_role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<ServiceEndpoint>>,
+    #[serde(
+        rename = "hasTransparentDataEncryption",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<f64>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntryResponse>>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
+    pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "maxTotalMemoryGb", default)]
-    pub max_total_memory_gb: f64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minReplicas", default)]
-    pub min_replicas: f64,
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_total_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
+    pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "minTotalMemoryGb", default)]
-    pub min_total_memory_gb: f64,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "numReplicas", default)]
-    pub num_replicas: f64,
-    #[serde(rename = "privateEndpointIds", default)]
-    pub private_endpoint_ids: Vec<String>,
-    #[serde(default)]
-    pub profile: ServiceProfile,
-    #[serde(default)]
-    pub provider: ServiceProvider,
-    #[serde(default)]
-    pub region: ServiceRegion,
-    #[serde(rename = "releaseChannel", default)]
-    pub release_channel: ServiceReleasechannel,
-    #[serde(rename = "replicaMemoryGb", default)]
-    pub replica_memory_gb: f64,
-    #[serde(rename = "scalingSchedule", default)]
-    pub scaling_schedule: ScalingSchedule,
-    #[serde(default)]
-    pub state: ServiceState,
-    #[serde(default)]
-    pub tags: Vec<ResourceTagsV1>,
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_total_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
+    pub num_replicas: Option<f64>,
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ServiceProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ServiceProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<ServiceRegion>,
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<ServiceReleasechannel>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+    #[serde(rename = "scalingSchedule", skip_serializing_if = "Option::is_none")]
+    pub scaling_schedule: Option<ScalingSchedule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ServiceState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<ResourceTagsV1Response>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub tier: ServiceTier,
-    #[serde(rename = "transparentDataEncryptionKeyId", default)]
-    pub transparent_data_encryption_key_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ServiceTier>,
+    #[serde(
+        rename = "transparentDataEncryptionKeyId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transparent_data_encryption_key_id: Option<String>,
 }
 
 /// `ServiceAccount` from the ClickHouse Cloud API.
@@ -14493,153 +14440,126 @@ pub struct ServiceAccount {
 /// `ServiceClickhouseSetting` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSetting {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingSchemaEntry {
-    #[serde(rename = "deprecationNotice", default)]
-    pub deprecation_notice: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub r#enum: Vec<i64>,
-    #[serde(default)]
-    pub example: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub r#type: String,
-    #[serde(default)]
-    pub warning: String,
+    #[serde(rename = "deprecationNotice", skip_serializing_if = "Option::is_none")]
+    pub deprecation_notice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#enum: Option<Vec<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub example: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// `ServiceClickhouseSettingWarning` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingWarning {
-    #[serde(default)]
-    pub message: String,
-    #[serde(default)]
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// `ServiceClickhouseSettingsList` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsList {
-    #[serde(default)]
-    pub settings: Vec<ServiceClickhouseSetting>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Vec<ServiceClickhouseSetting>>,
 }
 
 /// `ServiceClickhouseSettingsPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<String>,
 }
 
 /// `ServiceClickhouseSettingsPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchResponse {
-    #[serde(default)]
-    pub settings: String,
-    #[serde(default)]
-    pub warnings: Vec<ServiceClickhouseSettingWarning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<ServiceClickhouseSettingWarning>>,
 }
 
 /// `ServiceClickhouseSettingsSchema` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsSchema {
-    #[serde(default)]
-    pub settings: Vec<ServiceClickhouseSettingSchemaEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Vec<ServiceClickhouseSettingSchemaEntry>>,
 }
 
 /// `ServiceEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceEndpoint {
-    #[serde(default)]
-    pub host: String,
-    #[serde(default)]
-    pub port: f64,
-    #[serde(default)]
-    pub protocol: ServiceEndpointProtocol,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ServiceEndpointProtocol>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
 
 /// `ServiceEndpointChange` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceEndpointChange {
-    #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
     pub protocol: ServiceEndpointChangeProtocol,
 }
 
 /// `ServicePasswordPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePasswordPatchRequest {
-    #[serde(
-        rename = "newDoubleSha1Hash",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "newDoubleSha1Hash", skip_serializing_if = "Option::is_none")]
     pub new_double_sha1_hash: Option<String>,
-    #[serde(
-        rename = "newPasswordHash",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "newPasswordHash", skip_serializing_if = "Option::is_none")]
     pub new_password_hash: Option<String>,
 }
 
 /// `ServicePasswordPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePasswordPatchResponse {
-    #[serde(default)]
-    pub password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// `ServicePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePatchRequest {
-    #[serde(
-        rename = "enableCoreDumps",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<ServiceEndpointChange>>,
-    #[serde(
-        rename = "ipAccessList",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<IpAccessListPatch>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        rename = "privateEndpointIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<InstancePrivateEndpointsPatch>,
-    #[serde(
-        rename = "releaseChannel",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<ServicePatchRequestReleasechannel>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<InstanceTagsPatch>,
     #[serde(
         rename = "transparentDataEncryptionKeyId",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub transparent_data_encryption_key_id: Option<String>,
 }
@@ -14647,384 +14567,261 @@ pub struct ServicePatchRequest {
 /// `ServicePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostRequest {
-    #[serde(
-        rename = "autoscalingMode",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
-    #[serde(rename = "backupId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "backupId", skip_serializing_if = "Option::is_none")]
     pub backup_id: Option<uuid::Uuid>,
-    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
     pub byoc_id: Option<String>,
-    #[serde(
-        rename = "complianceType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
     pub compliance_type: Option<ServicePostRequestCompliancetype>,
-    #[serde(
-        rename = "dataWarehouseId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
     pub data_warehouse_id: Option<String>,
-    #[serde(
-        rename = "enableCoreDumps",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(
         rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(
-        rename = "encryptionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<ServiceEndpointChange>>,
     #[serde(
         rename = "hasTransparentDataEncryption",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub has_transparent_data_encryption: Option<bool>,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<f64>,
-    #[serde(rename = "ipAccessList", default)]
+    #[serde(rename = "ipAccessList")]
     pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(
-        rename = "isReadonly",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none")]
     pub is_readonly: Option<bool>,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "maxTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "minTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
-    #[serde(default)]
     pub name: String,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "privateEndpointIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<Vec<String>>,
     #[serde(
         rename = "privatePreviewTermsChecked",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub private_preview_terms_checked: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<ServicePostRequestProfile>,
-    #[serde(default)]
     pub provider: ServicePostRequestProvider,
-    #[serde(default)]
     pub region: ServicePostRequestRegion,
-    #[serde(
-        rename = "releaseChannel",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<ServicePostRequestReleasechannel>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<ResourceTagsV1>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<ServicePostRequestTier>,
 }
 
 /// `ServicePostResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostResponse {
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub service: Service,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<Service>,
 }
 
 /// `ServiceQueryAPIEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceQueryAPIEndpoint {
-    #[serde(rename = "allowedOrigins", default)]
-    pub allowed_origins: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(rename = "openApiKeys", default)]
-    pub open_api_keys: Vec<String>,
-    #[serde(default)]
-    pub roles: Vec<String>,
+    #[serde(rename = "allowedOrigins", skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "openApiKeys", skip_serializing_if = "Option::is_none")]
+    pub open_api_keys: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
 }
 
 /// `ServiceReplicaScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceReplicaScalingPatchRequest {
-    #[serde(
-        rename = "autoscalingMode",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<f64>,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<f64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<f64>,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<f64>,
 }
 
 /// `ServiceScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceScalingPatchRequest {
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "maxTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "minTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<f64>,
 }
 
 /// `ServiceScalingPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceScalingPatchResponse {
-    #[serde(rename = "availablePrivateEndpointIds", default)]
-    pub available_private_endpoint_ids: Vec<String>,
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "byocId", default)]
-    pub byoc_id: String,
-    #[serde(rename = "clickhouseVersion", default)]
-    pub clickhouse_version: String,
-    #[serde(rename = "complianceType", default)]
-    pub compliance_type: ServiceScalingPatchResponseCompliancetype,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "currentScaling", default)]
-    pub current_scaling: CurrentScaling,
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: String,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
+    #[serde(
+        rename = "availablePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub available_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
+    #[serde(rename = "clickhouseVersion", skip_serializing_if = "Option::is_none")]
+    pub clickhouse_version: Option<String>,
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
+    pub compliance_type: Option<ServiceScalingPatchResponseCompliancetype>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "currentScaling", skip_serializing_if = "Option::is_none")]
+    pub current_scaling: Option<CurrentScaling>,
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<String>,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
     #[serde(
         rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(
-        rename = "encryptionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
-    #[serde(rename = "encryptionRoleId", default)]
-    pub encryption_role_id: String,
-    #[serde(default)]
-    pub endpoints: Vec<ServiceEndpoint>,
-    #[serde(rename = "hasTransparentDataEncryption", default)]
-    pub has_transparent_data_encryption: bool,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: f64,
-    #[serde(rename = "ipAccessList", default)]
-    pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: bool,
-    #[serde(rename = "isReadonly", default)]
-    pub is_readonly: bool,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxReplicas", default)]
-    pub max_replicas: f64,
+    #[serde(rename = "encryptionRoleId", skip_serializing_if = "Option::is_none")]
+    pub encryption_role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<ServiceEndpoint>>,
+    #[serde(
+        rename = "hasTransparentDataEncryption",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<f64>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntryResponse>>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
+    pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "maxTotalMemoryGb", default)]
-    pub max_total_memory_gb: f64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minReplicas", default)]
-    pub min_replicas: f64,
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_total_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
+    pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "minTotalMemoryGb", default)]
-    pub min_total_memory_gb: f64,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "numReplicas", default)]
-    pub num_replicas: f64,
-    #[serde(rename = "privateEndpointIds", default)]
-    pub private_endpoint_ids: Vec<String>,
-    #[serde(default)]
-    pub profile: ServiceScalingPatchResponseProfile,
-    #[serde(default)]
-    pub provider: ServiceScalingPatchResponseProvider,
-    #[serde(default)]
-    pub region: ServiceScalingPatchResponseRegion,
-    #[serde(rename = "releaseChannel", default)]
-    pub release_channel: ServiceScalingPatchResponseReleasechannel,
-    #[serde(rename = "replicaMemoryGb", default)]
-    pub replica_memory_gb: f64,
-    #[serde(rename = "scalingSchedule", default)]
-    pub scaling_schedule: ScalingSchedule,
-    #[serde(default)]
-    pub state: ServiceScalingPatchResponseState,
-    #[serde(default)]
-    pub tags: Vec<ResourceTagsV1>,
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_total_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
+    pub num_replicas: Option<f64>,
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ServiceScalingPatchResponseProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ServiceScalingPatchResponseProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<ServiceScalingPatchResponseRegion>,
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<ServiceScalingPatchResponseReleasechannel>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+    #[serde(rename = "scalingSchedule", skip_serializing_if = "Option::is_none")]
+    pub scaling_schedule: Option<ScalingSchedule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ServiceScalingPatchResponseState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<ResourceTagsV1Response>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub tier: ServiceScalingPatchResponseTier,
-    #[serde(rename = "transparentDataEncryptionKeyId", default)]
-    pub transparent_data_encryption_key_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ServiceScalingPatchResponseTier>,
+    #[serde(
+        rename = "transparentDataEncryptionKeyId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transparent_data_encryption_key_id: Option<String>,
 }
 
 /// `ServiceStatePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceStatePatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<ServiceStatePatchRequestCommand>,
 }
 
 /// `UpgradeWindow` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpgradeWindow {
-    #[serde(default)]
-    pub duration: i64,
-    #[serde(rename = "startHourUtc", default)]
-    pub start_hour_utc: i64,
-    #[serde(default)]
-    pub weekday: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<i64>,
+    #[serde(rename = "startHourUtc", skip_serializing_if = "Option::is_none")]
+    pub start_hour_utc: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekday: Option<i64>,
 }
 
 /// `UpgradeWindowPutRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpgradeWindowPutRequest {
-    #[serde(rename = "startHourUtc", default)]
+    #[serde(rename = "startHourUtc")]
     pub start_hour_utc: i64,
-    #[serde(default)]
     pub weekday: i64,
 }
 
@@ -15042,58 +14839,73 @@ pub struct UpdateReversePrivateEndpoint {
 /// `UsageCost` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageCost {
-    #[serde(default)]
-    pub costs: Vec<UsageCostRecord>,
-    #[serde(rename = "grandTotalCHC", default)]
-    pub grand_total_chc: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs: Option<Vec<UsageCostRecord>>,
+    #[serde(rename = "grandTotalCHC", skip_serializing_if = "Option::is_none")]
+    pub grand_total_chc: Option<f64>,
 }
 
 /// `UsageCostMetrics` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageCostMetrics {
-    #[serde(rename = "backupCHC", default)]
-    pub backup_chc: f64,
-    #[serde(rename = "computeCHC", default)]
-    pub compute_chc: f64,
-    #[serde(rename = "dataTransferCHC", default)]
-    pub data_transfer_chc: f64,
-    #[serde(rename = "initialLoadCHC", default)]
-    pub initial_load_chc: f64,
-    #[serde(rename = "interRegionTier1DataTransferCHC", default)]
-    pub inter_region_tier1_data_transfer_chc: f64,
-    #[serde(rename = "interRegionTier2DataTransferCHC", default)]
-    pub inter_region_tier2_data_transfer_chc: f64,
-    #[serde(rename = "interRegionTier3DataTransferCHC", default)]
-    pub inter_region_tier3_data_transfer_chc: f64,
-    #[serde(rename = "interRegionTier4DataTransferCHC", default)]
-    pub inter_region_tier4_data_transfer_chc: f64,
-    #[serde(rename = "publicDataTransferCHC", default)]
-    pub public_data_transfer_chc: f64,
-    #[serde(rename = "storageCHC", default)]
-    pub storage_chc: f64,
+    #[serde(rename = "backupCHC", skip_serializing_if = "Option::is_none")]
+    pub backup_chc: Option<f64>,
+    #[serde(rename = "computeCHC", skip_serializing_if = "Option::is_none")]
+    pub compute_chc: Option<f64>,
+    #[serde(rename = "dataTransferCHC", skip_serializing_if = "Option::is_none")]
+    pub data_transfer_chc: Option<f64>,
+    #[serde(rename = "initialLoadCHC", skip_serializing_if = "Option::is_none")]
+    pub initial_load_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier1DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier1_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier2DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier2_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier3DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier3_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier4DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier4_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "publicDataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub public_data_transfer_chc: Option<f64>,
+    #[serde(rename = "storageCHC", skip_serializing_if = "Option::is_none")]
+    pub storage_chc: Option<f64>,
 }
 
 /// `UsageCostRecord` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageCostRecord {
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: uuid::Uuid,
-    #[serde(default)]
-    pub date: String,
-    #[serde(rename = "entityId", default)]
-    pub entity_id: uuid::Uuid,
-    #[serde(rename = "entityName", default)]
-    pub entity_name: String,
-    #[serde(rename = "entityType", default)]
-    pub entity_type: UsageCostRecordEntitytype,
-    #[serde(default)]
-    pub locked: bool,
-    #[serde(default)]
-    pub metrics: UsageCostMetrics,
-    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(rename = "entityId", skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<uuid::Uuid>,
+    #[serde(rename = "entityName", skip_serializing_if = "Option::is_none")]
+    pub entity_name: Option<String>,
+    #[serde(rename = "entityType", skip_serializing_if = "Option::is_none")]
+    pub entity_type: Option<UsageCostRecordEntitytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<UsageCostMetrics>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
     pub service_id: Option<uuid::Uuid>,
-    #[serde(rename = "totalCHC", default)]
-    pub total_chc: f64,
+    #[serde(rename = "totalCHC", skip_serializing_if = "Option::is_none")]
+    pub total_chc: Option<f64>,
 }
 
 /// `pgBouncerConfig` from the ClickHouse Cloud API.
@@ -15295,7 +15107,15 @@ pub struct ApiResponse<T> {
 
 impl Default for BackupBucket {
     fn default() -> Self {
-        Self::AwsBackupBucket(AwsBackupBucket::default())
+        // Every field of a response variant is `Option<T>`, so the derived
+        // `AwsBackupBucket::default()` leaves `bucketProvider` absent and
+        // serializes to `{}` — which deserializes back through the
+        // discriminator dispatch as `Unknown`, not as this variant. Naming the
+        // variant's own wire value keeps the default round-tripping.
+        Self::AwsBackupBucket(AwsBackupBucket {
+            bucket_provider: Some(AwsBackupBucketBucketprovider::default()),
+            ..AwsBackupBucket::default()
+        })
     }
 }
 

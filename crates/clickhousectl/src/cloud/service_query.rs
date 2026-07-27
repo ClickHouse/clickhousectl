@@ -25,6 +25,11 @@ const QUERY_ENDPOINT_ROLE: &str = "sql_console_admin";
 /// caller so CORS doesn't apply, but the API still requires a value.
 const ALLOWED_ORIGINS: &str = "*";
 
+/// Requires a response field the provisioning flow cannot proceed without.
+fn require_field<T>(value: Option<T>, field: &str) -> Result<T, Box<dyn std::error::Error>> {
+    value.ok_or_else(|| format!("the API response is missing required field '{field}'").into())
+}
+
 /// Ensure a query endpoint is provisioned for `service_id` and return the
 /// persisted key. If a key is already cached locally, returns it unchanged;
 /// otherwise creates the API key, binds it to the query endpoint (merging
@@ -57,13 +62,17 @@ pub async fn ensure_service_query_setup(
     };
 
     let key_response = client.create_api_key(org_id, &key_request).await?;
-    let key_id = key_response.key_id.clone();
-    let key_secret = key_response.key_secret.clone();
+    // Every response field is `Option<T>`, and an absent credential cannot be
+    // substituted with a placeholder: fail loudly instead of persisting an
+    // empty key pair that every later query would reject.
+    let key_id = require_field(key_response.key_id.clone(), "keyId")?;
+    let key_secret = require_field(key_response.key_secret.clone(), "keySecret")?;
     // `key_id`/`key_secret` are the credential pair used for query auth.
     // The endpoint binding's `openApiKeys` array, by contrast, references
     // API keys by their resource UUID — the same value the management
     // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept.
-    let api_key_uuid = key_response.key.id.to_string();
+    let api_key_uuid =
+        require_field(key_response.key.and_then(|key| key.id), "key.id")?.to_string();
 
     let endpoint = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
         Ok(endpoint) => endpoint,
@@ -79,7 +88,7 @@ pub async fn ensure_service_query_setup(
     let stored = ServiceQueryKey {
         key_id,
         key_secret,
-        endpoint_id: endpoint.id,
+        endpoint_id: require_field(endpoint.id, "id")?,
         service_name: service_name.to_string(),
         created_at: Utc::now(),
     };
@@ -102,7 +111,10 @@ async fn bind_query_endpoint(
         .instance_query_endpoint_get(org_id, service_id)
         .await
     {
-        Ok(resp) => resp.result.map(|ep| ep.open_api_keys).unwrap_or_default(),
+        Ok(resp) => resp
+            .result
+            .and_then(|ep| ep.open_api_keys)
+            .unwrap_or_default(),
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
         Err(e) => return Err(client.convert_error(e).into()),
     };

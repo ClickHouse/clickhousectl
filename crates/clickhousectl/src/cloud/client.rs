@@ -1085,7 +1085,10 @@ impl CloudClient {
         let orgs = self.list_organizations().await?;
         match orgs.len() {
             0 => Err(CloudError::new("No organization found for this API key")),
-            1 => Ok(orgs[0].id.to_string()),
+            1 => orgs[0]
+                .id
+                .map(|id| id.to_string())
+                .ok_or_else(|| CloudError::new("Organization response is missing its id")),
             _ => Err(CloudError::new(
                 "Multiple organizations found. Specify --org-id to choose one. \
                  Use `clickhousectl cloud org list` to see your organizations.",
