@@ -1016,7 +1016,12 @@ pub async fn clickpipe_list(
     } else {
         println!("ClickPipes:");
         for cp in &clickpipes {
-            println!("  {} ({}) - {}", cp.name, cp.id, cp.state);
+            println!(
+                "  {} ({}) - {}",
+                or_absent(cp.name.as_deref()),
+                or_absent(cp.id.as_ref()),
+                or_absent(cp.state.as_ref())
+            );
         }
     }
     Ok(())
@@ -1387,10 +1392,11 @@ pub async fn clickpipe_schema_discover(
         }
         let rows: Vec<Row> = response
             .fields
+            .unwrap_or_default()
             .into_iter()
             .map(|f| Row {
-                name: f.name,
-                r#type: f.r#type,
+                name: or_absent(f.name),
+                r#type: or_absent(f.r#type),
                 optional: match f.optional {
                     Some(true) => "true".to_string(),
                     Some(false) => "false".to_string(),
@@ -1472,7 +1478,9 @@ pub async fn clickpipe_state(
     } else {
         println!(
             "ClickPipe {} {} (state: {})",
-            clickpipe.name, command, clickpipe.state
+            or_absent(clickpipe.name.as_deref()),
+            command,
+            or_absent(clickpipe.state.as_ref())
         );
     }
     Ok(())
@@ -1504,10 +1512,14 @@ pub async fn clickpipe_scale(
     if json {
         println!("{}", serde_json::to_string_pretty(&clickpipe)?);
     } else {
-        println!("ClickPipe {} scaling updated", clickpipe.name);
-        println!("  Replicas: {}", clickpipe.scaling.replicas);
-        println!("  CPU: {}m", clickpipe.scaling.replica_cpu_millicores);
-        println!("  Memory: {} GB", clickpipe.scaling.replica_memory_gb);
+        let scaling = clickpipe.scaling.unwrap_or_default();
+        println!(
+            "ClickPipe {} scaling updated",
+            or_absent(clickpipe.name.as_deref())
+        );
+        println!("  Replicas: {}", or_absent(scaling.replicas));
+        println!("  CPU: {}m", or_absent(scaling.replica_cpu_millicores));
+        println!("  Memory: {} GB", or_absent(scaling.replica_memory_gb));
     }
     Ok(())
 }
@@ -1659,9 +1671,9 @@ fn print_created(
         println!("{}", serde_json::to_string_pretty(clickpipe)?);
     } else {
         println!("ClickPipe created successfully!");
-        println!("  Name: {}", clickpipe.name);
-        println!("  ID: {}", clickpipe.id);
-        println!("  State: {}", clickpipe.state);
+        println!("  Name: {}", or_absent(clickpipe.name.as_deref()));
+        println!("  ID: {}", or_absent(clickpipe.id.as_ref()));
+        println!("  State: {}", or_absent(clickpipe.state.as_ref()));
     }
     Ok(())
 }

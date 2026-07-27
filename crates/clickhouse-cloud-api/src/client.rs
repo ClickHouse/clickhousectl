@@ -2042,7 +2042,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
         click_pipe_id: &str,
-    ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
+    ) -> Result<ApiResponse<ClickPipeSettingsResponse>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
         );
@@ -2069,7 +2069,7 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
         body: &ClickPipeSettingsPutRequest,
-    ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
+    ) -> Result<ApiResponse<ClickPipeSettingsResponse>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
         );

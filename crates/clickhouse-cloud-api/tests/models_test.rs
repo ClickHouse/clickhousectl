@@ -287,8 +287,8 @@ fn deserialize_clickpipe() {
         "updatedAt": "2024-06-01T01:00:00Z"
     }"#;
     let pipe: ClickPipe = serde_json::from_str(json).unwrap();
-    assert_eq!(pipe.name, "my-pipe");
-    assert_eq!(pipe.state, ClickPipeState::Running);
+    assert_eq!(pipe.name.as_deref(), Some("my-pipe"));
+    assert_eq!(pipe.state, Some(ClickPipeState::Running));
 }
 
 #[test]
@@ -1027,8 +1027,8 @@ fn service_ignores_extra_fields() {
 fn clickpipe_ignores_extra_fields() {
     let json = r#"{"name":"pipe","state":"Running","newFeatureFlag":true}"#;
     let pipe: ClickPipe = serde_json::from_str(json).unwrap();
-    assert_eq!(pipe.name, "pipe");
-    assert_eq!(pipe.state, ClickPipeState::Running);
+    assert_eq!(pipe.name.as_deref(), Some("pipe"));
+    assert_eq!(pipe.state, Some(ClickPipeState::Running));
 }
 
 #[test]
@@ -1189,9 +1189,10 @@ fn organization_minimal_response() {
 #[test]
 fn clickpipe_minimal_response() {
     let pipe: ClickPipe = serde_json::from_str("{}").unwrap();
-    assert_eq!(pipe.id, uuid::Uuid::default());
-    assert_eq!(pipe.name, "");
-    assert_eq!(pipe.state, ClickPipeState::default());
+    assert_eq!(pipe, ClickPipe::default());
+    assert_eq!(pipe.id, None);
+    assert_eq!(pipe.name, None);
+    assert_eq!(pipe.state, None);
 }
 
 #[test]
@@ -1763,8 +1764,8 @@ fn deserialize_clickpipe_kafka_source() {
         "securityProtocol": "SASL_SSL"
     }"#;
     let src: ClickPipeKafkaSource = serde_json::from_str(json).unwrap();
-    assert_eq!(src.brokers, "broker1:9092,broker2:9092");
-    assert_eq!(src.topics, "my-topic");
+    assert_eq!(src.brokers.as_deref(), Some("broker1:9092,broker2:9092"));
+    assert_eq!(src.topics.as_deref(), Some("my-topic"));
 }
 
 #[test]
@@ -1779,10 +1780,11 @@ fn deserialize_clickpipe_destination() {
         ]
     }"#;
     let dest: ClickPipeDestination = serde_json::from_str(json).unwrap();
-    assert_eq!(dest.database, "default");
-    assert_eq!(dest.table, "events");
-    assert_eq!(dest.columns.len(), 2);
-    assert_eq!(dest.columns[0].name, "id");
+    assert_eq!(dest.database.as_deref(), Some("default"));
+    assert_eq!(dest.table.as_deref(), Some("events"));
+    let columns = dest.columns.expect("columns should populate");
+    assert_eq!(columns.len(), 2);
+    assert_eq!(columns[0].name.as_deref(), Some("id"));
 }
 
 #[test]
@@ -1791,10 +1793,10 @@ fn deserialize_clickpipe_scaling() {
         "replicas": 3,
         "concurrency": 2
     }"#;
-    let s: ClickPipeScaling = serde_json::from_str(json).unwrap();
-    assert_eq!(s.replicas, 3);
+    let s: ClickPipeScalingResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(s.replicas, Some(3));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(s.concurrency, 2);
+    assert_eq!(s.concurrency, Some(2));
 }
 
 // ===========================================================================
@@ -1848,14 +1850,14 @@ fn deserialize_clickpipe_pubsub_source() {
         "filter": "attribute.foo = \"bar\""
     }"#;
     let src: ClickPipePubSubSource = serde_json::from_str(json).unwrap();
-    assert_eq!(src.topic, "projects/p/topics/t");
-    assert_eq!(src.project_id, "my-project");
+    assert_eq!(src.topic.as_deref(), Some("projects/p/topics/t"));
+    assert_eq!(src.project_id.as_deref(), Some("my-project"));
     assert_eq!(
         src.authentication,
-        ClickPipePubSubSourceAuthentication::ServiceAccount
+        Some(ClickPipePubSubSourceAuthentication::ServiceAccount)
     );
-    assert_eq!(src.format, ClickPipePubSubSourceFormat::JSONEachRow);
-    assert_eq!(src.seek_type, ClickPipePubSubSourceSeektype::Latest);
+    assert_eq!(src.format, Some(ClickPipePubSubSourceFormat::JSONEachRow));
+    assert_eq!(src.seek_type, Some(ClickPipePubSubSourceSeektype::Latest));
     assert_eq!(src.ack_deadline, Some(60));
     assert_eq!(src.enable_ordering, Some(true));
 }
@@ -1894,8 +1896,11 @@ fn deserialize_clickpipe_source_with_pubsub() {
     }"#;
     let src: ClickPipeSource = serde_json::from_str(json).unwrap();
     let pubsub = src.pubsub.expect("pubsub field should populate");
-    assert_eq!(pubsub.topic, "projects/p/topics/t");
-    assert_eq!(pubsub.format, ClickPipePubSubSourceFormat::JSONEachRow);
+    assert_eq!(pubsub.topic.as_deref(), Some("projects/p/topics/t"));
+    assert_eq!(
+        pubsub.format,
+        Some(ClickPipePubSubSourceFormat::JSONEachRow)
+    );
 }
 
 // ===========================================================================
@@ -2568,11 +2573,12 @@ fn click_pipe_schema_discovery_response_round_trip() {
         ]
     }"#;
     let resp: ClickPipeSchemaDiscoveryResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.fields.len(), 2);
-    assert_eq!(resp.fields[0].name, "user_id");
-    assert_eq!(resp.fields[0].r#type, "Int64");
-    assert_eq!(resp.fields[0].optional, Some(false));
-    assert_eq!(resp.fields[1].optional, Some(true));
+    let fields = resp.fields.clone().expect("fields should populate");
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].name.as_deref(), Some("user_id"));
+    assert_eq!(fields[0].r#type.as_deref(), Some("Int64"));
+    assert_eq!(fields[0].optional, Some(false));
+    assert_eq!(fields[1].optional, Some(true));
 
     let v = serde_json::to_value(&resp).unwrap();
     assert_eq!(v["fields"][0]["name"], "user_id");
@@ -2732,15 +2738,156 @@ fn clickstack_filter_input_applies_to_source_ids_round_trip() {
 
 #[test]
 fn clickpipe_postgres_table_mapping_partition_by_expr_round_trip() {
-    let json = r#"{"partitionByExpr": "toYYYYMM(created_at)"}"#;
-    let mapping: ClickPipePostgresPipeTableMapping = serde_json::from_str(json).unwrap();
-    assert_eq!(mapping.partition_by_expr, "toYYYYMM(created_at)");
+    // `partitionByExpr` is required and non-nullable, so the request variant
+    // types it as `String` and always sends it.
+    let mapping = ClickPipePostgresPipeTableMapping {
+        partition_by_expr: "toYYYYMM(created_at)".to_string(),
+        ..Default::default()
+    };
     let v = serde_json::to_value(&mapping).unwrap();
     assert_eq!(v["partitionByExpr"], "toYYYYMM(created_at)");
 
-    // The field is required (non-nullable), so the default is the empty string.
-    let mapping: ClickPipePostgresPipeTableMapping = serde_json::from_str("{}").unwrap();
-    assert_eq!(mapping.partition_by_expr, "");
+    // The response variant types it as `Option<String>`: present, dropped, and
+    // explicitly `null` all deserialize.
+    let mapping: ClickPipePostgresPipeTableMappingResponse =
+        serde_json::from_str(r#"{"partitionByExpr": "toYYYYMM(created_at)"}"#).unwrap();
+    assert_eq!(
+        mapping.partition_by_expr.as_deref(),
+        Some("toYYYYMM(created_at)")
+    );
+    let mapping: ClickPipePostgresPipeTableMappingResponse =
+        serde_json::from_str(r#"{"partitionByExpr": null}"#).unwrap();
+    assert_eq!(mapping.partition_by_expr, None);
+    let mapping: ClickPipePostgresPipeTableMappingResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(mapping.partition_by_expr, None);
+}
+
+#[test]
+fn clickpipe_response_tolerates_dropped_and_null_fields() {
+    // The whole ClickPipe response tree is all-`Option`, so a dropped key and
+    // an explicit `null` both land as `None` — at the top level and inside the
+    // nested source/destination/scaling/settings shapes.
+    let dropped: ClickPipe = serde_json::from_str("{}").unwrap();
+    let nulled: ClickPipe = serde_json::from_str(
+        r#"{"id":null,"serviceId":null,"name":null,"state":null,"createdAt":null,
+            "updatedAt":null,"scaling":null,"settings":null,"source":null,
+            "destination":null,"fieldMappings":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, ClickPipe::default());
+    assert_eq!(nulled, ClickPipe::default());
+    // `null` on a list field is the residual case the previous
+    // `#[serde(default)]` policy still failed on.
+    assert_eq!(nulled.field_mappings, None);
+
+    let nested: ClickPipe = serde_json::from_str(
+        r#"{"source":{"postgres":{"host":"pg.example","settings":null,
+            "tableMappings":null}},
+            "destination":{"columns":null,"tableDefinition":{"engine":null,
+            "sortingKey":null}},
+            "scaling":{},"settings":{}}"#,
+    )
+    .unwrap();
+    let postgres = nested
+        .source
+        .and_then(|source| source.postgres)
+        .expect("postgres source should populate");
+    assert_eq!(postgres.host.as_deref(), Some("pg.example"));
+    assert_eq!(postgres.settings, None);
+    assert_eq!(postgres.table_mappings, None);
+    let destination = nested.destination.expect("destination should populate");
+    assert_eq!(destination.columns, None);
+    assert_eq!(
+        destination.table_definition,
+        Some(ClickPipeDestinationTableDefinitionResponse::default())
+    );
+    assert_eq!(nested.scaling, Some(ClickPipeScalingResponse::default()));
+    assert_eq!(nested.settings, Some(ClickPipeSettingsResponse::default()));
+}
+
+#[test]
+fn clickpipe_response_omits_absent_fields_when_serialized() {
+    // Absence stays absent in `--json` output, including inside the response
+    // variants of the shared nested pipe schemas.
+    let pipe = ClickPipe {
+        name: Some("my-pipe".to_string()),
+        scaling: Some(ClickPipeScalingResponse {
+            replicas: Some(2),
+            ..Default::default()
+        }),
+        field_mappings: Some(vec![ClickPipeFieldMappingResponse {
+            source_field: Some("id".to_string()),
+            destination_field: None,
+        }]),
+        destination: Some(ClickPipeDestination {
+            table: Some("events".to_string()),
+            table_definition: Some(ClickPipeDestinationTableDefinitionResponse {
+                engine: Some(ClickPipeDestinationTableEngineResponse {
+                    r#type: Some(ClickPipeDestinationTableEngineType::MergeTree),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&pipe).unwrap(),
+        serde_json::json!({
+            "name": "my-pipe",
+            "scaling": { "replicas": 2 },
+            "fieldMappings": [{ "sourceField": "id" }],
+            "destination": {
+                "table": "events",
+                "tableDefinition": { "engine": { "type": "MergeTree" } },
+            },
+        })
+    );
+}
+
+#[test]
+fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
+    // The pipe settings, table mappings, destination shapes, field mappings and
+    // scaling blocks are sent as well as returned, so each splits: the request
+    // variant keeps the schema's required fields as `T`, and only the response
+    // variant is all-`Option`.
+    let mapping = ClickPipeFieldMapping {
+        source_field: "id".to_string(),
+        destination_field: "row_id".to_string(),
+    };
+    assert_eq!(
+        serde_json::to_value(&mapping).unwrap(),
+        serde_json::json!({ "sourceField": "id", "destinationField": "row_id" })
+    );
+    // A request payload missing a required field is rejected, not defaulted.
+    assert!(serde_json::from_str::<ClickPipeFieldMapping>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeDestinationColumn>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeScaling>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipePostgresPipeTableMapping>("{}").is_err());
+    // The response variants accept the same payload.
+    assert_eq!(
+        serde_json::from_str::<ClickPipeFieldMappingResponse>("{}").unwrap(),
+        ClickPipeFieldMappingResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeDestinationColumnResponse>("{}").unwrap(),
+        ClickPipeDestinationColumnResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeScalingResponse>("{}").unwrap(),
+        ClickPipeScalingResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
+        ClickPipePostgresPipeTableMappingResponse::default()
+    );
+    // `ClickPipeSettings` is an all-optional schema in both directions, so the
+    // split is visible only in the type name the settings endpoints return.
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
+        ClickPipeSettingsResponse::default()
+    );
 }
 
 #[test]

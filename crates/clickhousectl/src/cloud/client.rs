@@ -1042,7 +1042,7 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettings> {
+    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
         let response = self
             .api()
             .click_pipe_settings_get(org_id, service_id, clickpipe_id)
@@ -1057,7 +1057,7 @@ impl CloudClient {
         service_id: &str,
         clickpipe_id: &str,
         request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettings> {
+    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
         let response = self
             .api()
             .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)

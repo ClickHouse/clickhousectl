@@ -327,7 +327,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             .await?
             .result
             .ok_or("clickpipe create returned no result")?;
-        let clickpipe_id = pipe.id.to_string();
+        let clickpipe_id = clickpipe_id(&pipe)?;
         cleanup.register_clickpipe(clickhouse_id.clone(), clickpipe_id.clone());
         eprintln!("  provisioned clickpipe id <redacted>");
 
@@ -350,12 +350,14 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         .await?;
                     let pipe = resp.result.ok_or("clickpipe get returned no result")?;
                     match pipe.state {
-                        ClickPipeState::Running => Ok(Some(pipe)),
-                        ClickPipeState::Failed | ClickPipeState::InternalError => Err(format!(
-                            "clickpipe entered terminal failure state {}",
-                            pipe.state
-                        )
-                        .into()),
+                        Some(ClickPipeState::Running) => Ok(Some(pipe)),
+                        Some(ClickPipeState::Failed) | Some(ClickPipeState::InternalError) => {
+                            Err(format!(
+                                "clickpipe entered terminal failure state {}",
+                                clickpipe_state(&pipe)
+                            )
+                            .into())
+                        }
                         _ => Ok(None),
                     }
                 }

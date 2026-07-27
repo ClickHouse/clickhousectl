@@ -121,6 +121,13 @@ pub fn is_beta_operation(name: &str) -> bool {
 /// python3 scripts/regenerate-deprecated-fields.py
 /// ```
 ///
+/// The script derives struct names from spec schema names alone, so a schema
+/// modeled as both a request and a response type needs the `{Name}Response`
+/// entry added by hand after regenerating (e.g. `ClickPipeScalingResponse`).
+/// The analyzer expects the pair once per Rust type the schema maps to, so a
+/// dropped response-variant entry fails the drift check rather than passing
+/// silently.
+///
 /// The shared OpenAPI analyzer reports drift if this list differs from the
 /// spec or if a field here lacks the `#[cfg(feature = "deprecated-fields")]`
 /// marker in `models.rs` (or vice versa).
@@ -130,6 +137,7 @@ pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[
     ("ApiKeyPostRequest", "roles"),
     ("ClickPipeScaling", "concurrency"),
     ("ClickPipeScalingPatchRequest", "concurrency"),
+    ("ClickPipeScalingResponse", "concurrency"),
     ("ClickStackTileInput", "asRatio"),
     ("ClickStackTileInput", "series"),
     ("Invitation", "role"),

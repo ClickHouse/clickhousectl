@@ -1326,13 +1326,14 @@ async fn list_click_pipes() {
     let resp = c.click_pipe_get_list("org-1", "svc-1").await.unwrap();
     let pipes = resp.result.unwrap();
     assert_eq!(pipes.len(), 1);
-    assert_eq!(pipes[0].name, "kafka-pipe");
+    assert_eq!(pipes[0].name.as_deref(), Some("kafka-pipe"));
 }
 
 /// Mirror the shape the live API actually returns for a Kafka pipe — including
 /// `reversePrivateEndpointIds: null`, which the spec declares as a required
-/// array but the server happily emits as null when unset. Before the fix,
-/// this fails with `invalid type: null, expected a sequence`.
+/// array but the server happily emits as null when unset. Response fields are
+/// `Option<T>`, so `null` lands as `None` rather than failing with
+/// `invalid type: null, expected a sequence`.
 #[tokio::test]
 async fn list_click_pipes_with_null_array_fields() {
     let (s, c) = setup().await;
@@ -1383,13 +1384,13 @@ async fn list_click_pipes_with_null_array_fields() {
     let resp = c.click_pipe_get_list("org-1", "svc-1").await.unwrap();
     let pipes = resp.result.unwrap();
     assert_eq!(pipes.len(), 1);
-    assert_eq!(pipes[0].name, "kafka-pipe");
+    assert_eq!(pipes[0].name.as_deref(), Some("kafka-pipe"));
     let kafka = pipes[0]
         .source
-        .kafka
         .as_ref()
+        .and_then(|source| source.kafka.as_ref())
         .expect("kafka source present");
-    assert!(kafka.reverse_private_endpoint_ids.is_empty());
+    assert_eq!(kafka.reverse_private_endpoint_ids, None);
 }
 
 #[tokio::test]
@@ -1413,7 +1414,7 @@ async fn create_click_pipe() {
     };
     let resp = c.click_pipe_create("org-1", "svc-1", &body).await.unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.name, "new-pipe");
+    assert_eq!(pipe.name.as_deref(), Some("new-pipe"));
 }
 
 #[tokio::test]
@@ -1434,7 +1435,7 @@ async fn get_click_pipe() {
 
     let resp = c.click_pipe_get("org-1", "svc-1", "pipe-1").await.unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.name, "my-pipe");
+    assert_eq!(pipe.name.as_deref(), Some("my-pipe"));
 }
 
 #[tokio::test]
@@ -1465,7 +1466,7 @@ async fn update_click_pipe() {
         .await
         .unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.name, "renamed-pipe");
+    assert_eq!(pipe.name.as_deref(), Some("renamed-pipe"));
 }
 
 #[tokio::test]
@@ -1512,7 +1513,7 @@ async fn update_click_pipe_state() {
         .await
         .unwrap();
     let pipe = resp.result.unwrap();
-    assert_eq!(pipe.state, ClickPipeState::Stopped);
+    assert_eq!(pipe.state, Some(ClickPipeState::Stopped));
 }
 
 #[tokio::test]
@@ -1622,10 +1623,11 @@ async fn click_pipe_schema_discovery_kafka() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.fields.len(), 2);
-    assert_eq!(result.fields[0].name, "user_id");
-    assert_eq!(result.fields[0].r#type, "Int64");
-    assert_eq!(result.fields[1].optional, Some(true));
+    let fields = result.fields.expect("fields should populate");
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].name.as_deref(), Some("user_id"));
+    assert_eq!(fields[0].r#type.as_deref(), Some("Int64"));
+    assert_eq!(fields[1].optional, Some(true));
 }
 
 // ===========================================================================
@@ -1652,8 +1654,8 @@ async fn get_cdc_scaling() {
         .await
         .unwrap();
     let scaling = resp.result.unwrap();
-    assert_eq!(scaling.replica_cpu_millicores, 2000);
-    assert_eq!(scaling.replica_memory_gb, 8.0);
+    assert_eq!(scaling.replica_cpu_millicores, Some(2000));
+    assert_eq!(scaling.replica_memory_gb, Some(8.0));
 }
 
 #[tokio::test]
@@ -1683,7 +1685,7 @@ async fn update_cdc_scaling() {
         .await
         .unwrap();
     let scaling = resp.result.unwrap();
-    assert_eq!(scaling.replica_cpu_millicores, 4000);
+    assert_eq!(scaling.replica_cpu_millicores, Some(4000));
 }
 
 // ===========================================================================

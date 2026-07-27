@@ -111,8 +111,12 @@ async fn assert_create_shape_accepted(
     {
         Ok(resp) => {
             if let Some(pipe) = resp.result {
-                eprintln!("  pipe created: id={} state={}", pipe.id, pipe.state);
-                cleanup.register_clickpipe(ctx.service_id.clone(), pipe.id.to_string());
+                eprintln!(
+                    "  pipe created: id={} state={}",
+                    field_string(pipe.id.as_ref()),
+                    clickpipe_state(&pipe)
+                );
+                cleanup.register_clickpipe(ctx.service_id.clone(), clickpipe_id(&pipe)?);
             }
             Ok(())
         }

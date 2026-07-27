@@ -118,7 +118,7 @@ pub async fn create_pipe_and_wait_running(
         .await?
         .result
         .ok_or("clickpipe create returned no result")?;
-    let clickpipe_id = pipe.id.to_string();
+    let clickpipe_id = clickpipe_id(&pipe)?;
     cleanup.register_clickpipe(ch.service_id.clone(), clickpipe_id.clone());
     eprintln!("  provisioned clickpipe id <redacted>");
 
@@ -137,12 +137,16 @@ pub async fn create_pipe_and_wait_running(
                     .await?;
                 let pipe = resp.result.ok_or("clickpipe get returned no result")?;
                 match pipe.state {
-                    ClickPipeState::Running | ClickPipeState::Completed => Ok(Some(pipe)),
-                    ClickPipeState::Failed | ClickPipeState::InternalError => Err(format!(
-                        "clickpipe entered terminal failure state {}",
-                        pipe.state
-                    )
-                    .into()),
+                    Some(ClickPipeState::Running) | Some(ClickPipeState::Completed) => {
+                        Ok(Some(pipe))
+                    }
+                    Some(ClickPipeState::Failed) | Some(ClickPipeState::InternalError) => {
+                        Err(format!(
+                            "clickpipe entered terminal failure state {}",
+                            clickpipe_state(&pipe)
+                        )
+                        .into())
+                    }
                     _ => Ok(None),
                 }
             }
@@ -158,7 +162,10 @@ pub async fn create_pipe_and_wait_running(
         .await?
         .result
         .ok_or("clickpipe list returned no result")?;
-    if !pipes.iter().any(|p| p.id.to_string() == clickpipe_id) {
+    if !pipes
+        .iter()
+        .any(|p| p.id.map(|id| id.to_string()).as_deref() == Some(clickpipe_id.as_str()))
+    {
         return Err(format!("clickpipe {clickpipe_id} missing from list response").into());
     }
 
