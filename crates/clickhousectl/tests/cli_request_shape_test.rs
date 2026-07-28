@@ -1528,6 +1528,9 @@ fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir
         .current_dir(dir.path())
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        // Provisioning must fail before the query runs; pin the query host to
+        // a closed port so a regression cannot reach the production host.
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", "http://127.0.0.1:1")
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -1640,6 +1643,164 @@ async fn service_query_deletes_the_key_when_the_endpoint_response_omits_the_id()
         "a bound-but-unpersistable key must be deleted",
     );
     assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+async fn service_query_deletes_the_key_when_the_endpoint_get_omits_open_api_keys() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+    // A 200 endpoint GET whose `openApiKeys` is absent leaves the currently
+    // bound keys unknown. The upsert replaces the list wholesale, so binding
+    // on top of an assumed-empty list would revoke them.
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "roles": ["sql_console_admin"] },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .mount(&control)
+        .await;
+
+    let (dir, stderr) = invoke_service_query_provisioning(&control);
+
+    let upserts = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
+        .count();
+    assert_eq!(
+        upserts, 0,
+        "the endpoint must not be rebound from an unknown key list",
+    );
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "the unbindable key must be deleted exactly once",
+    );
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+    assert!(
+        stderr.contains("'openApiKeys'"),
+        "stderr should name the omitted field:\n{stderr}",
+    );
+}
+
+/// Provision against an endpoint GET that reports `existing_keys`, and return
+/// the `openApiKeys` the upsert was sent, plus the project dir.
+async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile::TempDir, Value) {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": existing_keys },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .mount(&control)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "a successfully bound key must not be discarded",
+    );
+    let upsert = control
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
+        .expect("the endpoint upsert must be sent");
+    let body: Value = serde_json::from_slice(&upsert.body).unwrap();
+    (dir, body["openApiKeys"].clone())
+}
+
+#[tokio::test]
+async fn service_query_binds_the_new_key_when_the_endpoint_reports_no_keys() {
+    // An explicitly empty `openApiKeys` is a real answer, not an omission.
+    let (dir, sent_keys) = provision_against_endpoint_with_keys(serde_json::json!([])).await;
+    assert_eq!(sent_keys, serde_json::json!([QUERY_TEST_KEY_UUID]));
+    assert!(dir.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+async fn service_query_merges_the_new_key_into_the_reported_keys() {
+    let existing = "99999999-8888-7777-6666-555555555555";
+    let (_dir, sent_keys) =
+        provision_against_endpoint_with_keys(serde_json::json!([existing])).await;
+    assert_eq!(
+        sent_keys,
+        serde_json::json!([existing, QUERY_TEST_KEY_UUID]),
+        "an existing binding must survive the upsert",
+    );
 }
 
 // ── Idled / stopped services (query host 206 protocol) ─────────────────────

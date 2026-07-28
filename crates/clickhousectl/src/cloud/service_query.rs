@@ -138,6 +138,27 @@ pub async fn ensure_service_query_setup(
     Ok(stored)
 }
 
+/// The keys already bound to an existing query endpoint, taken from a
+/// successful GET. The upsert replaces `openApiKeys` wholesale, so an absent
+/// `result` or absent `openApiKeys` cannot be read as "no keys bound": merging
+/// into an empty list would revoke every binding the response failed to
+/// report. An explicitly empty list is a real answer and merges normally.
+fn existing_open_api_keys(
+    endpoint: Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let incomplete = |field: &str| -> Box<dyn std::error::Error> {
+        format!(
+            "the query endpoint response is missing field '{field}', so the keys currently bound \
+             to the endpoint are unknown; binding a new key would revoke them"
+        )
+        .into()
+    };
+    endpoint
+        .ok_or_else(|| incomplete("result"))?
+        .open_api_keys
+        .ok_or_else(|| incomplete("openApiKeys"))
+}
+
 /// Bind `api_key_uuid` to the service's query endpoint, merging into any
 /// existing endpoint configuration so we don't silently revoke other
 /// bindings the user set up.
@@ -152,10 +173,9 @@ async fn bind_query_endpoint(
         .instance_query_endpoint_get(org_id, service_id)
         .await
     {
-        Ok(resp) => resp
-            .result
-            .and_then(|ep| ep.open_api_keys)
-            .unwrap_or_default(),
+        Ok(resp) => existing_open_api_keys(resp.result)?,
+        // Only a 404 means there is no endpoint yet, so this binding is the
+        // first one and starts from an empty list.
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
         Err(e) => return Err(client.convert_error(e).into()),
     };
@@ -209,6 +229,52 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "the API response is missing required field 'keySecret'"
+        );
+    }
+
+    fn endpoint(
+        open_api_keys: Option<Vec<&str>>,
+    ) -> clickhouse_cloud_api::models::ServiceQueryAPIEndpoint {
+        clickhouse_cloud_api::models::ServiceQueryAPIEndpoint {
+            allowed_origins: None,
+            id: Some("ep-1".to_string()),
+            open_api_keys: open_api_keys.map(|keys| keys.into_iter().map(str::to_string).collect()),
+            roles: None,
+        }
+    }
+
+    #[test]
+    fn existing_keys_are_returned_when_the_endpoint_reports_them() {
+        assert_eq!(
+            existing_open_api_keys(Some(endpoint(Some(vec!["uuid-a", "uuid-b"])))).unwrap(),
+            vec!["uuid-a".to_string(), "uuid-b".to_string()],
+        );
+    }
+
+    #[test]
+    fn an_explicitly_empty_key_list_is_a_real_answer() {
+        assert!(
+            existing_open_api_keys(Some(endpoint(Some(vec![]))))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn absent_open_api_keys_is_refused_rather_than_treated_as_empty() {
+        let err = existing_open_api_keys(Some(endpoint(None))).unwrap_err();
+        assert!(
+            err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
+            "error should name the field and the consequence: {err}",
+        );
+    }
+
+    #[test]
+    fn absent_result_is_refused_rather_than_treated_as_empty() {
+        let err = existing_open_api_keys(None).unwrap_err();
+        assert!(
+            err.to_string().contains("'result'"),
+            "error should name the field: {err}",
         );
     }
 }
