@@ -627,27 +627,37 @@ pub async fn postgres_get(
 /// plus the command that mints a usable one; the create succeeded and the
 /// password is recoverable, so this is a warning rather than an error. An empty
 /// string is a password the API sent.
+///
+/// `connection_string` is the non-empty connection string the same response
+/// carried, if any: the spec says it embeds the service password, so when it is
+/// present the credential is not actually lost and telling the user to reset
+/// would rotate a working password for nothing.
 fn postgres_credentials_block(
     username: Option<&str>,
     password: Option<&str>,
+    connection_string: Option<&str>,
     postgres_id: Option<&PgIdProperty>,
 ) -> String {
-    match (password, postgres_id) {
-        (Some(password), _) => format!(
+    match (password, connection_string, postgres_id) {
+        (Some(password), _, _) => format!(
             "Credentials (save these — password shown only once):\n  Username: {}\n  Password: {}",
             or_absent(username),
             password
         ),
-        (None, Some(id)) => format!(
+        (None, Some(_), _) => "WARNING: the API response omitted the `password` field, so the \
+                               password cannot be shown on its own.\nThe connection string below \
+                               embeds it, so no password reset is needed."
+            .to_string(),
+        (None, None, Some(id)) => format!(
             "WARNING: the API response omitted the one-time password, so it cannot be shown.\n\
              The service was created; reset the password to get a usable credential:\n  \
              clickhousectl cloud postgres reset-password {} --generate",
             id
         ),
-        (None, None) => "WARNING: the API response omitted the one-time password, so it cannot be \
-                         shown.\nThe service was created; once you have its id, reset the password \
-                         with `clickhousectl cloud postgres reset-password <postgres-id> \
-                         --generate` to get a usable credential."
+        (None, None, None) => "WARNING: the API response omitted the one-time password, so it \
+                               cannot be shown.\nThe service was created; once you have its id, \
+                               reset the password with `clickhousectl cloud postgres \
+                               reset-password <postgres-id> --generate` to get a usable credential."
             .to_string(),
     }
 }
@@ -705,19 +715,20 @@ pub async fn postgres_create(
         println!();
         render_postgres_service(&svc);
         println!();
+        let connection_string = svc
+            .connection_string
+            .as_deref()
+            .filter(|conn| !conn.is_empty());
         println!(
             "{}",
             postgres_credentials_block(
                 svc.username.as_deref(),
                 svc.password.as_deref(),
+                connection_string,
                 svc.id.as_ref()
             )
         );
-        if let Some(conn) = svc
-            .connection_string
-            .as_deref()
-            .filter(|conn| !conn.is_empty())
-        {
+        if let Some(conn) = connection_string {
             println!("  Connection string: {}", conn);
         }
     }
@@ -1738,7 +1749,7 @@ mod tests {
     #[test]
     fn postgres_credentials_block_shows_the_password_the_api_sent() {
         assert_eq!(
-            postgres_credentials_block(Some("pg_user"), Some("s3cret"), Some(&pg_test_id())),
+            postgres_credentials_block(Some("pg_user"), Some("s3cret"), None, Some(&pg_test_id())),
             "Credentials (save these — password shown only once):\n  Username: pg_user\n  \
              Password: s3cret"
         );
@@ -1747,7 +1758,7 @@ mod tests {
     #[test]
     fn postgres_credentials_block_treats_an_empty_password_as_sent() {
         assert_eq!(
-            postgres_credentials_block(None, Some(""), None),
+            postgres_credentials_block(None, Some(""), None, None),
             format!(
                 "Credentials (save these — password shown only once):\n  Username: {ABSENT}\n  \
                  Password: "
@@ -1756,8 +1767,28 @@ mod tests {
     }
 
     #[test]
+    fn postgres_credentials_block_points_at_the_connection_string_instead_of_a_reset() {
+        // The connection string embeds the password, so the credential isn't
+        // lost and a reset would rotate a working password for nothing.
+        let block = postgres_credentials_block(
+            Some("pg_user"),
+            None,
+            Some("postgresql://pg_user:s3cret@host:5432/postgres"),
+            Some(&pg_test_id()),
+        );
+        assert!(
+            !block.contains("reset-password"),
+            "a recoverable password must not be reset: {block}"
+        );
+        assert!(
+            block.contains("connection string below embeds it"),
+            "the warning should point at the connection string: {block}"
+        );
+    }
+
+    #[test]
     fn postgres_credentials_block_warns_with_the_reset_command_when_the_password_is_absent() {
-        let block = postgres_credentials_block(Some("pg_user"), None, Some(&pg_test_id()));
+        let block = postgres_credentials_block(Some("pg_user"), None, None, Some(&pg_test_id()));
         assert!(
             !block.contains(&format!("Password: {ABSENT}")),
             "an absent password must not render a placeholder credential: {block}"
@@ -1774,7 +1805,7 @@ mod tests {
 
     #[test]
     fn postgres_credentials_block_warns_generically_when_the_service_id_is_absent() {
-        let block = postgres_credentials_block(Some("pg_user"), None, None);
+        let block = postgres_credentials_block(Some("pg_user"), None, None, None);
         assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
         assert!(
             block.contains("clickhousectl cloud postgres reset-password <postgres-id> --generate"),

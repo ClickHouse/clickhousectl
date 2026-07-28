@@ -2482,6 +2482,28 @@ async fn service_reset_password_succeeds_for_a_hash_reset_without_a_password() {
 }
 
 #[tokio::test]
+async fn service_reset_password_treats_a_double_sha1_only_reset_as_generation() {
+    // The API ignores `newDoubleSha1Hash` unless `newPasswordHash` is also
+    // sent, and generates a password instead — so the mode is generation and a
+    // response without a password loses the new credential.
+    let output = run_service_reset_password(
+        serde_json::json!({}),
+        &["--new-double-sha1-hash", "aabbccdd"],
+    )
+    .await;
+    assert!(
+        !output.status.success(),
+        "a double-SHA1-only reset with no password must fail\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("omitted the generated password"),
+        "stderr should name the omitted password:\n{stderr}",
+    );
+}
+
+#[tokio::test]
 async fn service_reset_password_json_prints_the_generated_password() {
     let output =
         run_service_reset_password(serde_json::json!({ "password": "s3cret" }), &["--json"]).await;

@@ -2250,10 +2250,8 @@ pub async fn service_reset_password(
 
     // Resolve before either output branch, so --json cannot report success
     // over a response that dropped the one-time generated password.
-    let outcome = resolve_reset_password_outcome(
-        request.new_password_hash.is_none() && request.new_double_sha1_hash.is_none(),
-        resp.password.as_deref(),
-    )?;
+    let outcome =
+        resolve_reset_password_outcome(generation_requested(&request), resp.password.as_deref())?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -2280,12 +2278,23 @@ enum ResetPasswordOutcome<'a> {
     HashUpdated,
 }
 
+/// Whether the PATCH body asks the API to generate a password.
+///
+/// `newPasswordHash` alone decides it: the spec says `newDoubleSha1Hash` "will
+/// be ignored and the generated password will be used" when `newPasswordHash`
+/// is absent, and that the response carries a password "only if there was no
+/// 'newPasswordHash' in the request". So a double-SHA1-only body is still a
+/// generation request, and treating it as a hash update would discard the
+/// generated password the API rotated to.
+fn generation_requested(request: &ServicePasswordPatchRequest) -> bool {
+    request.new_password_hash.is_none()
+}
+
 /// Resolves what to report from the request mode and the response.
 ///
-/// A PATCH body without either hash asks the API to generate a password, so
-/// the mode is read from the request rather than inferred from what came
-/// back: only a hash request explains a response without a password, and an
-/// absent one on a generation request means the new credential is lost.
+/// The mode is read from the request rather than inferred from what came back:
+/// only a hash request explains a response without a password, and an absent
+/// one on a generation request means the new credential is lost.
 fn resolve_reset_password_outcome(
     generation_requested: bool,
     password: Option<&str>,
@@ -3426,6 +3435,26 @@ mod tests {
             err.contains("the key may still have been created"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn generation_is_requested_unless_a_password_hash_is_sent() {
+        let request = |new_password_hash: Option<&str>, new_double_sha1_hash: Option<&str>| {
+            ServicePasswordPatchRequest {
+                new_password_hash: new_password_hash.map(str::to_string),
+                new_double_sha1_hash: new_double_sha1_hash.map(str::to_string),
+            }
+        };
+        assert!(generation_requested(&request(None, None)));
+        // The API ignores `newDoubleSha1Hash` without `newPasswordHash` and
+        // generates a password anyway, so this is still a generation request:
+        // reporting "hash updated" would discard the new credential.
+        assert!(generation_requested(&request(None, Some("sha1"))));
+        assert!(!generation_requested(&request(Some("sha256"), None)));
+        assert!(!generation_requested(&request(
+            Some("sha256"),
+            Some("sha1")
+        )));
     }
 
     #[test]
