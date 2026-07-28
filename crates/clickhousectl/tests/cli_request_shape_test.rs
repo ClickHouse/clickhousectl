@@ -2396,3 +2396,97 @@ async fn schema_discover_kinesis_posts_source_body() {
         body["source"],
     );
 }
+
+// ── Generated service passwords are never silently dropped ─────────────────
+//
+// `service reset-password` without either hash flag sends an empty PATCH
+// body, which asks the API to generate a password returned exactly once. A
+// response without one loses that credential, so both output modes must fail
+// instead of reporting a successful reset.
+
+async fn run_service_reset_password(
+    password_response: Value,
+    extra_args: &[&str],
+) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/password$",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": password_response,
+            "status": 200,
+            "requestId": "stub-reset-password",
+        })))
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let mut args: Vec<&str> = vec![
+        "cloud",
+        "--url",
+        &url,
+        "service",
+        "reset-password",
+        "svc-id",
+        "--org-id",
+        "org-1",
+    ];
+    args.extend(extra_args);
+
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args(&args)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn service_reset_password_fails_when_the_generated_password_is_absent() {
+    for extra_args in [&[][..], &["--json"][..]] {
+        let output = run_service_reset_password(serde_json::json!({}), extra_args).await;
+        assert!(
+            !output.status.success(),
+            "a generation reset with no password must fail for args {extra_args:?}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("omitted the generated password"),
+            "stderr should name the omitted password for args {extra_args:?}:\n{stderr}",
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("Password reset for service")
+                && !stdout.contains("no plaintext password returned"),
+            "no success output may precede the failure for args {extra_args:?}:\n{stdout}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_reset_password_succeeds_for_a_hash_reset_without_a_password() {
+    let output =
+        run_service_reset_password(serde_json::json!({}), &["--new-password-hash", "e3b0c442"])
+            .await;
+    assert_success(&output);
+    // Agent detection can force --json here, so assert only what holds in
+    // both output modes: the reset succeeds and shows no password.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("New password"),
+        "a hash reset must not report a password:\n{stdout}",
+    );
+}
+
+#[tokio::test]
+async fn service_reset_password_json_prints_the_generated_password() {
+    let output =
+        run_service_reset_password(serde_json::json!({ "password": "s3cret" }), &["--json"]).await;
+    assert_success(&output);
+    let body: Value =
+        serde_json::from_slice(&output.stdout).expect("--json output wasn't valid JSON");
+    assert_eq!(body["password"], "s3cret");
+}

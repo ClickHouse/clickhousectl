@@ -2218,18 +2218,60 @@ pub async fn service_reset_password(
     let request = build_service_password_patch_request(&opts);
     let resp = client.reset_password(&org_id, service_id, &request).await?;
 
+    // Resolve before either output branch, so --json cannot report success
+    // over a response that dropped the one-time generated password.
+    let outcome = resolve_reset_password_outcome(
+        request.new_password_hash.is_none() && request.new_double_sha1_hash.is_none(),
+        resp.password.as_deref(),
+    )?;
+
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("Password reset for service {}", service_id);
-        match resp.password.as_deref() {
-            Some(password) if !password.is_empty() => {
+        match outcome {
+            ResetPasswordOutcome::Generated(password) => {
                 println!("  New password: {}", password)
             }
-            _ => println!("  Password hash updated; no plaintext password returned"),
+            ResetPasswordOutcome::HashUpdated => {
+                println!("  Password hash updated; no plaintext password returned")
+            }
         }
     }
     Ok(())
+}
+
+/// What a `service reset-password` response says about the new credential.
+#[derive(Debug)]
+enum ResetPasswordOutcome<'a> {
+    /// The API generated the password; it is returned once and never again.
+    Generated(&'a str),
+    /// The caller supplied a hash, so the API generates no plaintext password.
+    HashUpdated,
+}
+
+/// Resolves what to report from the request mode and the response.
+///
+/// A PATCH body without either hash asks the API to generate a password, so
+/// the mode is read from the request rather than inferred from what came
+/// back: only a hash request explains a response without a password, and an
+/// absent one on a generation request means the new credential is lost.
+fn resolve_reset_password_outcome(
+    generation_requested: bool,
+    password: Option<&str>,
+) -> Result<ResetPasswordOutcome<'_>, Box<dyn std::error::Error>> {
+    if !generation_requested {
+        return Ok(ResetPasswordOutcome::HashUpdated);
+    }
+    match password {
+        Some(password) => Ok(ResetPasswordOutcome::Generated(password)),
+        None => Err(
+            "the API response omitted the generated password, so it cannot be shown: the \
+                     service password may already have been rotated — run the reset again to get \
+                     a password you can use"
+                .into(),
+        ),
+    }
 }
 
 pub async fn query_endpoint_get(
@@ -3305,6 +3347,49 @@ mod tests {
             .to_string();
         assert!(
             err.contains("the key may still have been created"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_reset_password_outcome_returns_the_generated_password() {
+        match resolve_reset_password_outcome(true, Some("s3cret")).unwrap() {
+            ResetPasswordOutcome::Generated(password) => assert_eq!(password, "s3cret"),
+            ResetPasswordOutcome::HashUpdated => panic!("expected the generated password"),
+        }
+
+        // An empty string is a password the API did send, so it is not absent.
+        assert!(matches!(
+            resolve_reset_password_outcome(true, Some("")).unwrap(),
+            ResetPasswordOutcome::Generated("")
+        ));
+    }
+
+    #[test]
+    fn resolve_reset_password_outcome_reports_hash_updated_regardless_of_response() {
+        assert!(matches!(
+            resolve_reset_password_outcome(false, None).unwrap(),
+            ResetPasswordOutcome::HashUpdated
+        ));
+        // The mode comes from the request, so an echoed password does not
+        // turn a hash reset into a generated one.
+        assert!(matches!(
+            resolve_reset_password_outcome(false, Some("s3cret")).unwrap(),
+            ResetPasswordOutcome::HashUpdated
+        ));
+    }
+
+    #[test]
+    fn resolve_reset_password_outcome_fails_when_the_generated_password_is_absent() {
+        let err = resolve_reset_password_outcome(true, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the generated password"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("may already have been rotated") && err.contains("run the reset again"),
             "unexpected error: {err}"
         );
     }
