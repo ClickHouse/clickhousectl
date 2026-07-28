@@ -12,7 +12,7 @@ use clickhouse_cloud_api::models::{
     ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
     ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
     ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
+    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequestCommand,
 };
 use std::io::{IsTerminal, Write};
@@ -869,6 +869,21 @@ fn build_backup_config_update_request(
     }
 }
 
+/// The post-create hint showing how to query the new service.
+///
+/// The hint is only useful with a real service id: an absent id would render a
+/// command line the user cannot run, so the hint is dropped rather than printed
+/// with a placeholder id in it.
+fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
+    service_id.map(|id| {
+        format!(
+            "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"\n\
+             (the Query API endpoint is provisioned automatically on first use)",
+            id
+        )
+    })
+}
+
 pub async fn service_create(
     client: &CloudClient,
     opts: CreateServiceOptions,
@@ -880,7 +895,6 @@ pub async fn service_create(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let response = client.create_service(&org_id, &request).await?;
-    let svc_id = or_absent(response.service.as_ref().and_then(|svc| svc.id));
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -894,14 +908,40 @@ pub async fn service_create(
         println!("Credentials (save these, password shown only once):");
         println!("  Username: default");
         println!("  Password: {}", or_absent(response.password.as_deref()));
-        println!();
-        println!(
-            "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"",
-            svc_id
-        );
-        println!("(the Query API endpoint is provisioned automatically on first use)");
+        if let Some(hint) = service_query_hint(response.service.as_ref().and_then(|svc| svc.id)) {
+            println!();
+            println!("{}", hint);
+        }
     }
     Ok(())
+}
+
+/// Classifies one poll of a service's state while waiting for a stop to land.
+///
+/// Returns `true` once the service has stopped. An absent state cannot be
+/// classified and the loop has no other exit, so treating it as "not stopped
+/// yet" would poll forever: fail instead of waiting on a state the API is not
+/// reporting.
+fn classify_stop_poll_state(
+    state: Option<&ServiceState>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let state = state
+        .ok_or(
+            "the API response omitted the service state while waiting for the service to stop, \
+             so the stop cannot be confirmed",
+        )?
+        .to_string();
+    if matches!(state.as_str(), "stopped" | "idle") {
+        return Ok(true);
+    }
+    if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
+        return Err(format!(
+            "service entered unexpected state '{}' while waiting for stop",
+            state
+        )
+        .into());
+    }
+    Ok(false)
 }
 
 pub async fn service_delete(
@@ -928,17 +968,9 @@ pub async fn service_delete(
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let svc = client.get_service(&org_id, service_id).await?;
-                let state = or_absent(svc.state.as_ref());
-                eprintln!("  state: {}", state);
-                if matches!(state.as_str(), "stopped" | "idle") {
+                eprintln!("  state: {}", or_absent(svc.state.as_ref()));
+                if classify_stop_poll_state(svc.state.as_ref())? {
                     break;
-                }
-                if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
-                    return Err(format!(
-                        "service entered unexpected state '{}' while waiting for stop",
-                        state
-                    )
-                    .into());
                 }
             }
         }
@@ -2869,6 +2901,53 @@ pub async fn key_list(
     Ok(())
 }
 
+/// What a `key create` response says about the key's credentials.
+#[derive(Debug)]
+enum KeyCreateMaterial<'a> {
+    /// The API returned the generated pair; it is shown once and never again.
+    Generated {
+        key_id: &'a str,
+        key_secret: &'a str,
+    },
+    /// The caller supplied pre-hashed credentials, so no pair is generated.
+    PreHashed,
+}
+
+/// Resolves the credentials to print from the request mode and the response.
+///
+/// Only a pre-hashed request explains a response without key material, so the
+/// mode is read from the request rather than inferred from what came back: an
+/// absent `keyId`/`keySecret` on a generated-key request means the one-time
+/// secret is lost, which is an error, not a "no key material returned" notice.
+fn resolve_key_create_material<'a>(
+    pre_hashed: bool,
+    key_id: Option<&'a str>,
+    key_secret: Option<&'a str>,
+    key_name: Option<&str>,
+) -> Result<KeyCreateMaterial<'a>, Box<dyn std::error::Error>> {
+    if pre_hashed {
+        return Ok(KeyCreateMaterial::PreHashed);
+    }
+    match (key_id, key_secret) {
+        (Some(key_id), Some(key_secret)) => Ok(KeyCreateMaterial::Generated { key_id, key_secret }),
+        _ => {
+            // Name the key when the response did return it, so the user knows
+            // which one to look for.
+            let named = match key_name {
+                Some(name) => format!(" '{}'", name),
+                None => String::new(),
+            };
+            Err(format!(
+                "the API response omitted the generated key material, so the one-time key secret \
+                 cannot be shown: the key{} may still have been created — list the organization's \
+                 keys and delete it if so",
+                named
+            )
+            .into())
+        }
+    }
+}
+
 pub async fn key_create(
     client: &CloudClient,
     opts: KeyCreateOptions,
@@ -2884,26 +2963,27 @@ pub async fn key_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
+        let name = resp.key.as_ref().and_then(|key| key.name.as_deref());
+        // Resolve the credentials before printing anything, so a response
+        // missing the one-time secret does not report success first.
+        let material = resolve_key_create_material(
+            request.hash_data.is_some(),
+            resp.key_id.as_deref(),
+            resp.key_secret.as_deref(),
+            name,
+        )?;
         println!("API key created!");
-        println!(
-            "  Name: {}",
-            or_absent(resp.key.as_ref().and_then(|key| key.name.as_deref()))
-        );
-        // The API omits the generated pair when the caller supplied pre-hashed
-        // credentials, so absent and empty mean the same thing here.
-        let key_id = resp.key_id.unwrap_or_default();
-        let key_secret = resp.key_secret.unwrap_or_default();
-        if !key_id.is_empty() {
-            println!("  Key ID: {}", key_id);
-        }
-        if !key_secret.is_empty() {
-            println!("  Key Secret: {}", key_secret);
-        }
-        if !key_id.is_empty() || !key_secret.is_empty() {
-            println!();
-            println!("Save the key secret now — it will not be shown again.");
-        } else {
-            println!("  Pre-hashed credentials accepted; no generated key material returned");
+        println!("  Name: {}", or_absent(name));
+        match material {
+            KeyCreateMaterial::Generated { key_id, key_secret } => {
+                println!("  Key ID: {}", key_id);
+                println!("  Key Secret: {}", key_secret);
+                println!();
+                println!("Save the key secret now — it will not be shown again.");
+            }
+            KeyCreateMaterial::PreHashed => {
+                println!("  Pre-hashed credentials accepted; no generated key material returned");
+            }
         }
     }
     Ok(())
@@ -3127,6 +3207,106 @@ mod tests {
             format!("{ABSENT}:9440")
         );
         assert_eq!(first_endpoint(Some(&[endpoint(None, None)])), ABSENT);
+    }
+
+    #[test]
+    fn service_query_hint_is_dropped_when_the_id_is_absent() {
+        assert_eq!(service_query_hint(None), None);
+
+        let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
+        let hint = service_query_hint(Some(id)).unwrap();
+        assert!(
+            hint.contains("--id a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"),
+            "hint should name the service: {hint}"
+        );
+        assert!(hint.contains("provisioned automatically on first use"));
+    }
+
+    #[test]
+    fn classify_stop_poll_state_fails_on_an_absent_state() {
+        let err = classify_stop_poll_state(None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the API response omitted the service state while waiting for the service to stop, \
+             so the stop cannot be confirmed"
+        );
+    }
+
+    #[test]
+    fn classify_stop_poll_state_separates_stopped_waiting_and_failed() {
+        assert!(classify_stop_poll_state(Some(&ServiceState::Stopped)).unwrap());
+        assert!(classify_stop_poll_state(Some(&ServiceState::Idle)).unwrap());
+        assert!(!classify_stop_poll_state(Some(&ServiceState::Stopping)).unwrap());
+        assert!(!classify_stop_poll_state(Some(&ServiceState::Running)).unwrap());
+        // An unrecognized state keeps the loop polling rather than failing.
+        assert!(
+            !classify_stop_poll_state(Some(&ServiceState::Unknown("hibernating".into()))).unwrap()
+        );
+
+        let err = classify_stop_poll_state(Some(&ServiceState::Failed)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "service entered unexpected state 'failed' while waiting for stop"
+        );
+        // "deleted" is not a typed variant, so it arrives through the catch-all.
+        let err =
+            classify_stop_poll_state(Some(&ServiceState::Unknown("deleted".into()))).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "service entered unexpected state 'deleted' while waiting for stop"
+        );
+    }
+
+    #[test]
+    fn resolve_key_create_material_returns_the_generated_pair() {
+        let material =
+            resolve_key_create_material(false, Some("key-id"), Some("key-secret"), Some("ci"))
+                .unwrap();
+        match material {
+            KeyCreateMaterial::Generated { key_id, key_secret } => {
+                assert_eq!(key_id, "key-id");
+                assert_eq!(key_secret, "key-secret");
+            }
+            KeyCreateMaterial::PreHashed => panic!("expected the generated pair"),
+        }
+    }
+
+    #[test]
+    fn resolve_key_create_material_reports_pre_hashed_regardless_of_response() {
+        assert!(matches!(
+            resolve_key_create_material(true, None, None, Some("ci")).unwrap(),
+            KeyCreateMaterial::PreHashed
+        ));
+        // The mode comes from the request, so echoed material does not change it.
+        assert!(matches!(
+            resolve_key_create_material(true, Some("key-id"), None, None).unwrap(),
+            KeyCreateMaterial::PreHashed
+        ));
+    }
+
+    #[test]
+    fn resolve_key_create_material_fails_when_generated_material_is_absent() {
+        let err = resolve_key_create_material(false, None, Some("key-secret"), Some("ci"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the generated key material"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("the key 'ci' may still have been created"));
+
+        // An empty string is material the API did send, so it is not absent.
+        let material = resolve_key_create_material(false, Some(""), Some(""), Some("ci")).unwrap();
+        assert!(matches!(material, KeyCreateMaterial::Generated { .. }));
+
+        // Without a name the message stays grammatical.
+        let err = resolve_key_create_material(false, Some("key-id"), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("the key may still have been created"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
