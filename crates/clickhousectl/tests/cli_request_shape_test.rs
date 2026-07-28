@@ -1472,6 +1472,176 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
     );
 }
 
+// ── Provisioning cleanup (issue #314) ──────────────────────────────────────
+//
+// Every field of a key-creation or endpoint-upsert response is `Option<T>`,
+// so provisioning can fail *after* the key exists. Each of those failures
+// must delete the key it created, otherwise every retry leaves another
+// orphaned key in the org.
+
+const QUERY_TEST_KEY_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+/// Mount a key-creation POST returning `result`, plus a key DELETE, on the
+/// control plane. `result` lets each test omit exactly the field under test.
+async fn mount_key_create_and_delete(control: &MockServer, result: Value) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .mount(control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-key-delete",
+        })))
+        .mount(control)
+        .await;
+}
+
+/// Run `cloud service query` in an empty project dir (no stored key, so the
+/// provisioning path runs) against `control`, with API key env creds.
+fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert!(
+        !output.status.success(),
+        "provisioning with an incomplete response must fail\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    (dir, String::from_utf8_lossy(&output.stderr).to_string())
+}
+
+/// The key UUIDs the control plane was asked to delete.
+async fn recorded_key_deletes(control: &MockServer) -> Vec<String> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::DELETE)
+        .map(|r| r.url.path().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn service_query_deletes_the_key_when_the_create_response_omits_the_secret() {
+    let control = start_mock_control_plane_with_service().await;
+    // `keySecret` absent: the key exists but cannot authenticate anything.
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+        }),
+    )
+    .await;
+
+    let (dir, stderr) = invoke_service_query_provisioning(&control);
+    assert!(
+        stderr.contains("keySecret"),
+        "stderr should name the missing field:\n{stderr}",
+    );
+
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "the unusable key must be deleted exactly once",
+    );
+
+    // The key was never bound, so no endpoint upsert was attempted, and
+    // nothing was persisted locally.
+    let upserts = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("/serviceQueryEndpoint"))
+        .count();
+    assert_eq!(upserts, 0, "a keyless credential must not be bound");
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+async fn service_query_deletes_the_key_when_the_endpoint_response_omits_the_id() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+    // No endpoint configured yet (404), and the upsert answers without `id`,
+    // so the binding took effect but can't be persisted.
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "roles": ["sql_console_admin"] },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .mount(&control)
+        .await;
+
+    let (dir, stderr) = invoke_service_query_provisioning(&control);
+    assert!(
+        stderr.contains("'id'"),
+        "stderr should name the missing field:\n{stderr}",
+    );
+
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "a bound-but-unpersistable key must be deleted",
+    );
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+}
+
 // ── Idled / stopped services (query host 206 protocol) ─────────────────────
 //
 // An idled or stopped service answers the run request with 206 and

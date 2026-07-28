@@ -10,8 +10,8 @@ use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::Utc;
 use clickhouse_cloud_api::models::{
-    ApiKeyPostRequest, ApiKeyPostRequestState, InstanceServiceQueryApiEndpointsPostRequest,
-    IpAccessListEntry,
+    ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
+    InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
 };
 
 /// The role attached to the query endpoint binding. Grants the key read +
@@ -28,6 +28,25 @@ const ALLOWED_ORIGINS: &str = "*";
 /// Requires a response field the provisioning flow cannot proceed without.
 fn require_field<T>(value: Option<T>, field: &str) -> Result<T, Box<dyn std::error::Error>> {
     value.ok_or_else(|| format!("the API response is missing required field '{field}'").into())
+}
+
+/// The `key_id`/`key_secret` pair the query host authenticates with, taken
+/// from the key-creation response. Both halves are required together: a key
+/// id without its secret is as unusable as neither.
+fn require_credential_pair(
+    key_response: &ApiKeyPostResponse,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let key_id = require_field(key_response.key_id.clone(), "keyId")?;
+    let key_secret = require_field(key_response.key_secret.clone(), "keySecret")?;
+    Ok((key_id, key_secret))
+}
+
+/// Discard the API key created for a provisioning attempt that then failed,
+/// so a later retry doesn't leave an orphaned key behind per attempt. Best
+/// effort: the caller is already returning an error, and a key we couldn't
+/// delete is no worse than the one we'd otherwise leave behind.
+async fn discard_api_key(client: &CloudClient, org_id: &str, api_key_uuid: &str) {
+    let _ = client.delete_api_key(org_id, api_key_uuid).await;
 }
 
 /// Ensure a query endpoint is provisioned for `service_id` and return the
@@ -62,25 +81,47 @@ pub async fn ensure_service_query_setup(
     };
 
     let key_response = client.create_api_key(org_id, &key_request).await?;
-    // Every response field is `Option<T>`, and an absent credential cannot be
-    // substituted with a placeholder: fail loudly instead of persisting an
-    // empty key pair that every later query would reject.
-    let key_id = require_field(key_response.key_id.clone(), "keyId")?;
-    let key_secret = require_field(key_response.key_secret.clone(), "keySecret")?;
     // `key_id`/`key_secret` are the credential pair used for query auth.
     // The endpoint binding's `openApiKeys` array, by contrast, references
     // API keys by their resource UUID — the same value the management
-    // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept.
+    // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept. Resolve the UUID
+    // first: every failure past this point deletes the key it identifies, so
+    // an absent `key.id` is the only one with no cleanup available — we
+    // cannot name the key we just created.
     let api_key_uuid =
-        require_field(key_response.key.and_then(|key| key.id), "key.id")?.to_string();
+        require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
+
+    // Every response field is `Option<T>`, and an absent credential cannot be
+    // substituted with a placeholder: fail loudly instead of persisting an
+    // empty key pair that every later query would reject.
+    let (key_id, key_secret) = match require_credential_pair(&key_response) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // The key exists but we can't authenticate with it, so it is
+            // dead weight in the org: discard it before failing.
+            discard_api_key(client, org_id, &api_key_uuid).await;
+            return Err(e);
+        }
+    };
 
     let endpoint = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
         Ok(endpoint) => endpoint,
         Err(e) => {
             // The key was created but never bound or persisted, so nothing
-            // can use it. Delete it (best-effort) so a later retry doesn't
-            // leave an orphaned key behind per attempt.
-            let _ = client.delete_api_key(org_id, &api_key_uuid).await;
+            // can use it.
+            discard_api_key(client, org_id, &api_key_uuid).await;
+            return Err(e);
+        }
+    };
+
+    let endpoint_id = match require_field(endpoint.id, "id") {
+        Ok(id) => id,
+        Err(e) => {
+            // The binding took effect but we can't persist it, so the key
+            // is again unusable. Discarding it leaves a dangling UUID in the
+            // endpoint's `openApiKeys`, which is harmless — a retry merges a
+            // fresh key into the same endpoint (see `bind_query_endpoint`).
+            discard_api_key(client, org_id, &api_key_uuid).await;
             return Err(e);
         }
     };
@@ -88,7 +129,7 @@ pub async fn ensure_service_query_setup(
     let stored = ServiceQueryKey {
         key_id,
         key_secret,
-        endpoint_id: require_field(endpoint.id, "id")?,
+        endpoint_id,
         service_name: service_name.to_string(),
         created_at: Utc::now(),
     };
@@ -131,4 +172,43 @@ async fn bind_query_endpoint(
     Ok(client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_response(key_id: Option<&str>, key_secret: Option<&str>) -> ApiKeyPostResponse {
+        ApiKeyPostResponse {
+            key: None,
+            key_id: key_id.map(str::to_string),
+            key_secret: key_secret.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn credential_pair_is_returned_when_both_halves_are_present() {
+        let (key_id, key_secret) =
+            require_credential_pair(&key_response(Some("k-1"), Some("s-1"))).unwrap();
+        assert_eq!(key_id, "k-1");
+        assert_eq!(key_secret, "s-1");
+    }
+
+    #[test]
+    fn credential_pair_fails_naming_the_absent_key_id() {
+        let err = require_credential_pair(&key_response(None, Some("s-1"))).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the API response is missing required field 'keyId'"
+        );
+    }
+
+    #[test]
+    fn credential_pair_fails_naming_the_absent_key_secret() {
+        let err = require_credential_pair(&key_response(Some("k-1"), None)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the API response is missing required field 'keySecret'"
+        );
+    }
 }
