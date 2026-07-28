@@ -884,6 +884,34 @@ fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
     })
 }
 
+/// The post-create credentials block, or the warning that replaces it.
+///
+/// The generated password is returned once, so a placeholder in its place would
+/// be read as the credential itself. An absent password therefore gets the
+/// omission plus the command that mints a usable one; the create succeeded and
+/// the password is recoverable, so this is a warning rather than an error. An
+/// empty string is a password the API sent.
+fn service_credentials_block(password: Option<&str>, service_id: Option<uuid::Uuid>) -> String {
+    match (password, service_id) {
+        (Some(password), _) => format!(
+            "Credentials (save these, password shown only once):\n  Username: default\n  \
+             Password: {}",
+            password
+        ),
+        (None, Some(id)) => format!(
+            "WARNING: the API response omitted the one-time password, so it cannot be shown.\n\
+             The service was created; reset the password to get a usable credential:\n  \
+             clickhousectl cloud service reset-password {}",
+            id
+        ),
+        (None, None) => "WARNING: the API response omitted the one-time password, so it cannot be \
+                         shown.\nThe service was created; once you have its id, reset the password \
+                         with `clickhousectl cloud service reset-password <service-id>` to get a \
+                         usable credential."
+            .to_string(),
+    }
+}
+
 pub async fn service_create(
     client: &CloudClient,
     opts: CreateServiceOptions,
@@ -899,16 +927,18 @@ pub async fn service_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
+        let service_id = response.service.as_ref().and_then(|svc| svc.id);
         println!("Service created successfully!");
         println!();
         if let Some(service) = &response.service {
             print_human(service)?;
         }
         println!();
-        println!("Credentials (save these, password shown only once):");
-        println!("  Username: default");
-        println!("  Password: {}", or_absent(response.password.as_deref()));
-        if let Some(hint) = service_query_hint(response.service.as_ref().and_then(|svc| svc.id)) {
+        println!(
+            "{}",
+            service_credentials_block(response.password.as_deref(), service_id)
+        );
+        if let Some(hint) = service_query_hint(service_id) {
             println!();
             println!("{}", hint);
         }
@@ -3263,6 +3293,52 @@ mod tests {
             "hint should name the service: {hint}"
         );
         assert!(hint.contains("provisioned automatically on first use"));
+    }
+
+    #[test]
+    fn service_credentials_block_shows_the_password_the_api_sent() {
+        let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
+        assert_eq!(
+            service_credentials_block(Some("s3cret"), Some(id)),
+            "Credentials (save these, password shown only once):\n  Username: default\n  \
+             Password: s3cret"
+        );
+    }
+
+    #[test]
+    fn service_credentials_block_treats_an_empty_password_as_sent() {
+        assert_eq!(
+            service_credentials_block(Some(""), None),
+            "Credentials (save these, password shown only once):\n  Username: default\n  \
+             Password: "
+        );
+    }
+
+    #[test]
+    fn service_credentials_block_warns_with_the_reset_command_when_the_password_is_absent() {
+        let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
+        let block = service_credentials_block(None, Some(id));
+        assert!(
+            !block.contains(&format!("Password: {ABSENT}")),
+            "an absent password must not render a placeholder credential: {block}"
+        );
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains(
+                "clickhousectl cloud service reset-password a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"
+            ),
+            "the warning should name the exact recovery command: {block}"
+        );
+    }
+
+    #[test]
+    fn service_credentials_block_warns_generically_when_the_service_id_is_absent() {
+        let block = service_credentials_block(None, None);
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains("clickhousectl cloud service reset-password <service-id>"),
+            "without an id the warning should stay generic: {block}"
+        );
     }
 
     #[test]
