@@ -8,7 +8,7 @@ use clickhouse_cloud_api::models::{
     PostgresInstanceConfig, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
     PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    ResourceTagsV1,
+    ResourceTagsV1, ResourceTagsV1Response,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -448,6 +448,30 @@ fn merge_tags(
     merged
 }
 
+/// Merges `--add-tag`/`--remove-tag` against the tag list a GET returned.
+///
+/// An omitted `tags` in the response is indistinguishable from a field the API
+/// dropped, so a read-modify-write must not proceed on it: `tags` is replaced
+/// wholesale by the PATCH, so merging against an assumed empty set would delete
+/// every tag the service still has. A returned tag without a key cannot be sent
+/// back either, so say so rather than dropping it from the merged set.
+fn merge_response_tags(
+    current: Option<Vec<ResourceTagsV1Response>>,
+    add: &[ResourceTagsV1],
+    remove_keys: &[String],
+) -> Result<Vec<ResourceTagsV1>, Box<dyn std::error::Error>> {
+    let current = current.ok_or(
+        "the API response omitted the tags field, so --add-tag/--remove-tag cannot be merged \
+         safely: an update replaces the tag set wholesale, and merging against an assumed empty \
+         set would delete any tags the service already has",
+    )?;
+    let existing = current
+        .into_iter()
+        .map(ResourceTagsV1::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(merge_tags(&existing, add, remove_keys))
+}
+
 // ---------------------------------------------------------------------------
 // Option structs (for commands with many args)
 // ---------------------------------------------------------------------------
@@ -679,16 +703,7 @@ pub async fn postgres_update(
             .map_err(|e| client.convert_error(e))?;
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
-        // An omitted `tags` in the response means "no tags to merge with"; a
-        // returned tag without a key cannot be sent back, so say so rather
-        // than dropping it from the merged set.
-        let existing = current
-            .tags
-            .unwrap_or_default()
-            .into_iter()
-            .map(ResourceTagsV1::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        Some(merge_tags(&existing, &add, opts.remove_tag))
+        Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     } else {
         None
     };
@@ -1612,6 +1627,64 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].key, "env");
         assert_eq!(out[0].value.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn merge_response_tags_refuses_absent_tags() {
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let err = merge_response_tags(None, &add, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the tags field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn merge_response_tags_merges_an_empty_tag_list() {
+        // `Some(vec![])` is the API saying "no tags", which is safe to merge on.
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let out = merge_response_tags(Some(vec![]), &add, &[]).unwrap();
+        assert_eq!(out, add);
+    }
+
+    #[test]
+    fn merge_response_tags_merges_returned_tags() {
+        let current = vec![
+            ResourceTagsV1Response {
+                key: Some("env".into()),
+                value: Some("dev".into()),
+            },
+            ResourceTagsV1Response {
+                key: Some("team".into()),
+                value: Some("data".into()),
+            },
+        ];
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let out = merge_response_tags(Some(current), &add, &["team".to_string()]).unwrap();
+        assert_eq!(out, add);
+    }
+
+    #[test]
+    fn merge_response_tags_refuses_a_returned_tag_without_a_key() {
+        let current = vec![ResourceTagsV1Response {
+            key: None,
+            value: Some("dev".into()),
+        }];
+        let err = merge_response_tags(Some(current), &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("key"), "unexpected error: {err}");
     }
 
     #[test]
