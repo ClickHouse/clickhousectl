@@ -492,8 +492,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -627,8 +627,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -763,8 +763,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -818,8 +818,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -883,8 +883,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -998,8 +998,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 

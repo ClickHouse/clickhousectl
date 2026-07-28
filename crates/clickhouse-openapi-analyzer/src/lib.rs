@@ -138,6 +138,24 @@ pub fn model_fields_with_serde_default(models_rs: &str) -> Result<Vec<String>, A
     rust_inventory::model_fields_with_serde_default(models_rs).map_err(AnalyzeError::RustSource)
 }
 
+/// Lists every model type in `models_rs` with a hand-written `impl Default
+/// for` block, sorted by name.
+///
+/// Backs the completeness half of
+/// `discriminated_union_defaults_round_trip_to_the_same_variant` in
+/// `clickhouse-cloud-api`'s `models_test.rs`: a `discriminated_union!` enum's
+/// `Default` must round-trip to the same variant, and every union with a
+/// `Default` uses a manual impl (derived `Default` cannot pick a payload
+/// variant), so requiring the test's covered-type list to equal this set means
+/// a new manual `Default` impl cannot silently escape the invariant. Like
+/// [`model_fields_with_serde_default`], this is a repository-policy check
+/// rather than a drift `FindingKind`, and it keeps `syn` out of the published
+/// crate's dependency graph.
+pub fn model_types_with_manual_default_impl(models_rs: &str) -> Result<Vec<String>, AnalyzeError> {
+    rust_inventory::model_types_with_manual_default_impl(models_rs)
+        .map_err(AnalyzeError::RustSource)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

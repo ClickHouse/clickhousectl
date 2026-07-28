@@ -26,12 +26,18 @@ where
 /// inline `enum` values for the discriminating field (both alert channels
 /// declare `["webhook", "email"]`), so a variant defaulting its discriminator to
 /// another variant's value would silently retype the value on the next
-/// deserialize. Add new unions with a `Default` impl here.
+/// deserialize. The covered list is enforced structurally, not by convention:
+/// it must equal the set of hand-written `impl Default for` blocks in
+/// `models.rs` (via the analyzer's `model_types_with_manual_default_impl`), so
+/// a new union gaining a `Default` without a list entry fails this test.
 #[test]
 fn discriminated_union_defaults_round_trip_to_the_same_variant() {
+    let mut covered: Vec<&str> = Vec::new();
+
     macro_rules! assert_default_round_trips {
         ($($union:ty),+ $(,)?) => {
             $({
+                covered.push(stringify!($union));
                 let default = <$union>::default();
                 let json = serde_json::to_string(&default).unwrap();
                 let parsed: $union = serde_json::from_str(&json).unwrap();
@@ -63,6 +69,20 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
         ClickStackTableChartConfig,
         ClickStackTileConfig,
         ClickStackWebhook,
+    );
+
+    covered.sort_unstable();
+    let manual_default_impls = clickhouse_openapi_analyzer::model_types_with_manual_default_impl(
+        include_str!("../src/models.rs"),
+    )
+    .unwrap();
+    assert_eq!(
+        covered,
+        manual_default_impls
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        "the covered list must equal the manual `impl Default for` blocks in models.rs"
     );
 }
 

@@ -15,20 +15,34 @@ fn test_delete_response_deserialize() {
         "requestId": "0182edf5-8c5b-4586-a6f8-78452320e4b1"
     });
     let response: DeleteResponse = serde_json::from_value(json).unwrap();
-    assert_eq!(response.status, 200.0);
-    assert_eq!(response.request_id, "0182edf5-8c5b-4586-a6f8-78452320e4b1");
+    assert_eq!(response.status, Some(200.0));
+    assert_eq!(
+        response.request_id.as_deref(),
+        Some("0182edf5-8c5b-4586-a6f8-78452320e4b1")
+    );
 }
 
 #[test]
 fn test_delete_response_serialize() {
     let response = DeleteResponse {
-        status: 200.0,
-        request_id: "0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string(),
+        status: Some(200.0),
+        request_id: Some("0182edf5-8c5b-4586-a6f8-78452320e4b1".to_string()),
     };
     let json = serde_json::to_value(&response).unwrap();
     assert_eq!(json["status"], 200.0);
     assert_eq!(json["requestId"], "0182edf5-8c5b-4586-a6f8-78452320e4b1");
     assert!(json.get("request_id").is_none());
+}
+
+#[test]
+fn test_delete_response_omits_absent_fields_instead_of_fabricating() {
+    let response: DeleteResponse = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(response.status, None);
+    assert_eq!(response.request_id, None);
+    // `--json` output must reflect the key set the API actually sent — no
+    // fabricated `"status": 0.0` or `"requestId": ""`.
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json, serde_json::json!({}));
 }
 
 // ── Activity tests (library types) ─────────────────────────────────

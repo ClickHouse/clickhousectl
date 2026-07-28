@@ -32,14 +32,16 @@ fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String 
 
 /// `host:port` of a service's first endpoint, for list tables.
 ///
-/// Renders [`ABSENT`] when the API returned no endpoints, or an endpoint
-/// without a host or port.
+/// Renders [`ABSENT`] when the API returned no endpoints, and keeps whichever
+/// half of a partial endpoint it did return (`host` alone, or `-:port`).
 fn first_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> String {
     endpoints
         .and_then(|endpoints| endpoints.first())
-        .and_then(|endpoint| match (endpoint.host.as_deref(), endpoint.port) {
-            (Some(host), Some(port)) => Some(format!("{host}:{port}")),
-            _ => None,
+        .map(|endpoint| match (endpoint.host.as_deref(), endpoint.port) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            (Some(host), None) => host.to_string(),
+            (None, Some(port)) => format!("{ABSENT}:{port}"),
+            (None, None) => ABSENT.to_string(),
         })
         .unwrap_or_else(|| ABSENT.to_string())
 }
@@ -3101,6 +3103,31 @@ fn format_bytes(bytes: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_endpoint_keeps_the_present_half_of_a_partial_endpoint() {
+        let endpoint = |host: Option<&str>, port: Option<f64>| ServiceEndpoint {
+            host: host.map(str::to_string),
+            port,
+            ..Default::default()
+        };
+
+        assert_eq!(first_endpoint(None), ABSENT);
+        assert_eq!(first_endpoint(Some(&[])), ABSENT);
+        assert_eq!(
+            first_endpoint(Some(&[endpoint(Some("host"), Some(9440.0))])),
+            "host:9440"
+        );
+        assert_eq!(
+            first_endpoint(Some(&[endpoint(Some("host"), None)])),
+            "host"
+        );
+        assert_eq!(
+            first_endpoint(Some(&[endpoint(None, Some(9440.0))])),
+            format!("{ABSENT}:9440")
+        );
+        assert_eq!(first_endpoint(Some(&[endpoint(None, None)])), ABSENT);
+    }
 
     #[test]
     fn parse_tag_rejects_empty_keys() {

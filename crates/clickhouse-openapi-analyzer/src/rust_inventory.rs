@@ -450,6 +450,33 @@ pub(crate) fn model_fields_with_serde_default(models: &str) -> syn::Result<Vec<S
         .collect())
 }
 
+/// Lists every model type with a hand-written `impl Default for` block,
+/// sorted by name. Derived `Default`s are deliberately excluded: only the
+/// manual impls are the ones `discriminated_union!` enums use, and only those
+/// carry the pick-a-variant decision the round-trip invariant guards.
+pub(crate) fn model_types_with_manual_default_impl(models: &str) -> syn::Result<Vec<String>> {
+    let file: syn::File = syn::parse_str(models)?;
+    let mut names: Vec<String> = file
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Impl(item_impl) = item else {
+                return None;
+            };
+            let (_, trait_path, _) = item_impl.trait_.as_ref()?;
+            if trait_path.segments.last()?.ident != "Default" {
+                return None;
+            }
+            let Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+                return None;
+            };
+            Some(type_path.path.segments.last()?.ident.unraw().to_string())
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
 /// Collects every named type appearing anywhere in `ty`, including inside
 /// generic arguments of wrappers [`TypeNode`] does not model (`Result`, maps,
 /// tuples). Used for reachability, where dropping a nested name would silently
@@ -783,6 +810,30 @@ mod tests {
                 "Widget.legacy_name".to_string(),
                 "Widget.name".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn model_types_with_manual_default_impl_lists_only_hand_written_impls() {
+        let models = r#"
+            #[derive(Default)]
+            pub struct Derived { pub id: Option<String> }
+            pub enum Union { A(Widget), Unknown(serde_json::Value) }
+            impl Default for Union {
+                fn default() -> Self { Self::A(Widget::default()) }
+            }
+            pub struct Widget;
+            impl Default for Widget {
+                fn default() -> Self { Self }
+            }
+            impl std::fmt::Display for Union {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { Ok(()) }
+            }
+        "#;
+
+        assert_eq!(
+            model_types_with_manual_default_impl(models).unwrap(),
+            vec!["Union".to_string(), "Widget".to_string()]
         );
     }
 
