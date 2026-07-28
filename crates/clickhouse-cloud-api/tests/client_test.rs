@@ -1912,6 +1912,143 @@ async fn delete_alert() {
 }
 
 // ===========================================================================
+// ClickStack: Saved Searches
+// ===========================================================================
+
+#[tokio::test]
+async fn list_saved_searches() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches",
+        ))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "id": "search-1",
+                "name": "Production Errors",
+                "sourceId": "source-1"
+            }
+        ])))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_list_saved_searches("org-1", "svc-1")
+        .await
+        .unwrap();
+    let searches = resp.result.unwrap();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0].source_id, "source-1");
+}
+
+#[tokio::test]
+async fn create_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Production Errors",
+            "sourceId": "source-1"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "search-1",
+            "name": "Production Errors",
+            "sourceId": "source-1"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSavedSearchInput {
+        name: "Production Errors".to_string(),
+        source_id: "source-1".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_saved_search("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().id, "search-1");
+}
+
+#[tokio::test]
+async fn get_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "search-1",
+            "name": "Production Errors",
+            "sourceId": "source-1"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_saved_search("org-1", "svc-1", "search-1")
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn update_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Updated Search",
+            "sourceId": "source-1"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "search-1",
+            "name": "Updated Search",
+            "sourceId": "source-1"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSavedSearchInput {
+        name: "Updated Search".to_string(),
+        source_id: "source-1".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_saved_search("org-1", "svc-1", "search-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn delete_saved_search() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_saved_search("org-1", "svc-1", "search-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
 // ClickStack: Dashboards
 // ===========================================================================
 
@@ -2063,6 +2200,131 @@ async fn list_sources() {
 }
 
 #[tokio::test]
+async fn create_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"kind": "promql", "name": "Prometheus Metrics"}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "source-1",
+            "kind": "promql",
+            "name": "Prometheus Metrics",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSource::ClickStackPromqlSource(ClickStackPromqlSource {
+        name: "Prometheus Metrics".to_string(),
+        kind: ClickStackPromqlSourceKind::Promql,
+        connection: "conn-1".to_string(),
+        from: ClickStackSourceFrom {
+            database_name: "default".to_string(),
+            table_name: "metrics".to_string(),
+        },
+        timestamp_value_expression: "timestamp".to_string(),
+        ..Default::default()
+    });
+    let resp = c
+        .click_stack_create_source("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn get_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/source-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "source-1",
+            "kind": "promql",
+            "name": "My Source",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_source("org-1", "svc-1", "source-1")
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn update_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/source-1",
+        ))
+        .and(body_partial_json(
+            serde_json::json!({"name": "Updated Source"}),
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "source-1",
+            "kind": "promql",
+            "name": "Updated Source",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackSource::ClickStackPromqlSource(ClickStackPromqlSource {
+        name: "Updated Source".to_string(),
+        kind: ClickStackPromqlSourceKind::Promql,
+        connection: "conn-1".to_string(),
+        from: ClickStackSourceFrom {
+            database_name: "default".to_string(),
+            table_name: "metrics".to_string(),
+        },
+        timestamp_value_expression: "timestamp".to_string(),
+        ..Default::default()
+    });
+    let resp = c
+        .click_stack_update_source("org-1", "svc-1", "source-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn delete_source() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources/source-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_source("org-1", "svc-1", "source-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+#[tokio::test]
 async fn list_webhooks() {
     let (s, c) = setup().await;
 
@@ -2077,6 +2339,585 @@ async fn list_webhooks() {
     let resp = c.click_stack_list_webhooks("org-1", "svc-1").await.unwrap();
     let webhooks = resp.result.unwrap();
     assert_eq!(webhooks.len(), 0);
+}
+
+// ===========================================================================
+// ClickStack: Connections
+// ===========================================================================
+
+#[tokio::test]
+async fn list_connections() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections",
+        ))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_list_connections("org-1", "svc-1")
+        .await
+        .unwrap();
+    let connections = resp.result.unwrap();
+    assert_eq!(connections.len(), 0);
+}
+
+#[tokio::test]
+async fn create_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Production ClickHouse",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default",
+            "password": "my-secret-password"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "conn-1",
+            "name": "Production ClickHouse",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateConnectionRequest {
+        name: "Production ClickHouse".to_string(),
+        host: "https://clickhouse.example.com:8443".to_string(),
+        username: "default".to_string(),
+        password: Some("my-secret-password".to_string()),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_connection("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let conn = resp.result.unwrap();
+    assert_eq!(conn.id, "conn-1");
+    assert_eq!(conn.name, "Production ClickHouse");
+}
+
+#[tokio::test]
+async fn get_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "conn-1",
+            "name": "Production ClickHouse",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default"
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_connection("org-1", "svc-1", "conn-1")
+        .await
+        .unwrap();
+    let conn = resp.result.unwrap();
+    assert_eq!(conn.id, "conn-1");
+}
+
+#[tokio::test]
+async fn update_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Updated Connection"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "conn-1",
+            "name": "Updated Connection",
+            "host": "https://clickhouse.example.com:8443",
+            "username": "default"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackUpdateConnectionRequest {
+        name: "Updated Connection".to_string(),
+        host: "https://clickhouse.example.com:8443".to_string(),
+        username: "default".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_connection("org-1", "svc-1", "conn-1", &body)
+        .await
+        .unwrap();
+    let conn = resp.result.unwrap();
+    assert_eq!(conn.name, "Updated Connection");
+}
+
+#[tokio::test]
+async fn delete_connection() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_connection("org-1", "svc-1", "conn-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
+// ClickStack: Roles
+// ===========================================================================
+
+#[tokio::test]
+async fn list_roles() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles",
+        ))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&s)
+        .await;
+
+    let resp = c.click_stack_list_roles("org-1", "svc-1").await.unwrap();
+    let roles = resp.result.unwrap();
+    assert_eq!(roles.len(), 0);
+}
+
+#[tokio::test]
+async fn create_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Deploy Bot",
+            "permissions": [{
+                "action": "read",
+                "subject": "dashboard",
+                "conditions": { "teamId": "team-1" }
+            }]
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "role-1",
+            "name": "Deploy Bot",
+            "isPredefined": false,
+            "permissions": [{
+                "action": "read",
+                "subject": "dashboard",
+                "conditions": { "teamId": "team-1" }
+            }]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateRoleRequest {
+        name: "Deploy Bot".to_string(),
+        permissions: vec![ClickStackCASLPermission {
+            action: "read".to_string(),
+            subject: "dashboard".to_string(),
+            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_role("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let role = resp.result.unwrap();
+    assert_eq!(role.id, "role-1");
+    assert_eq!(role.name, "Deploy Bot");
+    assert!(!role.is_predefined);
+}
+
+#[tokio::test]
+async fn get_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "role-1",
+            "name": "Read Only",
+            "isPredefined": true,
+            "permissions": [{ "action": "read", "subject": "dashboard" }]
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_get_role("org-1", "svc-1", "role-1")
+        .await
+        .unwrap();
+    let role = resp.result.unwrap();
+    assert_eq!(role.id, "role-1");
+    assert!(role.is_predefined);
+}
+
+#[tokio::test]
+async fn update_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "permissions": [{ "action": "manage", "subject": "all" }]
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "role-1",
+            "name": "Deploy Bot",
+            "isPredefined": false,
+            "permissions": [{ "action": "manage", "subject": "all" }]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackUpdateRoleRequest {
+        permissions: vec![ClickStackCASLPermission {
+            action: "manage".to_string(),
+            subject: "all".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_role("org-1", "svc-1", "role-1", &body)
+        .await
+        .unwrap();
+    let role = resp.result.unwrap();
+    assert_eq!(role.permissions.len(), 1);
+    assert_eq!(role.permissions[0].action, "manage");
+}
+
+#[tokio::test]
+async fn delete_role() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/roles/role-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_role("org-1", "svc-1", "role-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+// ===========================================================================
+// ClickStack: Webhooks & Dashboard validation
+// ===========================================================================
+
+#[tokio::test]
+async fn create_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Production Alerts",
+            "service": "slack",
+            "url": "https://hooks.slack.com/services/T/B/X"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-1",
+            "name": "Production Alerts",
+            "service": "slack",
+            "url": "https://hooks.slack.com/services/T/B/X",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Production Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert!(resp.result.is_some());
+}
+
+#[tokio::test]
+async fn update_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/webhook-1",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "Updated Alerts"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-1",
+            "name": "Updated Alerts",
+            "service": "slack",
+            "url": "https://hooks.slack.com/services/T/B/X",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Updated Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_webhook("org-1", "svc-1", "webhook-1", &body)
+        .await
+        .unwrap();
+    // The response union resolves to a concrete Slack webhook variant.
+    match resp.result.unwrap() {
+        ClickStackWebhook::ClickStackSlackWebhook(w) => {
+            assert_eq!(w.id, "webhook-1");
+            assert_eq!(w.name, "Updated Alerts");
+        }
+        other => panic!("expected Slack webhook variant, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn create_webhook_incidentio_response() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-2",
+            "name": "Incident Alerts",
+            "service": "incidentio",
+            "url": "https://api.incident.io/v2/alert_events/http/abc",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Incident Alerts".to_string(),
+        service: ClickStackWebhookInputService::Incidentio,
+        url: "https://api.incident.io/v2/alert_events/http/abc".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_create_webhook("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    // The response union resolves to a concrete IncidentIO webhook variant
+    // rather than greedily matching the structurally-identical Slack variant.
+    match resp.result.unwrap() {
+        ClickStackWebhook::ClickStackIncidentIOWebhook(w) => {
+            assert_eq!(w.id, "webhook-2");
+            assert_eq!(w.name, "Incident Alerts");
+        }
+        other => panic!("expected IncidentIO webhook variant, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn update_webhook_generic_response() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/webhook-3",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "webhook-3",
+            "name": "Generic Alerts",
+            "service": "generic",
+            "url": "https://example.com/hook",
+            "body": "{\"text\": \"{{ message }}\"}",
+            "createdAt": "2025-01-01T00:00:00.000Z",
+            "updatedAt": "2025-06-15T10:30:00.000Z"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackWebhookInput {
+        name: "Generic Alerts".to_string(),
+        service: ClickStackWebhookInputService::Generic,
+        url: "https://example.com/hook".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_update_webhook("org-1", "svc-1", "webhook-3", &body)
+        .await
+        .unwrap();
+    // The response union resolves to the Generic variant and preserves its
+    // optional `body` field, which the greedy Slack match would have discarded.
+    match resp.result.unwrap() {
+        ClickStackWebhook::ClickStackGenericWebhook(w) => {
+            assert_eq!(w.id, "webhook-3");
+            assert_eq!(w.body.as_deref(), Some("{\"text\": \"{{ message }}\"}"));
+        }
+        other => panic!("expected Generic webhook variant, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn delete_webhook() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/webhook-1",
+        ))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .click_stack_delete_webhook("org-1", "svc-1", "webhook-1")
+        .await
+        .unwrap();
+    assert_eq!(resp.status, Some(200.0));
+}
+
+#[tokio::test]
+async fn validate_dashboard() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/validate",
+        ))
+        .and(body_partial_json(serde_json::json!({
+            "name": "My Dashboard"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "valid": false,
+            "errors": [
+                {"path": "tiles.0.config", "message": "Required"}
+            ],
+            "normalized": null
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ClickStackCreateDashboardRequest {
+        name: "My Dashboard".to_string(),
+        ..Default::default()
+    };
+    let resp = c
+        .click_stack_validate_dashboard("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let result = resp.result.unwrap();
+    assert!(!result.valid);
+    assert_eq!(result.errors.len(), 1);
+    assert_eq!(result.errors[0].path, "tiles.0.config");
+    assert_eq!(result.normalized, None);
+}
+
+// ===========================================================================
+// Organization quotas
+// ===========================================================================
+
+#[tokio::test]
+async fn list_quotas() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/quotas"))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "quotaCode": "services-per-organization",
+                "name": "Services per organization",
+                "description": "Limits services.",
+                "scope": "organization",
+                "value": 20,
+                "usage": 3,
+                "adjustable": true
+            }
+        ])))
+        .mount(&s)
+        .await;
+
+    let resp = c.organization_quotas_get_list("org-1").await.unwrap();
+    let quotas = resp.result.unwrap();
+    assert_eq!(quotas.len(), 1);
+    assert_eq!(
+        quotas[0].quota_code,
+        OrganizationQuotaQuotacode::Services_per_organization
+    );
+    assert_eq!(quotas[0].scope, OrganizationQuotaScope::Organization);
+    assert_eq!(quotas[0].usage, Some(3));
+}
+
+#[tokio::test]
+async fn get_quota() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/quotas/replicas-per-warehouse",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "quotaCode": "replicas-per-warehouse",
+            "name": "Replicas per warehouse",
+            "description": "Limits each warehouse individually.",
+            "scope": "warehouse",
+            "value": 20,
+            "adjustable": true
+        })))
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_quota_get("org-1", "replicas-per-warehouse")
+        .await
+        .unwrap();
+    let quota = resp.result.unwrap();
+    assert_eq!(
+        quota.quota_code,
+        OrganizationQuotaQuotacode::Replicas_per_warehouse
+    );
+    assert_eq!(quota.scope, OrganizationQuotaScope::Warehouse);
+    assert_eq!(quota.usage, None);
 }
 
 // ===========================================================================

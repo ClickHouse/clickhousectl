@@ -4,6 +4,66 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Generates the `Deserialize` impl for an externally-discriminated
+/// `#[serde(untagged)]` enum.
+///
+/// Every ClickHouse Cloud "one of multiple variants" model whose JSON carries a
+/// string discriminator field (e.g. `bucketProvider`, `type`, `kind`,
+/// `displayType`, `service`, `operator`) shares the same deserialization shape:
+/// buffer the payload as a [`serde_json::Value`], read the discriminator key,
+/// and route each known wire value to the matching variant via
+/// [`serde_json::from_value`]. Any unrecognized or missing discriminator falls
+/// through to the enum's `Unknown(serde_json::Value)` catch-all, so unknown
+/// payloads round-trip losslessly instead of failing to deserialize. This
+/// explicit dispatch avoids the greedy first-match misrouting that
+/// `#[serde(untagged)]` derives suffer when variants share a discriminator.
+///
+/// The macro emits **only** the `Deserialize` impl. The enum declaration, its
+/// derives/serde attributes, and its `Display` impl must remain literal source
+/// so the syn-based OpenAPI drift analyzer can inventory them structurally (it
+/// cannot expand macros).
+///
+/// Each arm lists one or more discriminator wire values mapping to a single
+/// variant, so several values can share a variant:
+///
+/// ```ignore
+/// discriminated_union! {
+///     ClickStackNumberTileColorCondition, "operator" {
+///         "gt" | "gte" | "lt" | "lte" => ClickStackNumericColorCondition,
+///         "between" => ClickStackBetweenColorCondition,
+///         "eq" | "neq" => ClickStackEqualityColorCondition,
+///     }
+/// }
+/// ```
+///
+/// New discriminated unions in this module should use this macro rather than
+/// hand-writing the impl. Enums whose variants need multi-level or nested
+/// dispatch do not fit this single-key shape and must stay hand-written.
+macro_rules! discriminated_union {
+    (
+        $enum:ident, $key:literal {
+            $( $( $wire:literal )|+ => $variant:ident ),+ $(,)?
+        }
+    ) => {
+        impl<'de> Deserialize<'de> for $enum {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = serde_json::Value::deserialize(deserializer)?;
+                match value.get($key).and_then(|v| v.as_str()) {
+                    $(
+                        $( Some($wire) )|+ => serde_json::from_value(value)
+                            .map($enum::$variant)
+                            .map_err(serde::de::Error::custom),
+                    )+
+                    _ => Ok($enum::Unknown(value)),
+                }
+            }
+        }
+    };
+}
+
 /// `pgHaType` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgHaType {
@@ -510,8 +570,14 @@ pub enum ActivityType {
     Organization_member_delete,
     #[serde(rename = "organization_member_update_role")]
     Organization_member_update_role,
+    #[serde(rename = "organization_member_update_roles")]
+    Organization_member_update_roles,
     #[serde(rename = "organization_member_update_mfa_method")]
     Organization_member_update_mfa_method,
+    #[serde(rename = "organization_saml_connection_create")]
+    Organization_saml_connection_create,
+    #[serde(rename = "organization_saml_connection_update")]
+    Organization_saml_connection_update,
     #[serde(rename = "user_login")]
     User_login,
     #[serde(rename = "user_login_failed")]
@@ -556,6 +622,8 @@ pub enum ActivityType {
     Service_update_max_allowable_replicas,
     #[serde(rename = "service_update_backup_configuration")]
     Service_update_backup_configuration,
+    #[serde(rename = "service_update_snapshot_configuration")]
+    Service_update_snapshot_configuration,
     #[serde(rename = "service_restore_backup")]
     Service_restore_backup,
     #[serde(rename = "service_update_release_channel")]
@@ -604,8 +672,17 @@ impl std::fmt::Display for ActivityType {
             Self::Organization_member_leave => write!(f, "organization_member_leave"),
             Self::Organization_member_delete => write!(f, "organization_member_delete"),
             Self::Organization_member_update_role => write!(f, "organization_member_update_role"),
+            Self::Organization_member_update_roles => {
+                write!(f, "organization_member_update_roles")
+            }
             Self::Organization_member_update_mfa_method => {
                 write!(f, "organization_member_update_mfa_method")
+            }
+            Self::Organization_saml_connection_create => {
+                write!(f, "organization_saml_connection_create")
+            }
+            Self::Organization_saml_connection_update => {
+                write!(f, "organization_saml_connection_update")
             }
             Self::User_login => write!(f, "user_login"),
             Self::User_login_failed => write!(f, "user_login_failed"),
@@ -638,6 +715,9 @@ impl std::fmt::Display for ActivityType {
             }
             Self::Service_update_backup_configuration => {
                 write!(f, "service_update_backup_configuration")
+            }
+            Self::Service_update_snapshot_configuration => {
+                write!(f, "service_update_snapshot_configuration")
             }
             Self::Service_restore_backup => write!(f, "service_restore_backup"),
             Self::Service_update_release_channel => write!(f, "service_update_release_channel"),
@@ -2994,6 +3074,7 @@ pub enum ClickStackAlertResponseState {
     OK,
     INSUFFICIENT_DATA,
     DISABLED,
+    PENDING,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -3006,6 +3087,7 @@ impl std::fmt::Display for ClickStackAlertResponseState {
             Self::OK => write!(f, "OK"),
             Self::INSUFFICIENT_DATA => write!(f, "INSUFFICIENT_DATA"),
             Self::DISABLED => write!(f, "DISABLED"),
+            Self::PENDING => write!(f, "PENDING"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3047,6 +3129,29 @@ impl std::fmt::Display for ClickStackAlertResponseThresholdtype {
             Self::Not_equal => write!(f, "not_equal"),
             Self::Between => write!(f, "between"),
             Self::Not_between => write!(f, "not_between"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackBackgroundChart.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackBackgroundChartType {
+    #[serde(rename = "line")]
+    #[default]
+    Line,
+    #[serde(rename = "area")]
+    Area,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBackgroundChartType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line => write!(f, "line"),
+            Self::Area => write!(f, "area"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3107,6 +3212,146 @@ impl std::fmt::Display for ClickStackBarRawSqlChartConfigDisplaytype {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Stacked_bar => write!(f, "stacked_bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackBetweenColorCondition.operator`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackBetweenColorConditionOperator {
+    #[serde(rename = "between")]
+    #[default]
+    Between,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackBetweenColorConditionOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Between => write!(f, "between"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarBuilderChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarBuilderChartConfigDisplaytype {
+    #[serde(rename = "bar")]
+    #[default]
+    Bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarBuilderChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bar => write!(f, "bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarRawSqlChartConfig.configType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarRawSqlChartConfigConfigtype {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarRawSqlChartConfigConfigtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackCategoricalBarRawSqlChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackCategoricalBarRawSqlChartConfigDisplaytype {
+    #[serde(rename = "bar")]
+    #[default]
+    Bar,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarRawSqlChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bar => write!(f, "bar"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Palette-token colors shared by ClickStack chart tiles.
+///
+/// Used by `ClickStackBackgroundChart`, `ClickStackNumericColorCondition`,
+/// `ClickStackBetweenColorCondition`, `ClickStackEqualityColorCondition`,
+/// `ClickStackNumberBuilderChartConfig`, and `ClickStackNumberRawSqlChartConfig`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackChartColor {
+    #[serde(rename = "chart-blue")]
+    #[default]
+    Chart_blue,
+    #[serde(rename = "chart-orange")]
+    Chart_orange,
+    #[serde(rename = "chart-red")]
+    Chart_red,
+    #[serde(rename = "chart-cyan")]
+    Chart_cyan,
+    #[serde(rename = "chart-green")]
+    Chart_green,
+    #[serde(rename = "chart-pink")]
+    Chart_pink,
+    #[serde(rename = "chart-purple")]
+    Chart_purple,
+    #[serde(rename = "chart-light-blue")]
+    Chart_light_blue,
+    #[serde(rename = "chart-brown")]
+    Chart_brown,
+    #[serde(rename = "chart-gray")]
+    Chart_gray,
+    #[serde(rename = "chart-success")]
+    Chart_success,
+    #[serde(rename = "chart-warning")]
+    Chart_warning,
+    #[serde(rename = "chart-error")]
+    Chart_error,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackChartColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chart_blue => write!(f, "chart-blue"),
+            Self::Chart_orange => write!(f, "chart-orange"),
+            Self::Chart_red => write!(f, "chart-red"),
+            Self::Chart_cyan => write!(f, "chart-cyan"),
+            Self::Chart_green => write!(f, "chart-green"),
+            Self::Chart_pink => write!(f, "chart-pink"),
+            Self::Chart_purple => write!(f, "chart-purple"),
+            Self::Chart_light_blue => write!(f, "chart-light-blue"),
+            Self::Chart_brown => write!(f, "chart-brown"),
+            Self::Chart_gray => write!(f, "chart-gray"),
+            Self::Chart_success => write!(f, "chart-success"),
+            Self::Chart_warning => write!(f, "chart-warning"),
+            Self::Chart_error => write!(f, "chart-error"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3254,6 +3499,72 @@ pub enum ClickStackDashboardResponseSavedquerylanguage {
 }
 
 impl std::fmt::Display for ClickStackDashboardResponseSavedquerylanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackEqualityColorCondition.operator`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackEqualityColorConditionOperator {
+    #[serde(rename = "eq")]
+    #[default]
+    Eq,
+    #[serde(rename = "neq")]
+    Neq,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackEqualityColorConditionOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eq => write!(f, "eq"),
+            Self::Neq => write!(f, "neq"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackEventPatternsChartConfig.displayType`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackEventPatternsChartConfigDisplaytype {
+    #[serde(rename = "event_patterns")]
+    #[default]
+    Event_patterns,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackEventPatternsChartConfigDisplaytype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Event_patterns => write!(f, "event_patterns"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackEventPatternsChartConfig.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackEventPatternsChartConfigWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackEventPatternsChartConfigWherelanguage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sql => write!(f, "sql"),
@@ -3592,6 +3903,32 @@ impl std::fmt::Display for ClickStackLogSourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Log => write!(f, "log"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackLogSource.useTextIndexForImplicitColumn`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackLogSourceUsetextindexforimplicitcolumn {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "enabled")]
+    Enabled,
+    #[serde(rename = "disabled")]
+    Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackLogSourceUsetextindexforimplicitcolumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -4106,6 +4443,35 @@ impl std::fmt::Display for ClickStackNumberRawSqlChartConfigDisplaytype {
     }
 }
 
+/// Inline enum for `ClickStackNumericColorCondition.operator`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackNumericColorConditionOperator {
+    #[serde(rename = "gt")]
+    #[default]
+    Gt,
+    #[serde(rename = "gte")]
+    Gte,
+    #[serde(rename = "lt")]
+    Lt,
+    #[serde(rename = "lte")]
+    Lte,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackNumericColorConditionOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gt => write!(f, "gt"),
+            Self::Gte => write!(f, "gte"),
+            Self::Lt => write!(f, "lt"),
+            Self::Lte => write!(f, "lte"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackOnClickDashboard.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackOnClickDashboardType {
@@ -4144,6 +4510,26 @@ impl std::fmt::Display for ClickStackOnClickDashboardWherelanguage {
         match self {
             Self::Sql => write!(f, "sql"),
             Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackOnClickExternal.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackOnClickExternalType {
+    #[serde(rename = "external")]
+    #[default]
+    External,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackOnClickExternalType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::External => write!(f, "external"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -4332,6 +4718,26 @@ impl std::fmt::Display for ClickStackPieRawSqlChartConfigDisplaytype {
     }
 }
 
+/// Inline enum for `ClickStackPromqlSource.kind`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackPromqlSourceKind {
+    #[serde(rename = "promql")]
+    #[default]
+    Promql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackPromqlSourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Promql => write!(f, "promql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackSavedFilterValue.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackSavedFilterValueType {
@@ -4347,6 +4753,72 @@ impl std::fmt::Display for ClickStackSavedFilterValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSavedSearchFilter.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSavedSearchFilterType {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedSearchFilterType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSavedSearchInput.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSavedSearchInputWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedSearchInputWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackSavedSearch.whereLanguage`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackSavedSearchWherelanguage {
+    #[serde(rename = "sql")]
+    #[default]
+    Sql,
+    #[serde(rename = "lucene")]
+    Lucene,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackSavedSearchWherelanguage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sql => write!(f, "sql"),
+            Self::Lucene => write!(f, "lucene"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -5019,6 +5491,32 @@ impl std::fmt::Display for ClickStackTraceSourceKind {
     }
 }
 
+/// Inline enum for `ClickStackTraceSource.useTextIndexForImplicitColumn`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackTraceSourceUsetextindexforimplicitcolumn {
+    #[serde(rename = "auto")]
+    #[default]
+    Auto,
+    #[serde(rename = "enabled")]
+    Enabled,
+    #[serde(rename = "disabled")]
+    Disabled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackTraceSourceUsetextindexforimplicitcolumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Enabled => write!(f, "enabled"),
+            Self::Disabled => write!(f, "disabled"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Inline enum for `ClickStackUpdateAlertRequest.interval`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackUpdateAlertRequestInterval {
@@ -5142,6 +5640,32 @@ impl std::fmt::Display for ClickStackUpdateDashboardRequestSavedquerylanguage {
         match self {
             Self::Sql => write!(f, "sql"),
             Self::Lucene => write!(f, "lucene"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickStackWebhookInput.service`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackWebhookInputService {
+    #[serde(rename = "slack")]
+    #[default]
+    Slack,
+    #[serde(rename = "incidentio")]
+    Incidentio,
+    #[serde(rename = "generic")]
+    Generic,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickStackWebhookInputService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Slack => write!(f, "slack"),
+            Self::Incidentio => write!(f, "incidentio"),
+            Self::Generic => write!(f, "generic"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -5756,6 +6280,57 @@ impl std::fmt::Display for OrganizationPrivateEndpointRegion {
             Self::Westus3 => write!(f, "westus3"),
             Self::Germanywestcentral => write!(f, "germanywestcentral"),
             Self::Centralus => write!(f, "centralus"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `OrganizationQuota.quotaCode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum OrganizationQuotaQuotacode {
+    #[serde(rename = "services-per-organization")]
+    #[default]
+    Services_per_organization,
+    #[serde(rename = "postgres-services-per-organization")]
+    Postgres_services_per_organization,
+    #[serde(rename = "replicas-per-warehouse")]
+    Replicas_per_warehouse,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationQuotaQuotacode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Services_per_organization => write!(f, "services-per-organization"),
+            Self::Postgres_services_per_organization => {
+                write!(f, "postgres-services-per-organization")
+            }
+            Self::Replicas_per_warehouse => write!(f, "replicas-per-warehouse"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `OrganizationQuota.scope`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum OrganizationQuotaScope {
+    #[serde(rename = "organization")]
+    #[default]
+    Organization,
+    #[serde(rename = "warehouse")]
+    Warehouse,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for OrganizationQuotaScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Organization => write!(f, "organization"),
+            Self::Warehouse => write!(f, "warehouse"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -7153,7 +7728,8 @@ impl std::fmt::Display for PgConfigWalCompression {
 
 /// `BackupBucket` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucket {
@@ -7161,27 +7737,17 @@ pub enum BackupBucket {
     GcpBackupBucket(GcpBackupBucket),
     AzureBackupBucket(AzureBackupBucket),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucket {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucket::AwsBackupBucket)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucket::GcpBackupBucket)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucket::AzureBackupBucket)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucket::Unknown(value.to_string())),
-        }
+discriminated_union! {
+    BackupBucket, "bucketProvider" {
+        "AWS" => AwsBackupBucket,
+        "GCP" => GcpBackupBucket,
+        "AZURE" => AzureBackupBucket,
     }
 }
 
@@ -7198,7 +7764,8 @@ impl std::fmt::Display for BackupBucket {
 
 /// `BackupBucketPatchRequest` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketPatchRequest {
@@ -7206,27 +7773,17 @@ pub enum BackupBucketPatchRequest {
     GcpBackupBucketPatchRequestV1(GcpBackupBucketPatchRequestV1),
     AzureBackupBucketPatchRequestV1(AzureBackupBucketPatchRequestV1),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucketPatchRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucketPatchRequest::GcpBackupBucketPatchRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucketPatchRequest::AzureBackupBucketPatchRequestV1)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketPatchRequest::Unknown(value.to_string())),
-        }
+discriminated_union! {
+    BackupBucketPatchRequest, "bucketProvider" {
+        "AWS" => AwsBackupBucketPatchRequestV1,
+        "GCP" => GcpBackupBucketPatchRequestV1,
+        "AZURE" => AzureBackupBucketPatchRequestV1,
     }
 }
 
@@ -7245,7 +7802,8 @@ impl std::fmt::Display for BackupBucketPatchRequest {
 
 /// `BackupBucketPostRequest` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketPostRequest {
@@ -7253,27 +7811,17 @@ pub enum BackupBucketPostRequest {
     GcpBackupBucketPostRequestV1(GcpBackupBucketPostRequestV1),
     AzureBackupBucketPostRequestV1(AzureBackupBucketPostRequestV1),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucketPostRequest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucketPostRequest::AwsBackupBucketPostRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucketPostRequest::GcpBackupBucketPostRequestV1)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucketPostRequest::AzureBackupBucketPostRequestV1)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketPostRequest::Unknown(value.to_string())),
-        }
+discriminated_union! {
+    BackupBucketPostRequest, "bucketProvider" {
+        "AWS" => AwsBackupBucketPostRequestV1,
+        "GCP" => GcpBackupBucketPostRequestV1,
+        "AZURE" => AzureBackupBucketPostRequestV1,
     }
 }
 
@@ -7290,7 +7838,8 @@ impl std::fmt::Display for BackupBucketPostRequest {
 
 /// `BackupBucketProperties` - one of multiple variants.
 ///
-/// Uses `bucketProvider` as a discriminator: `"AWS"`, `"GCP"`, or `"AZURE"`.
+/// Dispatched on the `bucketProvider` field; see the `discriminated_union!`
+/// invocation below for the wire values.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum BackupBucketProperties {
@@ -7298,27 +7847,17 @@ pub enum BackupBucketProperties {
     GcpBackupBucketProperties(GcpBackupBucketProperties),
     AzureBackupBucketProperties(AzureBackupBucketProperties),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
-impl<'de> Deserialize<'de> for BackupBucketProperties {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match value.get("bucketProvider").and_then(|v| v.as_str()) {
-            Some("AWS") => serde_json::from_value(value)
-                .map(BackupBucketProperties::AwsBackupBucketProperties)
-                .map_err(serde::de::Error::custom),
-            Some("GCP") => serde_json::from_value(value)
-                .map(BackupBucketProperties::GcpBackupBucketProperties)
-                .map_err(serde::de::Error::custom),
-            Some("AZURE") => serde_json::from_value(value)
-                .map(BackupBucketProperties::AzureBackupBucketProperties)
-                .map_err(serde::de::Error::custom),
-            _ => Ok(BackupBucketProperties::Unknown(value.to_string())),
-        }
+discriminated_union! {
+    BackupBucketProperties, "bucketProvider" {
+        "AWS" => AwsBackupBucketProperties,
+        "GCP" => GcpBackupBucketProperties,
+        "AZURE" => AzureBackupBucketProperties,
     }
 }
 
@@ -7340,7 +7879,10 @@ pub enum ClickStackAlertChannel {
     ClickStackAlertChannelEmail(ClickStackAlertChannelEmail),
     ClickStackAlertChannelWebhook(ClickStackAlertChannelWebhook),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackAlertChannel {
@@ -7360,7 +7902,7 @@ pub enum ClickStackBarChartConfig {
     ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfig),
     ClickStackBarRawSqlChartConfig(ClickStackBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackBarChartConfig {
@@ -7375,8 +7917,43 @@ impl std::fmt::Display for ClickStackBarChartConfig {
     }
 }
 
-/// `ClickStackDashboardChartSeries` - one of multiple variants.
+/// `ClickStackCategoricalBarChartConfig` - one of multiple variants.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ClickStackCategoricalBarChartConfig {
+    ClickStackCategoricalBarBuilderChartConfig(ClickStackCategoricalBarBuilderChartConfig),
+    ClickStackCategoricalBarRawSqlChartConfig(ClickStackCategoricalBarRawSqlChartConfig),
+    /// Catch-all for unknown or newly-added values.
+    Unknown(serde_json::Value),
+}
+
+impl Default for ClickStackCategoricalBarChartConfig {
+    fn default() -> Self {
+        Self::ClickStackCategoricalBarBuilderChartConfig(
+            ClickStackCategoricalBarBuilderChartConfig::default(),
+        )
+    }
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarChartConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackCategoricalBarBuilderChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarBuilderChartConfig")
+            }
+            Self::ClickStackCategoricalBarRawSqlChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarRawSqlChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackDashboardChartSeries` - one of multiple variants.
+///
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackDashboardChartSeries {
     ClickStackTimeChartSeries(ClickStackTimeChartSeries),
@@ -7385,7 +7962,20 @@ pub enum ClickStackDashboardChartSeries {
     ClickStackSearchChartSeries(ClickStackSearchChartSeries),
     ClickStackMarkdownChartSeries(ClickStackMarkdownChartSeries),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackDashboardChartSeries, "type" {
+        "time" => ClickStackTimeChartSeries,
+        "table" => ClickStackTableChartSeries,
+        "number" => ClickStackNumberChartSeries,
+        "search" => ClickStackSearchChartSeries,
+        "markdown" => ClickStackMarkdownChartSeries,
+    }
 }
 
 impl std::fmt::Display for ClickStackDashboardChartSeries {
@@ -7408,7 +7998,7 @@ pub enum ClickStackLineChartConfig {
     ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfig),
     ClickStackLineRawSqlChartConfig(ClickStackLineRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackLineChartConfig {
@@ -7432,7 +8022,7 @@ pub enum ClickStackNumberChartConfig {
     ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfig),
     ClickStackNumberRawSqlChartConfig(ClickStackNumberRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackNumberChartConfig {
@@ -7449,19 +8039,76 @@ impl std::fmt::Display for ClickStackNumberChartConfig {
     }
 }
 
+/// `ClickStackNumberTileColorCondition` - one of multiple variants.
+///
+/// Dispatched on the `operator` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackNumberTileColorCondition {
+    ClickStackNumericColorCondition(ClickStackNumericColorCondition),
+    ClickStackBetweenColorCondition(ClickStackBetweenColorCondition),
+    ClickStackEqualityColorCondition(ClickStackEqualityColorCondition),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackNumberTileColorCondition, "operator" {
+        "gt" | "gte" | "lt" | "lte" => ClickStackNumericColorCondition,
+        "between" => ClickStackBetweenColorCondition,
+        "eq" | "neq" => ClickStackEqualityColorCondition,
+    }
+}
+
+impl std::fmt::Display for ClickStackNumberTileColorCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackNumericColorCondition(_) => {
+                write!(f, "ClickStackNumericColorCondition")
+            }
+            Self::ClickStackBetweenColorCondition(_) => {
+                write!(f, "ClickStackBetweenColorCondition")
+            }
+            Self::ClickStackEqualityColorCondition(_) => {
+                write!(f, "ClickStackEqualityColorCondition")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackOnClick` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackOnClick {
     ClickStackOnClickSearch(ClickStackOnClickSearch),
     ClickStackOnClickDashboard(ClickStackOnClickDashboard),
+    ClickStackOnClickExternal(ClickStackOnClickExternal),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackOnClick, "type" {
+        "search" => ClickStackOnClickSearch,
+        "dashboard" => ClickStackOnClickDashboard,
+        "external" => ClickStackOnClickExternal,
+    }
 }
 
 impl Default for ClickStackOnClick {
     fn default() -> Self {
-        Self::Unknown(String::new())
+        Self::Unknown(serde_json::Value::Null)
     }
 }
 
@@ -7470,24 +8117,38 @@ impl std::fmt::Display for ClickStackOnClick {
         match self {
             Self::ClickStackOnClickSearch(_) => write!(f, "ClickStackOnClickSearch"),
             Self::ClickStackOnClickDashboard(_) => write!(f, "ClickStackOnClickDashboard"),
+            Self::ClickStackOnClickExternal(_) => write!(f, "ClickStackOnClickExternal"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
 }
 
 /// `ClickStackOnClickTarget` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `mode` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackOnClickTarget {
     ClickStackOnClickTargetIdVariant(ClickStackOnClickTargetIdVariant),
     ClickStackOnClickTargetTemplateVariant(ClickStackOnClickTargetTemplateVariant),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackOnClickTarget, "mode" {
+        "id" => ClickStackOnClickTargetIdVariant,
+        "template" => ClickStackOnClickTargetTemplateVariant,
+    }
 }
 
 impl Default for ClickStackOnClickTarget {
     fn default() -> Self {
-        Self::Unknown(String::new())
+        Self::Unknown(serde_json::Value::Null)
     }
 }
 
@@ -7512,7 +8173,7 @@ pub enum ClickStackPieChartConfig {
     ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfig),
     ClickStackPieRawSqlChartConfig(ClickStackPieRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackPieChartConfig {
@@ -7528,15 +8189,32 @@ impl std::fmt::Display for ClickStackPieChartConfig {
 }
 
 /// `ClickStackSource` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `kind` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackSource {
     ClickStackLogSource(ClickStackLogSource),
     ClickStackTraceSource(ClickStackTraceSource),
     ClickStackMetricSource(ClickStackMetricSource),
     ClickStackSessionSource(ClickStackSessionSource),
+    ClickStackPromqlSource(ClickStackPromqlSource),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackSource, "kind" {
+        "log" => ClickStackLogSource,
+        "trace" => ClickStackTraceSource,
+        "metric" => ClickStackMetricSource,
+        "session" => ClickStackSessionSource,
+        "promql" => ClickStackPromqlSource,
+    }
 }
 
 impl std::fmt::Display for ClickStackSource {
@@ -7546,6 +8224,7 @@ impl std::fmt::Display for ClickStackSource {
             Self::ClickStackTraceSource(_) => write!(f, "ClickStackTraceSource"),
             Self::ClickStackMetricSource(_) => write!(f, "ClickStackMetricSource"),
             Self::ClickStackSessionSource(_) => write!(f, "ClickStackSessionSource"),
+            Self::ClickStackPromqlSource(_) => write!(f, "ClickStackPromqlSource"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -7558,7 +8237,7 @@ pub enum ClickStackTableChartConfig {
     ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfig),
     ClickStackTableRawSqlChartConfig(ClickStackTableRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    Unknown(serde_json::Value),
 }
 
 impl std::fmt::Display for ClickStackTableChartConfig {
@@ -7576,9 +8255,13 @@ impl std::fmt::Display for ClickStackTableChartConfig {
 }
 
 /// `ClickStackTileConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `displayType` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackTileConfig {
+    ClickStackCategoricalBarChartConfig(ClickStackCategoricalBarChartConfig),
     ClickStackLineChartConfig(ClickStackLineChartConfig),
     ClickStackBarChartConfig(ClickStackBarChartConfig),
     ClickStackTableChartConfig(ClickStackTableChartConfig),
@@ -7586,14 +8269,36 @@ pub enum ClickStackTileConfig {
     ClickStackPieChartConfig(ClickStackPieChartConfig),
     ClickStackHeatmapChartConfig(ClickStackHeatmapChartConfig),
     ClickStackSearchChartConfig(ClickStackSearchChartConfig),
+    ClickStackEventPatternsChartConfig(ClickStackEventPatternsChartConfig),
     ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfig),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackTileConfig, "displayType" {
+        "line" => ClickStackLineChartConfig,
+        "stacked_bar" => ClickStackBarChartConfig,
+        "bar" => ClickStackCategoricalBarChartConfig,
+        "table" => ClickStackTableChartConfig,
+        "number" => ClickStackNumberChartConfig,
+        "pie" => ClickStackPieChartConfig,
+        "heatmap" => ClickStackHeatmapChartConfig,
+        "search" => ClickStackSearchChartConfig,
+        "event_patterns" => ClickStackEventPatternsChartConfig,
+        "markdown" => ClickStackMarkdownChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackTileConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ClickStackCategoricalBarChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarChartConfig")
+            }
             Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
             Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
             Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
@@ -7601,6 +8306,9 @@ impl std::fmt::Display for ClickStackTileConfig {
             Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
             Self::ClickStackHeatmapChartConfig(_) => write!(f, "ClickStackHeatmapChartConfig"),
             Self::ClickStackSearchChartConfig(_) => write!(f, "ClickStackSearchChartConfig"),
+            Self::ClickStackEventPatternsChartConfig(_) => {
+                write!(f, "ClickStackEventPatternsChartConfig")
+            }
             Self::ClickStackMarkdownChartConfig(_) => write!(f, "ClickStackMarkdownChartConfig"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -7608,7 +8316,10 @@ impl std::fmt::Display for ClickStackTileConfig {
 }
 
 /// `ClickStackWebhook` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `service` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackWebhook {
     ClickStackSlackWebhook(ClickStackSlackWebhook),
@@ -7617,7 +8328,20 @@ pub enum ClickStackWebhook {
     ClickStackSlackAPIWebhook(ClickStackSlackAPIWebhook),
     ClickStackPagerDutyAPIWebhook(ClickStackPagerDutyAPIWebhook),
     /// Catch-all for unknown or newly-added values.
-    Unknown(String),
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackWebhook, "service" {
+        "slack" => ClickStackSlackWebhook,
+        "incidentio" => ClickStackIncidentIOWebhook,
+        "generic" => ClickStackGenericWebhook,
+        "slack_api" => ClickStackSlackAPIWebhook,
+        "pagerduty_api" => ClickStackPagerDutyAPIWebhook,
+    }
 }
 
 impl std::fmt::Display for ClickStackWebhook {
@@ -7632,6 +8356,18 @@ impl std::fmt::Display for ClickStackWebhook {
         }
     }
 }
+
+/// Type alias for `ClickStackCASLPermissionConditions`.
+pub type ClickStackCASLPermissionConditions = serde_json::Value;
+
+/// Type alias for `ClickStackValidateDashboardResponseNormalized`.
+pub type ClickStackValidateDashboardResponseNormalized = serde_json::Value;
+
+/// Type alias for `ClickStackWebhookInputHeaders`.
+pub type ClickStackWebhookInputHeaders = std::collections::BTreeMap<String, String>;
+
+/// Type alias for `ClickStackWebhookInputQueryParams`.
+pub type ClickStackWebhookInputQueryParams = std::collections::BTreeMap<String, String>;
 
 /// Type alias for `pgCreatedAtProperty`.
 pub type PgCreatedAtProperty = chrono::DateTime<chrono::Utc>;
@@ -9007,6 +9743,12 @@ pub struct ClickPipePatchObjectStorageSource {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchPostgresPipeRemoveTableMapping {
     #[serde(
+        rename = "partitionByExpr",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub partition_by_expr: Option<String>,
+    #[serde(
         rename = "partitionKey",
         skip_serializing_if = "Option::is_none",
         default
@@ -9473,6 +10215,8 @@ pub struct ClickPipePostgresPipeSettings {
 pub struct ClickPipePostgresPipeTableMapping {
     #[serde(rename = "excludedColumns", default)]
     pub excluded_columns: Vec<String>,
+    #[serde(rename = "partitionByExpr", default)]
+    pub partition_by_expr: String,
     #[serde(rename = "partitionKey", default)]
     pub partition_key: String,
     #[serde(rename = "sortingKeys", default)]
@@ -9786,6 +10530,12 @@ pub struct ClickStackAlertResponse {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
     #[serde(
+        rename = "numConsecutiveWindows",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub num_consecutive_windows: Option<i64>,
+    #[serde(
         rename = "savedSearchId",
         skip_serializing_if = "Option::is_none",
         default
@@ -9836,6 +10586,14 @@ pub struct ClickStackAlertSilenced {
     pub by: Option<String>,
     #[serde(default)]
     pub until: chrono::DateTime<chrono::Utc>,
+}
+
+/// `ClickStackBackgroundChart` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBackgroundChart {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<ClickStackChartColor>,
+    pub r#type: ClickStackBackgroundChartType,
 }
 
 /// `ClickStackBarBuilderChartConfig` from the ClickHouse Cloud API.
@@ -9895,6 +10653,97 @@ pub struct ClickStackBarRawSqlChartConfig {
     pub sql_template: String,
 }
 
+/// `ClickStackBetweenColorCondition` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBetweenColorCondition {
+    pub color: ClickStackChartColor,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+    pub operator: ClickStackBetweenColorConditionOperator,
+    pub value: Vec<f64>,
+}
+
+/// `ClickStackCASLPermission` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCASLPermission {
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub conditions: Option<ClickStackCASLPermissionConditions>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub integration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub inverted: Option<bool>,
+    pub subject: String,
+}
+
+/// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCategoricalBarBuilderChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackCategoricalBarBuilderChartConfigDisplaytype,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub limit: Option<i64>,
+    #[serde(
+        rename = "numberFormat",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
+    pub select: Vec<ClickStackSelectItem>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+}
+
+/// `ClickStackCategoricalBarRawSqlChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCategoricalBarRawSqlChartConfig {
+    #[serde(rename = "configType")]
+    pub config_type: ClickStackCategoricalBarRawSqlChartConfigConfigtype,
+    #[serde(rename = "connectionId")]
+    pub connection_id: String,
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackCategoricalBarRawSqlChartConfigDisplaytype,
+    #[serde(
+        rename = "numberFormat",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate")]
+    pub sql_template: String,
+}
+
+/// `ClickStackConnection` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackConnection {
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub host: String,
+    #[serde(
+        rename = "hyperdxSettingPrefix",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub hyperdx_setting_prefix: Option<String>,
+    pub id: String,
+    #[serde(
+        rename = "isPrometheusEndpoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub is_prometheus_endpoint: Option<bool>,
+    pub name: String,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub username: String,
+}
+
 /// `ClickStackCreateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateAlertRequest {
@@ -9916,6 +10765,12 @@ pub struct ClickStackCreateAlertRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
+    #[serde(
+        rename = "numConsecutiveWindows",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub num_consecutive_windows: Option<i64>,
     #[serde(
         rename = "savedSearchId",
         skip_serializing_if = "Option::is_none",
@@ -9950,6 +10805,28 @@ pub struct ClickStackCreateAlertRequest {
     pub tile_id: Option<String>,
 }
 
+/// `ClickStackCreateConnectionRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCreateConnectionRequest {
+    pub host: String,
+    #[serde(
+        rename = "hyperdxSettingPrefix",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub hyperdx_setting_prefix: Option<String>,
+    #[serde(
+        rename = "isPrometheusEndpoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub is_prometheus_endpoint: Option<bool>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password: Option<String>,
+    pub username: String,
+}
+
 /// `ClickStackCreateDashboardRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateDashboardRequest {
@@ -9979,6 +10856,15 @@ pub struct ClickStackCreateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<String>>,
     pub tiles: Vec<ClickStackTileInput>,
+}
+
+/// `ClickStackCreateRoleRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCreateRoleRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    pub name: String,
+    pub permissions: Vec<ClickStackCASLPermission>,
 }
 
 /// `ClickStackDashboardContainer` from the ClickHouse Cloud API.
@@ -10037,9 +10923,45 @@ pub struct ClickStackDashboardResponse {
     pub tiles: Vec<ClickStackTileOutput>,
 }
 
+/// `ClickStackEqualityColorCondition` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackEqualityColorCondition {
+    pub color: ClickStackChartColor,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+    pub operator: ClickStackEqualityColorConditionOperator,
+    /// A finite number or a string; the spec models this as `oneOf number|string`.
+    pub value: serde_json::Value,
+}
+
+/// `ClickStackEventPatternsChartConfig` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackEventPatternsChartConfig {
+    #[serde(rename = "displayType")]
+    pub display_type: ClickStackEventPatternsChartConfigDisplaytype,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(
+        rename = "whereLanguage",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub where_language: Option<ClickStackEventPatternsChartConfigWherelanguage>,
+}
+
 /// `ClickStackFilter` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilter {
+    #[serde(
+        rename = "appliesToSourceIds",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub applies_to_source_ids: Option<Vec<String>>,
     pub expression: String,
     pub id: String,
     pub name: String,
@@ -10065,6 +10987,12 @@ pub struct ClickStackFilter {
 /// `ClickStackFilterInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilterInput {
+    #[serde(
+        rename = "appliesToSourceIds",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub applies_to_source_ids: Option<Vec<String>>,
     pub expression: String,
     pub name: String,
     #[serde(rename = "sourceId")]
@@ -10206,6 +11134,12 @@ pub struct ClickStackLineBuilderChartConfig {
     pub display_type: ClickStackLineBuilderChartConfigDisplaytype,
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
+    #[serde(
+        rename = "fitYAxisToData",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub fit_y_axis_to_data: Option<bool>,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
     #[serde(
@@ -10243,6 +11177,12 @@ pub struct ClickStackLineRawSqlChartConfig {
     #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
     pub fill_nulls: Option<bool>,
     #[serde(
+        rename = "fitYAxisToData",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(
         rename = "numberFormat",
         skip_serializing_if = "Option::is_none",
         default
@@ -10266,6 +11206,8 @@ pub struct ClickStackLogSource {
     pub connection: String,
     #[serde(rename = "defaultTableSelectExpression")]
     pub default_table_select_expression: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     #[serde(
         rename = "displayedTimestampValueExpression",
         skip_serializing_if = "Option::is_none",
@@ -10299,7 +11241,8 @@ pub struct ClickStackLogSource {
     )]
     pub highlighted_trace_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     #[serde(
         rename = "implicitColumnExpression",
         skip_serializing_if = "Option::is_none",
@@ -10307,6 +11250,12 @@ pub struct ClickStackLogSource {
     )]
     pub implicit_column_expression: Option<String>,
     pub kind: ClickStackLogSourceKind,
+    #[serde(
+        rename = "knownColumnsListExpression",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub known_columns_list_expression: Option<String>,
     #[serde(
         rename = "materializedViews",
         skip_serializing_if = "Option::is_none",
@@ -10338,6 +11287,8 @@ pub struct ClickStackLogSource {
         default
     )]
     pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(
         rename = "serviceNameExpression",
         skip_serializing_if = "Option::is_none",
@@ -10370,6 +11321,13 @@ pub struct ClickStackLogSource {
         default
     )]
     pub trace_source_id: Option<String>,
+    #[serde(
+        rename = "useTextIndexForImplicitColumn",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub use_text_index_for_implicit_column:
+        Option<ClickStackLogSourceUsetextindexforimplicitcolumn>,
 }
 
 /// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
@@ -10422,8 +11380,11 @@ pub struct ClickStackMaterializedView {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackMetricSource {
     pub connection: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     pub from: ClickStackMetricSourceFrom,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     pub kind: ClickStackMetricSourceKind,
     #[serde(
         rename = "logSourceId",
@@ -10442,6 +11403,8 @@ pub struct ClickStackMetricSource {
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(rename = "resourceAttributesExpression")]
     pub resource_attributes_expression: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(rename = "timestampValueExpression")]
     pub timestamp_value_expression: String,
 }
@@ -10473,6 +11436,20 @@ pub struct ClickStackMetricTables {
 /// `ClickStackNumberBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberBuilderChartConfig {
+    #[serde(
+        rename = "backgroundChart",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub background_chart: Option<ClickStackBackgroundChart>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(
+        rename = "colorRules",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackNumberBuilderChartConfigDisplaytype,
     #[serde(
@@ -10549,6 +11526,8 @@ pub struct ClickStackNumberFormat {
 /// `ClickStackNumberRawSqlChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberRawSqlChartConfig {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<ClickStackChartColor>,
     #[serde(rename = "configType")]
     pub config_type: ClickStackNumberRawSqlChartConfigConfigtype,
     #[serde(rename = "connectionId")]
@@ -10565,6 +11544,16 @@ pub struct ClickStackNumberRawSqlChartConfig {
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackNumericColorCondition` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackNumericColorCondition {
+    pub color: ClickStackChartColor,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub label: Option<String>,
+    pub operator: ClickStackNumericColorConditionOperator,
+    pub value: f64,
 }
 
 /// `ClickStackOnClickDashboard` from the ClickHouse Cloud API.
@@ -10586,6 +11575,14 @@ pub struct ClickStackOnClickDashboard {
         default
     )]
     pub where_template: Option<String>,
+}
+
+/// `ClickStackOnClickExternal` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickExternal {
+    pub r#type: ClickStackOnClickExternalType,
+    #[serde(rename = "urlTemplate")]
+    pub url_template: String,
 }
 
 /// `ClickStackOnClickFilterTemplate` from the ClickHouse Cloud API.
@@ -10654,12 +11651,16 @@ pub struct ClickStackPieBuilderChartConfig {
     pub display_type: ClickStackPieBuilderChartConfigDisplaytype,
     #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
     pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub limit: Option<i64>,
     #[serde(
         rename = "numberFormat",
         skip_serializing_if = "Option::is_none",
         default
     )]
     pub number_format: Option<ClickStackNumberFormat>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
@@ -10686,11 +11687,50 @@ pub struct ClickStackPieRawSqlChartConfig {
     pub sql_template: String,
 }
 
+/// `ClickStackPromqlSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlSource {
+    pub connection: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
+    pub from: ClickStackSourceFrom,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
+    pub kind: ClickStackPromqlSourceKind,
+    pub name: String,
+    #[serde(
+        rename = "querySettings",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub query_settings: Option<Vec<ClickStackQuerySetting>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
+    #[serde(rename = "timestampValueExpression")]
+    pub timestamp_value_expression: String,
+}
+
 /// `ClickStackQuerySetting` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackQuerySetting {
     pub setting: String,
     pub value: String,
+}
+
+/// `ClickStackRole` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackRole {
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    pub id: String,
+    #[serde(rename = "isPredefined")]
+    pub is_predefined: bool,
+    pub name: String,
+    pub permissions: Vec<ClickStackCASLPermission>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ClickStackSavedFilterValue` from the ClickHouse Cloud API.
@@ -10699,6 +11739,69 @@ pub struct ClickStackSavedFilterValue {
     pub condition: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub r#type: Option<ClickStackSavedFilterValueType>,
+}
+
+/// `ClickStackSavedSearch` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearch {
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filters: Option<Vec<ClickStackSavedSearchFilter>>,
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(rename = "teamId", skip_serializing_if = "Option::is_none", default)]
+    pub team_id: Option<String>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(
+        rename = "whereLanguage",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub where_language: Option<ClickStackSavedSearchWherelanguage>,
+}
+
+/// `ClickStackSavedSearchFilter` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearchFilter {
+    pub condition: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#type: Option<ClickStackSavedSearchFilterType>,
+}
+
+/// `ClickStackSavedSearchInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearchInput {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub filters: Option<Vec<ClickStackSavedSearchFilter>>,
+    pub name: String,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId")]
+    pub source_id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub r#where: Option<String>,
+    #[serde(
+        rename = "whereLanguage",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub where_language: Option<ClickStackSavedSearchInputWherelanguage>,
 }
 
 /// `ClickStackSearchChartConfig` from the ClickHouse Cloud API.
@@ -10780,8 +11883,11 @@ pub struct ClickStackSelectItem {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSessionSource {
     pub connection: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     pub from: ClickStackSourceFrom,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     pub kind: ClickStackSessionSourceKind,
     pub name: String,
     #[serde(
@@ -10790,6 +11896,8 @@ pub struct ClickStackSessionSource {
         default
     )]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(
         rename = "timestampValueExpression",
         skip_serializing_if = "Option::is_none",
@@ -11045,12 +12153,10 @@ pub struct ClickStackTimeChartSeries {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTraceSource {
     pub connection: String,
-    #[serde(
-        rename = "defaultTableSelectExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    pub default_table_select_expression: Option<String>,
+    #[serde(rename = "defaultTableSelectExpression", default)]
+    pub default_table_select_expression: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub disabled: Option<bool>,
     #[serde(rename = "durationExpression")]
     pub duration_expression: String,
     #[serde(rename = "durationPrecision")]
@@ -11082,7 +12188,8 @@ pub struct ClickStackTraceSource {
     )]
     pub highlighted_trace_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub id: Option<String>,
     #[serde(
         rename = "implicitColumnExpression",
         skip_serializing_if = "Option::is_none",
@@ -11090,6 +12197,12 @@ pub struct ClickStackTraceSource {
     )]
     pub implicit_column_expression: Option<String>,
     pub kind: ClickStackTraceSourceKind,
+    #[serde(
+        rename = "knownColumnsListExpression",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub known_columns_list_expression: Option<String>,
     #[serde(
         rename = "logSourceId",
         skip_serializing_if = "Option::is_none",
@@ -11129,6 +12242,8 @@ pub struct ClickStackTraceSource {
         default
     )]
     pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<String>,
     #[serde(
         rename = "serviceNameExpression",
         skip_serializing_if = "Option::is_none",
@@ -11169,6 +12284,13 @@ pub struct ClickStackTraceSource {
     pub timestamp_value_expression: String,
     #[serde(rename = "traceIdExpression")]
     pub trace_id_expression: String,
+    #[serde(
+        rename = "useTextIndexForImplicitColumn",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub use_text_index_for_implicit_column:
+        Option<ClickStackTraceSourceUsetextindexforimplicitcolumn>,
 }
 
 /// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
@@ -11204,6 +12326,12 @@ pub struct ClickStackUpdateAlertRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub note: Option<String>,
     #[serde(
+        rename = "numConsecutiveWindows",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub num_consecutive_windows: Option<i64>,
+    #[serde(
         rename = "savedSearchId",
         skip_serializing_if = "Option::is_none",
         default
@@ -11237,6 +12365,28 @@ pub struct ClickStackUpdateAlertRequest {
     pub tile_id: Option<String>,
 }
 
+/// `ClickStackUpdateConnectionRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackUpdateConnectionRequest {
+    pub host: String,
+    #[serde(
+        rename = "hyperdxSettingPrefix",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub hyperdx_setting_prefix: Option<String>,
+    #[serde(
+        rename = "isPrometheusEndpoint",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub is_prometheus_endpoint: Option<bool>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub password: Option<String>,
+    pub username: String,
+}
+
 /// `ClickStackUpdateDashboardRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateDashboardRequest {
@@ -11266,6 +12416,52 @@ pub struct ClickStackUpdateDashboardRequest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tags: Option<Vec<String>>,
     pub tiles: Vec<ClickStackTileInput>,
+}
+
+/// `ClickStackUpdateRoleRequest` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackUpdateRoleRequest {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
+    pub permissions: Vec<ClickStackCASLPermission>,
+}
+
+/// `ClickStackValidateDashboardError` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateDashboardError {
+    pub message: String,
+    pub path: String,
+}
+
+/// `ClickStackValidateDashboardResponse` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackValidateDashboardResponse {
+    pub errors: Vec<ClickStackValidateDashboardError>,
+    pub normalized: Option<ClickStackValidateDashboardResponseNormalized>,
+    pub valid: bool,
+}
+
+/// `ClickStackWebhookInput` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackWebhookInput {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub headers: Option<ClickStackWebhookInputHeaders>,
+    pub name: String,
+    #[serde(
+        rename = "queryParams",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub query_params: Option<ClickStackWebhookInputQueryParams>,
+    #[serde(default)]
+    pub service: ClickStackWebhookInputService,
+    pub url: String,
 }
 
 /// `CreateReversePrivateEndpoint` from the ClickHouse Cloud API.
@@ -11633,6 +12829,20 @@ pub struct OrganizationPrivateEndpointsPatch {
     pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
     #[serde(default)]
     pub remove: Vec<OrganizationPatchPrivateEndpoint>,
+}
+
+/// `OrganizationQuota` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OrganizationQuota {
+    pub adjustable: bool,
+    pub description: String,
+    pub name: String,
+    #[serde(rename = "quotaCode")]
+    pub quota_code: OrganizationQuotaQuotacode,
+    pub scope: OrganizationQuotaScope,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub usage: Option<i64>,
+    pub value: i64,
 }
 
 /// `PLAIN` from the ClickHouse Cloud API.
