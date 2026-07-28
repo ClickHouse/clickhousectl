@@ -151,9 +151,10 @@ fn existing_open_api_keys(
         .ok_or_else(|| incomplete("openApiKeys"))
 }
 
-/// Bind `api_key_uuid` to the service's query endpoint, merging into any
-/// existing endpoint configuration so we don't silently revoke other
-/// bindings the user set up.
+/// Bind `api_key_uuid` to the service's query endpoint, merging into the
+/// endpoint's existing `openApiKeys` so we don't silently revoke other
+/// key bindings the user set up. Only the key list is merged: the upsert
+/// still replaces `roles` and `allowedOrigins` with this module's values.
 async fn bind_query_endpoint(
     client: &CloudClient,
     org_id: &str,
