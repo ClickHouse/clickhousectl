@@ -3002,18 +3002,19 @@ pub async fn key_create(
 
     let resp = client.create_api_key(&org_id, &request).await?;
 
+    let name = resp.key.as_ref().and_then(|key| key.name.as_deref());
+    // Resolve before either output branch, so --json cannot report success
+    // over a response that dropped the one-time key material.
+    let material = resolve_key_create_material(
+        request.hash_data.is_some(),
+        resp.key_id.as_deref(),
+        resp.key_secret.as_deref(),
+        name,
+    )?;
+
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
-        let name = resp.key.as_ref().and_then(|key| key.name.as_deref());
-        // Resolve the credentials before printing anything, so a response
-        // missing the one-time secret does not report success first.
-        let material = resolve_key_create_material(
-            request.hash_data.is_some(),
-            resp.key_id.as_deref(),
-            resp.key_secret.as_deref(),
-            name,
-        )?;
         println!("API key created!");
         println!("  Name: {}", or_absent(name));
         match material {

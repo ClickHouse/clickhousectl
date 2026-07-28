@@ -2490,3 +2490,109 @@ async fn service_reset_password_json_prints_the_generated_password() {
         serde_json::from_slice(&output.stdout).expect("--json output wasn't valid JSON");
     assert_eq!(body["password"], "s3cret");
 }
+
+// ── Generated API key material is never silently dropped ───────────────────
+//
+// `key create` without the pre-hash flags asks the API to generate a key pair
+// returned exactly once. A response missing `keyId`/`keySecret` loses that
+// credential, so validation runs before either output branch — `--json` (which
+// agent detection also turns on by itself) must not print the incomplete
+// response and exit zero.
+
+async fn run_key_create(result: Value, extra_args: &[&str]) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let mut args: Vec<&str> = vec![
+        "cloud", "--url", &url, "key", "create", "--name", "ci", "--org-id", "org-1",
+    ];
+    args.extend(extra_args);
+
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args(&args)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn key_create_fails_when_the_generated_material_is_absent() {
+    for extra_args in [&[][..], &["--json"][..]] {
+        let output = run_key_create(
+            serde_json::json!({
+                "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" },
+                "keyId": "generated-key-id",
+            }),
+            extra_args,
+        )
+        .await;
+        assert!(
+            !output.status.success(),
+            "a generated key create with no secret must fail for args {extra_args:?}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("omitted the generated key material"),
+            "stderr should name the omitted material for args {extra_args:?}:\n{stderr}",
+        );
+        // Neither the human confirmation nor the incomplete response body may
+        // reach stdout ahead of the failure.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("API key created!") && !stdout.contains("generated-key-id"),
+            "no success output may precede the failure for args {extra_args:?}:\n{stdout}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_create_json_prints_the_raw_response() {
+    let result = serde_json::json!({
+        "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" },
+        "keyId": "generated-key-id",
+        "keySecret": "generated-key-secret",
+    });
+    let output = run_key_create(result.clone(), &["--json"]).await;
+    assert_success(&output);
+    let body: Value =
+        serde_json::from_slice(&output.stdout).expect("--json output wasn't valid JSON");
+    // --json reflects the key set the API sent; nothing is synthesized from
+    // the resolved material.
+    assert_eq!(body, result);
+}
+
+#[tokio::test]
+async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
+    let output = run_key_create(
+        serde_json::json!({ "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" } }),
+        &[
+            "--hash-key-id",
+            "0f1e2d3c",
+            "--hash-key-id-suffix",
+            "3c",
+            "--hash-key-secret",
+            "4b5a6978",
+        ],
+    )
+    .await;
+    assert_success(&output);
+    // Agent detection can force --json here, so assert only what holds in
+    // both output modes: no key material is reported.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Key Secret"),
+        "a pre-hashed create must not report key material:\n{stdout}",
+    );
+}
