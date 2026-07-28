@@ -208,7 +208,10 @@ impl OpenApiInventory {
     /// response-position by walking `$ref`s from each operation's parameters
     /// and request body (request roots) and responses (response roots), then
     /// taking the transitive closure through the schema reference graph. A
-    /// schema can be in both positions.
+    /// schema can be in both positions. Reusable component objects
+    /// (`#/components/responses/...` and friends) used in those positions are
+    /// resolved as part of the walk, so a schema reachable only through one is
+    /// still classified by direction.
     fn collect_schema_positions(&mut self, spec: &Value) {
         let mut request_roots = BTreeSet::new();
         let mut response_roots = BTreeSet::new();
@@ -221,20 +224,20 @@ impl OpenApiInventory {
                     continue;
                 };
                 if let Some(parameters) = path_object.get("parameters") {
-                    referenced_schema_names(parameters, &mut request_roots);
+                    referenced_schema_names(spec, parameters, &mut request_roots);
                 }
                 for (method, operation) in path_object {
                     if !HTTP_METHODS.contains(&method.as_str()) {
                         continue;
                     }
                     if let Some(parameters) = operation.get("parameters") {
-                        referenced_schema_names(parameters, &mut request_roots);
+                        referenced_schema_names(spec, parameters, &mut request_roots);
                     }
                     if let Some(request_body) = operation.get("requestBody") {
-                        referenced_schema_names(request_body, &mut request_roots);
+                        referenced_schema_names(spec, request_body, &mut request_roots);
                     }
                     if let Some(responses) = operation.get("responses") {
-                        referenced_schema_names(responses, &mut response_roots);
+                        referenced_schema_names(spec, responses, &mut response_roots);
                     }
                 }
             }
@@ -247,7 +250,7 @@ impl OpenApiInventory {
         {
             for (schema_name, schema) in schemas {
                 let mut refs = BTreeSet::new();
-                referenced_schema_names(schema, &mut refs);
+                referenced_schema_names(spec, schema, &mut refs);
                 schema_refs.insert(schema_name.clone(), refs);
             }
         }
@@ -256,25 +259,59 @@ impl OpenApiInventory {
     }
 }
 
-fn referenced_schema_names(value: &Value, output: &mut BTreeSet<String>) {
+/// Collects the names of every `#/components/schemas/...` schema referenced
+/// from `value`, resolving `$ref`s to reusable non-schema components against
+/// `spec` and continuing the walk through them.
+///
+/// An operation may name a component object instead of inlining it —
+/// `responses: {"200": {"$ref": "#/components/responses/Widget"}}`, or the
+/// `#/components/requestBodies/...` and `#/components/parameters/...`
+/// equivalents — and those components may in turn reference further
+/// components. Without following them the schemas behind such an operation
+/// would be classified in neither direction.
+fn referenced_schema_names(spec: &Value, value: &Value, output: &mut BTreeSet<String>) {
+    walk_schema_references(spec, value, output, &mut BTreeSet::new());
+}
+
+/// `visited` holds the component references already entered, so a reference
+/// cycle between components terminates instead of recursing forever.
+fn walk_schema_references(
+    spec: &Value,
+    value: &Value,
+    output: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+) {
     match value {
         Value::Object(object) => {
-            if let Some(reference) = object.get("$ref").and_then(Value::as_str)
-                && let Some(name) = reference.strip_prefix("#/components/schemas/")
-            {
-                output.insert(name.to_string());
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                if let Some(name) = reference.strip_prefix("#/components/schemas/") {
+                    output.insert(name.to_string());
+                } else if is_component_reference(reference)
+                    && visited.insert(reference.to_string())
+                    && let Some(component) = spec.pointer(&reference[1..])
+                {
+                    walk_schema_references(spec, component, output, visited);
+                }
             }
             for child in object.values() {
-                referenced_schema_names(child, output);
+                walk_schema_references(spec, child, output, visited);
             }
         }
         Value::Array(items) => {
             for child in items {
-                referenced_schema_names(child, output);
+                walk_schema_references(spec, child, output, visited);
             }
         }
         _ => {}
     }
+}
+
+/// True for a local reference to a reusable component other than a schema —
+/// a response, request body, parameter, header, and so on. Schema references
+/// are recorded by name instead, because the transitive closure runs over the
+/// schema reference graph.
+fn is_component_reference(reference: &str) -> bool {
+    reference.starts_with("#/components/") && !reference.starts_with("#/components/schemas/")
 }
 
 fn transitive_schema_closure(
@@ -1199,6 +1236,108 @@ mod tests {
         assert!(inventory.is_request_position("Unreferenced"));
         assert!(!inventory.is_response_position("Unreferenced"));
         assert!(!inventory.is_request_position("ResponseOnlyDetail"));
+    }
+
+    #[test]
+    fn classifies_schemas_reached_through_reusable_components() {
+        // An operation may name a reusable component object instead of
+        // inlining it, and that component may reference another component. The
+        // schemas behind either hop must still be classified by direction.
+        let spec = serde_json::json!({
+            "paths": {
+                "/widgets": {
+                    "post": {
+                        "operationId": "createWidget",
+                        "parameters": [{"$ref": "#/components/parameters/SortOrder"}],
+                        "requestBody": {"$ref": "#/components/requestBodies/WidgetPost"},
+                        "responses": {"200": {"$ref": "#/components/responses/Widget"}}
+                    }
+                }
+            },
+            "components": {
+                "parameters": {"SortOrder": {
+                    "name": "sort",
+                    "schema": {"$ref": "#/components/schemas/SortOrder"}
+                }},
+                "requestBodies": {"WidgetPost": {"content": {"application/json": {
+                    "schema": {"$ref": "#/components/schemas/WidgetPostRequest"}
+                }}}},
+                "responses": {"Widget": {
+                    "headers": {"X-Widget-Mode": {"$ref": "#/components/headers/WidgetMode"}},
+                    "content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/WidgetPostResponse"}
+                    }}
+                }},
+                "headers": {"WidgetMode": {
+                    "schema": {"$ref": "#/components/schemas/WidgetMode"}
+                }},
+                "schemas": {
+                    "SortOrder": {"type": "string"},
+                    "WidgetPostRequest": {"properties": {
+                        "nested": {"$ref": "#/components/schemas/RequestNested"}
+                    }},
+                    "RequestNested": {"type": "string"},
+                    "WidgetPostResponse": {"properties": {
+                        "nested": {"$ref": "#/components/schemas/ResponseNested"}
+                    }},
+                    "ResponseNested": {"type": "string"},
+                    "WidgetMode": {"type": "string"}
+                }
+            }
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        assert_eq!(
+            inventory.request_position_schemas,
+            BTreeSet::from([
+                "SortOrder".to_string(),
+                "WidgetPostRequest".to_string(),
+                "RequestNested".to_string(),
+            ])
+        );
+        assert_eq!(
+            inventory.response_position_schemas,
+            BTreeSet::from([
+                "WidgetPostResponse".to_string(),
+                "ResponseNested".to_string(),
+                "WidgetMode".to_string(),
+            ])
+        );
+        assert!(!inventory.is_request_position("WidgetPostResponse"));
+    }
+
+    #[test]
+    fn terminates_on_a_component_reference_cycle() {
+        // Cyclic component references are malformed, but the walk must not
+        // recurse forever on them, and schemas seen on the way still classify.
+        let spec = serde_json::json!({
+            "paths": {
+                "/widgets": {
+                    "get": {
+                        "operationId": "getWidget",
+                        "responses": {"200": {"$ref": "#/components/responses/First"}}
+                    }
+                }
+            },
+            "components": {
+                "responses": {
+                    "First": {
+                        "content": {"application/json": {
+                            "schema": {"$ref": "#/components/schemas/Widget"}
+                        }},
+                        "x-next": {"$ref": "#/components/responses/Second"},
+                        "x-self": {"$ref": "#/components/responses/SelfReferential"}
+                    },
+                    "Second": {"x-next": {"$ref": "#/components/responses/First"}},
+                    "SelfReferential": {"x-next": {"$ref": "#/components/responses/SelfReferential"}}
+                },
+                "schemas": {"Widget": {"type": "string"}}
+            }
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+        assert_eq!(
+            inventory.response_position_schemas,
+            BTreeSet::from(["Widget".to_string()])
+        );
     }
 
     #[test]
