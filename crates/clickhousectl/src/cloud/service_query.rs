@@ -114,22 +114,14 @@ pub async fn ensure_service_query_setup(
         }
     };
 
-    let endpoint_id = match require_field(endpoint.id, "id") {
-        Ok(id) => id,
-        Err(e) => {
-            // The binding took effect but we can't persist it, so the key
-            // is again unusable. Discarding it leaves a dangling UUID in the
-            // endpoint's `openApiKeys`, which is harmless — a retry merges a
-            // fresh key into the same endpoint (see `bind_query_endpoint`).
-            discard_api_key(client, org_id, &api_key_uuid).await;
-            return Err(e);
-        }
-    };
-
+    // The upsert succeeded, so the key is bound and fully usable. The echoed
+    // `id` is diagnostic only, never an auth input: persist the record
+    // without it rather than deleting a working credential and leaving a
+    // dangling UUID in the endpoint's `openApiKeys`.
     let stored = ServiceQueryKey {
         key_id,
         key_secret,
-        endpoint_id,
+        endpoint_id: endpoint.id,
         service_name: service_name.to_string(),
         created_at: Utc::now(),
     };

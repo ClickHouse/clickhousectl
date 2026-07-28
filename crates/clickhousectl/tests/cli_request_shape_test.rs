@@ -1595,8 +1595,9 @@ async fn service_query_deletes_the_key_when_the_create_response_omits_the_secret
 }
 
 #[tokio::test]
-async fn service_query_deletes_the_key_when_the_endpoint_response_omits_the_id() {
+async fn service_query_keeps_the_key_when_the_endpoint_response_omits_the_id() {
     let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
     mount_key_create_and_delete(
         &control,
         serde_json::json!({
@@ -1606,8 +1607,9 @@ async fn service_query_deletes_the_key_when_the_endpoint_response_omits_the_id()
         }),
     )
     .await;
-    // No endpoint configured yet (404), and the upsert answers without `id`,
-    // so the binding took effect but can't be persisted.
+    // No endpoint configured yet (404), and the upsert succeeds but answers
+    // without `id`. The key is bound and usable: the echoed id is diagnostic
+    // only, so provisioning completes rather than discarding the credential.
     let endpoint_path =
         format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
     Mock::given(method("GET"))
@@ -1629,20 +1631,49 @@ async fn service_query_deletes_the_key_when_the_endpoint_response_omits_the_id()
         .mount(&control)
         .await;
 
-    let (dir, stderr) = invoke_service_query_provisioning(&control);
+    let dir = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
     assert!(
-        stderr.contains("'id'"),
-        "stderr should name the missing field:\n{stderr}",
+        recorded_key_deletes(&control).await.is_empty(),
+        "a bound, usable key must not be discarded over an unused echoed id",
     );
 
-    assert_eq!(
-        recorded_key_deletes(&control).await,
-        vec![format!(
-            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
-        )],
-        "a bound-but-unpersistable key must be deleted",
+    // The credential is persisted, with `endpoint_id` omitted rather than
+    // written as a placeholder.
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    let key = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(key["key_id"], "provisioned-key-id");
+    assert_eq!(key["key_secret"], "provisioned-key-secret");
+    assert!(
+        key.get("endpoint_id").is_none(),
+        "an absent endpoint id must not be stored: {stored}",
     );
-    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
 }
 
 #[tokio::test]
@@ -1788,7 +1819,14 @@ async fn service_query_binds_the_new_key_when_the_endpoint_reports_no_keys() {
     // An explicitly empty `openApiKeys` is a real answer, not an omission.
     let (dir, sent_keys) = provision_against_endpoint_with_keys(serde_json::json!([])).await;
     assert_eq!(sent_keys, serde_json::json!([QUERY_TEST_KEY_UUID]));
-    assert!(dir.path().join(".clickhouse/credentials.json").exists());
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["endpoint_id"], "ep-1",
+        "an echoed endpoint id is recorded",
+    );
 }
 
 #[tokio::test]
