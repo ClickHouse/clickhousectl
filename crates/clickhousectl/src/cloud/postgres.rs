@@ -267,14 +267,21 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::er
 
 /// Builds the `postgres config` write body from a user-supplied JSON document.
 ///
+/// The document root must be a JSON object; anything else (a scalar, an array,
+/// `null`) is rejected rather than read as "no sections", which would send an
+/// empty body and reset the configuration.
+///
 /// The API rejects a body that omits either `pgConfig` or `pgBouncerConfig`, and
-/// the request model is strict (no serde defaults), so an omitted key resolves
-/// to an empty object here — explicitly, at the point of use.
+/// the request model is strict (no serde defaults), so an omitted key of an
+/// object root resolves to an empty object here — explicitly, at the point of use.
 fn instance_config_from_json(
     doc: &serde_json::Value,
 ) -> Result<PostgresInstanceConfig, Box<dyn std::error::Error>> {
+    let root = doc
+        .as_object()
+        .ok_or("configuration document must be a JSON object")?;
     let section = |key: &str| {
-        doc.get(key)
+        root.get(key)
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}))
     };
@@ -1707,6 +1714,34 @@ mod tests {
             serde_json::to_value(&empty).unwrap(),
             serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
         );
+    }
+
+    #[test]
+    fn instance_config_from_json_accepts_both_sections() {
+        let cfg = instance_config_from_json(&serde_json::json!({
+            "pgConfig": { "max_connections": 500, "work_mem": "64MB" },
+            "pgBouncerConfig": {},
+        }))
+        .unwrap();
+        assert_eq!(cfg.pg_config.max_connections, Some(serde_json::json!(500)));
+        assert_eq!(cfg.pg_config.work_mem, Some(serde_json::json!("64MB")));
+        assert_eq!(cfg.pg_bouncer_config, PgBouncerConfig::default());
+    }
+
+    #[test]
+    fn instance_config_from_json_refuses_a_non_object_root() {
+        // A non-object root must not read as "no sections": that would send
+        // `{"pgConfig": {}, "pgBouncerConfig": {}}` and reset the config.
+        for root in [
+            serde_json::Value::Null,
+            serde_json::json!([{ "pgConfig": {} }]),
+            serde_json::json!("pgConfig"),
+            serde_json::json!(7),
+            serde_json::json!(true),
+        ] {
+            let err = instance_config_from_json(&root).unwrap_err().to_string();
+            assert_eq!(err, "configuration document must be a JSON object");
+        }
     }
 
     #[test]
