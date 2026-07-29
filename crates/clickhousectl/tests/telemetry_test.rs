@@ -80,6 +80,18 @@ impl Sandbox {
         self.command(args).output().expect("failed to spawn binary")
     }
 
+    /// Run the binary with its stderr attached to a pipe whose read end is
+    /// already closed, so every stderr write in the child fails. A panic on
+    /// such a write would surface as exit code 101.
+    fn run_with_closed_stderr(&self, args: &[&str]) -> Output {
+        let (reader, writer) = std::io::pipe().expect("failed to create pipe");
+        drop(reader);
+        self.command(args)
+            .stderr(writer)
+            .output()
+            .expect("failed to spawn binary")
+    }
+
     /// Poll until the mock has seen `n` requests; panics after ~5s. The send
     /// child is detached, so arrival is asynchronous.
     async fn wait_for_requests(&self, n: usize) -> Vec<Value> {
@@ -584,4 +596,56 @@ async fn marker_lives_in_dot_clickhouse_telemetry_json() {
         entries.contains(&"telemetry.json".to_string()),
         "{entries:?}"
     );
+}
+
+// -- closed stderr must never turn an exit code into a panic (#320) ----------
+
+#[tokio::test]
+async fn closed_stderr_never_panics_or_bypasses_telemetry() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // Cache a newer version so `--help` and the failing command both try to
+    // write the update notice to the (closed) stderr.
+    let cache = sandbox
+        .home
+        .path()
+        .join(".clickhouse")
+        .join("last_update_check");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(&cache, format!("{now}\n999.0.0")).unwrap();
+
+    // `--help`: the update notice write is swallowed, clap's exit code 0 is
+    // preserved, and the telemetry tail still runs.
+    let output = sandbox.run_with_closed_stderr(&["--help"]);
+    assert_eq!(output.status.code(), Some(0), "help must not panic");
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["outcome"], "help");
+
+    // A failing command: the `Error: ...` line and the update notice both hit
+    // the closed stderr; the handler's exit code 1 survives (not panic's 101)
+    // and the failure event still goes out.
+    let output = sandbox.run_with_closed_stderr(&["local", "remove", "no-such-version-xyz"]);
+    assert_eq!(output.status.code(), Some(1), "failure must keep exit 1");
+    let payloads = sandbox.wait_for_requests(2).await;
+    assert_eq!(payloads[1]["exit_code"], 1);
+
+    // `telemetry enable` under DO_NOT_TRACK: the stderr note about DNT is
+    // swallowed and the command still succeeds.
+    let output = {
+        let (reader, writer) = std::io::pipe().expect("failed to create pipe");
+        drop(reader);
+        sandbox
+            .command(&["telemetry", "enable"])
+            .env("DO_NOT_TRACK", "1")
+            .stderr(writer)
+            .output()
+            .expect("failed to spawn binary")
+    };
+    assert_eq!(output.status.code(), Some(0), "enable must not panic");
+    assert!(stdout_of(&output).contains("Telemetry enabled."));
 }

@@ -159,7 +159,10 @@ async fn run_parsed(cli: Cli) -> i32 {
     let exit_code = match result {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            use std::io::Write;
+            // Not `eprintln!`, which panics on a closed stderr — see
+            // `telemetry::print_first_run_notice`.
+            let _ = writeln!(std::io::stderr(), "Error: {}", e);
             e.exit_code()
         }
     };

@@ -630,7 +630,11 @@ pub fn run_command(cmd: crate::cli::TelemetryCommands) -> Result<()> {
             // (see `decide`): without this note the user would see success
             // while telemetry stays fully silent.
             if env_truthy(real_env_lookup(DNT_ENV)) {
-                eprintln!(
+                use std::io::Write;
+                // Not `eprintln!`, which panics on a closed stderr — see
+                // `print_first_run_notice`.
+                let _ = writeln!(
+                    std::io::stderr(),
                     "Note: the DO_NOT_TRACK environment variable is set; telemetry will remain silent while it is set."
                 );
             }
