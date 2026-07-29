@@ -48,7 +48,7 @@ use crate::error::{Error, Result};
 use crate::paths;
 
 /// Public documentation for what is collected and how to opt out.
-const DOCS_URL: &str = "https://clickhouse.com/docs/interfaces/cli#telemetry";
+const DOCS_URL: &str = "https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry";
 
 /// Production ingest endpoint (Cloudflare worker in front of ClickHouse Cloud).
 const DEFAULT_ENDPOINT: &str = "https://chctl.clickhouse.com/v1/telemetry";

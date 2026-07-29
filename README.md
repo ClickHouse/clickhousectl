@@ -885,7 +885,7 @@ The CLI checks for updates in the background (at most once per 24 hours) and cac
 
 ## Telemetry
 
-`clickhousectl` collects anonymous usage data to help us understand which commands matter and improve the CLI. Full details: <https://clickhouse.com/docs/interfaces/cli#telemetry>.
+`clickhousectl` collects anonymous usage data to help us understand which commands matter and improve the CLI. Full details: <https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry>.
 
 Each event contains exactly:
 
@@ -897,7 +897,7 @@ Each event contains exactly:
 - whether it ran in CI (`CI` env var)
 - whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)
 
-Every invocation counts, including `--help`, `--version`, a bare `clickhousectl`, and mistyped commands — failed invocations are recorded as such (that is how we find the confusing corners of the CLI), subject to the same consent flow as everything else.
+Every invocation counts, including `--help`, `--version`, a bare `clickhousectl`, and mistyped commands — failed invocations are recorded as such (that is how we find the confusing corners of the CLI), subject to the same consent flow as everything else. (One known gap: a few local commands that mirror a child process's exit code directly skip the event when the child exits non-zero; tracked in [#321](https://github.com/ClickHouse/clickhousectl/issues/321).)
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all. That holds for failed parses too: they are reconstructed by matching argv tokens against the defined command tree, so every recorded string is one the CLI itself defines.
 

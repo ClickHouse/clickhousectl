@@ -84,7 +84,7 @@ CONTEXT FOR AGENTS:
   clickhousectl collects anonymous usage data: command name, flag names (never values or
   arguments), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
   Opt out with `clickhousectl telemetry disable` or DO_NOT_TRACK=1.
-  Details: https://clickhouse.com/docs/interfaces/cli#telemetry")]
+  Details: https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry")]
     Telemetry(TelemetryArgs),
 }
 
