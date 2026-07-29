@@ -23,8 +23,8 @@
 //! agents. A successful parse is captured exactly from `ArgMatches`; a
 //! failed parse has none, so [`capture_lossy`] re-walks argv against the
 //! clap definitions and records the longest *valid* prefix, the error kind,
-//! and clap's own suggestion — the unmatched token itself never leaves the
-//! machine.
+//! and clap's suggestion re-anchored to a definition string — the unmatched
+//! token itself never leaves the machine.
 //!
 //! Two commands hand the process over to another program via `exec()`
 //! (`local client`, host `psql`), replacing the process image so `main`'s
@@ -192,9 +192,13 @@ struct Payload {
     /// `"invalid_subcommand"`, …). Literal strings only — this field can
     /// never carry user data.
     outcome: &'static str,
-    /// Clap's "did you mean" for failed parses. Computed by clap from the
-    /// definition set, so it names a defined subcommand or flag — never the
-    /// user's input. `null` when clap made no suggestion.
+    /// Clap's "did you mean" for failed parses, anchored locally: recorded
+    /// only when it equality-matches a subcommand name or arg long name in
+    /// the clap definitions, and the recorded string is cloned from the
+    /// definition itself — the "never the user's input" guarantee is
+    /// enforced here, not inherited from clap internals. Always the bare
+    /// canonical name (no `--`), for flags and subcommands alike. `null`
+    /// when clap made no suggestion or the suggestion matched no definition.
     suggestion: Option<String>,
     is_agent: bool,
     /// Canonical id of the detected coding agent (e.g. "claude-code");
@@ -238,7 +242,9 @@ pub struct Invocation {
     /// See [`Payload::outcome`]: `"ok"` from [`capture`], an error-kind
     /// mapping from [`capture_lossy`].
     outcome: &'static str,
-    /// See [`Payload::suggestion`]: always `None` from [`capture`].
+    /// See [`Payload::suggestion`]: always `None` from [`capture`]; from
+    /// [`capture_lossy`] it is a clone of a definition-owned string, never
+    /// of clap's error context.
     suggestion: Option<String>,
 }
 
@@ -262,17 +268,51 @@ fn outcome_for_error(kind: clap::error::ErrorKind) -> &'static str {
     }
 }
 
-/// Clap's "did you mean" for a failed parse, when present. The suggestion is
-/// computed by clap from the definition set, so it is definition-derived and
-/// safe to record.
-fn suggestion_for_error(error: &clap::Error) -> Option<String> {
+/// Clap's "did you mean" for a failed parse, when present. Candidates come
+/// out of clap's error context, but the recorded value does not: each one is
+/// re-anchored to the built definitions by [`resolve_suggestion`], so the
+/// privacy invariant holds locally rather than resting on clap internals.
+/// Clap sorts multi-candidate lists by *ascending* similarity (clap_builder
+/// `did_you_mean` contract), so the best candidate is the last one that
+/// resolves.
+fn suggestion_for_error(root: &clap::Command, error: &clap::Error) -> Option<String> {
     use clap::error::{ContextKind, ContextValue};
     [ContextKind::SuggestedSubcommand, ContextKind::SuggestedArg]
         .iter()
         .find_map(|kind| match error.get(*kind) {
-            Some(ContextValue::String(s)) => Some(s.clone()),
-            Some(ContextValue::Strings(s)) => s.first().cloned(),
+            Some(ContextValue::String(s)) => resolve_suggestion(root, s),
+            Some(ContextValue::Strings(s)) => {
+                s.iter().rev().find_map(|s| resolve_suggestion(root, s))
+            }
             _ => None,
+        })
+}
+
+/// Anchor a clap-suggested name to the definition that owns it: strip the
+/// `--` prefix clap puts on flag suggestions, then require an equality match
+/// against some subcommand name or arg long name in the tree. The returned
+/// string is cloned from the *definition*, never from clap's error context,
+/// so a recorded suggestion is structurally definition-owned; anything
+/// unmatched is dropped. Flags and subcommands are both recorded as the bare
+/// canonical name.
+fn resolve_suggestion(root: &clap::Command, suggested: &str) -> Option<String> {
+    let name = suggested.trim_start_matches('-');
+    find_defined_name(root, name).map(str::to_string)
+}
+
+/// Depth-first search of the whole command tree for a definition string
+/// equal to `name`: arg long names first, then subcommand names, recursing
+/// into every subcommand.
+fn find_defined_name<'a>(cmd: &'a clap::Command, name: &str) -> Option<&'a str> {
+    cmd.get_arguments()
+        .filter_map(|a| a.get_long())
+        .find(|&long| long == name)
+        .or_else(|| {
+            cmd.get_subcommands().find_map(|sub| {
+                Some(sub.get_name())
+                    .filter(|&sub_name| sub_name == name)
+                    .or_else(|| find_defined_name(sub, name))
+            })
         })
 }
 
@@ -446,7 +486,7 @@ pub fn capture_lossy(
         command: path.join(" "),
         flags: flags.into_iter().collect(),
         outcome: outcome_for_error(error.kind()),
-        suggestion: suggestion_for_error(error),
+        suggestion: suggestion_for_error(root, error),
     }
 }
 
@@ -1063,6 +1103,65 @@ mod tests {
         assert_eq!(inv.suggestion.as_deref(), Some("service"));
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
         assert!(!json.contains("servce"), "typo leaked into payload: {json}");
+    }
+
+    #[test]
+    fn lossy_suggestion_picks_the_most_similar_candidate() {
+        use clap::Command;
+        use clap::error::{ContextKind, ContextValue};
+        // Jaro similarity to the typo "starz" is unambiguously ordered:
+        // "start" 0.87 > "stash" 0.73, both above clap's 0.7 threshold, so
+        // clap suggests both — ascending, most similar last. Taking the
+        // first would record the weakest candidate.
+        let mut cmd = Command::new("root")
+            .subcommand(Command::new("stash"))
+            .subcommand(Command::new("start"));
+        let argv: Vec<std::ffi::OsString> = ["root", "starz"].iter().map(Into::into).collect();
+        let error = cmd.try_get_matches_from_mut(&argv).unwrap_err();
+        // Guard against the premise going stale: both candidates must be
+        // present, ascending, or the assertion below proves nothing.
+        assert_eq!(
+            error.get(ContextKind::SuggestedSubcommand),
+            Some(&ContextValue::Strings(vec!["stash".into(), "start".into()]))
+        );
+        let inv = capture_lossy(&mut cmd, &argv, &error);
+        assert_eq!(inv.suggestion.as_deref(), Some("start"));
+    }
+
+    #[test]
+    fn lossy_flag_suggestion_records_the_bare_definition_name() {
+        // Clap's SuggestedArg context carries `--json`; the recorded value is
+        // the bare canonical name, cloned from the definition.
+        let inv = capture_lossy_from(&["clickhousectl", "cloud", "service", "list", "--jsn"]);
+        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.suggestion.as_deref(), Some("json"));
+    }
+
+    #[test]
+    fn suggestion_matching_no_definition_is_dropped() {
+        use clap::error::{ContextKind, ContextValue, ErrorKind};
+        let mut cmd = crate::cli::Cli::command();
+        cmd.build();
+        // Fabricate a suggestion clap could never produce: anchoring must
+        // reject anything that is not a definition string.
+        let mut error = clap::Error::new(ErrorKind::InvalidSubcommand);
+        error.insert(
+            ContextKind::SuggestedSubcommand,
+            ContextValue::Strings(vec!["not-a-defined-name".into()]),
+        );
+        assert_eq!(suggestion_for_error(&cmd, &error), None);
+
+        // A candidate list where only the weaker (earlier) entry resolves:
+        // the unresolvable one is skipped, not recorded.
+        let mut error = clap::Error::new(ErrorKind::InvalidSubcommand);
+        error.insert(
+            ContextKind::SuggestedSubcommand,
+            ContextValue::Strings(vec!["service".into(), "not-a-defined-name".into()]),
+        );
+        assert_eq!(
+            suggestion_for_error(&cmd, &error).as_deref(),
+            Some("service")
+        );
     }
 
     #[test]
