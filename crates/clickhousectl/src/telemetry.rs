@@ -159,9 +159,21 @@ fn env_truthy(value: Option<String>) -> bool {
 struct Payload {
     command: String,
     flags: Vec<String>,
-    /// gh-style exit code (`Error::exit_code`): 0 success, 1 error,
-    /// 2 cancelled, 4 auth required.
+    /// Exit code: gh-style (`Error::exit_code`) for dispatched commands —
+    /// 0 success, 1 error, 2 cancelled, 4 auth required — and clap's own
+    /// code for parse outcomes (0 help/version, 2 usage error). The numeric
+    /// clash between "cancelled" and "usage error" is disambiguated by
+    /// `outcome` (see #319 for the shell-visible fix).
     exit_code: i32,
+    /// How the invocation ended, from the closed vocabulary `"ok"` (parsed
+    /// and dispatched) or a direct mapping of clap's `ErrorKind` (`"help"`,
+    /// `"version"`, `"invalid_subcommand"`, …). Literal strings only — this
+    /// field can never carry user data.
+    outcome: &'static str,
+    /// Clap's "did you mean" for failed parses. Computed by clap from the
+    /// definition set, so it names a defined subcommand or flag — never the
+    /// user's input. `null` when clap made no suggestion.
+    suggestion: Option<String>,
     is_agent: bool,
     /// Canonical id of the detected coding agent (e.g. "claude-code");
     /// `null` for human invocations.
@@ -180,6 +192,8 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
         command: invocation.command.clone(),
         flags,
         exit_code,
+        outcome: invocation.outcome,
+        suggestion: invocation.suggestion.clone(),
         is_agent: detected.is_some(),
         agent: detected.map(|a| a.id.as_str().to_string()),
         ci: env_truthy(env(CI_ENV)),
@@ -198,6 +212,45 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
 pub struct Invocation {
     command: String,
     flags: Vec<String>,
+    /// See [`Payload::outcome`]: `"ok"` from [`capture`], an error-kind
+    /// mapping from [`capture_lossy`].
+    outcome: &'static str,
+    /// See [`Payload::suggestion`]: always `None` from [`capture`].
+    suggestion: Option<String>,
+}
+
+/// Map clap's parse-error kind to the closed outcome vocabulary. Every value
+/// is a literal owned by this match; the wildcard covers the remaining (and
+/// future — `ErrorKind` is non-exhaustive) kinds.
+fn outcome_for_error(kind: clap::error::ErrorKind) -> &'static str {
+    use clap::error::ErrorKind as K;
+    match kind {
+        K::DisplayHelp => "help",
+        K::DisplayVersion => "version",
+        K::InvalidSubcommand => "invalid_subcommand",
+        K::UnknownArgument => "unknown_argument",
+        // Derive commands with a required subcommand report a bare
+        // invocation as the "display help" flavor; for telemetry both kinds
+        // are the same fact — no subcommand was given.
+        K::MissingSubcommand | K::DisplayHelpOnMissingArgumentOrSubcommand => "missing_subcommand",
+        K::MissingRequiredArgument => "missing_required",
+        K::InvalidValue | K::ValueValidation => "invalid_value",
+        _ => "other_parse_error",
+    }
+}
+
+/// Clap's "did you mean" for a failed parse, when present. The suggestion is
+/// computed by clap from the definition set, so it is definition-derived and
+/// safe to record.
+fn suggestion_for_error(error: &clap::Error) -> Option<String> {
+    use clap::error::{ContextKind, ContextValue};
+    [ContextKind::SuggestedSubcommand, ContextKind::SuggestedArg]
+        .iter()
+        .find_map(|kind| match error.get(*kind) {
+            Some(ContextValue::String(s)) => Some(s.clone()),
+            Some(ContextValue::Strings(s)) => s.first().cloned(),
+            _ => None,
+        })
 }
 
 /// Derive the command path and passed-flag names from the parsed matches.
@@ -260,6 +313,88 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     Invocation {
         command: path.join(" "),
         flags: flags.into_iter().collect(),
+        outcome: "ok",
+        suggestion: None,
+    }
+}
+
+/// Derive a lossy invocation from raw argv when parsing failed and no
+/// `ArgMatches` exists (help, version, and every usage error).
+///
+/// Walks the argv tokens against the clap `Command` tree and records only
+/// strings owned by the definitions, matched by equality — argv slices never
+/// enter the result, the same "structurally impossible to leak a value"
+/// guarantee as [`capture`]. The walk stops at the first token that matches
+/// nothing, so `command` is the longest *valid* prefix; the unmatched token
+/// itself is never recorded (a typo is indistinguishable from a secret
+/// pasted into the wrong window — see #320).
+pub fn capture_lossy(
+    root: &mut clap::Command,
+    argv: &[std::ffi::OsString],
+    error: &clap::Error,
+) -> Invocation {
+    // Idempotent; materializes the implicit help/version args so `--help`
+    // and `-h` resolve to real definitions below.
+    root.build();
+
+    // Ancestor commands, innermost last, like `capture`: flags are resolved
+    // against the current command first, then outward (global flags are
+    // defined on an ancestor but valid at deeper levels).
+    let mut stack: Vec<&clap::Command> = vec![root];
+    let mut path: Vec<&str> = Vec::new();
+    let mut flags = std::collections::BTreeSet::new();
+    let mut tokens = argv.iter().skip(1);
+    while let Some(token) = tokens.next() {
+        // A non-UTF-8 token cannot match any definition.
+        let Some(token) = token.to_str() else { break };
+        // Everything after `--` is positional by definition.
+        if token == "--" {
+            break;
+        }
+        if let Some(rest) = token.strip_prefix("--") {
+            let (name, has_inline_value) = match rest.split_once('=') {
+                Some((name, _value)) => (name, true),
+                None => (rest, false),
+            };
+            let Some(arg) = stack
+                .iter()
+                .rev()
+                .find_map(|cmd| cmd.get_arguments().find(|a| a.get_long() == Some(name)))
+            else {
+                break;
+            };
+            // `get_long` is `Some` — that is what the token just matched.
+            flags.extend(arg.get_long().map(str::to_string));
+            // The definition says this flag consumes the next token as its
+            // value: skip it, so a value that happens to equal a sibling
+            // subcommand name is never misrecorded as command path.
+            if !has_inline_value && arg.get_action().takes_values() {
+                tokens.next();
+            }
+        } else if token == "-h" {
+            // The short forms of the two implicit flags, recorded under
+            // their definitions' long names like everything else.
+            flags.insert("help".to_string());
+        } else if token == "-V" {
+            flags.insert("version".to_string());
+        } else if let Some(sub) = stack
+            .last()
+            .expect("stack starts non-empty and only grows")
+            .find_subcommand(token)
+        {
+            // Recorded name is the definition's, even when the token
+            // matched an alias.
+            path.push(sub.get_name());
+            stack.push(sub);
+        } else {
+            break;
+        }
+    }
+    Invocation {
+        command: path.join(" "),
+        flags: flags.into_iter().collect(),
+        outcome: outcome_for_error(error.kind()),
+        suggestion: suggestion_for_error(error),
     }
 }
 
@@ -477,6 +612,8 @@ mod tests {
         Invocation {
             command: "local list".into(),
             flags: vec!["json".into()],
+            outcome: "ok",
+            suggestion: None,
         }
     }
 
@@ -565,6 +702,8 @@ mod tests {
         assert_eq!(value["command"], "local list");
         assert_eq!(value["flags"], serde_json::json!(["json"]));
         assert_eq!(value["exit_code"], 4);
+        assert_eq!(value["outcome"], "ok");
+        assert_eq!(value["suggestion"], serde_json::Value::Null);
         assert_eq!(value["ci"], true);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["os"], std::env::consts::OS);
@@ -599,6 +738,8 @@ mod tests {
                 "command",
                 "flags",
                 "exit_code",
+                "outcome",
+                "suggestion",
                 "is_agent",
                 "agent",
                 "ci",
@@ -620,6 +761,8 @@ mod tests {
         let inv = Invocation {
             command: "x".into(),
             flags: (0..100).map(|i| format!("flag-{i}")).collect(),
+            outcome: "ok",
+            suggestion: None,
         };
         let payload = build_payload(&inv, 0, &env_of(&[]));
         assert_eq!(payload.flags.len(), MAX_FLAGS);
@@ -686,6 +829,145 @@ mod tests {
         let inv = capture_from(&["clickhousectl", "local", "list"]);
         assert_eq!(inv.command, "local list");
         assert!(inv.flags.is_empty());
+    }
+
+    // -- capture_lossy: failed parses, longest valid prefix only -------------
+
+    fn capture_lossy_from(args: &[&str]) -> Invocation {
+        let mut cmd = crate::cli::Cli::command();
+        let argv: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+        let error = cmd
+            .try_get_matches_from_mut(&argv)
+            .expect_err("argv must fail to parse for capture_lossy tests");
+        capture_lossy(&mut cmd, &argv, &error)
+    }
+
+    #[test]
+    fn lossy_bare_invocation_is_missing_subcommand() {
+        let inv = capture_lossy_from(&["clickhousectl"]);
+        assert_eq!(inv.command, "");
+        assert!(inv.flags.is_empty());
+        assert_eq!(inv.outcome, "missing_subcommand");
+        assert_eq!(inv.suggestion, None);
+    }
+
+    #[test]
+    fn lossy_root_help_records_the_help_flag() {
+        let inv = capture_lossy_from(&["clickhousectl", "--help"]);
+        assert_eq!(inv.command, "");
+        assert_eq!(inv.flags, ["help"]);
+        assert_eq!(inv.outcome, "help");
+    }
+
+    #[test]
+    fn lossy_nested_help_keeps_the_command_path() {
+        let inv = capture_lossy_from(&["clickhousectl", "cloud", "service", "--help"]);
+        assert_eq!(inv.command, "cloud service");
+        assert_eq!(inv.flags, ["help"]);
+        assert_eq!(inv.outcome, "help");
+    }
+
+    #[test]
+    fn lossy_short_help_and_version_record_long_names() {
+        let inv = capture_lossy_from(&["clickhousectl", "local", "-h"]);
+        assert_eq!(inv.command, "local");
+        assert_eq!(inv.flags, ["help"]);
+        assert_eq!(inv.outcome, "help");
+
+        let inv = capture_lossy_from(&["clickhousectl", "-V"]);
+        assert_eq!(inv.command, "");
+        assert_eq!(inv.flags, ["version"]);
+        assert_eq!(inv.outcome, "version");
+    }
+
+    #[test]
+    fn lossy_typoed_subcommand_stops_and_carries_the_suggestion() {
+        let inv = capture_lossy_from(&["clickhousectl", "cloud", "servce", "list"]);
+        // The typo'd token is never recorded; the path is the valid prefix.
+        assert_eq!(inv.command, "cloud");
+        assert!(inv.flags.is_empty());
+        assert_eq!(inv.outcome, "invalid_subcommand");
+        // Clap's did-you-mean names a *defined* subcommand.
+        assert_eq!(inv.suggestion.as_deref(), Some("service"));
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("servce"), "typo leaked into payload: {json}");
+    }
+
+    #[test]
+    fn lossy_unknown_flag_stops_the_walk() {
+        let inv = capture_lossy_from(&["clickhousectl", "local", "--frobnicate", "list"]);
+        assert_eq!(inv.command, "local");
+        assert!(inv.flags.is_empty());
+        assert_eq!(inv.outcome, "unknown_argument");
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("frobnicate"), "unknown flag leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_flag_value_equal_to_a_subcommand_name_is_skipped() {
+        // `get` is missing its required positional, so the parse fails; the
+        // `--org-id` *value* happens to be the name of a sibling subcommand
+        // and must not be misrecorded as command path.
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "get",
+            "--org-id",
+            "list",
+        ]);
+        assert_eq!(inv.command, "cloud service get");
+        assert_eq!(inv.flags, ["org-id"]);
+        assert_eq!(inv.outcome, "missing_required");
+    }
+
+    #[test]
+    fn lossy_inline_flag_value_is_discarded() {
+        // `--org-id=SECRET` fails only because of the trailing junk token;
+        // the name part is matched, the inline value never recorded.
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "list",
+            "--org-id=SECRET-ORG",
+            "junk-token",
+        ]);
+        assert_eq!(inv.command, "cloud service list");
+        assert_eq!(inv.flags, ["org-id"]);
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "inline value leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_double_dash_stops_the_walk() {
+        let inv = capture_lossy_from(&["clickhousectl", "local", "--", "SECRET-POSITIONAL"]);
+        assert_eq!(inv.command, "local");
+        assert!(inv.flags.is_empty());
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "post-`--` token leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_hostile_argv_never_reaches_the_payload() {
+        // Mirrors capture_reports_names_only_never_values_or_positionals:
+        // positionals, flag values, and unmatched tokens must all be absent.
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "cloud",
+            "--json",
+            "service",
+            "get",
+            "SECRET-SERVICE-ID",
+            "--org-id",
+            "SECRET-ORG",
+            "--wat",
+            "SECRET-TRAILING",
+        ]);
+        assert_eq!(inv.command, "cloud service get");
+        assert_eq!(inv.outcome, "unknown_argument");
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
     }
 
     #[test]

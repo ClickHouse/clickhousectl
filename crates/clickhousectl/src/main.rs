@@ -43,41 +43,74 @@ async fn main() {
 
     // Parse via ArgMatches (rather than `Cli::try_parse()`) so the telemetry
     // capture below can read the command path and passed-flag *names* from the
-    // clap definitions — argument values are never consulted.
+    // clap definitions — argument values are never consulted. Argv is
+    // collected once so a failed parse can be re-walked by `capture_lossy`.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let mut cmd = Cli::command();
-    let matches = match cmd.try_get_matches_from_mut(std::env::args_os()) {
-        Ok(matches) => matches,
+
+    // Single-exit invariant (#320): every invocation — bare, help, version,
+    // typo, dispatched command — falls through to the common tail below, so
+    // the first-run telemetry notice and subsequent events cover all of them.
+    // The sole exemption is the hidden `telemetry send` child inside
+    // `run_parsed`. Do not add exit paths that bypass this tail.
+    let (exit_code, telemetry_invocation) = match cmd.try_get_matches_from_mut(argv.iter()) {
+        Ok(matches) => {
+            #[cfg(feature = "telemetry")]
+            let invocation = telemetry::capture(&cmd, &matches);
+            #[cfg(not(feature = "telemetry"))]
+            let invocation = ();
+            // The matches were produced by this very `cmd`, so a mismatch is
+            // a clap derive bug, not a user error.
+            let cli = Cli::from_arg_matches(&matches)
+                .expect("Cli::from_arg_matches must accept matches from Cli::command()");
+            (run_parsed(cli).await, invocation)
+        }
         Err(e) => {
+            // clap keeps its own formatting and colors; help/version print to
+            // stdout, usage errors to stderr.
+            e.print().expect("failed to print output");
             match e.kind() {
                 // --version always hits the network to refresh the cache + timer,
                 // then prints the notice from the freshly-updated cache.
                 ErrorKind::DisplayVersion => {
-                    e.print().expect("failed to print output");
                     update::force_refresh_update_cache().await;
                     update::print_cached_update_notice();
-                    std::process::exit(0);
                 }
                 // --help shows the notice from cache (no blocking network call).
-                ErrorKind::DisplayHelp => {
-                    e.print().expect("failed to print output");
-                    update::print_cached_update_notice();
-                    std::process::exit(0);
-                }
-                // Parse errors exit here, before telemetry capture: a mistyped
-                // invocation never produces an event.
-                _ => e.exit(),
+                ErrorKind::DisplayHelp => update::print_cached_update_notice(),
+                // Usage errors do no update-cache work: a mistyped invocation
+                // must not cause network activity beyond the consented
+                // telemetry send.
+                _ => {}
             }
+            #[cfg(feature = "telemetry")]
+            let invocation = telemetry::capture_lossy(&mut cmd, &argv, &e);
+            #[cfg(not(feature = "telemetry"))]
+            let invocation = ();
+            // clap's own exit codes: 0 for help/version, 2 for usage errors.
+            // The 2 numerically collides with the documented "cancelled" exit
+            // code; the telemetry `outcome` field disambiguates, and the
+            // shell-visible clash is #319's to fix.
+            (e.exit_code(), invocation)
         }
     };
 
+    // Consent is evaluated here, after the command ran, so `telemetry disable`
+    // silences its own event and `telemetry enable` sends one.
     #[cfg(feature = "telemetry")]
-    let telemetry_invocation = telemetry::capture(&cmd, &matches);
+    telemetry::finalize(telemetry_invocation, exit_code);
+    #[cfg(not(feature = "telemetry"))]
+    let () = telemetry_invocation;
 
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    std::process::exit(exit_code);
+}
 
-    // The hidden send child does exactly one POST and exits: no update-cache
-    // refresh, no dispatch, and no telemetry hook of its own (a send can never
-    // trigger another send).
+/// Run a successfully parsed invocation to completion and report the exit
+/// code for `main`'s single exit. The hidden `telemetry send` child is the
+/// one deliberate early exit in the binary: it does exactly one POST — no
+/// update-cache refresh, no dispatch, and no telemetry hook of its own, so a
+/// send can never trigger another send.
+async fn run_parsed(cli: Cli) -> i32 {
     #[cfg(feature = "telemetry")]
     if matches!(
         cli.command,
@@ -126,12 +159,7 @@ async fn main() {
         update::print_cached_update_notice();
     }
 
-    // Consent is evaluated here, after the command ran, so `telemetry disable`
-    // silences its own event and `telemetry enable` sends one.
-    #[cfg(feature = "telemetry")]
-    telemetry::finalize(telemetry_invocation, exit_code);
-
-    std::process::exit(exit_code);
+    exit_code
 }
 
 /// The explicit `--json` flag for a command, or `None` for commands that never

@@ -273,6 +273,101 @@ async fn flag_names_sent_but_values_never_leak() {
     assert_eq!(event["flags"], serde_json::json!(["json"]));
 }
 
+// -- any invocation counts (#320): bare, help, version, parse errors --------
+
+#[tokio::test]
+async fn first_run_of_help_prints_notice_and_writes_marker() {
+    let sandbox = Sandbox::new().await;
+
+    // A user whose first-ever touch is `--help` still starts their consent
+    // clock: notice shown, marker written, nothing sent.
+    let output = sandbox.run(&["--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout_of(&output).contains("Usage:"));
+    assert!(
+        stderr_of(&output).contains("anonymous usage data"),
+        "first --help must print the notice, got stderr: {}",
+        stderr_of(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.state_path()).unwrap(),
+        r#"{"disabled":false}"#
+    );
+    sandbox.assert_no_requests().await;
+
+    // Second help run: no repeated notice, and (consent granted) an event
+    // with the help outcome and the flag recorded under its long name.
+    let output = sandbox.run(&["cloud", "--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "cloud");
+    assert_eq!(event["flags"], serde_json::json!(["help"]));
+    assert_eq!(event["outcome"], "help");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[tokio::test]
+async fn bare_invocation_reports_missing_subcommand() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&[]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "clap usage errors keep exit 2"
+    );
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "");
+    assert_eq!(event["outcome"], "missing_subcommand");
+    assert_eq!(event["exit_code"], 2);
+}
+
+#[tokio::test]
+async fn invalid_subcommand_reports_kind_but_never_the_token() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // An agent-hallucinated command: the event records that it happened and
+    // where the valid prefix ended — never the unmatched token itself, which
+    // is indistinguishable from a secret pasted into the wrong window.
+    let output = sandbox.run(&["hallucinated-subcommand-xyz"]);
+    assert_eq!(output.status.code(), Some(2));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "");
+    assert_eq!(event["outcome"], "invalid_subcommand");
+    let raw = serde_json::to_string(event).unwrap();
+    assert!(
+        !raw.contains("hallucinated-subcommand-xyz"),
+        "raw token leaked into the payload: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn typo_carries_definition_derived_suggestion() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&["cloud", "servce", "list"]);
+    assert_eq!(output.status.code(), Some(2));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "cloud");
+    assert_eq!(event["outcome"], "invalid_subcommand");
+    // Clap's did-you-mean names the *defined* subcommand, so recording it is
+    // safe; the typo'd token stays off the wire.
+    assert_eq!(event["suggestion"], "service");
+    let raw = serde_json::to_string(event).unwrap();
+    assert!(!raw.contains("servce"), "typo leaked: {raw}");
+}
+
 #[tokio::test]
 async fn do_not_track_is_fully_silent() {
     let sandbox = Sandbox::new().await;
