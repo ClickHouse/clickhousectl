@@ -889,14 +889,17 @@ The CLI checks for updates in the background (at most once per 24 hours) and cac
 
 Each event contains exactly:
 
-- the command path (e.g. `local start`)
+- the command path (e.g. `local start`) — for an invocation that fails to parse, the longest *valid* prefix of what was typed; a mistyped or unrecognized token is never recorded
 - the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
-- the exit code (`gh`-style: 0 success, 1 error, 2 cancelled, 4 auth required)
+- how the invocation ended: `ok`, `help`, `version`, or a parse-error kind such as `invalid_subcommand` — plus, for typos, clap's "did you mean" suggestion (always the name of a real command or flag, never your input)
+- the exit code (`gh`-style: 0 success, 1 error, 2 cancelled, 4 auth required; parse errors keep clap's exit 2)
 - the CLI version, OS, and architecture
 - whether it ran in CI (`CI` env var)
 - whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)
 
-There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
+Every invocation counts, including `--help`, `--version`, a bare `clickhousectl`, and mistyped commands — failed invocations are recorded as such (that is how we find the confusing corners of the CLI), subject to the same consent flow as everything else.
+
+There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all. That holds for failed parses too: they are reconstructed by matching argv tokens against the defined command tree, so every recorded string is one the CLI itself defines.
 
 Nothing is ever sent before you have seen the notice or explicitly enabled telemetry with `clickhousectl telemetry enable`: the first run prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run — or immediately if you opt in by running `telemetry enable`, which is explicit consent and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 

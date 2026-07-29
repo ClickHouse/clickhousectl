@@ -16,6 +16,16 @@
 //! ([`capture`] walks `ArgMatches` ids and `Arg` metadata, never touching
 //! `get_one`/`get_raw`), so leaking a value is structurally impossible.
 //!
+//! Every invocation of the binary counts (#320): bare, `--help`,
+//! `--version`, and mistyped commands all show the first-run notice and
+//! produce events under the same consent state machine — failed invocations
+//! are exactly the signal that shows where the CLI confuses people and
+//! agents. A successful parse is captured exactly from `ArgMatches`; a
+//! failed parse has none, so [`capture_lossy`] re-walks argv against the
+//! clap definitions and records the longest *valid* prefix, the error kind,
+//! and clap's own suggestion — the unmatched token itself never leaves the
+//! machine.
+//!
 //! Transport is a detached child process (`clickhousectl telemetry send`,
 //! hidden): the parent spawns it with all stdio nulled and never waits, so
 //! command latency is unaffected even when the endpoint is unreachable. The
