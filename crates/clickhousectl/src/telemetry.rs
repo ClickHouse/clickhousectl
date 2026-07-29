@@ -367,7 +367,7 @@ pub fn capture_lossy(
     let mut path: Vec<&str> = Vec::new();
     let mut flags = std::collections::BTreeSet::new();
     let mut tokens = argv.iter().skip(1);
-    while let Some(token) = tokens.next() {
+    'walk: while let Some(token) = tokens.next() {
         // A non-UTF-8 token cannot match any definition.
         let Some(token) = token.to_str() else { break };
         // Everything after `--` is positional by definition.
@@ -379,14 +379,17 @@ pub fn capture_lossy(
                 Some((name, _value)) => (name, true),
                 None => (rest, false),
             };
-            let Some(arg) = stack
-                .iter()
-                .rev()
-                .find_map(|cmd| cmd.get_arguments().find(|a| a.get_long() == Some(name)))
-            else {
+            let Some(arg) = stack.iter().rev().find_map(|cmd| {
+                cmd.get_arguments().find(|a| {
+                    a.get_long() == Some(name)
+                        || a.get_all_aliases()
+                            .is_some_and(|aliases| aliases.contains(&name))
+                })
+            }) else {
                 break;
             };
-            // `get_long` is `Some` — that is what the token just matched.
+            // Recorded name is the canonical long, even when the token
+            // matched a hidden alias (e.g. `--fg` records `foreground`).
             flags.extend(arg.get_long().map(str::to_string));
             // The definition says this flag consumes the next token as its
             // value: skip it, so a value that happens to equal a sibling
@@ -394,12 +397,38 @@ pub fn capture_lossy(
             if !has_inline_value && arg.get_action().takes_values() {
                 tokens.next();
             }
-        } else if token == "-h" {
-            // The short forms of the two implicit flags, recorded under
-            // their definitions' long names like everything else.
-            flags.insert("help".to_string());
-        } else if token == "-V" {
-            flags.insert("version".to_string());
+        } else if let Some(cluster) = token.strip_prefix('-').filter(|rest| !rest.is_empty()) {
+            // A short cluster (`-F`, `-Fv`, `-p9000`): resolve each char the
+            // way clap does, innermost-outward like the long path. This also
+            // covers the implicit `-h`/`-V`, which `root.build()` above
+            // materialized as real definitions. A bare `-` never gets here
+            // (empty cluster) and falls through to the subcommand branch,
+            // where it breaks the walk like any unknown token.
+            for (i, ch) in cluster.char_indices() {
+                let Some(arg) = stack.iter().rev().find_map(|cmd| {
+                    cmd.get_arguments().find(|a| {
+                        a.get_short() == Some(ch)
+                            || a.get_all_short_aliases().is_some_and(|s| s.contains(&ch))
+                    })
+                }) else {
+                    // An unresolvable char stops the whole walk; flags already
+                    // recorded stay — they are definition strings.
+                    break 'walk;
+                };
+                // Canonical long name, falling back to the definition's id
+                // for short-only args — the same fallback `capture` uses.
+                flags.insert(arg.get_long().unwrap_or(arg.get_id().as_str()).to_string());
+                if arg.get_action().takes_values() {
+                    // The rest of the token (optionally after `=`) is this
+                    // flag's attached value: discard it. When the cluster
+                    // ends with no attached value, the next argv token is
+                    // the value: skip it, as in the long path.
+                    if cluster[i + ch.len_utf8()..].is_empty() {
+                        tokens.next();
+                    }
+                    break;
+                }
+            }
         } else if let Some(sub) = stack
             .last()
             .expect("stack starts non-empty and only grows")
@@ -1080,6 +1109,118 @@ mod tests {
         assert_eq!(inv.flags, ["org-id"]);
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
         assert!(!json.contains("SECRET"), "inline value leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_long_aliases_record_the_canonical_names() {
+        // `--fg` and `--config-file` are hidden aliases (local/cli.rs); the
+        // recorded names are the definitions' canonical longs. The parse
+        // fails only on the `--http-port` value.
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "--fg",
+            "--config-file",
+            "SECRET-CONFIG",
+            "--http-port",
+            "SECRET-PORT",
+        ]);
+        assert_eq!(inv.command, "local server start");
+        assert_eq!(inv.flags, ["config", "foreground", "http-port"]);
+        assert_eq!(inv.outcome, "invalid_value");
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "flag value leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_short_flag_value_equal_to_a_subcommand_name_is_skipped() {
+        // Short spelling of lossy_flag_value_equal_to_a_subcommand_name_is_
+        // skipped: the `-q` *value* is a subcommand name elsewhere in the
+        // tree and must not be misrecorded as command path — and must not
+        // break the walk before `-p` (whose bad value fails the parse).
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "local",
+            "client",
+            "-q",
+            "list",
+            "-p",
+            "SECRET-NOT-A-PORT",
+        ]);
+        assert_eq!(inv.command, "local client");
+        assert_eq!(inv.flags, ["port", "query"]);
+        assert_eq!(inv.outcome, "invalid_value");
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "flag value leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_short_cluster_resolves_each_char_and_discards_attached_value() {
+        use clap::{Arg, ArgAction, Command};
+        let mut cmd = Command::new("root").subcommand(
+            Command::new("sub")
+                .arg(
+                    Arg::new("verbose")
+                        .long("verbose")
+                        .short('v')
+                        .action(ArgAction::SetTrue),
+                )
+                // Short-only: recorded under its id, like `capture`.
+                .arg(Arg::new("quiet").short('q').action(ArgAction::SetTrue))
+                // `-L` is a short alias; the canonical long is recorded.
+                .arg(Arg::new("level").long("level").short('l').short_alias('L')),
+        );
+        // One cluster: two unit flags, then a value-taking flag whose
+        // attached value is the remainder of the token.
+        let argv: Vec<std::ffi::OsString> = ["root", "sub", "-qvLSECRET-LEVEL", "junk-token"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        let error = cmd.try_get_matches_from_mut(&argv).unwrap_err();
+        let inv = capture_lossy(&mut cmd, &argv, &error);
+        assert_eq!(inv.command, "sub");
+        assert_eq!(inv.flags, ["level", "quiet", "verbose"]);
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "attached value leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_unknown_short_stops_the_walk() {
+        // Nothing after the unresolvable char is recorded, not even a flag
+        // clap would have accepted.
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "list",
+            "-Z",
+            "--org-id",
+            "SECRET-ORG",
+        ]);
+        assert_eq!(inv.command, "cloud service list");
+        assert!(inv.flags.is_empty());
+        assert_eq!(inv.outcome, "unknown_argument");
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "post-break token leaked: {json}");
+
+        // Mid-cluster: chars resolved before the unknown one stay recorded —
+        // they are definition strings.
+        use clap::{Arg, ArgAction, Command};
+        let mut cmd = Command::new("root").subcommand(
+            Command::new("sub").arg(
+                Arg::new("verbose")
+                    .long("verbose")
+                    .short('v')
+                    .action(ArgAction::SetTrue),
+            ),
+        );
+        let argv: Vec<std::ffi::OsString> = ["root", "sub", "-vZ"].iter().map(Into::into).collect();
+        let error = cmd.try_get_matches_from_mut(&argv).unwrap_err();
+        let inv = capture_lossy(&mut cmd, &argv, &error);
+        assert_eq!(inv.command, "sub");
+        assert_eq!(inv.flags, ["verbose"]);
     }
 
     #[test]
