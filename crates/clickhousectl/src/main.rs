@@ -34,6 +34,13 @@ async fn main() {
     // libc's environ.
     dotenv::init();
 
+    // Snapshot the executable path before the command runs: a successful
+    // `clickhousectl update` replaces the binary on disk, after which a lazy
+    // `current_exe()` lookup fails on Linux and the update's own telemetry
+    // event would be dropped.
+    #[cfg(feature = "telemetry")]
+    telemetry::init();
+
     // Parse via ArgMatches (rather than `Cli::try_parse()`) so the telemetry
     // capture below can read the command path and passed-flag *names* from the
     // clap definitions — argument values are never consulted.

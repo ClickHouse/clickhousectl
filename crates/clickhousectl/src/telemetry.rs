@@ -22,6 +22,7 @@
 //! child fires one POST with a short timeout and dies silently on any failure.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -45,6 +46,28 @@ const DNT_ENV: &str = "DO_NOT_TRACK";
 const CI_ENV: &str = "CI";
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The executable path, snapshotted at process startup by [`init`].
+///
+/// Resolved eagerly rather than inside `spawn_send_child` because a successful
+/// `clickhousectl update` atomically replaces the binary on disk before the
+/// send child is spawned. On Linux, `/proc/self/exe` then resolves to
+/// `.../clickhousectl (deleted)`, the spawn fails, and the event for the
+/// update itself is silently dropped. At startup the path is always clean;
+/// after an update it names the new binary, which is valid to spawn (the
+/// hidden `telemetry send` interface is stable across versions — see the pin
+/// on `TelemetryCommands::Send` in `cli.rs`).
+static EXE_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Snapshot process-wide facts needed at finalize time. Called once at the
+/// top of `main`, same eager pattern as `dotenv::init`. If `current_exe()`
+/// fails the lock stays empty and the send is skipped — the same failure mode
+/// as resolving lazily.
+pub fn init() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = EXE_PATH.set(exe);
+    }
+}
 
 /// The ingest worker caps `flags` at 64 entries; truncate client-side too.
 const MAX_FLAGS: usize = 64;
@@ -318,11 +341,14 @@ fn print_first_run_notice() {
 
 /// Re-invoke this binary as `clickhousectl telemetry send` with the payload
 /// in the child's environment, all stdio nulled, and never wait: the parent
-/// exits immediately and the child dies silently on any failure.
+/// exits immediately and the child dies silently on any failure. The path
+/// comes from the startup snapshot, so after a self-update this spawns the
+/// *new* binary — which may be a newer version than the parent that built
+/// the payload.
 fn spawn_send_child(payload_json: &str) {
     use std::process::{Command, Stdio};
 
-    let Ok(exe) = std::env::current_exe() else {
+    let Some(exe) = EXE_PATH.get() else {
         return;
     };
     let _ = Command::new(exe)
@@ -660,6 +686,16 @@ mod tests {
         let inv = capture_from(&["clickhousectl", "local", "list"]);
         assert_eq!(inv.command, "local list");
         assert!(inv.flags.is_empty());
+    }
+
+    #[test]
+    fn init_snapshots_the_executable_path_once() {
+        // Under `cargo test` the test binary always has a resolvable path.
+        init();
+        let first = EXE_PATH.get().expect("init must snapshot the exe path");
+        // Idempotent: a second call keeps the first snapshot.
+        init();
+        assert_eq!(EXE_PATH.get(), Some(first));
     }
 
     #[test]

@@ -109,6 +109,12 @@ pub enum TelemetryCommands {
     /// the marker file and prints the notice).
     Status,
     /// (internal) Fire one telemetry POST from CHCTL_TELEMETRY_PAYLOAD and exit
+    //
+    // Stable cross-version interface — never remove or rename. After a
+    // self-update the parent (old version) spawns the freshly installed
+    // binary (new version) as `telemetry send` with the payload in
+    // CHCTL_TELEMETRY_PAYLOAD, so this subcommand and that env var must keep
+    // working across releases.
     #[command(hide = true)]
     Send,
 }
