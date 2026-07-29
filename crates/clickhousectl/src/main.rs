@@ -52,12 +52,19 @@ async fn main() {
     // typo, dispatched command — falls through to the common tail below, so
     // the first-run telemetry notice and subsequent events cover all of them.
     // The sole intended exemption is the hidden `telemetry send` child inside
-    // `run_parsed`; three pre-existing child-exit-code passthroughs in the
-    // local handlers still bypass the tail (#321). Do not add exit paths.
+    // `run_parsed`; the `exec()` handoffs (`local client`, host psql) record
+    // their event via `telemetry::finalize_before_exec` just before the
+    // process image is replaced; three pre-existing child-exit-code
+    // passthroughs in the local handlers still bypass the tail (#321). Do not
+    // add exit paths.
     let (exit_code, telemetry_invocation) = match cmd.try_get_matches_from_mut(argv.iter()) {
         Ok(matches) => {
             #[cfg(feature = "telemetry")]
             let invocation = telemetry::capture(&cmd, &matches);
+            // Stashed so the pre-exec hook can reach it from inside a
+            // handler when `exec()` makes the tail below unreachable.
+            #[cfg(feature = "telemetry")]
+            telemetry::stash_invocation(invocation.clone());
             #[cfg(not(feature = "telemetry"))]
             let invocation = ();
             // The matches were produced by this very `cmd`, so a mismatch is

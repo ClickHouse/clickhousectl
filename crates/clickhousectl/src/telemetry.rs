@@ -26,6 +26,14 @@
 //! and clap's own suggestion — the unmatched token itself never leaves the
 //! machine.
 //!
+//! Two commands hand the process over to another program via `exec()`
+//! (`local client`, host `psql`), replacing the process image so `main`'s
+//! tail never runs on success. Those call sites invoke
+//! [`finalize_before_exec`] immediately before `exec()`; it records the
+//! stashed invocation with outcome `"exec"` and shares an exactly-once
+//! guard with [`finalize`] so a *failed* `exec()` — where the error
+//! propagates back to `main` — never produces a second event.
+//!
 //! Transport is a detached child process (`clickhousectl telemetry send`,
 //! hidden): the parent spawns it with all stdio nulled and never waits, so
 //! command latency is unaffected even when the endpoint is unreachable. The
@@ -33,6 +41,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -176,9 +185,12 @@ struct Payload {
     /// `outcome` (see #319 for the shell-visible fix).
     exit_code: i32,
     /// How the invocation ended, from the closed vocabulary `"ok"` (parsed
-    /// and dispatched) or a direct mapping of clap's `ErrorKind` (`"help"`,
-    /// `"version"`, `"invalid_subcommand"`, …). Literal strings only — this
-    /// field can never carry user data.
+    /// and dispatched), `"exec"` (parsed, dispatched, and the process image
+    /// was replaced by `exec()` — the handed-over program's exit status is
+    /// unknowable, so `exit_code` is a fixed 0 and not meaningful), or a
+    /// direct mapping of clap's `ErrorKind` (`"help"`, `"version"`,
+    /// `"invalid_subcommand"`, …). Literal strings only — this field can
+    /// never carry user data.
     outcome: &'static str,
     /// Clap's "did you mean" for failed parses. Computed by clap from the
     /// definition set, so it names a defined subcommand or flag — never the
@@ -219,6 +231,7 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
 
 /// What the user invoked: the subcommand path (e.g. `"local start"`) and the
 /// long names of the flags they passed. No values, no positionals.
+#[derive(Clone)]
 pub struct Invocation {
     command: String,
     flags: Vec<String>,
@@ -454,13 +467,69 @@ fn decide(path: &Path, invocation: &Invocation, exit_code: i32, env: EnvLookup<'
     }
 }
 
+/// The successfully-parsed invocation, stashed by `main` before dispatch so
+/// [`finalize_before_exec`] can build an event from deep inside a handler
+/// without threading the capture through every signature. Never set on the
+/// parse-failure path — `exec()` is only reachable after a successful parse.
+static STASHED_INVOCATION: OnceLock<Invocation> = OnceLock::new();
+
+pub fn stash_invocation(invocation: Invocation) {
+    let _ = STASHED_INVOCATION.set(invocation);
+}
+
+/// Exactly-once guard shared by [`finalize`] and [`finalize_before_exec`]:
+/// whichever runs first claims it, the other is a no-op. When `exec()` fails,
+/// the pre-exec hook has already recorded the invocation as `"exec"` and the
+/// error propagating back to `main`'s tail is not recorded — losing the
+/// exec-failure detail is the accepted price for never emitting two events
+/// for one invocation.
+static FINALIZED: AtomicBool = AtomicBool::new(false);
+
+/// `true` for exactly one caller per guard: swap semantics, first wins.
+fn claim(guard: &AtomicBool) -> bool {
+    !guard.swap(true, Ordering::SeqCst)
+}
+
+/// The event recorded when the process image is about to be replaced: the
+/// stashed parse result with its outcome rewritten to the `"exec"` literal
+/// (see [`Payload::outcome`]).
+fn exec_invocation(stashed: &Invocation) -> Invocation {
+    Invocation {
+        outcome: "exec",
+        ..stashed.clone()
+    }
+}
+
 /// The telemetry hook, called once at the very end of `main` (after the
 /// command has run, so `telemetry disable` silences its own event), with the
 /// gh-style exit code the process is about to exit with. Never errors, never
 /// blocks beyond spawning a detached child.
 pub fn finalize(invocation: Invocation, exit_code: i32) {
+    if !claim(&FINALIZED) {
+        return;
+    }
+    finalize_inner(&invocation, exit_code);
+}
+
+/// The pre-exec hook, called by the `exec()` handoffs (`local client`, host
+/// `psql`) immediately before the process image is replaced and `main`'s tail
+/// becomes unreachable. On a first run this prints the notice to stderr just
+/// before the handed-over program starts — acceptable and intended. The
+/// detached send child survives the `exec()` because it is a separate
+/// process.
+pub fn finalize_before_exec() {
+    let Some(stashed) = STASHED_INVOCATION.get() else {
+        return;
+    };
+    if !claim(&FINALIZED) {
+        return;
+    }
+    finalize_inner(&exec_invocation(stashed), 0);
+}
+
+fn finalize_inner(invocation: &Invocation, exit_code: i32) {
     let Some(path) = state_path() else { return };
-    match decide(&path, &invocation, exit_code, &real_env_lookup) {
+    match decide(&path, invocation, exit_code, &real_env_lookup) {
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
         Action::Debug(json) => {
@@ -786,6 +855,56 @@ mod tests {
         };
         let payload = build_payload(&inv, 0, &env_of(&[]));
         assert_eq!(payload.flags.len(), MAX_FLAGS);
+    }
+
+    // -- exec handoffs: pre-exec hook building blocks -------------------------
+
+    #[test]
+    fn claim_yields_true_exactly_once() {
+        // Tested on a local guard, not the shared static, so this cannot
+        // race other tests or depend on execution order.
+        let guard = AtomicBool::new(false);
+        assert!(claim(&guard));
+        assert!(!claim(&guard));
+        assert!(!claim(&guard));
+    }
+
+    #[test]
+    fn exec_invocation_rewrites_only_the_outcome() {
+        let stashed = Invocation {
+            command: "local client".into(),
+            flags: vec!["port".into()],
+            outcome: "ok",
+            suggestion: None,
+        };
+        let inv = exec_invocation(&stashed);
+        assert_eq!(inv.outcome, "exec");
+        assert_eq!(inv.command, "local client");
+        assert_eq!(inv.flags, ["port"]);
+        assert_eq!(inv.suggestion, None);
+    }
+
+    #[test]
+    fn exec_outcome_sends_the_expected_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("telemetry.json");
+        save_state_to(&path, false).unwrap();
+        let inv = exec_invocation(&Invocation {
+            command: "local client".into(),
+            flags: vec!["query".into()],
+            outcome: "ok",
+            suggestion: None,
+        });
+        // The hook always passes 0: the handed-over program's exit status is
+        // unknowable, and `outcome` marks the code as not meaningful.
+        let Action::Send(json) = decide(&path, &inv, 0, &env_of(&[])) else {
+            panic!("expected Send");
+        };
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["command"], "local client");
+        assert_eq!(value["flags"], serde_json::json!(["query"]));
+        assert_eq!(value["outcome"], "exec");
+        assert_eq!(value["exit_code"], 0);
     }
 
     // -- capture: values are structurally unreachable ------------------------
