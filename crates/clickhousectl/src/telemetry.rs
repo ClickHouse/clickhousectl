@@ -463,15 +463,25 @@ pub fn finalize(invocation: Invocation, exit_code: i32) {
     match decide(&path, &invocation, exit_code, &real_env_lookup) {
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
-        Action::Debug(json) => eprintln!("{json}"),
+        Action::Debug(json) => {
+            use std::io::Write;
+            // Not `eprintln!`, which panics on a closed stderr — see
+            // `print_first_run_notice`.
+            let _ = writeln!(std::io::stderr(), "{json}");
+        }
         Action::Send(json) => spawn_send_child(&json),
     }
 }
 
 /// Printed to stderr regardless of TTY so agent/non-interactive usage still
-/// sees it exactly once (stdout stays machine-parseable).
+/// sees it exactly once (stdout stays machine-parseable). Write failures are
+/// ignored, not `eprintln!`-panicked: this hook runs on every invocation —
+/// including ones whose stderr is a closed pipe — and must never turn an
+/// exit code into a panic.
 fn print_first_run_notice() {
-    eprintln!(
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr(),
         "\nNote: clickhousectl collects anonymous usage data to help improve the CLI:\n\
          command name, flag names (never values or arguments), success/failure, version,\n\
          OS/arch, and CI/agent detection. No user or machine IDs. Nothing was sent this run.\n\

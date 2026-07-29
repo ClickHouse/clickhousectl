@@ -51,8 +51,9 @@ async fn main() {
     // Single-exit invariant (#320): every invocation — bare, help, version,
     // typo, dispatched command — falls through to the common tail below, so
     // the first-run telemetry notice and subsequent events cover all of them.
-    // The sole exemption is the hidden `telemetry send` child inside
-    // `run_parsed`. Do not add exit paths that bypass this tail.
+    // The sole intended exemption is the hidden `telemetry send` child inside
+    // `run_parsed`; three pre-existing child-exit-code passthroughs in the
+    // local handlers still bypass the tail (#321). Do not add exit paths.
     let (exit_code, telemetry_invocation) = match cmd.try_get_matches_from_mut(argv.iter()) {
         Ok(matches) => {
             #[cfg(feature = "telemetry")]
@@ -67,8 +68,11 @@ async fn main() {
         }
         Err(e) => {
             // clap keeps its own formatting and colors; help/version print to
-            // stdout, usage errors to stderr.
-            e.print().expect("failed to print output");
+            // stdout, usage errors to stderr. Print failures are swallowed
+            // like clap's own `Error::exit` swallows them: a broken pipe must
+            // not turn exit 2 into a panic (which would also bypass the
+            // telemetry tail below).
+            let _ = e.print();
             match e.kind() {
                 // --version always hits the network to refresh the cache + timer,
                 // then prints the notice from the freshly-updated cache.
