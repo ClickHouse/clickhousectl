@@ -891,7 +891,7 @@ Each event contains exactly:
 
 - the command path (e.g. `local start`) — for an invocation that fails to parse, the longest *valid* prefix of what was typed; a mistyped or unrecognized token is never recorded
 - the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
-- how the invocation ended: `ok`, `help`, `version`, `exec` (the CLI handed the process over to another program, e.g. `local client`; its exit status is unknown), or a parse-error kind such as `invalid_subcommand` — plus, for typos, clap's "did you mean" suggestion (always the name of a real command or flag, never your input)
+- how the invocation ended: for dispatched invocations `ok`, `error`, `cancelled`, `auth_required`, or `exec` (the CLI handed the process over to another program, e.g. `local client`; its exit status is unknown); for invocations that fail to parse, `help`, `version`, or a parse-error kind such as `invalid_subcommand` — plus, for typos, clap's "did you mean" suggestion (always the name of a real command or flag, never your input)
 - the exit code (`gh`-style: 0 success, 1 error, 2 cancelled, 4 auth required; parse errors keep clap's exit 2; a fixed 0 for `exec`, where the real exit code is not knowable)
 - the CLI version, OS, and architecture
 - whether it ran in CI (`CI` env var)

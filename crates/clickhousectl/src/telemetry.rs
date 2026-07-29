@@ -181,16 +181,20 @@ struct Payload {
     /// Exit code: gh-style (`Error::exit_code`) for dispatched commands —
     /// 0 success, 1 error, 2 cancelled, 4 auth required — and clap's own
     /// code for parse outcomes (0 help/version, 2 usage error). The numeric
-    /// clash between "cancelled" and "usage error" is disambiguated by
-    /// `outcome` (see #319 for the shell-visible fix).
+    /// clash between "cancelled" and "usage error" is fully disambiguated by
+    /// `outcome` in the payload: a dispatched 2 becomes `"cancelled"`, a
+    /// parse-failure 2 keeps its parse kind (see #319 for the shell-visible
+    /// fix).
     exit_code: i32,
-    /// How the invocation ended, from the closed vocabulary `"ok"` (parsed
-    /// and dispatched), `"exec"` (parsed, dispatched, and the process image
-    /// was replaced by `exec()` — the handed-over program's exit status is
-    /// unknowable, so `exit_code` is a fixed 0 and not meaningful), or a
-    /// direct mapping of clap's `ErrorKind` (`"help"`, `"version"`,
-    /// `"invalid_subcommand"`, …). Literal strings only — this field can
-    /// never carry user data.
+    /// How the invocation ended, from a closed vocabulary. Dispatched
+    /// invocations carry `"ok"`, `"error"`, `"cancelled"`, or
+    /// `"auth_required"` — derived from the gh-style exit code by
+    /// [`dispatched_outcome`] — or `"exec"` (parsed, dispatched, and the
+    /// process image was replaced by `exec()` — the handed-over program's
+    /// exit status is unknowable, so `exit_code` is a fixed 0 and not
+    /// meaningful). Failed parses carry a direct mapping of clap's
+    /// `ErrorKind` (`"help"`, `"version"`, `"invalid_subcommand"`, …).
+    /// Literal strings only — this field can never carry user data.
     outcome: &'static str,
     /// Clap's "did you mean" for failed parses, anchored locally: recorded
     /// only when it equality-matches a subcommand name or arg long name in
@@ -210,6 +214,26 @@ struct Payload {
     arch: &'static str,
 }
 
+/// Derive the dispatched outcome from the gh-style exit code. [`capture`]
+/// marks a successful parse `"ok"` before the command has run; by finalize
+/// time the exit code says how dispatch actually ended, so only that
+/// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
+/// `"exec"` from [`finalize_before_exec`] pass through untouched. The mapping
+/// mirrors `Error::exit_code()`; issue #319 will move "cancelled" off exit
+/// code 2 (to stop the shell-level clash with clap's usage-error 2), and this
+/// mapping must follow when it lands.
+fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
+    if outcome != "ok" {
+        return outcome;
+    }
+    match exit_code {
+        0 => "ok",
+        2 => "cancelled",
+        4 => "auth_required",
+        _ => "error",
+    }
+}
+
 fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) -> Payload {
     let mut flags = invocation.flags.clone();
     flags.truncate(MAX_FLAGS);
@@ -218,7 +242,7 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
         command: invocation.command.clone(),
         flags,
         exit_code,
-        outcome: invocation.outcome,
+        outcome: dispatched_outcome(invocation.outcome, exit_code),
         suggestion: invocation.suggestion.clone(),
         is_agent: detected.is_some(),
         agent: detected.map(|a| a.id.as_str().to_string()),
@@ -239,8 +263,10 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
 pub struct Invocation {
     command: String,
     flags: Vec<String>,
-    /// See [`Payload::outcome`]: `"ok"` from [`capture`], an error-kind
-    /// mapping from [`capture_lossy`].
+    /// See [`Payload::outcome`]: `"ok"` from [`capture`] means *parsed* —
+    /// the dispatched outcome is not knowable until the exit code exists, so
+    /// [`dispatched_outcome`] derives it at finalize time. From
+    /// [`capture_lossy`] this is the error-kind mapping, never rewritten.
     outcome: &'static str,
     /// See [`Payload::suggestion`]: always `None` from [`capture`]; from
     /// [`capture_lossy`] it is a clone of a definition-owned string, never
@@ -864,12 +890,60 @@ mod tests {
         assert_eq!(value["command"], "local list");
         assert_eq!(value["flags"], serde_json::json!(["json"]));
         assert_eq!(value["exit_code"], 4);
-        assert_eq!(value["outcome"], "ok");
+        // The parse-time "ok" placeholder is rewritten from the exit code.
+        assert_eq!(value["outcome"], "auth_required");
         assert_eq!(value["suggestion"], serde_json::Value::Null);
         assert_eq!(value["ci"], true);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["os"], std::env::consts::OS);
         assert_eq!(value["arch"], std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn dispatched_outcome_derives_from_the_gh_style_exit_code() {
+        assert_eq!(dispatched_outcome("ok", 0), "ok");
+        assert_eq!(dispatched_outcome("ok", 1), "error");
+        assert_eq!(dispatched_outcome("ok", 2), "cancelled");
+        assert_eq!(dispatched_outcome("ok", 4), "auth_required");
+        // Any exit code outside the gh-style vocabulary is still a failure.
+        assert_eq!(dispatched_outcome("ok", 3), "error");
+        // Non-"ok" outcomes are never rewritten, whatever the exit code.
+        assert_eq!(
+            dispatched_outcome("unknown_argument", 2),
+            "unknown_argument"
+        );
+        assert_eq!(dispatched_outcome("exec", 0), "exec");
+    }
+
+    /// The `outcome` field of the payload `decide` builds for the given
+    /// invocation and exit code, with an enabled state file.
+    fn decided_outcome(invocation: &Invocation, exit_code: i32) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("telemetry.json");
+        save_state_to(&path, false).unwrap();
+        let Action::Send(json) = decide(&path, invocation, exit_code, &env_of(&[])) else {
+            panic!("expected Send");
+        };
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["outcome"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn dispatched_payload_outcomes_track_the_exit_code() {
+        assert_eq!(decided_outcome(&invocation(), 0), "ok");
+        assert_eq!(decided_outcome(&invocation(), 1), "error");
+        assert_eq!(decided_outcome(&invocation(), 2), "cancelled");
+    }
+
+    #[test]
+    fn lossy_payload_outcome_is_not_rewritten_by_the_exit_code() {
+        let inv = Invocation {
+            command: "local".into(),
+            flags: vec![],
+            outcome: "unknown_argument",
+            suggestion: None,
+        };
+        assert_eq!(decided_outcome(&inv, 2), "unknown_argument");
     }
 
     #[test]
