@@ -296,6 +296,10 @@ fn run_client(
     }
 
     cmd.args(&args);
+    // `exec()` replaces the process image on success, so `main`'s telemetry
+    // tail never runs for this invocation; record the event now (#320).
+    #[cfg(feature = "telemetry")]
+    crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
 }

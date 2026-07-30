@@ -885,13 +885,13 @@ The CLI checks for updates in the background (at most once per 24 hours) and cac
 
 ## Telemetry
 
-`clickhousectl` collects anonymous usage data to help us understand which commands matter and improve the CLI. Full details: <https://clickhouse.com/docs/interfaces/cli#telemetry>.
+`clickhousectl` collects anonymous usage data to help us understand which commands matter and improve the CLI. Full details: <https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry>.
 
 Each event contains exactly:
 
 - the command path (e.g. `local start`)
 - the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
-- the exit code (`gh`-style: 0 success, 1 error, 2 cancelled, 4 auth required)
+- how the invocation ended and its exit code
 - the CLI version, OS, and architecture
 - whether it ran in CI (`CI` env var)
 - whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)

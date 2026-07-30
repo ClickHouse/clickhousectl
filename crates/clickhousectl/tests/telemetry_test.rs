@@ -80,6 +80,18 @@ impl Sandbox {
         self.command(args).output().expect("failed to spawn binary")
     }
 
+    /// Run the binary with its stderr attached to a pipe whose read end is
+    /// already closed, so every stderr write in the child fails. A panic on
+    /// such a write would surface as exit code 101.
+    fn run_with_closed_stderr(&self, args: &[&str]) -> Output {
+        let (reader, writer) = std::io::pipe().expect("failed to create pipe");
+        drop(reader);
+        self.command(args)
+            .stderr(writer)
+            .output()
+            .expect("failed to spawn binary")
+    }
+
     /// Poll until the mock has seen `n` requests; panics after ~5s. The send
     /// child is detached, so arrival is asynchronous.
     async fn wait_for_requests(&self, n: usize) -> Vec<Value> {
@@ -246,9 +258,11 @@ async fn failure_reported_and_positional_value_never_leaks() {
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
     assert_eq!(event["command"], "local remove");
-    // The event carries the gh-style exit code the process exited with.
+    // The event carries the gh-style exit code the process exited with, and
+    // the outcome derived from it — a failed handler is "error", not "ok".
     assert_eq!(event["exit_code"], 1);
     assert_eq!(event["exit_code"], output.status.code().unwrap());
+    assert_eq!(event["outcome"], "error");
     let raw = serde_json::to_string(event).unwrap();
     assert!(
         !raw.contains("no-such-version-xyz"),
@@ -271,6 +285,101 @@ async fn flag_names_sent_but_values_never_leak() {
     let event = &payloads[0];
     assert_eq!(event["command"], "local list");
     assert_eq!(event["flags"], serde_json::json!(["json"]));
+}
+
+// -- any invocation counts (#320): bare, help, version, parse errors --------
+
+#[tokio::test]
+async fn first_run_of_help_prints_notice_and_writes_marker() {
+    let sandbox = Sandbox::new().await;
+
+    // A user whose first-ever touch is `--help` still starts their consent
+    // clock: notice shown, marker written, nothing sent.
+    let output = sandbox.run(&["--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(stdout_of(&output).contains("Usage:"));
+    assert!(
+        stderr_of(&output).contains("anonymous usage data"),
+        "first --help must print the notice, got stderr: {}",
+        stderr_of(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.state_path()).unwrap(),
+        r#"{"disabled":false}"#
+    );
+    sandbox.assert_no_requests().await;
+
+    // Second help run: no repeated notice, and (consent granted) an event
+    // with the help outcome and the flag recorded under its long name.
+    let output = sandbox.run(&["cloud", "--help"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "cloud");
+    assert_eq!(event["flags"], serde_json::json!(["help"]));
+    assert_eq!(event["outcome"], "help");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[tokio::test]
+async fn bare_invocation_reports_missing_subcommand() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&[]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "clap usage errors keep exit 2"
+    );
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "");
+    assert_eq!(event["outcome"], "missing_subcommand");
+    assert_eq!(event["exit_code"], 2);
+}
+
+#[tokio::test]
+async fn invalid_subcommand_reports_kind_but_never_the_token() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // An agent-hallucinated command: the event records that it happened and
+    // where the valid prefix ended — never the unmatched token itself, which
+    // is indistinguishable from a secret pasted into the wrong window.
+    let output = sandbox.run(&["hallucinated-subcommand-xyz"]);
+    assert_eq!(output.status.code(), Some(2));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "");
+    assert_eq!(event["outcome"], "invalid_subcommand");
+    let raw = serde_json::to_string(event).unwrap();
+    assert!(
+        !raw.contains("hallucinated-subcommand-xyz"),
+        "raw token leaked into the payload: {raw}"
+    );
+}
+
+#[tokio::test]
+async fn typo_carries_definition_derived_suggestion() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&["cloud", "servce", "list"]);
+    assert_eq!(output.status.code(), Some(2));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "cloud");
+    assert_eq!(event["outcome"], "invalid_subcommand");
+    // Clap's did-you-mean names the *defined* subcommand, so recording it is
+    // safe; the typo'd token stays off the wire.
+    assert_eq!(event["suggestion"], "service");
+    let raw = serde_json::to_string(event).unwrap();
+    assert!(!raw.contains("servce"), "typo leaked: {raw}");
 }
 
 #[tokio::test]
@@ -489,4 +598,56 @@ async fn marker_lives_in_dot_clickhouse_telemetry_json() {
         entries.contains(&"telemetry.json".to_string()),
         "{entries:?}"
     );
+}
+
+// -- closed stderr must never turn an exit code into a panic (#320) ----------
+
+#[tokio::test]
+async fn closed_stderr_never_panics_or_bypasses_telemetry() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    // Cache a newer version so `--help` and the failing command both try to
+    // write the update notice to the (closed) stderr.
+    let cache = sandbox
+        .home
+        .path()
+        .join(".clickhouse")
+        .join("last_update_check");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(&cache, format!("{now}\n999.0.0")).unwrap();
+
+    // `--help`: the update notice write is swallowed, clap's exit code 0 is
+    // preserved, and the telemetry tail still runs.
+    let output = sandbox.run_with_closed_stderr(&["--help"]);
+    assert_eq!(output.status.code(), Some(0), "help must not panic");
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["outcome"], "help");
+
+    // A failing command: the `Error: ...` line and the update notice both hit
+    // the closed stderr; the handler's exit code 1 survives (not panic's 101)
+    // and the failure event still goes out.
+    let output = sandbox.run_with_closed_stderr(&["local", "remove", "no-such-version-xyz"]);
+    assert_eq!(output.status.code(), Some(1), "failure must keep exit 1");
+    let payloads = sandbox.wait_for_requests(2).await;
+    assert_eq!(payloads[1]["exit_code"], 1);
+
+    // `telemetry enable` under DO_NOT_TRACK: the stderr note about DNT is
+    // swallowed and the command still succeeds.
+    let output = {
+        let (reader, writer) = std::io::pipe().expect("failed to create pipe");
+        drop(reader);
+        sandbox
+            .command(&["telemetry", "enable"])
+            .env("DO_NOT_TRACK", "1")
+            .stderr(writer)
+            .output()
+            .expect("failed to spawn binary")
+    };
+    assert_eq!(output.status.code(), Some(0), "enable must not panic");
+    assert!(stdout_of(&output).contains("Telemetry enabled."));
 }

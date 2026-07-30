@@ -84,7 +84,7 @@ CONTEXT FOR AGENTS:
   clickhousectl collects anonymous usage data: command name, flag names (never values or
   arguments), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
   Opt out with `clickhousectl telemetry disable` or DO_NOT_TRACK=1.
-  Details: https://clickhouse.com/docs/interfaces/cli#telemetry")]
+  Details: https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry")]
     Telemetry(TelemetryArgs),
 }
 
@@ -109,6 +109,12 @@ pub enum TelemetryCommands {
     /// the marker file and prints the notice).
     Status,
     /// (internal) Fire one telemetry POST from CHCTL_TELEMETRY_PAYLOAD and exit
+    //
+    // Stable cross-version interface — never remove or rename. After a
+    // self-update the parent (old version) spawns the freshly installed
+    // binary (new version) as `telemetry send` with the payload in
+    // CHCTL_TELEMETRY_PAYLOAD, so this subcommand and that env var must keep
+    // working across releases.
     #[command(hide = true)]
     Send,
 }
