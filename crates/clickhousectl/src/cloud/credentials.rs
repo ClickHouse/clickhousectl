@@ -18,7 +18,11 @@ pub struct Credentials {
 pub struct ServiceQueryKey {
     pub key_id: String,
     pub key_secret: String,
-    pub endpoint_id: String,
+    /// The query endpoint the key is bound to, when the upsert echoed it.
+    /// Recorded for diagnostics only — authentication uses the key pair — so
+    /// an endpoint response that omits `id` still yields a usable record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_id: Option<String>,
     pub service_name: String,
     pub created_at: DateTime<Utc>,
 }
@@ -108,7 +112,7 @@ mod tests {
             ServiceQueryKey {
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
-                endpoint_id: "ep".into(),
+                endpoint_id: Some("ep".into()),
                 service_name: "demo".into(),
                 created_at: chrono::DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
                     .unwrap()
@@ -121,7 +125,44 @@ mod tests {
         let key = back.service_query_keys.get("svc-1").unwrap();
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
-        assert_eq!(key.endpoint_id, "ep");
+        assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
         assert_eq!(key.service_name, "demo");
+    }
+
+    #[test]
+    fn stored_key_without_an_endpoint_id_round_trips_with_the_field_omitted() {
+        let mut creds = Credentials::default();
+        creds.service_query_keys.insert(
+            "svc-1".into(),
+            ServiceQueryKey {
+                key_id: "kid".into(),
+                key_secret: "sec".into(),
+                endpoint_id: None,
+                service_name: "demo".into(),
+                created_at: chrono::DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            },
+        );
+
+        let s = serde_json::to_string(&creds).unwrap();
+        assert!(!s.contains("endpoint_id"), "absent means omitted: {s}");
+        let back: Credentials = serde_json::from_str(&s).unwrap();
+        let key = back.service_query_keys.get("svc-1").unwrap();
+        assert_eq!(key.key_id, "kid");
+        assert_eq!(key.key_secret, "sec");
+        assert_eq!(key.endpoint_id, None);
+    }
+
+    #[test]
+    fn existing_credentials_files_with_an_endpoint_id_still_deserialize() {
+        // Files written before `endpoint_id` became optional carry it as a
+        // bare string and must keep loading.
+        let raw = r#"{"service_query_keys":{"svc-1":{"key_id":"kid","key_secret":"sec",
+            "endpoint_id":"ep","service_name":"demo","created_at":"2026-05-11T12:00:00Z"}}}"#;
+        let creds: Credentials = serde_json::from_str(raw).unwrap();
+        let key = creds.service_query_keys.get("svc-1").unwrap();
+        assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
+        assert_eq!(key.key_id, "kid");
     }
 }

@@ -10,8 +10,8 @@ use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::Utc;
 use clickhouse_cloud_api::models::{
-    ApiKeyPostRequest, ApiKeyPostRequestState, InstanceServiceQueryApiEndpointsPostRequest,
-    IpAccessListEntry,
+    ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
+    InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
 };
 
 /// The role attached to the query endpoint binding. Grants the key read +
@@ -24,6 +24,30 @@ const QUERY_ENDPOINT_ROLE: &str = "sql_console_admin";
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
 /// caller so CORS doesn't apply, but the API still requires a value.
 const ALLOWED_ORIGINS: &str = "*";
+
+/// Requires a response field the provisioning flow cannot proceed without.
+fn require_field<T>(value: Option<T>, field: &str) -> Result<T, Box<dyn std::error::Error>> {
+    value.ok_or_else(|| format!("the API response is missing required field '{field}'").into())
+}
+
+/// The `key_id`/`key_secret` pair the query host authenticates with, taken
+/// from the key-creation response. Both halves are required together: a key
+/// id without its secret is as unusable as neither.
+fn require_credential_pair(
+    key_response: &ApiKeyPostResponse,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let key_id = require_field(key_response.key_id.clone(), "keyId")?;
+    let key_secret = require_field(key_response.key_secret.clone(), "keySecret")?;
+    Ok((key_id, key_secret))
+}
+
+/// Discard the API key created for a provisioning attempt that then failed,
+/// so a later retry doesn't leave an orphaned key behind per attempt. Best
+/// effort: the caller is already returning an error, and a key we couldn't
+/// delete is no worse than the one we'd otherwise leave behind.
+async fn discard_api_key(client: &CloudClient, org_id: &str, api_key_uuid: &str) {
+    let _ = client.delete_api_key(org_id, api_key_uuid).await;
+}
 
 /// Ensure a query endpoint is provisioned for `service_id` and return the
 /// persisted key. If a key is already cached locally, returns it unchanged;
@@ -57,25 +81,43 @@ pub async fn ensure_service_query_setup(
     };
 
     let key_response = client.create_api_key(org_id, &key_request).await?;
-    let key_id = key_response.key_id.clone();
-    let key_secret = key_response.key_secret.clone();
     // `key_id`/`key_secret` are the credential pair used for query auth.
     // The endpoint binding's `openApiKeys` array, by contrast, references
     // API keys by their resource UUID — the same value the management
-    // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept.
-    let api_key_uuid = key_response.key.id.to_string();
+    // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept. Resolve the UUID
+    // first: every failure past this point deletes the key it identifies, so
+    // an absent `key.id` is the only one with no cleanup available — we
+    // cannot name the key we just created.
+    let api_key_uuid =
+        require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
+
+    // Every response field is `Option<T>`, and an absent credential cannot be
+    // substituted with a placeholder: fail loudly instead of persisting an
+    // empty key pair that every later query would reject.
+    let (key_id, key_secret) = match require_credential_pair(&key_response) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // The key exists but we can't authenticate with it, so it is
+            // dead weight in the org: discard it before failing.
+            discard_api_key(client, org_id, &api_key_uuid).await;
+            return Err(e);
+        }
+    };
 
     let endpoint = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
         Ok(endpoint) => endpoint,
         Err(e) => {
             // The key was created but never bound or persisted, so nothing
-            // can use it. Delete it (best-effort) so a later retry doesn't
-            // leave an orphaned key behind per attempt.
-            let _ = client.delete_api_key(org_id, &api_key_uuid).await;
+            // can use it.
+            discard_api_key(client, org_id, &api_key_uuid).await;
             return Err(e);
         }
     };
 
+    // The upsert succeeded, so the key is bound and fully usable. The echoed
+    // `id` is diagnostic only, never an auth input: persist the record
+    // without it rather than deleting a working credential and leaving a
+    // dangling UUID in the endpoint's `openApiKeys`.
     let stored = ServiceQueryKey {
         key_id,
         key_secret,
@@ -88,9 +130,31 @@ pub async fn ensure_service_query_setup(
     Ok(stored)
 }
 
-/// Bind `api_key_uuid` to the service's query endpoint, merging into any
-/// existing endpoint configuration so we don't silently revoke other
-/// bindings the user set up.
+/// The keys already bound to an existing query endpoint, taken from a
+/// successful GET. The upsert replaces `openApiKeys` wholesale, so an absent
+/// `result` or absent `openApiKeys` cannot be read as "no keys bound": merging
+/// into an empty list would revoke every binding the response failed to
+/// report. An explicitly empty list is a real answer and merges normally.
+fn existing_open_api_keys(
+    endpoint: Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let incomplete = |field: &str| -> Box<dyn std::error::Error> {
+        format!(
+            "the query endpoint response is missing field '{field}', so the keys currently bound \
+             to the endpoint are unknown; binding a new key would revoke them"
+        )
+        .into()
+    };
+    endpoint
+        .ok_or_else(|| incomplete("result"))?
+        .open_api_keys
+        .ok_or_else(|| incomplete("openApiKeys"))
+}
+
+/// Bind `api_key_uuid` to the service's query endpoint, merging into the
+/// endpoint's existing `openApiKeys` so we don't silently revoke other
+/// key bindings the user set up. Only the key list is merged: the upsert
+/// still replaces `roles` and `allowedOrigins` with this module's values.
 async fn bind_query_endpoint(
     client: &CloudClient,
     org_id: &str,
@@ -102,7 +166,9 @@ async fn bind_query_endpoint(
         .instance_query_endpoint_get(org_id, service_id)
         .await
     {
-        Ok(resp) => resp.result.map(|ep| ep.open_api_keys).unwrap_or_default(),
+        Ok(resp) => existing_open_api_keys(resp.result)?,
+        // Only a 404 means there is no endpoint yet, so this binding is the
+        // first one and starts from an empty list.
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
         Err(e) => return Err(client.convert_error(e).into()),
     };
@@ -119,4 +185,89 @@ async fn bind_query_endpoint(
     Ok(client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_response(key_id: Option<&str>, key_secret: Option<&str>) -> ApiKeyPostResponse {
+        ApiKeyPostResponse {
+            key: None,
+            key_id: key_id.map(str::to_string),
+            key_secret: key_secret.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn credential_pair_is_returned_when_both_halves_are_present() {
+        let (key_id, key_secret) =
+            require_credential_pair(&key_response(Some("k-1"), Some("s-1"))).unwrap();
+        assert_eq!(key_id, "k-1");
+        assert_eq!(key_secret, "s-1");
+    }
+
+    #[test]
+    fn credential_pair_fails_naming_the_absent_key_id() {
+        let err = require_credential_pair(&key_response(None, Some("s-1"))).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the API response is missing required field 'keyId'"
+        );
+    }
+
+    #[test]
+    fn credential_pair_fails_naming_the_absent_key_secret() {
+        let err = require_credential_pair(&key_response(Some("k-1"), None)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the API response is missing required field 'keySecret'"
+        );
+    }
+
+    fn endpoint(
+        open_api_keys: Option<Vec<&str>>,
+    ) -> clickhouse_cloud_api::models::ServiceQueryAPIEndpoint {
+        clickhouse_cloud_api::models::ServiceQueryAPIEndpoint {
+            allowed_origins: None,
+            id: Some("ep-1".to_string()),
+            open_api_keys: open_api_keys.map(|keys| keys.into_iter().map(str::to_string).collect()),
+            roles: None,
+        }
+    }
+
+    #[test]
+    fn existing_keys_are_returned_when_the_endpoint_reports_them() {
+        assert_eq!(
+            existing_open_api_keys(Some(endpoint(Some(vec!["uuid-a", "uuid-b"])))).unwrap(),
+            vec!["uuid-a".to_string(), "uuid-b".to_string()],
+        );
+    }
+
+    #[test]
+    fn an_explicitly_empty_key_list_is_a_real_answer() {
+        assert!(
+            existing_open_api_keys(Some(endpoint(Some(vec![]))))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn absent_open_api_keys_is_refused_rather_than_treated_as_empty() {
+        let err = existing_open_api_keys(Some(endpoint(None))).unwrap_err();
+        assert!(
+            err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
+            "error should name the field and the consequence: {err}",
+        );
+    }
+
+    #[test]
+    fn absent_result_is_refused_rather_than_treated_as_empty() {
+        let err = existing_open_api_keys(None).unwrap_err();
+        assert!(
+            err.to_string().contains("'result'"),
+            "error should name the field: {err}",
+        );
+    }
 }

@@ -800,6 +800,10 @@ clickhousectl cloud --json service get <service-id>
 
 `clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`.
 
+### Absent fields
+
+Cloud commands never invent values for data the API did not return. A field the API omits is shown as `-` in tables and human-readable output, and is left out of `--json` output entirely rather than emitted as `null` — so `--json` reflects exactly what the API sent.
+
 ### Exit codes
 
 Follow `gh` conventions:

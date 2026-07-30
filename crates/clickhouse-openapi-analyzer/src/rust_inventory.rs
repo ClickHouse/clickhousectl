@@ -88,7 +88,21 @@ impl TypeNode {
 pub(crate) struct FieldInfo {
     pub(crate) rust_name: String,
     pub(crate) rust_type: TypeNode,
+    /// Every named type mentioned anywhere in the field's type, including
+    /// inside generic arguments the [`TypeNode`] shape model does not follow
+    /// (e.g. map values). Used for response-tree reachability.
+    pub(crate) type_names: BTreeSet<String>,
     pub(crate) deprecated_marker: bool,
+    /// Whether the field carries a field-level `#[serde(default)]` (bare or
+    /// `default = "path"`). Banned repository-wide: on a required request
+    /// field it fabricates a value the server never sent, and on `Option`
+    /// response fields it is meaningless (see the policy test in
+    /// `clickhouse-cloud-api/tests/spec_coverage_test.rs`).
+    pub(crate) serde_default: bool,
+    /// Whether the field carries `#[serde(skip_serializing_if = "...")]`.
+    /// Response-tree `Option` fields must all carry it so an absent field is
+    /// omitted from serialized output rather than emitted as `null`.
+    pub(crate) skip_serializing_if: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -101,11 +115,17 @@ pub(crate) struct EnumInfo {
     pub(crate) values: BTreeSet<String>,
     pub(crate) is_value_enum: bool,
     pub(crate) values_const: Option<BTreeSet<String>>,
+    /// Named types carried by any variant's payload (union arms), so
+    /// response-tree reachability can traverse data-carrying enums.
+    pub(crate) variant_type_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct MethodInfo {
     pub(crate) arguments: BTreeMap<String, TypeNode>,
+    /// Every named type mentioned anywhere in the method's return type
+    /// (e.g. `ApiResponse` and `Service` in `Result<ApiResponse<Vec<Service>>, Error>`).
+    pub(crate) return_type_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -121,6 +141,9 @@ pub(crate) struct RustInventory {
     pub(crate) structs: BTreeMap<String, StructInfo>,
     pub(crate) enums: BTreeMap<String, EnumInfo>,
     pub(crate) aliases: BTreeMap<String, TypeNode>,
+    /// Named types mentioned anywhere in each alias's target type, for
+    /// response-tree reachability (parallel to `aliases`).
+    pub(crate) alias_type_names: BTreeMap<String, BTreeSet<String>>,
     pub(crate) metadata: MetadataInventory,
 }
 
@@ -177,9 +200,16 @@ impl RustInventory {
                         TypeNode::from_syn(&argument.ty),
                     );
                 }
+                let mut return_type_names = BTreeSet::new();
+                if let syn::ReturnType::Type(_, ty) = &function.sig.output {
+                    collect_type_names(ty, &mut return_type_names);
+                }
                 self.client_methods.insert(
                     function.sig.ident.unraw().to_string(),
-                    MethodInfo { arguments },
+                    MethodInfo {
+                        arguments,
+                        return_type_names,
+                    },
                 );
             }
         }
@@ -192,8 +222,8 @@ impl RustInventory {
                 Item::Struct(item_struct) if matches!(item_struct.vis, Visibility::Public(_)) => {
                     let name = item_struct.ident.unraw().to_string();
                     self.model_types.insert(name.clone());
-                    // Rejects a banned `rename_all` on the struct container.
-                    serde_options(&item_struct.attrs)?;
+                    // Also rejects a banned `rename_all` on the struct container.
+                    let container = serde_options(&item_struct.attrs)?;
                     let mut fields = BTreeMap::new();
                     if let Fields::Named(named) = &item_struct.fields {
                         for field in &named.named {
@@ -206,12 +236,21 @@ impl RustInventory {
                             let rust_name = ident.unraw().to_string();
                             let options = serde_options(&field.attrs)?;
                             let spec_name = options.rename.unwrap_or_else(|| rust_name.clone());
+                            let mut type_names = BTreeSet::new();
+                            collect_type_names(&field.ty, &mut type_names);
                             fields.insert(
                                 spec_name,
                                 FieldInfo {
                                     rust_name,
                                     rust_type: TypeNode::from_syn(&field.ty),
+                                    type_names,
                                     deprecated_marker: has_deprecated_cfg(&field.attrs)?,
+                                    // A container-level `#[serde(default)]` fills every
+                                    // missing field, so it marks each field individually —
+                                    // the serde(default) ban cannot be dodged by moving
+                                    // the attribute up to the struct.
+                                    serde_default: options.default || container.default,
+                                    skip_serializing_if: options.skip_serializing_if,
                                 },
                             );
                         }
@@ -223,8 +262,12 @@ impl RustInventory {
                     self.model_types.insert(name.clone());
                     let container = serde_options(&item_enum.attrs)?;
                     let mut values = BTreeSet::new();
+                    let mut variant_type_names = BTreeSet::new();
                     let mut is_value_enum = !container.untagged;
                     for variant in &item_enum.variants {
+                        for field in variant.fields.iter() {
+                            collect_type_names(&field.ty, &mut variant_type_names);
+                        }
                         let options = serde_options(&variant.attrs)?;
                         if options.untagged || options.other {
                             continue;
@@ -242,12 +285,16 @@ impl RustInventory {
                             values,
                             is_value_enum,
                             values_const: None,
+                            variant_type_names,
                         },
                     );
                 }
                 Item::Type(item_type) if matches!(item_type.vis, Visibility::Public(_)) => {
                     let name = item_type.ident.unraw().to_string();
                     self.model_types.insert(name.clone());
+                    let mut type_names = BTreeSet::new();
+                    collect_type_names(&item_type.ty, &mut type_names);
+                    self.alias_type_names.insert(name.clone(), type_names);
                     self.aliases.insert(name, TypeNode::from_syn(&item_type.ty));
                 }
                 _ => {}
@@ -301,6 +348,44 @@ impl RustInventory {
         }
     }
 
+    /// The set of model types transitively reachable from `Client` method
+    /// return types, traversing struct fields, enum variant payloads, and
+    /// type aliases. This is the "response tree": the types the library
+    /// deserializes API responses into.
+    pub(crate) fn response_reachable_types(&self) -> BTreeSet<String> {
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<String> = self
+            .client_methods
+            .values()
+            .flat_map(|method| method.return_type_names.iter())
+            .filter(|name| self.model_types.contains(*name))
+            .cloned()
+            .collect();
+        while let Some(name) = stack.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let mut neighbours = BTreeSet::new();
+            if let Some(struct_info) = self.structs.get(&name) {
+                for field in struct_info.fields.values() {
+                    neighbours.extend(field.type_names.iter().cloned());
+                }
+            }
+            if let Some(enum_info) = self.enums.get(&name) {
+                neighbours.extend(enum_info.variant_type_names.iter().cloned());
+            }
+            if let Some(alias_names) = self.alias_type_names.get(&name) {
+                neighbours.extend(alias_names.iter().cloned());
+            }
+            for neighbour in neighbours {
+                if self.model_types.contains(&neighbour) && !seen.contains(&neighbour) {
+                    stack.push(neighbour);
+                }
+            }
+        }
+        seen
+    }
+
     pub(crate) fn terminal_type(&self, ty: &TypeNode) -> Option<String> {
         self.resolve_terminal(ty, &mut BTreeSet::new())
     }
@@ -344,11 +429,95 @@ impl RustInventory {
     }
 }
 
+/// Lists every public model struct field that carries a field-level
+/// `#[serde(default)]` (bare or `default = "path"`), as
+/// `StructName.rust_field_name`, sorted by struct name then wire field name.
+///
+/// `cfg`-gated deprecated-marker fields are included, and a container-level
+/// `#[serde(default)]` reports every field of its struct — the ban cannot be
+/// dodged by moving the attribute up to the container.
+pub(crate) fn model_fields_with_serde_default(models: &str) -> syn::Result<Vec<String>> {
+    let inventory = RustInventory::parse("", models, "")?;
+    Ok(inventory
+        .structs
+        .iter()
+        .flat_map(|(struct_name, info)| {
+            info.fields
+                .values()
+                .filter(|field| field.serde_default)
+                .map(move |field| format!("{struct_name}.{}", field.rust_name))
+        })
+        .collect())
+}
+
+/// Lists every model type with a hand-written `impl Default for` block,
+/// sorted by name. Derived `Default`s are deliberately excluded: only the
+/// manual impls are the ones `discriminated_union!` enums use, and only those
+/// carry the pick-a-variant decision the round-trip invariant guards.
+pub(crate) fn model_types_with_manual_default_impl(models: &str) -> syn::Result<Vec<String>> {
+    let file: syn::File = syn::parse_str(models)?;
+    let mut names: Vec<String> = file
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Impl(item_impl) = item else {
+                return None;
+            };
+            let (_, trait_path, _) = item_impl.trait_.as_ref()?;
+            if trait_path.segments.last()?.ident != "Default" {
+                return None;
+            }
+            let Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+                return None;
+            };
+            Some(type_path.path.segments.last()?.ident.unraw().to_string())
+        })
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Collects every named type appearing anywhere in `ty`, including inside
+/// generic arguments of wrappers [`TypeNode`] does not model (`Result`, maps,
+/// tuples). Used for reachability, where dropping a nested name would silently
+/// shrink the response tree.
+fn collect_type_names(ty: &Type, output: &mut BTreeSet<String>) {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                output.insert(segment.ident.unraw().to_string());
+            }
+            for segment in &type_path.path.segments {
+                if let PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                    for argument in &arguments.args {
+                        if let GenericArgument::Type(inner) = argument {
+                            collect_type_names(inner, output);
+                        }
+                    }
+                }
+            }
+        }
+        Type::Reference(reference) => collect_type_names(&reference.elem, output),
+        Type::Slice(slice) => collect_type_names(&slice.elem, output),
+        Type::Array(array) => collect_type_names(&array.elem, output),
+        Type::Tuple(tuple) => {
+            for element in &tuple.elems {
+                collect_type_names(element, output);
+            }
+        }
+        Type::Paren(paren) => collect_type_names(&paren.elem, output),
+        Type::Group(group) => collect_type_names(&group.elem, output),
+        _ => {}
+    }
+}
+
 #[derive(Default)]
 struct SerdeOptions {
     rename: Option<String>,
     untagged: bool,
     other: bool,
+    default: bool,
+    skip_serializing_if: bool,
 }
 
 fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
@@ -381,6 +550,16 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
                 options.untagged = true;
             } else if meta.path.is_ident("other") {
                 options.other = true;
+            } else if meta.path.is_ident("default") {
+                // Both `default` and `default = "path"` opt the field into value
+                // fabrication, so this must precede the generic `key = value` arm below.
+                options.default = true;
+                if meta.input.peek(syn::Token![=]) {
+                    let _: Expr = meta.value()?.parse()?;
+                }
+            } else if meta.path.is_ident("skip_serializing_if") {
+                options.skip_serializing_if = true;
+                let _: Expr = meta.value()?.parse()?;
             } else if meta.input.peek(syn::Token![=]) {
                 let _: Expr = meta.value()?.parse()?;
             }
@@ -521,6 +700,157 @@ mod tests {
             Some("WidgetType".to_string())
         );
         assert!(inventory.metadata.beta_operations.contains("list_widgets"));
+    }
+
+    #[test]
+    fn response_reachability_walks_returns_fields_variants_and_aliases() {
+        let client = r#"
+            pub struct Client;
+            impl Client {
+                pub async fn get_widget(&self) -> Result<ApiResponse<Vec<Widget>>, Error> {
+                    unimplemented!()
+                }
+                pub async fn mutate_widget(&self, body: WidgetPostRequest) {}
+            }
+        "#;
+        let models = r#"
+            pub struct ApiResponse<T> { pub result: Option<T> }
+            pub struct Widget {
+                pub union: Option<WidgetUnion>,
+                pub rows: WidgetRows,
+                pub map: std::collections::BTreeMap<String, MapValue>,
+            }
+            pub enum WidgetUnion {
+                Known(WidgetVariant),
+                #[serde(untagged)]
+                Unknown(serde_json::Value),
+            }
+            pub struct WidgetVariant { pub leaf: Option<String> }
+            pub type WidgetRows = Vec<WidgetRow>;
+            pub struct WidgetRow { pub cell: Option<String> }
+            pub struct MapValue { pub value: Option<String> }
+            pub struct WidgetPostRequest { pub name: String }
+            pub struct Unrelated { pub other: String }
+        "#;
+        let inventory = RustInventory::parse(client, models, "").unwrap();
+        assert_eq!(
+            inventory.client_methods["get_widget"].return_type_names,
+            BTreeSet::from([
+                "Result".to_string(),
+                "ApiResponse".to_string(),
+                "Vec".to_string(),
+                "Widget".to_string(),
+                "Error".to_string(),
+            ])
+        );
+        assert_eq!(
+            inventory.response_reachable_types(),
+            BTreeSet::from([
+                "ApiResponse".to_string(),
+                "Widget".to_string(),
+                "WidgetUnion".to_string(),
+                "WidgetVariant".to_string(),
+                "WidgetRows".to_string(),
+                "WidgetRow".to_string(),
+                "MapValue".to_string(),
+            ]),
+            "request-only and unrelated types must stay out of the response tree"
+        );
+    }
+
+    #[test]
+    fn tracks_serde_default_and_skip_serializing_if_in_all_attribute_forms() {
+        let models = r#"
+            pub struct Widget {
+                #[serde(default)]
+                pub bare: String,
+                #[serde(rename = "renamedWithDefault", default)]
+                pub renamed: String,
+                #[serde(default = "some::path")]
+                pub with_path: String,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                pub skipped: Option<String>,
+                pub plain: String,
+            }
+        "#;
+
+        let inventory = RustInventory::parse("", models, "").unwrap();
+        let fields = &inventory.structs["Widget"].fields;
+        assert!(fields["bare"].serde_default);
+        assert!(fields["renamedWithDefault"].serde_default);
+        assert!(fields["with_path"].serde_default);
+        assert!(!fields["plain"].serde_default);
+        assert!(fields["skipped"].skip_serializing_if);
+        assert!(!fields["plain"].skip_serializing_if);
+    }
+
+    #[test]
+    fn model_fields_with_serde_default_lists_carriers_sorted() {
+        let models = r#"
+            pub struct Widget {
+                #[serde(default)]
+                pub name: String,
+                pub description: Option<String>,
+                #[serde(rename = "createdAt", default)]
+                pub created_at: String,
+                #[cfg(feature = "deprecated-fields")]
+                #[serde(rename = "legacyName", default)]
+                pub legacy_name: Option<String>,
+            }
+            pub struct Gadget {
+                pub id: Option<String>,
+            }
+            pub enum State { Ready }
+        "#;
+
+        assert_eq!(
+            model_fields_with_serde_default(models).unwrap(),
+            vec![
+                "Widget.created_at".to_string(),
+                "Widget.legacy_name".to_string(),
+                "Widget.name".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn model_types_with_manual_default_impl_lists_only_hand_written_impls() {
+        let models = r#"
+            #[derive(Default)]
+            pub struct Derived { pub id: Option<String> }
+            pub enum Union { A(Widget), Unknown(serde_json::Value) }
+            impl Default for Union {
+                fn default() -> Self { Self::A(Widget::default()) }
+            }
+            pub struct Widget;
+            impl Default for Widget {
+                fn default() -> Self { Self }
+            }
+            impl std::fmt::Display for Union {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { Ok(()) }
+            }
+        "#;
+
+        assert_eq!(
+            model_types_with_manual_default_impl(models).unwrap(),
+            vec!["Union".to_string(), "Widget".to_string()]
+        );
+    }
+
+    #[test]
+    fn container_level_serde_default_marks_every_field() {
+        let models = r#"
+            #[serde(default)]
+            pub struct Widget {
+                pub name: String,
+                pub description: Option<String>,
+            }
+        "#;
+
+        assert_eq!(
+            model_fields_with_serde_default(models).unwrap(),
+            vec!["Widget.description".to_string(), "Widget.name".to_string()]
+        );
     }
 
     #[test]

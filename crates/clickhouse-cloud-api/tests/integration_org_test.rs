@@ -51,7 +51,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             })
             .await?
             .expect("blocking steps always return a value");
-        assert_eq!(org.id.to_string(), ctx.org_id);
+        assert_eq!(field_string(org.id), ctx.org_id);
 
         // ── Members ─────────────────────────────────────────────────
         //
@@ -82,7 +82,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
         if let Some(members) = members.as_ref() {
             let secondary_present = members
                 .iter()
-                .any(|m| m.user_id == secondary_user_id);
+                .any(|m| m.user_id.as_deref() == Some(secondary_user_id.as_str()));
             assert!(
                 secondary_present,
                 "member list did not include configured secondary user"
@@ -93,7 +93,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             // is wider than the secondary user alone.
             let distinct_users = members
                 .iter()
-                .map(|m| m.user_id.as_str())
+                .filter_map(|m| m.user_id.as_deref())
                 .collect::<std::collections::HashSet<_>>();
             assert!(
                 distinct_users.len() >= 2,
@@ -115,10 +115,16 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .await?;
 
         if let Some(secondary_member) = secondary_member {
-            assert_eq!(secondary_member.user_id, secondary_user_id);
+            assert_eq!(
+                secondary_member.user_id.as_deref(),
+                Some(secondary_user_id.as_str())
+            );
             assert!(
-                !secondary_member.email.is_empty(),
-                "secondary member email was empty"
+                secondary_member
+                    .email
+                    .as_deref()
+                    .is_some_and(|email| !email.is_empty()),
+                "secondary member email was absent or empty"
             );
 
             // Custom Roles round-trip. Orgs that have migrated to Custom
@@ -134,7 +140,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             let original_role_ids: Vec<String> = secondary_member
                 .assigned_roles
                 .iter()
-                .map(|ar| ar.role_id.to_string())
+                .flatten()
+                .map(|ar| field_string(ar.role_id))
                 .collect();
 
             let org_roles = failures
@@ -158,7 +165,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     original_role_ids.iter().map(|s| s.as_str()).collect();
                 let candidate_extra = org_roles
                     .iter()
-                    .map(|r| r.id.clone())
+                    .filter_map(|r| r.id.clone())
                     .find(|id| !originals.contains(id.as_str()));
 
                 let target_role_ids: Option<Vec<String>> = match candidate_extra {
@@ -251,7 +258,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                                     member
                                                         .assigned_roles
                                                         .iter()
-                                                        .map(|ar| ar.role_id.to_string())
+                                                        .flatten()
+                                                        .map(|ar| field_string(ar.role_id))
                                                         .collect();
                                                 if got == want {
                                                     Ok(Some(()))
@@ -321,7 +329,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                                     member
                                                         .assigned_roles
                                                         .iter()
-                                                        .map(|ar| ar.role_id.to_string())
+                                                        .flatten()
+                                                        .map(|ar| field_string(ar.role_id))
                                                         .collect();
                                                 if got == want {
                                                     Ok(Some(()))
@@ -388,10 +397,11 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .await?;
 
         if let Some(invitation) = invitation {
-            let invitation_id = invitation.id.to_string();
+            let invitation_id = field_string(invitation.id);
             cleanup.register_invitation(invitation_id.clone());
             assert_eq!(
-                invitation.email, invitation_email_for_assert,
+                invitation.email.as_deref(),
+                Some(invitation_email_for_assert.as_str()),
                 "invitation create echoed unexpected email"
             );
             #[cfg(feature = "deprecated-fields")]
@@ -417,7 +427,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                 .ok_or("invitation list returned no result")?;
                             if !list
                                 .iter()
-                                .any(|inv| inv.id.to_string() == invitation_id_for_list)
+                                .any(|inv| field_string(inv.id) == invitation_id_for_list)
                             {
                                 return Err(format!(
                                     "invitation list did not include new invitation {invitation_id_for_list}"
@@ -443,16 +453,16 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let fetched = resp
                             .result
                             .ok_or("invitation get returned no result")?;
-                        if fetched.id.to_string() != id {
+                        if field_string(fetched.id) != id {
                             return Err(format!(
-                                "invitation get returned wrong id {}; wanted {id}",
+                                "invitation get returned wrong id {:?}; wanted {id}",
                                 fetched.id
                             )
                             .into());
                         }
-                        if fetched.email != want_email {
+                        if fetched.email.as_deref() != Some(want_email.as_str()) {
                             return Err(format!(
-                                "invitation get returned wrong email {}; wanted {want_email}",
+                                "invitation get returned wrong email {:?}; wanted {want_email}",
                                 fetched.email
                             )
                             .into());
@@ -607,7 +617,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let roles = resp
                             .result
                             .ok_or("roles list returned no result")?;
-                        Ok(roles.into_iter().map(|r| r.id).collect::<Vec<_>>())
+                        Ok(roles.into_iter().flat_map(|r| r.id).collect::<Vec<_>>())
                     }
                 },
             )
@@ -639,9 +649,9 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     let role = resp
                         .result
                         .ok_or("role create returned no result")?;
-                    if role.name != role_name {
+                    if role.name.as_deref() != Some(role_name.as_str()) {
                         return Err(format!(
-                            "created role name mismatch: expected {role_name}, got {}",
+                            "created role name mismatch: expected {role_name}, got {:?}",
                             role.name
                         )
                         .into());
@@ -654,8 +664,9 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
         // Register for cleanup before any further mutation so a failure
         // mid-phase still reclaims the resource via teardown.
         let role_id = if let Some(role) = created_role.as_ref() {
-            cleanup.register_role(role.id.clone());
-            Some(role.id.clone())
+            let role_id = require_field(role.id.clone(), "id")?;
+            cleanup.register_role(role_id.clone());
+            Some(role_id)
         } else {
             None
         };
@@ -678,7 +689,10 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let roles = resp
                                 .result
                                 .ok_or("roles list returned no result")?;
-                            if !roles.iter().any(|r| r.id == role_id) {
+                            if !roles
+                                .iter()
+                                .any(|r| r.id.as_deref() == Some(role_id.as_str()))
+                            {
                                 return Err(format!(
                                     "created role {role_id} not visible in roles list"
                                 )
@@ -715,21 +729,21 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let role = resp
                                 .result
                                 .ok_or("role get returned no result")?;
-                            if role.id != role_id {
+                            if role.id.as_deref() != Some(role_id.as_str()) {
                                 return Err(format!(
-                                    "role id mismatch: expected {role_id}, got {}",
+                                    "role id mismatch: expected {role_id}, got {:?}",
                                     role.id
                                 )
                                 .into());
                             }
-                            if role.name != expected_name {
+                            if role.name.as_deref() != Some(expected_name.as_str()) {
                                 return Err(format!(
-                                    "role name mismatch: expected {expected_name}, got {}",
+                                    "role name mismatch: expected {expected_name}, got {:?}",
                                     role.name
                                 )
                                 .into());
                             }
-                            if !matches!(role.r#type, RBACRoleType::Custom) {
+                            if !matches!(role.r#type, Some(RBACRoleType::Custom)) {
                                 return Err(format!(
                                     "expected custom role type, got {:?}",
                                     role.r#type
@@ -739,7 +753,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let actual_permissions: Vec<String> = role
                                 .policies
                                 .iter()
-                                .flat_map(|p| p.permissions.iter().cloned())
+                                .flatten()
+                                .flat_map(|p| p.permissions.iter().flatten().cloned())
                                 .collect();
                             for expected in &expected_permissions {
                                 if !actual_permissions.iter().any(|p| p == expected) {
@@ -830,7 +845,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let actual_permissions: Vec<String> = role
                                 .policies
                                 .iter()
-                                .flat_map(|p| p.permissions.iter().cloned())
+                                .flatten()
+                                .flat_map(|p| p.permissions.iter().flatten().cloned())
                                 .collect();
                             for expected in &expected_permissions {
                                 if !actual_permissions.iter().any(|p| p == expected) {
@@ -961,7 +977,9 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                         return Ok(None);
                                     }
                                     let hit = entries.into_iter().find(|a| {
-                                        a.created_at.timestamp() as u64 >= window_start_secs
+                                        a.created_at.is_some_and(|created_at| {
+                                            created_at.timestamp() as u64 >= window_start_secs
+                                        })
                                     });
                                     Ok(hit)
                                 }
@@ -982,7 +1000,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .await?;
 
         if let Some(activity) = recent_activity {
-            let activity_id = activity.id.clone();
+            let activity_id = require_field(activity.id.clone(), "id")?;
             failures
                 .run(
                     &ctx,
@@ -997,19 +1015,23 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let fetched = resp.result.ok_or_else(|| {
                                 "activity_get returned no result".to_string()
                             })?;
-                            if fetched.id != activity_id {
+                            if fetched.id.as_deref() != Some(activity_id.as_str()) {
                                 return Err(format!(
-                                    "activity_get returned id {} but requested {}",
+                                    "activity_get returned id {:?} but requested {}",
                                     fetched.id, activity_id
                                 )
                                 .into());
                             }
-                            if fetched.organization_id.is_empty() {
+                            if fetched
+                                .organization_id
+                                .as_deref()
+                                .is_none_or(str::is_empty)
+                            {
                                 return Err(
-                                    "activity_get returned empty organizationId".into()
+                                    "activity_get returned no organizationId".into()
                                 );
                             }
-                            if fetched.created_at.timestamp() == 0 {
+                            if fetched.created_at.is_none_or(|at| at.timestamp() == 0) {
                                 return Err(
                                     "activity_get returned zero createdAt".into()
                                 );
@@ -1059,10 +1081,12 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     let created = resp
                         .result
                         .ok_or_else(|| "openapi_key_create returned no result".to_string())?;
-                    if created.key.name != key_name {
+                    let created_key_name =
+                        created.key.as_ref().and_then(|key| key.name.as_deref());
+                    if created_key_name != Some(key_name.as_str()) {
                         return Err(format!(
                             "openapi_key_create returned name {:?}, expected {:?}",
-                            created.key.name, key_name
+                            created_key_name, key_name
                         )
                         .into());
                     }
@@ -1072,7 +1096,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .await?;
 
         if let Some(created_key) = created_key {
-            let api_key_uuid = created_key.key.id.to_string();
+            let api_key_uuid = field_string(created_key.key.and_then(|key| key.id));
             cleanup.register_api_key(api_key_uuid.clone());
 
             // openapi_key_get — assert fields match what create returned.
@@ -1089,21 +1113,21 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let key = resp
                             .result
                             .ok_or_else(|| "openapi_key_get returned no result".to_string())?;
-                        if key.id.to_string() != api_key_uuid {
+                        if field_string(key.id) != api_key_uuid {
                             return Err(format!(
-                                "openapi_key_get returned id {}, expected {}",
+                                "openapi_key_get returned id {:?}, expected {}",
                                 key.id, api_key_uuid
                             )
                             .into());
                         }
-                        if key.name != expected_name {
+                        if key.name.as_deref() != Some(expected_name.as_str()) {
                             return Err(format!(
                                 "openapi_key_get returned name {:?}, expected {:?}",
                                 key.name, expected_name
                             )
                             .into());
                         }
-                        if !matches!(key.state, ApiKeyState::Enabled) {
+                        if !matches!(key.state, Some(ApiKeyState::Enabled)) {
                             return Err(format!(
                                 "openapi_key_get returned state {:?}, expected Enabled",
                                 key.state
@@ -1127,7 +1151,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         let keys = resp
                             .result
                             .ok_or_else(|| "openapi_key_get_list returned no result".to_string())?;
-                        if !keys.iter().any(|k| k.id.to_string() == api_key_uuid) {
+                        if !keys.iter().any(|k| field_string(k.id) == api_key_uuid) {
                             return Err(format!(
                                 "openapi_key_get_list did not contain newly created key {api_key_uuid} (found {} keys)",
                                 keys.len()
@@ -1162,7 +1186,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let patched_key = patched
                                 .result
                                 .ok_or_else(|| "openapi_key_update returned no result".to_string())?;
-                            if !matches!(patched_key.state, ApiKeyState::Disabled) {
+                            if !matches!(patched_key.state, Some(ApiKeyState::Disabled)) {
                                 return Err(format!(
                                     "openapi_key_update -> disabled returned state {:?}",
                                     patched_key.state
@@ -1175,7 +1199,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let key = resp
                                 .result
                                 .ok_or_else(|| "openapi_key_get after disable returned no result".to_string())?;
-                            if !matches!(key.state, ApiKeyState::Disabled) {
+                            if !matches!(key.state, Some(ApiKeyState::Disabled)) {
                                 return Err(format!(
                                     "openapi_key_get after disable returned state {:?}, expected Disabled",
                                     key.state
@@ -1194,7 +1218,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             let restored_key = restored
                                 .result
                                 .ok_or_else(|| "openapi_key_update -> enabled returned no result".to_string())?;
-                            if !matches!(restored_key.state, ApiKeyState::Enabled) {
+                            if !matches!(restored_key.state, Some(ApiKeyState::Enabled)) {
                                 return Err(format!(
                                     "openapi_key_update -> enabled returned state {:?}",
                                     restored_key.state

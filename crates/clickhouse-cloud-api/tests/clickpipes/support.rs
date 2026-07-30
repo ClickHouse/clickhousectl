@@ -11,7 +11,25 @@
 
 pub use crate::common::support::*;
 
+use clickhouse_cloud_api::models::ClickPipe;
 use std::time::Duration;
+
+// ── ClickPipe response accessors ─────────────────────────────────────
+//
+// Every field of the `ClickPipe` response model is `Option<T>`, so tests read
+// through these instead of unwrapping: an id a test cannot proceed without is
+// an explicit error, and a state used only for logging or matching degrades to
+// an empty string (which matches no known state).
+
+/// A pipe's id as a string — every follow-up call needs it.
+pub fn clickpipe_id(pipe: &ClickPipe) -> TestResult<String> {
+    Ok(require_field(pipe.id.as_ref(), "id")?.to_string())
+}
+
+/// A pipe's state as a string, or an empty string when the API omitted it.
+pub fn clickpipe_state(pipe: &ClickPipe) -> String {
+    field_string(pipe.state.as_ref())
+}
 
 // ── AWS Cleanup Registry ─────────────────────────────────────────────
 //

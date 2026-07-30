@@ -1155,7 +1155,7 @@ impl Client {
         &self,
         organization_id: &str,
         postgres_id: &str,
-    ) -> Result<ApiResponse<PostgresInstanceConfig>, Error> {
+    ) -> Result<ApiResponse<PostgresInstanceConfigResponse>, Error> {
         let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
         let req = self.request(reqwest::Method::GET, &path);
         let resp = req.send().await?;
@@ -2042,7 +2042,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
         click_pipe_id: &str,
-    ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
+    ) -> Result<ApiResponse<ClickPipeSettingsResponse>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
         );
@@ -2069,7 +2069,7 @@ impl Client {
         service_id: &str,
         click_pipe_id: &str,
         body: &ClickPipeSettingsPutRequest,
-    ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
+    ) -> Result<ApiResponse<ClickPipeSettingsResponse>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings"
         );
@@ -2728,7 +2728,7 @@ impl Client {
         &self,
         organization_id: &str,
         service_id: &str,
-    ) -> Result<ApiResponse<Vec<ClickStackSource>>, Error> {
+    ) -> Result<ApiResponse<Vec<ClickStackSourceResponse>>, Error> {
         let path =
             format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
         let req = self.request(reqwest::Method::GET, &path);
@@ -2753,7 +2753,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
         body: &ClickStackSource,
-    ) -> Result<ApiResponse<ClickStackSource>, Error> {
+    ) -> Result<ApiResponse<ClickStackSourceResponse>, Error> {
         let path =
             format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
         let mut req = self.request(reqwest::Method::POST, &path);
@@ -2779,7 +2779,7 @@ impl Client {
         organization_id: &str,
         service_id: &str,
         click_stack_source_id: &str,
-    ) -> Result<ApiResponse<ClickStackSource>, Error> {
+    ) -> Result<ApiResponse<ClickStackSourceResponse>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
         );
@@ -2806,7 +2806,7 @@ impl Client {
         service_id: &str,
         click_stack_source_id: &str,
         body: &ClickStackSource,
-    ) -> Result<ApiResponse<ClickStackSource>, Error> {
+    ) -> Result<ApiResponse<ClickStackSourceResponse>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources/{click_stack_source_id}"
         );

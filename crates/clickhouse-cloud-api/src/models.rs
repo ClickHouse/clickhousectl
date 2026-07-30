@@ -1,6 +1,13 @@
 //! Typed models for ClickHouse Cloud API schemas.
 //!
-//! Auto-generated from the OpenAPI specification.
+//! Derived from the OpenAPI specification and kept in step with it by the drift
+//! analyzer, which parses this file — every model struct, enum and type alias
+//! must be declared here as literal source.
+//!
+//! Request models are strict and response models have every field `Option<T>`; a
+//! schema used in both directions appears twice, as `{Name}` and
+//! `{Name}Response`. `#[serde(default)]` is banned. See the crate-level docs for
+//! the policy and the reasoning behind it.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,11 +19,19 @@ use serde::{Deserialize, Serialize};
 /// `displayType`, `service`, `operator`) shares the same deserialization shape:
 /// buffer the payload as a [`serde_json::Value`], read the discriminator key,
 /// and route each known wire value to the matching variant via
-/// [`serde_json::from_value`]. Any unrecognized or missing discriminator falls
-/// through to the enum's `Unknown(serde_json::Value)` catch-all, so unknown
-/// payloads round-trip losslessly instead of failing to deserialize. This
-/// explicit dispatch avoids the greedy first-match misrouting that
-/// `#[serde(untagged)]` derives suffer when variants share a discriminator.
+/// [`serde_json::from_value`]. This explicit dispatch avoids the greedy
+/// first-match misrouting that `#[serde(untagged)]` derives suffer when variants
+/// share a discriminator.
+///
+/// Once the payload buffers into a `Value`, deserialization cannot fail. Two
+/// routes reach the enum's `Unknown(serde_json::Value)` catch-all, which holds
+/// the payload verbatim so it round-trips losslessly:
+///
+/// * an unrecognized discriminator value, through the final catch-all arm;
+/// * a recognized discriminator whose payload does not fit the selected variant
+///   — e.g. the API changes a field from an array to a string — through
+///   [`crate::serde_helpers::deserialize_or_raw`]. Field-level tolerance covers
+///   a field the API stops sending; this covers a field whose shape it changes.
 ///
 /// The macro emits **only** the `Deserialize` impl. The enum declaration, its
 /// derives/serde attributes, and its `Display` impl must remain literal source
@@ -36,13 +51,47 @@ use serde::{Deserialize, Serialize};
 /// }
 /// ```
 ///
+/// Some unions discriminate one variant by the *absence* of the key rather than
+/// by a wire value of it (e.g. a ClickStack chart config carries
+/// `configType: "sql"` when it is a raw-SQL config and carries no `configType`
+/// at all when it is a builder config). Such a union adds a trailing `none` arm
+/// naming the variant the key's absence selects, plus the keys whose presence
+/// disqualifies that variant:
+///
+/// ```ignore
+/// discriminated_union! {
+///     ClickStackLineChartConfig, "configType" {
+///         "sql" => ClickStackLineRawSqlChartConfig,
+///         none unless "connectionId" | "sqlTemplate" => ClickStackLineBuilderChartConfig,
+///     }
+/// }
+/// ```
+///
+/// The `none` arm pins two semantics:
+///
+/// * It deliberately conflates "key absent" and "key present but not a string":
+///   both produce a `None` scrutinee, so both take the arm.
+/// * The `unless` keys guard against a *dropped* discriminator. A total absence
+///   variant — one that cannot fail to deserialize, because none of its fields
+///   is required — would otherwise absorb any keyless payload, silently
+///   retyping a raw-SQL config as an empty builder config and discarding its
+///   `connectionId`/`sqlTemplate`. Listing keys that only the other variants
+///   carry routes such a payload to `Unknown` instead, where it survives
+///   intact. Unknown *added* keys are not listed and stay ignored. If the spec
+///   ever gives the absence variant one of the guard keys, drop that key from
+///   the list.
+///
+/// Without a `none` arm, an absent or non-string discriminator falls to
+/// `Unknown` through the final catch-all.
+///
 /// New discriminated unions in this module should use this macro rather than
 /// hand-writing the impl. Enums whose variants need multi-level or nested
 /// dispatch do not fit this single-key shape and must stay hand-written.
 macro_rules! discriminated_union {
     (
         $enum:ident, $key:literal {
-            $( $( $wire:literal )|+ => $variant:ident ),+ $(,)?
+            $( $( $wire:literal )|+ => $variant:ident, )+
+            $( none unless $( $guard:literal )|+ => $absent:ident, )?
         }
     ) => {
         impl<'de> Deserialize<'de> for $enum {
@@ -53,10 +102,23 @@ macro_rules! discriminated_union {
                 let value = serde_json::Value::deserialize(deserializer)?;
                 match value.get($key).and_then(|v| v.as_str()) {
                     $(
-                        $( Some($wire) )|+ => serde_json::from_value(value)
-                            .map($enum::$variant)
-                            .map_err(serde::de::Error::custom),
+                        $( Some($wire) )|+ => Ok(
+                            crate::serde_helpers::deserialize_or_raw(value)
+                                .map($enum::$variant)
+                                .unwrap_or_else($enum::Unknown),
+                        ),
                     )+
+                    $(
+                        None => Ok(
+                            if [$($guard),+].iter().any(|key| value.get(key).is_some()) {
+                                $enum::Unknown(value)
+                            } else {
+                                crate::serde_helpers::deserialize_or_raw(value)
+                                    .map($enum::$absent)
+                                    .unwrap_or_else($enum::Unknown)
+                            },
+                        ),
+                    )?
                     _ => Ok($enum::Unknown(value)),
                 }
             }
@@ -2903,12 +2965,18 @@ impl std::fmt::Display for ClickPipeStatePatchRequestCommand {
 }
 
 /// Inline enum for `ClickStackAlertChannelEmail.type`.
+///
+/// The spec gives both alert-channel variants the same `enum: ["webhook",
+/// "email"]`, so `#[default]` sits on `Email` rather than on the first value:
+/// this field discriminates the `ClickStackAlertChannel` union, and defaulting
+/// it to `webhook` would make `ClickStackAlertChannelEmail::default()`
+/// deserialize back as the webhook variant.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickStackAlertChannelEmailType {
     #[serde(rename = "webhook")]
-    #[default]
     Webhook,
     #[serde(rename = "email")]
+    #[default]
     Email,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
@@ -7873,7 +7941,10 @@ impl std::fmt::Display for BackupBucketProperties {
 }
 
 /// `ClickStackAlertChannel` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `type` field; see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackAlertChannel {
     ClickStackAlertChannelEmail(ClickStackAlertChannelEmail),
@@ -7883,6 +7954,13 @@ pub enum ClickStackAlertChannel {
     /// Holds the raw payload as `serde_json::Value` so it round-trips
     /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertChannel, "type" {
+        "email" => ClickStackAlertChannelEmail,
+        "webhook" => ClickStackAlertChannelWebhook,
+    }
 }
 
 impl std::fmt::Display for ClickStackAlertChannel {
@@ -7895,14 +7973,73 @@ impl std::fmt::Display for ClickStackAlertChannel {
     }
 }
 
+/// `ClickStackAlertChannel` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackAlertChannel`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `type` field, exactly as the request union is: dispatch
+/// reads the raw JSON rather than trying each variant's shape, so all-`Option`
+/// arms — which would match any object under `untagged` matching — cannot
+/// misroute a payload. A `type` this crate does not know, or a payload that
+/// does not fit the variant its `type` selects, lands in `Unknown` with the
+/// raw JSON intact.
+///
+/// Deliberately has no `Default`: every arm's default would serialize to `{}`,
+/// which carries no `type` and so would not deserialize back to the same
+/// variant. Build a [`ClickStackAlertChannel`] instead when writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackAlertChannelResponse {
+    ClickStackAlertChannelEmail(ClickStackAlertChannelEmailResponse),
+    ClickStackAlertChannelWebhook(ClickStackAlertChannelWebhookResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackAlertChannelResponse, "type" {
+        "email" => ClickStackAlertChannelEmail,
+        "webhook" => ClickStackAlertChannelWebhook,
+    }
+}
+
+impl std::fmt::Display for ClickStackAlertChannelResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackAlertChannelEmail(_) => write!(f, "ClickStackAlertChannelEmail"),
+            Self::ClickStackAlertChannelWebhook(_) => write!(f, "ClickStackAlertChannelWebhook"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackBarChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackBarChartConfig {
     ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfig),
     ClickStackBarRawSqlChartConfig(ClickStackBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackBarChartConfig, "configType" {
+        "sql" => ClickStackBarRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackBarBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackBarChartConfig {
@@ -7917,14 +8054,77 @@ impl std::fmt::Display for ClickStackBarChartConfig {
     }
 }
 
+/// `ClickStackBarChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackBarChartConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `configType` field exactly as the request union is (absent
+/// or non-string dispatches to the builder variant, unless the payload carries
+/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// variant's shape, so all-`Option` arms — which would match any object under
+/// `untagged` matching — cannot misroute a payload, and the `unless` guard
+/// keeps a raw-SQL payload with a dropped discriminator out of the total
+/// builder arm. A payload that does not fit the variant its discriminator
+/// selects lands in `Unknown` with the raw JSON intact.
+///
+/// Deliberately has no `Default`: response values are produced by
+/// deserialization, never constructed; build a [`ClickStackBarChartConfig`] instead when
+/// writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackBarChartConfigResponse {
+    ClickStackBarRawSqlChartConfig(ClickStackBarRawSqlChartConfigResponse),
+    ClickStackBarBuilderChartConfig(ClickStackBarBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackBarChartConfigResponse, "configType" {
+        "sql" => ClickStackBarRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackBarBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackBarChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackBarRawSqlChartConfig(_) => write!(f, "ClickStackBarRawSqlChartConfig"),
+            Self::ClickStackBarBuilderChartConfig(_) => {
+                write!(f, "ClickStackBarBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackCategoricalBarChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackCategoricalBarChartConfig {
     ClickStackCategoricalBarBuilderChartConfig(ClickStackCategoricalBarBuilderChartConfig),
     ClickStackCategoricalBarRawSqlChartConfig(ClickStackCategoricalBarRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackCategoricalBarChartConfig, "configType" {
+        "sql" => ClickStackCategoricalBarRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackCategoricalBarBuilderChartConfig,
+    }
 }
 
 impl Default for ClickStackCategoricalBarChartConfig {
@@ -7943,6 +8143,57 @@ impl std::fmt::Display for ClickStackCategoricalBarChartConfig {
             }
             Self::ClickStackCategoricalBarRawSqlChartConfig(_) => {
                 write!(f, "ClickStackCategoricalBarRawSqlChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackCategoricalBarChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackCategoricalBarChartConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `configType` field exactly as the request union is (absent
+/// or non-string dispatches to the builder variant, unless the payload carries
+/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// variant's shape, so all-`Option` arms — which would match any object under
+/// `untagged` matching — cannot misroute a payload, and the `unless` guard
+/// keeps a raw-SQL payload with a dropped discriminator out of the total
+/// builder arm. A payload that does not fit the variant its discriminator
+/// selects lands in `Unknown` with the raw JSON intact.
+///
+/// Deliberately has no `Default`: response values are produced by
+/// deserialization, never constructed; build a [`ClickStackCategoricalBarChartConfig`] instead when
+/// writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackCategoricalBarChartConfigResponse {
+    ClickStackCategoricalBarRawSqlChartConfig(ClickStackCategoricalBarRawSqlChartConfigResponse),
+    ClickStackCategoricalBarBuilderChartConfig(ClickStackCategoricalBarBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackCategoricalBarChartConfigResponse, "configType" {
+        "sql" => ClickStackCategoricalBarRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackCategoricalBarBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackCategoricalBarChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackCategoricalBarRawSqlChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarRawSqlChartConfig")
+            }
+            Self::ClickStackCategoricalBarBuilderChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarBuilderChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -7992,13 +8243,27 @@ impl std::fmt::Display for ClickStackDashboardChartSeries {
 }
 
 /// `ClickStackLineChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackLineChartConfig {
     ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfig),
     ClickStackLineRawSqlChartConfig(ClickStackLineRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackLineChartConfig, "configType" {
+        "sql" => ClickStackLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackLineBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackLineChartConfig {
@@ -8015,14 +8280,79 @@ impl std::fmt::Display for ClickStackLineChartConfig {
     }
 }
 
+/// `ClickStackLineChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackLineChartConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `configType` field exactly as the request union is (absent
+/// or non-string dispatches to the builder variant, unless the payload carries
+/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// variant's shape, so all-`Option` arms — which would match any object under
+/// `untagged` matching — cannot misroute a payload, and the `unless` guard
+/// keeps a raw-SQL payload with a dropped discriminator out of the total
+/// builder arm. A payload that does not fit the variant its discriminator
+/// selects lands in `Unknown` with the raw JSON intact.
+///
+/// Deliberately has no `Default`: response values are produced by
+/// deserialization, never constructed; build a [`ClickStackLineChartConfig`] instead when
+/// writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackLineChartConfigResponse {
+    ClickStackLineRawSqlChartConfig(ClickStackLineRawSqlChartConfigResponse),
+    ClickStackLineBuilderChartConfig(ClickStackLineBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackLineChartConfigResponse, "configType" {
+        "sql" => ClickStackLineRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackLineBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackLineChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackLineRawSqlChartConfig(_) => {
+                write!(f, "ClickStackLineRawSqlChartConfig")
+            }
+            Self::ClickStackLineBuilderChartConfig(_) => {
+                write!(f, "ClickStackLineBuilderChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackNumberChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackNumberChartConfig {
     ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfig),
     ClickStackNumberRawSqlChartConfig(ClickStackNumberRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackNumberChartConfig, "configType" {
+        "sql" => ClickStackNumberRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackNumberBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackNumberChartConfig {
@@ -8033,6 +8363,57 @@ impl std::fmt::Display for ClickStackNumberChartConfig {
             }
             Self::ClickStackNumberRawSqlChartConfig(_) => {
                 write!(f, "ClickStackNumberRawSqlChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackNumberChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackNumberChartConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `configType` field exactly as the request union is (absent
+/// or non-string dispatches to the builder variant, unless the payload carries
+/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// variant's shape, so all-`Option` arms — which would match any object under
+/// `untagged` matching — cannot misroute a payload, and the `unless` guard
+/// keeps a raw-SQL payload with a dropped discriminator out of the total
+/// builder arm. A payload that does not fit the variant its discriminator
+/// selects lands in `Unknown` with the raw JSON intact.
+///
+/// Deliberately has no `Default`: response values are produced by
+/// deserialization, never constructed; build a [`ClickStackNumberChartConfig`] instead when
+/// writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackNumberChartConfigResponse {
+    ClickStackNumberRawSqlChartConfig(ClickStackNumberRawSqlChartConfigResponse),
+    ClickStackNumberBuilderChartConfig(ClickStackNumberBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackNumberChartConfigResponse, "configType" {
+        "sql" => ClickStackNumberRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackNumberBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackNumberChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackNumberRawSqlChartConfig(_) => {
+                write!(f, "ClickStackNumberRawSqlChartConfig")
+            }
+            Self::ClickStackNumberBuilderChartConfig(_) => {
+                write!(f, "ClickStackNumberBuilderChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -8065,6 +8446,60 @@ discriminated_union! {
 }
 
 impl std::fmt::Display for ClickStackNumberTileColorCondition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackNumericColorCondition(_) => {
+                write!(f, "ClickStackNumericColorCondition")
+            }
+            Self::ClickStackBetweenColorCondition(_) => {
+                write!(f, "ClickStackBetweenColorCondition")
+            }
+            Self::ClickStackEqualityColorCondition(_) => {
+                write!(f, "ClickStackEqualityColorCondition")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackNumberTileColorCondition` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackNumberTileColorCondition`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `operator` field, exactly as the request union is: dispatch
+/// reads the raw JSON rather than trying each variant's shape, so all-`Option`
+/// arms — which would match any object under `untagged` matching — cannot
+/// misroute a payload. A `operator` this crate does not know, or a payload that
+/// does not fit the variant its `operator` selects, lands in `Unknown` with the
+/// raw JSON intact.
+///
+/// Deliberately has no `Default`: every arm's default would serialize to `{}`,
+/// which carries no `operator` and so would not deserialize back to the same
+/// variant. Build a [`ClickStackNumberTileColorCondition`] instead when writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackNumberTileColorConditionResponse {
+    ClickStackNumericColorCondition(ClickStackNumericColorConditionResponse),
+    ClickStackBetweenColorCondition(ClickStackBetweenColorConditionResponse),
+    ClickStackEqualityColorCondition(ClickStackEqualityColorConditionResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackNumberTileColorConditionResponse, "operator" {
+        "gt" | "gte" | "lt" | "lte" => ClickStackNumericColorCondition,
+        "between" => ClickStackBetweenColorCondition,
+        "eq" | "neq" => ClickStackEqualityColorCondition,
+    }
+}
+
+impl std::fmt::Display for ClickStackNumberTileColorConditionResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ClickStackNumericColorCondition(_) => {
@@ -8123,6 +8558,54 @@ impl std::fmt::Display for ClickStackOnClick {
     }
 }
 
+/// `ClickStackOnClick` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackOnClick`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `type` field, exactly as the request union is: dispatch
+/// reads the raw JSON rather than trying each variant's shape, so all-`Option`
+/// arms — which would match any object under `untagged` matching — cannot
+/// misroute a payload. A `type` this crate does not know, or a payload that
+/// does not fit the variant its `type` selects, lands in `Unknown` with the
+/// raw JSON intact.
+///
+/// Deliberately has no `Default`: every arm's default would serialize to `{}`,
+/// which carries no `type` and so would not deserialize back to the same
+/// variant. Build a [`ClickStackOnClick`] instead when writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackOnClickResponse {
+    ClickStackOnClickSearch(ClickStackOnClickSearchResponse),
+    ClickStackOnClickDashboard(ClickStackOnClickDashboardResponse),
+    ClickStackOnClickExternal(ClickStackOnClickExternalResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackOnClickResponse, "type" {
+        "search" => ClickStackOnClickSearch,
+        "dashboard" => ClickStackOnClickDashboard,
+        "external" => ClickStackOnClickExternal,
+    }
+}
+
+impl std::fmt::Display for ClickStackOnClickResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackOnClickSearch(_) => write!(f, "ClickStackOnClickSearch"),
+            Self::ClickStackOnClickDashboard(_) => write!(f, "ClickStackOnClickDashboard"),
+            Self::ClickStackOnClickExternal(_) => write!(f, "ClickStackOnClickExternal"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackOnClickTarget` - one of multiple variants.
 ///
 /// Dispatched on the `mode` field; see the `discriminated_union!`
@@ -8166,14 +8649,77 @@ impl std::fmt::Display for ClickStackOnClickTarget {
     }
 }
 
+/// `ClickStackOnClickTarget` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackOnClickTarget`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `mode` field, exactly as the request union is: dispatch
+/// reads the raw JSON rather than trying each variant's shape, so all-`Option`
+/// arms — which would match any object under `untagged` matching — cannot
+/// misroute a payload. A `mode` this crate does not know, or a payload that
+/// does not fit the variant its `mode` selects, lands in `Unknown` with the
+/// raw JSON intact.
+///
+/// Deliberately has no `Default`: every arm's default would serialize to `{}`,
+/// which carries no `mode` and so would not deserialize back to the same
+/// variant. Build a [`ClickStackOnClickTarget`] instead when writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackOnClickTargetResponse {
+    ClickStackOnClickTargetIdVariant(ClickStackOnClickTargetIdVariantResponse),
+    ClickStackOnClickTargetTemplateVariant(ClickStackOnClickTargetTemplateVariantResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackOnClickTargetResponse, "mode" {
+        "id" => ClickStackOnClickTargetIdVariant,
+        "template" => ClickStackOnClickTargetTemplateVariant,
+    }
+}
+
+impl std::fmt::Display for ClickStackOnClickTargetResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackOnClickTargetIdVariant(_) => {
+                write!(f, "ClickStackOnClickTargetIdVariant")
+            }
+            Self::ClickStackOnClickTargetTemplateVariant(_) => {
+                write!(f, "ClickStackOnClickTargetTemplateVariant")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackPieChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackPieChartConfig {
     ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfig),
     ClickStackPieRawSqlChartConfig(ClickStackPieRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackPieChartConfig, "configType" {
+        "sql" => ClickStackPieRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackPieBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackPieChartConfig {
@@ -8183,6 +8729,55 @@ impl std::fmt::Display for ClickStackPieChartConfig {
                 write!(f, "ClickStackPieBuilderChartConfig")
             }
             Self::ClickStackPieRawSqlChartConfig(_) => write!(f, "ClickStackPieRawSqlChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackPieChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackPieChartConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `configType` field exactly as the request union is (absent
+/// or non-string dispatches to the builder variant, unless the payload carries
+/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// variant's shape, so all-`Option` arms — which would match any object under
+/// `untagged` matching — cannot misroute a payload, and the `unless` guard
+/// keeps a raw-SQL payload with a dropped discriminator out of the total
+/// builder arm. A payload that does not fit the variant its discriminator
+/// selects lands in `Unknown` with the raw JSON intact.
+///
+/// Deliberately has no `Default`: response values are produced by
+/// deserialization, never constructed; build a [`ClickStackPieChartConfig`] instead when
+/// writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackPieChartConfigResponse {
+    ClickStackPieRawSqlChartConfig(ClickStackPieRawSqlChartConfigResponse),
+    ClickStackPieBuilderChartConfig(ClickStackPieBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackPieChartConfigResponse, "configType" {
+        "sql" => ClickStackPieRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackPieBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackPieChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackPieRawSqlChartConfig(_) => write!(f, "ClickStackPieRawSqlChartConfig"),
+            Self::ClickStackPieBuilderChartConfig(_) => {
+                write!(f, "ClickStackPieBuilderChartConfig")
+            }
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -8230,14 +8825,82 @@ impl std::fmt::Display for ClickStackSource {
     }
 }
 
+/// `ClickStackSource` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackSource`]: each arm is the all-`Option`
+/// response variant of its request struct, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `kind` field, exactly as the request union is: dispatch
+/// reads the raw JSON rather than trying each variant's shape, so all-`Option`
+/// arms — which would match any object under `untagged` matching — cannot
+/// misroute a payload. A `kind` this crate does not know, or a payload that does
+/// not fit the variant its `kind` selects, lands in `Unknown` with the raw JSON
+/// intact.
+///
+/// Deliberately has no `Default`: every arm's default would serialize to `{}`,
+/// which carries no `kind` and so would not deserialize back to the same
+/// variant. Build a [`ClickStackSource`] instead when writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackSourceResponse {
+    ClickStackLogSource(ClickStackLogSourceResponse),
+    ClickStackTraceSource(ClickStackTraceSourceResponse),
+    ClickStackMetricSource(ClickStackMetricSourceResponse),
+    ClickStackSessionSource(ClickStackSessionSourceResponse),
+    ClickStackPromqlSource(ClickStackPromqlSourceResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackSourceResponse, "kind" {
+        "log" => ClickStackLogSource,
+        "trace" => ClickStackTraceSource,
+        "metric" => ClickStackMetricSource,
+        "session" => ClickStackSessionSource,
+        "promql" => ClickStackPromqlSource,
+    }
+}
+
+impl std::fmt::Display for ClickStackSourceResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackLogSource(_) => write!(f, "ClickStackLogSource"),
+            Self::ClickStackTraceSource(_) => write!(f, "ClickStackTraceSource"),
+            Self::ClickStackMetricSource(_) => write!(f, "ClickStackMetricSource"),
+            Self::ClickStackSessionSource(_) => write!(f, "ClickStackSessionSource"),
+            Self::ClickStackPromqlSource(_) => write!(f, "ClickStackPromqlSource"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ClickStackTableChartConfig` - one of multiple variants.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Dispatched on the `configType` field (absent or non-string dispatches to the
+/// builder variant, unless the payload carries a raw-SQL-only key); see the
+/// `discriminated_union!` invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum ClickStackTableChartConfig {
     ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfig),
     ClickStackTableRawSqlChartConfig(ClickStackTableRawSqlChartConfig),
     /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
     Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackTableChartConfig, "configType" {
+        "sql" => ClickStackTableRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackTableBuilderChartConfig,
+    }
 }
 
 impl std::fmt::Display for ClickStackTableChartConfig {
@@ -8248,6 +8911,57 @@ impl std::fmt::Display for ClickStackTableChartConfig {
             }
             Self::ClickStackTableRawSqlChartConfig(_) => {
                 write!(f, "ClickStackTableRawSqlChartConfig")
+            }
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackTableChartConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackTableChartConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `configType` field exactly as the request union is (absent
+/// or non-string dispatches to the builder variant, unless the payload carries
+/// a raw-SQL-only key): dispatch reads the raw JSON rather than trying each
+/// variant's shape, so all-`Option` arms — which would match any object under
+/// `untagged` matching — cannot misroute a payload, and the `unless` guard
+/// keeps a raw-SQL payload with a dropped discriminator out of the total
+/// builder arm. A payload that does not fit the variant its discriminator
+/// selects lands in `Unknown` with the raw JSON intact.
+///
+/// Deliberately has no `Default`: response values are produced by
+/// deserialization, never constructed; build a [`ClickStackTableChartConfig`] instead when
+/// writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackTableChartConfigResponse {
+    ClickStackTableRawSqlChartConfig(ClickStackTableRawSqlChartConfigResponse),
+    ClickStackTableBuilderChartConfig(ClickStackTableBuilderChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackTableChartConfigResponse, "configType" {
+        "sql" => ClickStackTableRawSqlChartConfig,
+        none unless "connectionId" | "sqlTemplate" => ClickStackTableBuilderChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackTableChartConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackTableRawSqlChartConfig(_) => {
+                write!(f, "ClickStackTableRawSqlChartConfig")
+            }
+            Self::ClickStackTableBuilderChartConfig(_) => {
+                write!(f, "ClickStackTableBuilderChartConfig")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }
@@ -8301,6 +9015,79 @@ impl std::fmt::Display for ClickStackTileConfig {
             }
             Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
             Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
+            Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
+            Self::ClickStackNumberChartConfig(_) => write!(f, "ClickStackNumberChartConfig"),
+            Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
+            Self::ClickStackHeatmapChartConfig(_) => write!(f, "ClickStackHeatmapChartConfig"),
+            Self::ClickStackSearchChartConfig(_) => write!(f, "ClickStackSearchChartConfig"),
+            Self::ClickStackEventPatternsChartConfig(_) => {
+                write!(f, "ClickStackEventPatternsChartConfig")
+            }
+            Self::ClickStackMarkdownChartConfig(_) => write!(f, "ClickStackMarkdownChartConfig"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// `ClickStackTileConfig` - one of multiple variants, in response position.
+///
+/// Response variant of [`ClickStackTileConfig`]: each arm is the all-`Option`
+/// response variant of its request type, so a field the API drops or sends as
+/// `null` deserializes to `None` instead of failing.
+///
+/// Dispatched on the `displayType` field, exactly as the request union is: dispatch
+/// reads the raw JSON rather than trying each variant's shape, so all-`Option`
+/// arms — which would match any object under `untagged` matching — cannot
+/// misroute a payload. A `displayType` this crate does not know, or a payload that
+/// does not fit the variant its `displayType` selects, lands in `Unknown` with the
+/// raw JSON intact.
+///
+/// Deliberately has no `Default`: every arm's default would serialize to `{}`,
+/// which carries no `displayType` and so would not deserialize back to the same
+/// variant. Build a [`ClickStackTileConfig`] instead when writing.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickStackTileConfigResponse {
+    ClickStackLineChartConfig(ClickStackLineChartConfigResponse),
+    ClickStackBarChartConfig(ClickStackBarChartConfigResponse),
+    ClickStackCategoricalBarChartConfig(ClickStackCategoricalBarChartConfigResponse),
+    ClickStackTableChartConfig(ClickStackTableChartConfigResponse),
+    ClickStackNumberChartConfig(ClickStackNumberChartConfigResponse),
+    ClickStackPieChartConfig(ClickStackPieChartConfigResponse),
+    ClickStackHeatmapChartConfig(ClickStackHeatmapChartConfigResponse),
+    ClickStackSearchChartConfig(ClickStackSearchChartConfigResponse),
+    ClickStackEventPatternsChartConfig(ClickStackEventPatternsChartConfigResponse),
+    ClickStackMarkdownChartConfig(ClickStackMarkdownChartConfigResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ClickStackTileConfigResponse, "displayType" {
+        "line" => ClickStackLineChartConfig,
+        "stacked_bar" => ClickStackBarChartConfig,
+        "bar" => ClickStackCategoricalBarChartConfig,
+        "table" => ClickStackTableChartConfig,
+        "number" => ClickStackNumberChartConfig,
+        "pie" => ClickStackPieChartConfig,
+        "heatmap" => ClickStackHeatmapChartConfig,
+        "search" => ClickStackSearchChartConfig,
+        "event_patterns" => ClickStackEventPatternsChartConfig,
+        "markdown" => ClickStackMarkdownChartConfig,
+    }
+}
+
+impl std::fmt::Display for ClickStackTileConfigResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickStackLineChartConfig(_) => write!(f, "ClickStackLineChartConfig"),
+            Self::ClickStackBarChartConfig(_) => write!(f, "ClickStackBarChartConfig"),
+            Self::ClickStackCategoricalBarChartConfig(_) => {
+                write!(f, "ClickStackCategoricalBarChartConfig")
+            }
             Self::ClickStackTableChartConfig(_) => write!(f, "ClickStackTableChartConfig"),
             Self::ClickStackNumberChartConfig(_) => write!(f, "ClickStackNumberChartConfig"),
             Self::ClickStackPieChartConfig(_) => write!(f, "ClickStackPieChartConfig"),
@@ -8396,281 +9183,277 @@ pub type PgStorageSize = i64;
 /// Type alias for `pgTags`.
 pub type PgTags = Vec<ResourceTagsV1>;
 
+/// Type alias for `pgTags` in response position, over
+/// [`ResourceTagsV1Response`].
+pub type PgTagsResponse = Vec<ResourceTagsV1Response>;
+
 /// `Activity` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Activity {
-    #[serde(rename = "actorDetails", default)]
-    pub actor_details: String,
-    #[serde(rename = "actorId", default)]
-    pub actor_id: String,
-    #[serde(rename = "actorIpAddress", default)]
-    pub actor_ip_address: String,
-    #[serde(rename = "actorType", default)]
-    pub actor_type: ActivityActortype,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: String,
-    #[serde(rename = "keyUpdateType", default)]
-    pub key_update_type: ActivityKeyupdatetype,
-    #[serde(rename = "organizationId", default)]
-    pub organization_id: String,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: String,
-    #[serde(rename = "targetKeyId", default)]
-    pub target_key_id: String,
-    #[serde(default)]
-    pub r#type: ActivityType,
-    #[serde(rename = "userAgent", default)]
-    pub user_agent: String,
+    #[serde(rename = "actorDetails", skip_serializing_if = "Option::is_none")]
+    pub actor_details: Option<String>,
+    #[serde(rename = "actorId", skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    #[serde(rename = "actorIpAddress", skip_serializing_if = "Option::is_none")]
+    pub actor_ip_address: Option<String>,
+    #[serde(rename = "actorType", skip_serializing_if = "Option::is_none")]
+    pub actor_type: Option<ActivityActortype>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "keyUpdateType", skip_serializing_if = "Option::is_none")]
+    pub key_update_type: Option<ActivityKeyupdatetype>,
+    #[serde(rename = "organizationId", skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(rename = "targetKeyId", skip_serializing_if = "Option::is_none")]
+    pub target_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ActivityType>,
+    #[serde(rename = "userAgent", skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 /// `ApiKey` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKey {
-    #[serde(rename = "assignedRoles", default)]
-    pub assigned_roles: Vec<AssignedRole>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "ipAccessList", default)]
-    pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "keySuffix", default)]
-    pub key_suffix: String,
-    #[serde(default)]
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntryResponse>>,
+    #[serde(rename = "keySuffix", skip_serializing_if = "Option::is_none")]
+    pub key_suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub roles: Vec<String>,
-    #[serde(default)]
-    pub state: ApiKeyState,
-    #[serde(rename = "usedAt", default)]
-    pub used_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ApiKeyState>,
+    #[serde(rename = "usedAt", skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ApiKeyHashData` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyHashData {
-    #[serde(rename = "keyIdHash", default)]
+    #[serde(rename = "keyIdHash")]
     pub key_id_hash: String,
-    #[serde(rename = "keyIdSuffix", default)]
+    #[serde(rename = "keyIdSuffix")]
     pub key_id_suffix: String,
-    #[serde(rename = "keySecretHash", default)]
+    #[serde(rename = "keySecretHash")]
     pub key_secret_hash: String,
 }
 
 /// `ApiKeyPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPatchRequest {
-    #[serde(
-        rename = "assignedRoleIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<uuid::Uuid>>,
-    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(
-        rename = "ipAccessList",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<Vec<IpAccessListEntry>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ApiKeyPatchRequestState>,
 }
 
 /// `ApiKeyPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPostRequest {
-    #[serde(rename = "assignedRoleIds", default)]
+    #[serde(rename = "assignedRoleIds")]
     pub assigned_role_ids: Vec<uuid::Uuid>,
-    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(rename = "hashData", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "hashData", skip_serializing_if = "Option::is_none")]
     pub hash_data: Option<ApiKeyHashData>,
-    #[serde(rename = "ipAccessList", default)]
+    #[serde(rename = "ipAccessList")]
     pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(default)]
     pub name: String,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    #[serde(default)]
     pub state: ApiKeyPostRequestState,
 }
 
 /// `ApiKeyPostResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPostResponse {
-    #[serde(default)]
-    pub key: ApiKey,
-    #[serde(rename = "keyId", default)]
-    pub key_id: String,
-    #[serde(rename = "keySecret", default)]
-    pub key_secret: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<ApiKey>,
+    #[serde(rename = "keyId", skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    #[serde(rename = "keySecret", skip_serializing_if = "Option::is_none")]
+    pub key_secret: Option<String>,
 }
 
 /// `AssignedRole` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AssignedRole {
-    #[serde(rename = "roleId", default)]
-    pub role_id: uuid::Uuid,
-    #[serde(rename = "roleName", default)]
-    pub role_name: String,
-    #[serde(rename = "roleType", default)]
-    pub role_type: AssignedRoleRoletype,
+    #[serde(rename = "roleId", skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<uuid::Uuid>,
+    #[serde(rename = "roleName", skip_serializing_if = "Option::is_none")]
+    pub role_name: Option<String>,
+    #[serde(rename = "roleType", skip_serializing_if = "Option::is_none")]
+    pub role_type: Option<AssignedRoleRoletype>,
 }
 
 /// `AwsBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucket {
-    #[serde(rename = "bucketPath", default)]
-    pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
-    pub bucket_provider: AwsBackupBucketBucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
-    pub iam_role_arn: String,
-    #[serde(rename = "iamRoleSessionName", default)]
-    pub iam_role_session_name: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "bucketPath", skip_serializing_if = "Option::is_none")]
+    pub bucket_path: Option<String>,
+    #[serde(rename = "bucketProvider", skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<AwsBackupBucketBucketprovider>,
+    #[serde(rename = "iamRoleArn", skip_serializing_if = "Option::is_none")]
+    pub iam_role_arn: Option<String>,
+    #[serde(rename = "iamRoleSessionName", skip_serializing_if = "Option::is_none")]
+    pub iam_role_session_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
 }
 
 /// `AwsBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucketPatchRequestV1 {
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AwsBackupBucketPatchRequestV1Bucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
+    #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(
-        rename = "iamRoleSessionName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "iamRoleSessionName", skip_serializing_if = "Option::is_none")]
     pub iam_role_session_name: Option<String>,
 }
 
 /// `AwsBackupBucketPostRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucketPostRequestV1 {
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AwsBackupBucketPostRequestV1Bucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
+    #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(rename = "iamRoleSessionName", default)]
+    #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }
 
 /// `AwsBackupBucketProperties` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AwsBackupBucketProperties {
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AwsBackupBucketPropertiesBucketprovider,
-    #[serde(rename = "iamRoleArn", default)]
+    #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
-    #[serde(rename = "iamRoleSessionName", default)]
+    #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }
 
 /// `AzureBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucket {
-    #[serde(rename = "bucketProvider", default)]
-    pub bucket_provider: AzureBackupBucketBucketprovider,
-    #[serde(rename = "containerName", default)]
-    pub container_name: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "bucketProvider", skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<AzureBackupBucketBucketprovider>,
+    #[serde(rename = "containerName", skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
 }
 
 /// `AzureBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucketPatchRequestV1 {
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPatchRequestV1Bucketprovider,
-    #[serde(rename = "connectionString", default)]
+    #[serde(rename = "connectionString")]
     pub connection_string: String,
-    #[serde(rename = "containerName", default)]
+    #[serde(rename = "containerName")]
     pub container_name: String,
 }
 
 /// `AzureBackupBucketPostRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucketPostRequestV1 {
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPostRequestV1Bucketprovider,
-    #[serde(rename = "connectionString", default)]
+    #[serde(rename = "connectionString")]
     pub connection_string: String,
-    #[serde(rename = "containerName", default)]
+    #[serde(rename = "containerName")]
     pub container_name: String,
 }
 
 /// `AzureBackupBucketProperties` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureBackupBucketProperties {
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: AzureBackupBucketPropertiesBucketprovider,
-    #[serde(rename = "containerName", default)]
+    #[serde(rename = "containerName")]
     pub container_name: String,
 }
 
 /// `AzureEventHub` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureEventHub {
-    #[serde(rename = "connectionString", default)]
+    #[serde(rename = "connectionString")]
     pub connection_string: String,
 }
 
 /// `Backup` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Backup {
-    #[serde(rename = "backupName", default)]
-    pub backup_name: String,
-    #[serde(default)]
-    pub bucket: serde_json::Value,
-    #[serde(rename = "durationInSeconds", default)]
-    pub duration_in_seconds: f64,
-    #[serde(rename = "finishedAt", default)]
-    pub finished_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: String,
-    #[serde(rename = "sizeInBytes", default)]
-    pub size_in_bytes: f64,
-    #[serde(rename = "startedAt", default)]
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub status: BackupStatus,
-    #[serde(default)]
-    pub r#type: BackupType,
+    #[serde(rename = "backupName", skip_serializing_if = "Option::is_none")]
+    pub backup_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<serde_json::Value>,
+    #[serde(rename = "durationInSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_in_seconds: Option<f64>,
+    #[serde(rename = "finishedAt", skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(rename = "sizeInBytes", skip_serializing_if = "Option::is_none")]
+    pub size_in_bytes: Option<f64>,
+    #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<BackupStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<BackupType>,
 }
 
 /// `BackupConfiguration` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BackupConfiguration {
-    #[serde(rename = "backupPeriodInHours", default)]
-    pub backup_period_in_hours: f64,
-    #[serde(rename = "backupRetentionPeriodInHours", default)]
-    pub backup_retention_period_in_hours: f64,
-    #[serde(rename = "backupStartTime", default)]
-    pub backup_start_time: String,
+    #[serde(
+        rename = "backupPeriodInHours",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backup_period_in_hours: Option<f64>,
+    #[serde(
+        rename = "backupRetentionPeriodInHours",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backup_retention_period_in_hours: Option<f64>,
+    #[serde(rename = "backupStartTime", skip_serializing_if = "Option::is_none")]
+    pub backup_start_time: Option<String>,
 }
 
 /// `BackupConfigurationPatchRequest` from the ClickHouse Cloud API.
@@ -8678,204 +9461,272 @@ pub struct BackupConfiguration {
 pub struct BackupConfigurationPatchRequest {
     #[serde(
         rename = "backupPeriodInHours",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub backup_period_in_hours: Option<f64>,
     #[serde(
         rename = "backupRetentionPeriodInHours",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub backup_retention_period_in_hours: Option<f64>,
-    #[serde(
-        rename = "backupStartTime",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "backupStartTime", skip_serializing_if = "Option::is_none")]
     pub backup_start_time: Option<String>,
 }
 
 /// `BasePostgresService` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BasePostgresService {
-    #[serde(rename = "haType", default)]
+    #[serde(rename = "haType")]
     pub ha_type: PgHaType,
-    #[serde(default)]
     pub name: PgNameProperty,
-    #[serde(rename = "postgresVersion", default)]
+    #[serde(rename = "postgresVersion")]
     pub postgres_version: PgVersion,
-    #[serde(default)]
     pub provider: PgProvider,
-    #[serde(default)]
     pub region: PgRegion,
-    #[serde(default)]
     pub size: PgSize,
-    #[serde(default)]
     pub tags: PgTags,
 }
 
 /// `ByocConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocConfig {
-    #[serde(rename = "accountName", default)]
-    pub account_name: String,
-    #[serde(rename = "cloudProvider", default)]
-    pub cloud_provider: ByocConfigCloudprovider,
-    #[serde(rename = "displayName", default)]
-    pub display_name: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(rename = "regionId", default)]
-    pub region_id: ByocConfigRegionid,
-    #[serde(default)]
-    pub state: ByocConfigState,
+    #[serde(rename = "accountName", skip_serializing_if = "Option::is_none")]
+    pub account_name: Option<String>,
+    #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<ByocConfigCloudprovider>,
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "regionId", skip_serializing_if = "Option::is_none")]
+    pub region_id: Option<ByocConfigRegionid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ByocConfigState>,
 }
 
 /// `ByocInfrastructurePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocInfrastructurePatchRequest {
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }
 
 /// `ByocInfrastructurePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocInfrastructurePostRequest {
-    #[serde(rename = "accountId", default)]
+    #[serde(rename = "accountId")]
     pub account_id: String,
-    #[serde(rename = "availabilityZoneSuffixes", default)]
+    #[serde(rename = "availabilityZoneSuffixes")]
     pub availability_zone_suffixes: Vec<String>,
-    #[serde(rename = "displayName", default)]
+    #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(rename = "regionId", default)]
+    #[serde(rename = "regionId")]
     pub region_id: ByocInfrastructurePostRequestRegionid,
-    #[serde(rename = "vpcCidrRange", default)]
+    #[serde(rename = "vpcCidrRange")]
     pub vpc_cidr_range: String,
 }
 
 /// `ClickPipe` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipe {
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub destination: ClickPipeDestination,
-    #[serde(rename = "fieldMappings", default)]
-    pub field_mappings: Vec<ClickPipeFieldMapping>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub scaling: ClickPipeScaling,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: uuid::Uuid,
-    #[serde(default)]
-    pub settings: ClickPipeSettings,
-    #[serde(default)]
-    pub source: ClickPipeSource,
-    #[serde(default)]
-    pub state: ClickPipeState,
-    #[serde(rename = "updatedAt", default)]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination: Option<ClickPipeDestination>,
+    #[serde(rename = "fieldMappings", skip_serializing_if = "Option::is_none")]
+    pub field_mappings: Option<Vec<ClickPipeFieldMappingResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scaling: Option<ClickPipeScalingResponse>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipeSettingsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<ClickPipeSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ClickPipeState>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ClickPipeBigQueryPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeBigQueryPipeSettings {
-    #[serde(rename = "allowNullableColumns", default)]
+    #[serde(rename = "allowNullableColumns")]
     pub allow_nullable_columns: bool,
-    #[serde(rename = "initialLoadParallelism", default)]
+    #[serde(rename = "initialLoadParallelism")]
     pub initial_load_parallelism: f64,
-    #[serde(rename = "replicationMode", default)]
+    #[serde(rename = "replicationMode")]
     pub replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode,
-    #[serde(rename = "snapshotNumRowsPerPartition", default)]
+    #[serde(rename = "snapshotNumRowsPerPartition")]
     pub snapshot_num_rows_per_partition: f64,
-    #[serde(rename = "snapshotNumberOfParallelTables", default)]
+    #[serde(rename = "snapshotNumberOfParallelTables")]
     pub snapshot_number_of_parallel_tables: f64,
+}
+
+/// `ClickPipeBigQueryPipeSettings` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeBigQueryPipeSettings`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeBigQueryPipeSettingsResponse {
+    #[serde(
+        rename = "allowNullableColumns",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allow_nullable_columns: Option<bool>,
+    #[serde(
+        rename = "initialLoadParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_load_parallelism: Option<f64>,
+    #[serde(rename = "replicationMode", skip_serializing_if = "Option::is_none")]
+    pub replication_mode: Option<ClickPipeBigQueryPipeSettingsReplicationmode>,
+    #[serde(
+        rename = "snapshotNumRowsPerPartition",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_num_rows_per_partition: Option<f64>,
+    #[serde(
+        rename = "snapshotNumberOfParallelTables",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_number_of_parallel_tables: Option<f64>,
 }
 
 /// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeBigQueryPipeTableMapping {
-    #[serde(rename = "excludedColumns", default)]
+    #[serde(rename = "excludedColumns")]
     pub excluded_columns: Vec<String>,
-    #[serde(rename = "sortingKeys", default)]
+    #[serde(rename = "sortingKeys")]
     pub sorting_keys: Vec<String>,
-    #[serde(rename = "sourceDatasetName", default)]
+    #[serde(rename = "sourceDatasetName")]
     pub source_dataset_name: String,
-    #[serde(rename = "sourceTable", default)]
+    #[serde(rename = "sourceTable")]
     pub source_table: String,
-    #[serde(rename = "tableEngine", default)]
+    #[serde(rename = "tableEngine")]
     pub table_engine: ClickPipeBigQueryPipeTableMappingTableengine,
-    #[serde(rename = "targetTable", default)]
+    #[serde(rename = "targetTable")]
     pub target_table: String,
-    #[serde(rename = "useCustomSortingKey", default)]
+    #[serde(rename = "useCustomSortingKey")]
     pub use_custom_sorting_key: bool,
+}
+
+/// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API, in
+/// response position.
+///
+/// Response variant of [`ClickPipeBigQueryPipeTableMapping`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeBigQueryPipeTableMappingResponse {
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
+    pub excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
+    pub sorting_keys: Option<Vec<String>>,
+    #[serde(rename = "sourceDatasetName", skip_serializing_if = "Option::is_none")]
+    pub source_dataset_name: Option<String>,
+    #[serde(rename = "sourceTable", skip_serializing_if = "Option::is_none")]
+    pub source_table: Option<String>,
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<ClickPipeBigQueryPipeTableMappingTableengine>,
+    #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
+    pub target_table: Option<String>,
+    #[serde(
+        rename = "useCustomSortingKey",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_custom_sorting_key: Option<bool>,
 }
 
 /// `ClickPipeBigQuerySource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeBigQuerySource {
-    #[serde(default)]
-    pub settings: ClickPipeBigQueryPipeSettings,
-    #[serde(rename = "snapshotStagingPath", default)]
-    pub snapshot_staging_path: String,
-    #[serde(rename = "tableMappings", default)]
-    pub table_mappings: Vec<ClickPipeBigQueryPipeTableMapping>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipeBigQueryPipeSettingsResponse>,
+    #[serde(
+        rename = "snapshotStagingPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_staging_path: Option<String>,
+    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
+    pub table_mappings: Option<Vec<ClickPipeBigQueryPipeTableMappingResponse>>,
 }
 
 /// `ClickPipeDestination` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeDestination {
-    #[serde(default)]
-    pub columns: Vec<ClickPipeDestinationColumn>,
-    #[serde(default)]
-    pub database: String,
-    #[serde(rename = "managedTable", default)]
-    pub managed_table: bool,
-    #[serde(default)]
-    pub table: String,
-    #[serde(rename = "tableDefinition", default)]
-    pub table_definition: ClickPipeDestinationTableDefinition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickPipeDestinationColumnResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(rename = "managedTable", skip_serializing_if = "Option::is_none")]
+    pub managed_table: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    #[serde(rename = "tableDefinition", skip_serializing_if = "Option::is_none")]
+    pub table_definition: Option<ClickPipeDestinationTableDefinitionResponse>,
 }
 
 /// `ClickPipeDestinationColumn` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeDestinationColumn {
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub r#type: String,
+}
+
+/// `ClickPipeDestinationColumn` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeDestinationColumn`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeDestinationColumnResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
 }
 
 /// `ClickPipeDestinationTableDefinition` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeDestinationTableDefinition {
-    #[serde(default)]
     pub engine: ClickPipeDestinationTableEngine,
     // API rejects empty strings / empty arrays for these keys. Spec has no
     // `required` array so the description-heuristic treats them as required;
     // skip at serialize time when unset instead of modeling as Option<T>.
-    #[serde(
-        rename = "partitionBy",
-        skip_serializing_if = "String::is_empty",
-        default
-    )]
+    #[serde(rename = "partitionBy", skip_serializing_if = "String::is_empty")]
     pub partition_by: String,
-    #[serde(
-        rename = "primaryKey",
-        skip_serializing_if = "String::is_empty",
-        default
-    )]
+    #[serde(rename = "primaryKey", skip_serializing_if = "String::is_empty")]
     pub primary_key: String,
-    #[serde(rename = "sortingKey", skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(rename = "sortingKey", skip_serializing_if = "Vec::is_empty")]
     pub sorting_key: Vec<String>,
+}
+
+/// `ClickPipeDestinationTableDefinition` from the ClickHouse Cloud API, in
+/// response position.
+///
+/// Response variant of [`ClickPipeDestinationTableDefinition`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeDestinationTableDefinitionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<ClickPipeDestinationTableEngineResponse>,
+    #[serde(rename = "partitionBy", skip_serializing_if = "Option::is_none")]
+    pub partition_by: Option<String>,
+    #[serde(rename = "primaryKey", skip_serializing_if = "Option::is_none")]
+    pub primary_key: Option<String>,
+    #[serde(rename = "sortingKey", skip_serializing_if = "Option::is_none")]
+    pub sorting_key: Option<Vec<String>>,
 }
 
 /// `ClickPipeDestinationTableEngine` from the ClickHouse Cloud API.
@@ -8885,173 +9736,206 @@ pub struct ClickPipeDestinationTableEngine {
     // rejection for MergeTree/ReplacingMergeTree/Null engines. Spec has no
     // `required` array so the heuristic treats this as required; API rejects
     // empty values despite that.
-    #[serde(rename = "columnIds", skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(rename = "columnIds", skip_serializing_if = "Vec::is_empty")]
     pub column_ids: Vec<String>,
-    #[serde(default)]
     pub r#type: ClickPipeDestinationTableEngineType,
-    #[serde(
-        rename = "versionColumnId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "versionColumnId", skip_serializing_if = "Option::is_none")]
+    pub version_column_id: Option<String>,
+}
+
+/// `ClickPipeDestinationTableEngine` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeDestinationTableEngine`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeDestinationTableEngineResponse {
+    #[serde(rename = "columnIds", skip_serializing_if = "Option::is_none")]
+    pub column_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeDestinationTableEngineType>,
+    #[serde(rename = "versionColumnId", skip_serializing_if = "Option::is_none")]
     pub version_column_id: Option<String>,
 }
 
 /// `ClickPipeFieldMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeFieldMapping {
-    #[serde(rename = "destinationField", default)]
+    #[serde(rename = "destinationField")]
     pub destination_field: String,
-    #[serde(rename = "sourceField", default)]
+    #[serde(rename = "sourceField")]
     pub source_field: String,
+}
+
+/// `ClickPipeFieldMapping` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickPipeFieldMapping`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeFieldMappingResponse {
+    #[serde(rename = "destinationField", skip_serializing_if = "Option::is_none")]
+    pub destination_field: Option<String>,
+    #[serde(rename = "sourceField", skip_serializing_if = "Option::is_none")]
+    pub source_field: Option<String>,
 }
 
 /// `ClickPipeKafkaOffset` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeKafkaOffset {
-    #[serde(default)]
     pub strategy: ClickPipeKafkaOffsetStrategy,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+/// `ClickPipeKafkaOffset` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickPipeKafkaOffset`]: every field is `Option<T>`, so
+/// a field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeKafkaOffsetResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<ClickPipeKafkaOffsetStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
 }
 
 /// `ClickPipeKafkaSchemaRegistry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeKafkaSchemaRegistry {
-    #[serde(default)]
-    pub authentication: ClickPipeKafkaSchemaRegistryAuthentication,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipeKafkaSchemaRegistryAuthentication>,
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(default)]
-    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// `ClickPipeKafkaSchemaRegistryCredentials` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeKafkaSchemaRegistryCredentials {
-    #[serde(default)]
     pub password: String,
-    #[serde(default)]
     pub username: String,
 }
 
 /// `ClickPipeKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeKafkaSource {
-    #[serde(default)]
-    pub authentication: ClickPipeKafkaSourceAuthentication,
-    #[serde(default)]
-    pub brokers: String,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipeKafkaSourceAuthentication>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brokers: Option<String>,
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(
-        rename = "consumerGroup",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "consumerGroup", skip_serializing_if = "Option::is_none")]
     pub consumer_group: Option<String>,
-    #[serde(
-        rename = "exactlyOnce",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "exactlyOnce", skip_serializing_if = "Option::is_none")]
     pub exactly_once: Option<bool>,
-    #[serde(default)]
-    pub format: ClickPipeKafkaSourceFormat,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ClickPipeKafkaSourceFormat>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub offset: Option<ClickPipeKafkaOffset>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<ClickPipeKafkaOffsetResponse>,
     #[serde(
         rename = "reversePrivateEndpointIds",
-        default,
-        deserialize_with = "crate::serde_helpers::null_to_empty"
+        skip_serializing_if = "Option::is_none"
     )]
-    pub reverse_private_endpoint_ids: Vec<String>,
-    #[serde(
-        rename = "schemaRegistry",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    pub reverse_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none")]
     pub schema_registry: Option<ClickPipeKafkaSchemaRegistry>,
-    #[serde(default)]
-    pub topics: String,
-    #[serde(default)]
-    pub r#type: ClickPipeKafkaSourceType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topics: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeKafkaSourceType>,
 }
 
 /// `ClickPipeKinesisSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeKinesisSource {
-    #[serde(default)]
-    pub authentication: ClickPipeKinesisSourceAuthentication,
-    #[serde(default)]
-    pub format: ClickPipeKinesisSourceFormat,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipeKinesisSourceAuthentication>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ClickPipeKinesisSourceFormat>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(rename = "iteratorType", default)]
-    pub iterator_type: ClickPipeKinesisSourceIteratortype,
-    #[serde(default)]
-    pub region: String,
-    #[serde(rename = "streamName", default)]
-    pub stream_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iteratorType", skip_serializing_if = "Option::is_none")]
+    pub iterator_type: Option<ClickPipeKinesisSourceIteratortype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(rename = "streamName", skip_serializing_if = "Option::is_none")]
+    pub stream_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
-    #[serde(
-        rename = "useEnhancedFanOut",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "useEnhancedFanOut", skip_serializing_if = "Option::is_none")]
     pub use_enhanced_fan_out: Option<bool>,
 }
 
 /// `ClickPipeMongoDBPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeSettings {
-    #[serde(
-        rename = "deleteOnMerge",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
     pub delete_on_merge: Option<bool>,
-    #[serde(
-        rename = "pullBatchSize",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
     pub pull_batch_size: Option<i64>,
     #[serde(rename = "replicationMode")]
     pub replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode,
     #[serde(
         rename = "snapshotNumRowsPerPartition",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_num_rows_per_partition: Option<i64>,
     #[serde(
         rename = "snapshotNumberOfParallelTables",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_number_of_parallel_tables: Option<i64>,
     #[serde(
         rename = "syncIntervalSeconds",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
     #[serde(
         rename = "useJsonNativeFormat",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_json_native_format: Option<bool>,
+}
+
+/// `ClickPipeMongoDBPipeSettings` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeMongoDBPipeSettings`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBPipeSettingsResponse {
+    #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
+    pub delete_on_merge: Option<bool>,
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
+    pub pull_batch_size: Option<i64>,
+    #[serde(rename = "replicationMode", skip_serializing_if = "Option::is_none")]
+    pub replication_mode: Option<ClickPipeMongoDBPipeSettingsReplicationmode>,
+    #[serde(
+        rename = "snapshotNumRowsPerPartition",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_num_rows_per_partition: Option<i64>,
+    #[serde(
+        rename = "snapshotNumberOfParallelTables",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_number_of_parallel_tables: Option<i64>,
+    #[serde(
+        rename = "syncIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sync_interval_seconds: Option<i64>,
+    #[serde(
+        rename = "useJsonNativeFormat",
+        skip_serializing_if = "Option::is_none"
     )]
     pub use_json_native_format: Option<bool>,
 }
@@ -9063,62 +9947,62 @@ pub struct ClickPipeMongoDBPipeTableMapping {
     pub source_collection: String,
     #[serde(rename = "sourceDatabaseName")]
     pub source_database_name: String,
-    #[serde(
-        rename = "tableEngine",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipeMongoDBPipeTableMappingTableengine>,
     #[serde(rename = "targetTable")]
     pub target_table: String,
 }
 
+/// `ClickPipeMongoDBPipeTableMapping` from the ClickHouse Cloud API, in
+/// response position.
+///
+/// Response variant of [`ClickPipeMongoDBPipeTableMapping`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMongoDBPipeTableMappingResponse {
+    #[serde(rename = "sourceCollection", skip_serializing_if = "Option::is_none")]
+    pub source_collection: Option<String>,
+    #[serde(rename = "sourceDatabaseName", skip_serializing_if = "Option::is_none")]
+    pub source_database_name: Option<String>,
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<ClickPipeMongoDBPipeTableMappingTableengine>,
+    #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
+    pub target_table: Option<String>,
+}
+
 /// `ClickPipeMongoDBSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBSource {
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
-    #[serde(rename = "readPreference")]
-    pub read_preference: ClickPipeMongoDBSourceReadpreference,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub settings: Option<ClickPipeMongoDBPipeSettings>,
+    #[serde(rename = "readPreference", skip_serializing_if = "Option::is_none")]
+    pub read_preference: Option<ClickPipeMongoDBSourceReadpreference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipeMongoDBPipeSettingsResponse>,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(
-        rename = "tableMappings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    pub table_mappings: Option<Vec<ClickPipeMongoDBPipeTableMapping>>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
+    pub table_mappings: Option<Vec<ClickPipeMongoDBPipeTableMappingResponse>>,
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
-    pub uri: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uri: Option<String>,
 }
 
 /// `ClickPipeMutateBigQuerySource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutateBigQuerySource {
-    #[serde(default)]
     pub credentials: ServiceAccount,
-    #[serde(default)]
     pub settings: ClickPipeBigQueryPipeSettings,
-    #[serde(rename = "snapshotStagingPath", default)]
+    #[serde(rename = "snapshotStagingPath")]
     pub snapshot_staging_path: String,
-    #[serde(rename = "tableMappings", default)]
+    #[serde(rename = "tableMappings")]
     pub table_mappings: Vec<ClickPipeBigQueryPipeTableMapping>,
 }
 
@@ -9130,74 +10014,49 @@ pub struct ClickPipeMutateDestination {
     // pipes (Postgres, MySQL, BigQuery)" — all four must be omitted entirely
     // for database pipes. Modeled with skip-when-empty / Option so callers can
     // build a single destination type and database pipes serialize cleanly.
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<ClickPipeDestinationColumn>,
-    #[serde(default)]
     pub database: String,
-    #[serde(
-        rename = "managedTable",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "managedTable", skip_serializing_if = "Option::is_none")]
     pub managed_table: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
-    #[serde(
-        rename = "tableDefinition",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableDefinition", skip_serializing_if = "Option::is_none")]
     pub table_definition: Option<ClickPipeDestinationTableDefinition>,
 }
 
 /// `ClickPipeMutateKafkaSchemaRegistry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutateKafkaSchemaRegistry {
-    #[serde(default)]
     pub authentication: ClickPipeMutateKafkaSchemaRegistryAuthentication,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(default)]
     pub credentials: ClickPipeKafkaSchemaRegistryCredentials,
-    #[serde(default)]
     pub url: String,
 }
 
 /// `ClickPipeMutateMongoDBSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutateMongoDBSource {
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<PLAIN>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
     #[serde(rename = "readPreference")]
     pub read_preference: ClickPipeMutateMongoDBSourceReadpreference,
     pub settings: ClickPipeMongoDBPipeSettings,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
     #[serde(rename = "tableMappings")]
     pub table_mappings: Vec<ClickPipeMongoDBPipeTableMapping>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
     pub uri: String,
 }
@@ -9205,83 +10064,64 @@ pub struct ClickPipeMutateMongoDBSource {
 /// `ClickPipeMutateMySQLSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutateMySQLSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipeMutateMySQLSourceAuthentication>,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<PLAIN>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
     pub host: String,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
     pub port: i64,
-    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none")]
     pub server_id: Option<i64>,
     pub settings: ClickPipeMySQLPipeSettings,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
     #[serde(rename = "tableMappings")]
     pub table_mappings: Vec<ClickPipeMySQLPipeTableMapping>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickPipeMutateMySQLSourceType>,
 }
 
 /// `ClickPipeMutatePostgresSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMutatePostgresSource {
-    #[serde(default)]
     pub authentication: ClickPipeMutatePostgresSourceAuthentication,
     // caCertificate is `undefinedOr(isValidPEMCertificate)` server-side — sending
     // `""` (the bare-String default) fails PEM validation. Modeled as
     // `Option<String>` so callers can omit it.
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(default)]
     pub credentials: PLAIN,
-    #[serde(default)]
     pub database: String,
-    #[serde(rename = "disableTls", default)]
+    #[serde(rename = "disableTls")]
     pub disable_tls: bool,
-    #[serde(default)]
     pub host: String,
     // iamRole only applies to RDS-style Postgres + IAM_ROLE auth. Spec marks
     // it required but the server rejects "" for Basic-auth Postgres. Modeled
     // as Option<String> so callers can omit it; same pattern as ca_certificate.
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(default)]
     pub port: i64,
-    #[serde(default)]
     pub settings: ClickPipePostgresPipeSettings,
-    #[serde(rename = "skipCertVerification", default)]
+    #[serde(rename = "skipCertVerification")]
     pub skip_cert_verification: bool,
-    #[serde(rename = "tableMappings", default)]
+    #[serde(rename = "tableMappings")]
     pub table_mappings: Vec<ClickPipePostgresPipeTableMapping>,
     // tlsHost is only set when the broker cert SAN doesn't match `host`.
     // Optional in practice; server rejects "" with PEM-style validation.
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickPipeMutatePostgresSourceType>,
 }
 
@@ -9290,99 +10130,141 @@ pub struct ClickPipeMutatePostgresSource {
 pub struct ClickPipeMySQLPipeSettings {
     #[serde(
         rename = "allowNullableColumns",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub allow_nullable_columns: Option<bool>,
-    #[serde(
-        rename = "deleteOnMerge",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
     pub delete_on_merge: Option<bool>,
     #[serde(
         rename = "initialLoadParallelism",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub initial_load_parallelism: Option<i64>,
-    #[serde(
-        rename = "pullBatchSize",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
     pub pull_batch_size: Option<i64>,
     #[serde(
         rename = "replicationMechanism",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub replication_mechanism: Option<ClickPipeMySQLPipeSettingsReplicationmechanism>,
     #[serde(rename = "replicationMode")]
     pub replication_mode: ClickPipeMySQLPipeSettingsReplicationmode,
     #[serde(
         rename = "snapshotNumRowsPerPartition",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_num_rows_per_partition: Option<i64>,
     #[serde(
         rename = "snapshotNumberOfParallelTables",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_number_of_parallel_tables: Option<i64>,
     #[serde(
         rename = "syncIntervalSeconds",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
+    #[serde(rename = "useCompression", skip_serializing_if = "Option::is_none")]
+    pub use_compression: Option<bool>,
+}
+
+/// `ClickPipeMySQLPipeSettings` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeMySQLPipeSettings`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMySQLPipeSettingsResponse {
     #[serde(
-        rename = "useCompression",
-        skip_serializing_if = "Option::is_none",
-        default
+        rename = "allowNullableColumns",
+        skip_serializing_if = "Option::is_none"
     )]
+    pub allow_nullable_columns: Option<bool>,
+    #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
+    pub delete_on_merge: Option<bool>,
+    #[serde(
+        rename = "initialLoadParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_load_parallelism: Option<i64>,
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
+    pub pull_batch_size: Option<i64>,
+    #[serde(
+        rename = "replicationMechanism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replication_mechanism: Option<ClickPipeMySQLPipeSettingsReplicationmechanism>,
+    #[serde(rename = "replicationMode", skip_serializing_if = "Option::is_none")]
+    pub replication_mode: Option<ClickPipeMySQLPipeSettingsReplicationmode>,
+    #[serde(
+        rename = "snapshotNumRowsPerPartition",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_num_rows_per_partition: Option<i64>,
+    #[serde(
+        rename = "snapshotNumberOfParallelTables",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_number_of_parallel_tables: Option<i64>,
+    #[serde(
+        rename = "syncIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sync_interval_seconds: Option<i64>,
+    #[serde(rename = "useCompression", skip_serializing_if = "Option::is_none")]
     pub use_compression: Option<bool>,
 }
 
 /// `ClickPipeMySQLPipeTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMySQLPipeTableMapping {
-    #[serde(
-        rename = "excludedColumns",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
     pub excluded_columns: Option<Vec<String>>,
-    #[serde(
-        rename = "partitionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
     pub partition_key: Option<String>,
-    #[serde(
-        rename = "sortingKeys",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
     pub sorting_keys: Option<Vec<String>>,
     #[serde(rename = "sourceSchemaName")]
     pub source_schema_name: String,
     #[serde(rename = "sourceTable")]
     pub source_table: String,
-    #[serde(
-        rename = "tableEngine",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipeMySQLPipeTableMappingTableengine>,
     #[serde(rename = "targetTable")]
     pub target_table: String,
     #[serde(
         rename = "useCustomSortingKey",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_custom_sorting_key: Option<bool>,
+}
+
+/// `ClickPipeMySQLPipeTableMapping` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipeMySQLPipeTableMapping`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMySQLPipeTableMappingResponse {
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
+    pub excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
+    pub partition_key: Option<String>,
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
+    pub sorting_keys: Option<Vec<String>>,
+    #[serde(rename = "sourceSchemaName", skip_serializing_if = "Option::is_none")]
+    pub source_schema_name: Option<String>,
+    #[serde(rename = "sourceTable", skip_serializing_if = "Option::is_none")]
+    pub source_table: Option<String>,
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<ClickPipeMySQLPipeTableMappingTableengine>,
+    #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
+    pub target_table: Option<String>,
+    #[serde(
+        rename = "useCustomSortingKey",
+        skip_serializing_if = "Option::is_none"
     )]
     pub use_custom_sorting_key: Option<bool>,
 }
@@ -9390,132 +10272,96 @@ pub struct ClickPipeMySQLPipeTableMapping {
 /// `ClickPipeMySQLSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMySQLSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipeMySQLSourceAuthentication>,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
-    pub host: String,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    pub port: i64,
-    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i64>,
+    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none")]
     pub server_id: Option<i64>,
-    pub settings: ClickPipeMySQLPipeSettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipeMySQLPipeSettingsResponse>,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(rename = "tableMappings")]
-    pub table_mappings: Vec<ClickPipeMySQLPipeTableMapping>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
+    pub table_mappings: Option<Vec<ClickPipeMySQLPipeTableMappingResponse>>,
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickPipeMySQLSourceType>,
 }
 
 /// `ClickPipeObjectStorageSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeObjectStorageSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipeObjectStorageSourceAuthentication>,
-    #[serde(
-        rename = "azureContainerName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "azureContainerName", skip_serializing_if = "Option::is_none")]
     pub azure_container_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compression: Option<ClickPipeObjectStorageSourceCompression>,
-    #[serde(
-        rename = "connectionString",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "connectionString", skip_serializing_if = "Option::is_none")]
     pub connection_string: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub delimiter: Option<String>,
-    #[serde(default)]
-    pub format: ClickPipeObjectStorageSourceFormat,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ClickPipeObjectStorageSourceFormat>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(
-        rename = "isContinuous",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "isContinuous", skip_serializing_if = "Option::is_none")]
     pub is_continuous: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(rename = "queueUrl", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "queueUrl", skip_serializing_if = "Option::is_none")]
     pub queue_url: Option<String>,
-    #[serde(
-        rename = "skipInitialLoad",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none")]
     pub skip_initial_load: Option<bool>,
-    #[serde(
-        rename = "startAfter",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none")]
     pub start_after: Option<String>,
-    #[serde(default)]
-    pub r#type: ClickPipeObjectStorageSourceType,
-    #[serde(default)]
-    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeObjectStorageSourceType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// `ClickPipePatchDestination` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchDestination {
-    #[serde(default)]
     pub columns: Vec<ClickPipeDestinationColumn>,
 }
 
 /// `ClickPipePatchKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchKafkaSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipePatchKafkaSourceAuthentication>,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(default)]
     pub credentials: serde_json::Value,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(
-        rename = "reversePrivateEndpointIds",
-        default,
-        deserialize_with = "crate::serde_helpers::null_to_empty"
-    )]
+    #[serde(rename = "reversePrivateEndpointIds")]
     pub reverse_private_endpoint_ids: Vec<String>,
 }
 
 /// `ClickPipePatchKinesisSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchKinesisSource {
-    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none")]
     pub access_key: Option<MskIamUser>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipePatchKinesisSourceAuthentication>,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
 }
 
@@ -9526,11 +10372,7 @@ pub struct ClickPipePatchMongoDBPipeRemoveTableMapping {
     pub source_collection: Option<String>,
     #[serde(rename = "sourceDatabaseName")]
     pub source_database_name: Option<String>,
-    #[serde(
-        rename = "tableEngine",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipePatchMongoDBPipeRemoveTableMappingTableengine>,
     #[serde(rename = "targetTable")]
     pub target_table: Option<String>,
@@ -9539,16 +10381,11 @@ pub struct ClickPipePatchMongoDBPipeRemoveTableMapping {
 /// `ClickPipePatchMongoDBPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchMongoDBPipeSettings {
-    #[serde(
-        rename = "pullBatchSize",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
     pub pull_batch_size: Option<i64>,
     #[serde(
         rename = "syncIntervalSeconds",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
 }
@@ -9556,47 +10393,29 @@ pub struct ClickPipePatchMongoDBPipeSettings {
 /// `ClickPipePatchMongoDBSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchMongoDBSource {
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<PLAIN>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
-    #[serde(
-        rename = "readPreference",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "readPreference", skip_serializing_if = "Option::is_none")]
     pub read_preference: Option<ClickPipePatchMongoDBSourceReadpreference>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ClickPipePatchMongoDBPipeSettings>,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(
-        rename = "tableMappingsToAdd",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableMappingsToAdd", skip_serializing_if = "Option::is_none")]
     pub table_mappings_to_add: Option<Vec<ClickPipeMongoDBPipeTableMapping>>,
     #[serde(
         rename = "tableMappingsToRemove",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub table_mappings_to_remove: Option<Vec<ClickPipePatchMongoDBPipeRemoveTableMapping>>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
     pub uri: Option<String>,
 }
@@ -9604,21 +10423,13 @@ pub struct ClickPipePatchMongoDBSource {
 /// `ClickPipePatchMySQLPipeRemoveTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchMySQLPipeRemoveTableMapping {
-    #[serde(
-        rename = "partitionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
     pub partition_key: Option<String>,
     #[serde(rename = "sourceSchemaName")]
     pub source_schema_name: Option<String>,
     #[serde(rename = "sourceTable")]
     pub source_table: Option<String>,
-    #[serde(
-        rename = "tableEngine",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipePatchMySQLPipeRemoveTableMappingTableengine>,
     #[serde(rename = "targetTable")]
     pub target_table: Option<String>,
@@ -9627,172 +10438,100 @@ pub struct ClickPipePatchMySQLPipeRemoveTableMapping {
 /// `ClickPipePatchMySQLPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchMySQLPipeSettings {
-    #[serde(
-        rename = "pullBatchSize",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
     pub pull_batch_size: Option<i64>,
     #[serde(
         rename = "syncIntervalSeconds",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
-    #[serde(
-        rename = "useCompression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "useCompression", skip_serializing_if = "Option::is_none")]
     pub use_compression: Option<bool>,
 }
 
 /// `ClickPipePatchMySQLSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchMySQLSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipePatchMySQLSourceAuthentication>,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<PLAIN>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
     pub host: Option<String>,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
     pub port: Option<i64>,
-    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "serverId", skip_serializing_if = "Option::is_none")]
     pub server_id: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ClickPipePatchMySQLPipeSettings>,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(
-        rename = "tableMappingsToAdd",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableMappingsToAdd", skip_serializing_if = "Option::is_none")]
     pub table_mappings_to_add: Option<Vec<ClickPipeMySQLPipeTableMapping>>,
     #[serde(
         rename = "tableMappingsToRemove",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub table_mappings_to_remove: Option<Vec<ClickPipePatchMySQLPipeRemoveTableMapping>>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
 }
 
 /// `ClickPipePatchObjectStorageSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchObjectStorageSource {
-    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none")]
     pub access_key: Option<MskIamUser>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipePatchObjectStorageSourceAuthentication>,
-    #[serde(
-        rename = "azureContainerName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "azureContainerName", skip_serializing_if = "Option::is_none")]
     pub azure_container_name: Option<String>,
-    #[serde(
-        rename = "connectionString",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "connectionString", skip_serializing_if = "Option::is_none")]
     pub connection_string: Option<String>,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(
-        rename = "serviceAccountKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "serviceAccountKey", skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<String>,
-    #[serde(
-        rename = "skipInitialLoad",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none")]
     pub skip_initial_load: Option<bool>,
-    #[serde(
-        rename = "startAfter",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none")]
     pub start_after: Option<String>,
 }
 
 /// `ClickPipePatchPostgresPipeRemoveTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchPostgresPipeRemoveTableMapping {
-    #[serde(
-        rename = "partitionByExpr",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
     pub partition_by_expr: Option<String>,
-    #[serde(
-        rename = "partitionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
     pub partition_key: Option<String>,
-    #[serde(
-        rename = "sourceSchemaName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sourceSchemaName", skip_serializing_if = "Option::is_none")]
     pub source_schema_name: Option<String>,
-    #[serde(
-        rename = "sourceTable",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sourceTable", skip_serializing_if = "Option::is_none")]
     pub source_table: Option<String>,
-    #[serde(
-        rename = "tableEngine",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
     pub table_engine: Option<ClickPipePatchPostgresPipeRemoveTableMappingTableengine>,
-    #[serde(
-        rename = "targetTable",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
     pub target_table: Option<String>,
 }
 
 /// `ClickPipePatchPostgresPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchPostgresPipeSettings {
-    #[serde(
-        rename = "pullBatchSize",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
     pub pull_batch_size: Option<i64>,
     #[serde(
         rename = "syncIntervalSeconds",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
 }
@@ -9800,50 +10539,35 @@ pub struct ClickPipePatchPostgresPipeSettings {
 /// `ClickPipePatchPostgresSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchPostgresSource {
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(default)]
     pub credentials: PLAIN,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
-    #[serde(
-        rename = "disableTls",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
     pub disable_tls: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<i64>,
-    #[serde(default)]
     pub settings: ClickPipePatchPostgresPipeSettings,
     #[serde(
         rename = "skipCertVerification",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(rename = "tableMappingsToAdd", default)]
+    #[serde(rename = "tableMappingsToAdd")]
     pub table_mappings_to_add: Vec<ClickPipePostgresPipeTableMapping>,
-    #[serde(rename = "tableMappingsToRemove", default)]
+    #[serde(rename = "tableMappingsToRemove")]
     pub table_mappings_to_remove: Vec<ClickPipePatchPostgresPipeRemoveTableMapping>,
-    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
 }
 
 /// `ClickPipePatchPubSubSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchPubSubSource {
-    #[serde(
-        rename = "ackDeadline",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
     pub ack_deadline: Option<i64>,
     pub authentication: Option<ClickPipePatchPubSubSourceAuthentication>,
     #[serde(rename = "serviceAccountKey")]
@@ -9853,246 +10577,165 @@ pub struct ClickPipePatchPubSubSource {
 /// `ClickPipePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub destination: Option<ClickPipePatchDestination>,
-    #[serde(
-        rename = "fieldMappings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "fieldMappings", skip_serializing_if = "Option::is_none")]
     pub field_mappings: Option<Vec<ClickPipeFieldMapping>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ClickPipeSettings>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<ClickPipePatchSource>,
 }
 
 /// `ClickPipePatchSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kafka: Option<ClickPipePatchKafkaSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kinesis: Option<ClickPipePatchKinesisSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mongodb: Option<ClickPipePatchMongoDBSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mysql: Option<ClickPipePatchMySQLSource>,
-    #[serde(
-        rename = "objectStorage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none")]
     pub object_storage: Option<ClickPipePatchObjectStorageSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres: Option<ClickPipePatchPostgresSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePatchPubSubSource>,
-    #[serde(rename = "validateSamples", default)]
+    #[serde(rename = "validateSamples")]
     pub validate_samples: bool,
 }
 
 /// `ClickPipePostKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostKafkaSource {
-    #[serde(default)]
     pub authentication: ClickPipePostKafkaSourceAuthentication,
-    #[serde(default)]
     pub brokers: String,
-    #[serde(
-        rename = "caCertificate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    #[serde(
-        rename = "consumerGroup",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "consumerGroup", skip_serializing_if = "Option::is_none")]
     pub consumer_group: Option<String>,
-    #[serde(default)]
     pub credentials: serde_json::Value,
-    #[serde(
-        rename = "exactlyOnce",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "exactlyOnce", skip_serializing_if = "Option::is_none")]
     pub exactly_once: Option<bool>,
-    #[serde(default)]
     pub format: ClickPipePostKafkaSourceFormat,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<ClickPipeKafkaOffset>,
-    #[serde(
-        rename = "reversePrivateEndpointIds",
-        default,
-        deserialize_with = "crate::serde_helpers::null_to_empty"
-    )]
+    #[serde(rename = "reversePrivateEndpointIds")]
     pub reverse_private_endpoint_ids: Vec<String>,
-    #[serde(
-        rename = "schemaRegistry",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none")]
     pub schema_registry: Option<ClickPipeMutateKafkaSchemaRegistry>,
-    #[serde(default)]
     pub topics: String,
-    #[serde(default)]
     pub r#type: ClickPipePostKafkaSourceType,
 }
 
 /// `ClickPipePostKinesisSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostKinesisSource {
-    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none")]
     pub access_key: Option<MskIamUser>,
-    #[serde(default)]
     pub authentication: ClickPipePostKinesisSourceAuthentication,
-    #[serde(default)]
     pub format: ClickPipePostKinesisSourceFormat,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(rename = "iteratorType", default)]
+    #[serde(rename = "iteratorType")]
     pub iterator_type: ClickPipePostKinesisSourceIteratortype,
-    #[serde(default)]
     pub region: String,
-    #[serde(rename = "streamName", default)]
+    #[serde(rename = "streamName")]
     pub stream_name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
-    #[serde(
-        rename = "useEnhancedFanOut",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "useEnhancedFanOut", skip_serializing_if = "Option::is_none")]
     pub use_enhanced_fan_out: Option<bool>,
 }
 
 /// `ClickPipeSchemaDiscoveryField` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSchemaDiscoveryField {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub optional: Option<bool>,
 }
 
 /// `ClickPipeSchemaDiscoveryRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSchemaDiscoveryRequest {
-    #[serde(default)]
     pub source: ClickPipeSchemaDiscoverySource,
 }
 
 /// `ClickPipeSchemaDiscoveryResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSchemaDiscoveryResponse {
-    #[serde(default)]
-    pub fields: Vec<ClickPipeSchemaDiscoveryField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<ClickPipeSchemaDiscoveryField>>,
 }
 
 /// `ClickPipeSchemaDiscoverySource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSchemaDiscoverySource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kafka: Option<ClickPipePostKafkaSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kinesis: Option<ClickPipePostKinesisSource>,
 }
 
 /// `ClickPipePostObjectStorageSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostObjectStorageSource {
-    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "accessKey", skip_serializing_if = "Option::is_none")]
     pub access_key: Option<MskIamUser>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipePostObjectStorageSourceAuthentication>,
-    #[serde(
-        rename = "azureContainerName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "azureContainerName", skip_serializing_if = "Option::is_none")]
     pub azure_container_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compression: Option<ClickPipePostObjectStorageSourceCompression>,
-    #[serde(
-        rename = "connectionString",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "connectionString", skip_serializing_if = "Option::is_none")]
     pub connection_string: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub delimiter: Option<String>,
-    #[serde(default)]
     pub format: ClickPipePostObjectStorageSourceFormat,
-    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(
-        rename = "isContinuous",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "isContinuous", skip_serializing_if = "Option::is_none")]
     pub is_continuous: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(rename = "queueUrl", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "queueUrl", skip_serializing_if = "Option::is_none")]
     pub queue_url: Option<String>,
-    #[serde(
-        rename = "serviceAccountKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "serviceAccountKey", skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<String>,
-    #[serde(
-        rename = "skipInitialLoad",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "skipInitialLoad", skip_serializing_if = "Option::is_none")]
     pub skip_initial_load: Option<bool>,
-    #[serde(
-        rename = "startAfter",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "startAfter", skip_serializing_if = "Option::is_none")]
     pub start_after: Option<String>,
-    #[serde(default)]
     pub r#type: ClickPipePostObjectStorageSourceType,
-    #[serde(default)]
     pub url: String,
 }
 
 /// `ClickPipePostPubSubSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostPubSubSource {
-    #[serde(
-        rename = "ackDeadline",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
     pub ack_deadline: Option<i64>,
     pub authentication: ClickPipePostPubSubSourceAuthentication,
-    #[serde(
-        rename = "enableOrdering",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]
     pub enable_ordering: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
     pub format: ClickPipePostPubSubSourceFormat,
     #[serde(rename = "projectId")]
     pub project_id: String,
-    #[serde(
-        rename = "seekTimestamp",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
     pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "seekType")]
     pub seek_type: ClickPipePostPubSubSourceSeektype,
@@ -10104,108 +10747,137 @@ pub struct ClickPipePostPubSubSource {
 /// `ClickPipePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostRequest {
-    #[serde(default)]
     pub destination: ClickPipeMutateDestination,
     // Empty arrays rejected by some API paths and never useful on create —
     // skip when empty. Non-Option to match the spec description heuristic.
-    #[serde(
-        rename = "fieldMappings",
-        skip_serializing_if = "Vec::is_empty",
-        default
-    )]
+    #[serde(rename = "fieldMappings", skip_serializing_if = "Vec::is_empty")]
     pub field_mappings: Vec<ClickPipeFieldMapping>,
-    #[serde(default)]
     pub name: String,
     // scaling block default-serializes as {replicas: 0, ...} which the API
     // rejects ("replicas: Not between 1 and 40"). Modeled as Option so the
     // whole block is omitted when the caller doesn't set it.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub scaling: Option<ClickPipeScaling>,
     // settings default-serializes as `{}` which the API also rejects.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ClickPipeSettings>,
-    #[serde(default)]
     pub source: ClickPipePostSource,
 }
 
 /// `ClickPipePostSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bigquery: Option<ClickPipeMutateBigQuerySource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kafka: Option<ClickPipePostKafkaSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kinesis: Option<ClickPipePostKinesisSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mongodb: Option<ClickPipeMutateMongoDBSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mysql: Option<ClickPipeMutateMySQLSource>,
-    #[serde(
-        rename = "objectStorage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none")]
     pub object_storage: Option<ClickPipePostObjectStorageSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres: Option<ClickPipeMutatePostgresSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePostPubSubSource>,
-    #[serde(rename = "validateSamples", default)]
+    #[serde(rename = "validateSamples")]
     pub validate_samples: bool,
 }
 
 /// `ClickPipePostgresPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostgresPipeSettings {
-    #[serde(rename = "allowNullableColumns", default)]
+    #[serde(rename = "allowNullableColumns")]
     pub allow_nullable_columns: bool,
-    #[serde(rename = "deleteOnMerge", default)]
+    #[serde(rename = "deleteOnMerge")]
     pub delete_on_merge: bool,
-    #[serde(rename = "enableFailoverSlots", default)]
+    #[serde(rename = "enableFailoverSlots")]
     pub enable_failover_slots: bool,
     #[serde(
         rename = "initialLoadParallelism",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub initial_load_parallelism: Option<i64>,
-    #[serde(
-        rename = "publicationName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "publicationName", skip_serializing_if = "Option::is_none")]
     pub publication_name: Option<String>,
-    #[serde(
-        rename = "pullBatchSize",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
     pub pull_batch_size: Option<i64>,
-    #[serde(rename = "replicationMode", default)]
+    #[serde(rename = "replicationMode")]
     pub replication_mode: ClickPipePostgresPipeSettingsReplicationmode,
     #[serde(
         rename = "replicationSlotName",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub replication_slot_name: Option<String>,
     #[serde(
         rename = "snapshotNumRowsPerPartition",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_num_rows_per_partition: Option<i64>,
     #[serde(
         rename = "snapshotNumberOfParallelTables",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub snapshot_number_of_parallel_tables: Option<i64>,
     #[serde(
         rename = "syncIntervalSeconds",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub sync_interval_seconds: Option<i64>,
+}
+
+/// `ClickPipePostgresPipeSettings` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`ClickPipePostgresPipeSettings`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostgresPipeSettingsResponse {
+    #[serde(
+        rename = "allowNullableColumns",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allow_nullable_columns: Option<bool>,
+    #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
+    pub delete_on_merge: Option<bool>,
+    #[serde(
+        rename = "enableFailoverSlots",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enable_failover_slots: Option<bool>,
+    #[serde(
+        rename = "initialLoadParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_load_parallelism: Option<i64>,
+    #[serde(rename = "publicationName", skip_serializing_if = "Option::is_none")]
+    pub publication_name: Option<String>,
+    #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
+    pub pull_batch_size: Option<i64>,
+    #[serde(rename = "replicationMode", skip_serializing_if = "Option::is_none")]
+    pub replication_mode: Option<ClickPipePostgresPipeSettingsReplicationmode>,
+    #[serde(
+        rename = "replicationSlotName",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replication_slot_name: Option<String>,
+    #[serde(
+        rename = "snapshotNumRowsPerPartition",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_num_rows_per_partition: Option<i64>,
+    #[serde(
+        rename = "snapshotNumberOfParallelTables",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_number_of_parallel_tables: Option<i64>,
+    #[serde(
+        rename = "syncIntervalSeconds",
+        skip_serializing_if = "Option::is_none"
     )]
     pub sync_interval_seconds: Option<i64>,
 }
@@ -10213,220 +10885,291 @@ pub struct ClickPipePostgresPipeSettings {
 /// `ClickPipePostgresPipeTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostgresPipeTableMapping {
-    #[serde(rename = "excludedColumns", default)]
+    #[serde(rename = "excludedColumns")]
     pub excluded_columns: Vec<String>,
-    #[serde(rename = "partitionByExpr", default)]
+    #[serde(rename = "partitionByExpr")]
     pub partition_by_expr: String,
-    #[serde(rename = "partitionKey", default)]
+    #[serde(rename = "partitionKey")]
     pub partition_key: String,
-    #[serde(rename = "sortingKeys", default)]
+    #[serde(rename = "sortingKeys")]
     pub sorting_keys: Vec<String>,
-    #[serde(rename = "sourceSchemaName", default)]
+    #[serde(rename = "sourceSchemaName")]
     pub source_schema_name: String,
-    #[serde(rename = "sourceTable", default)]
+    #[serde(rename = "sourceTable")]
     pub source_table: String,
-    #[serde(rename = "tableEngine", default)]
+    #[serde(rename = "tableEngine")]
     pub table_engine: ClickPipePostgresPipeTableMappingTableengine,
-    #[serde(rename = "targetTable", default)]
+    #[serde(rename = "targetTable")]
     pub target_table: String,
-    #[serde(rename = "useCustomSortingKey", default)]
+    #[serde(rename = "useCustomSortingKey")]
     pub use_custom_sorting_key: bool,
+}
+
+/// `ClickPipePostgresPipeTableMapping` from the ClickHouse Cloud API, in
+/// response position.
+///
+/// Response variant of [`ClickPipePostgresPipeTableMapping`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostgresPipeTableMappingResponse {
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
+    pub excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
+    pub partition_by_expr: Option<String>,
+    #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
+    pub partition_key: Option<String>,
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
+    pub sorting_keys: Option<Vec<String>>,
+    #[serde(rename = "sourceSchemaName", skip_serializing_if = "Option::is_none")]
+    pub source_schema_name: Option<String>,
+    #[serde(rename = "sourceTable", skip_serializing_if = "Option::is_none")]
+    pub source_table: Option<String>,
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<ClickPipePostgresPipeTableMappingTableengine>,
+    #[serde(rename = "targetTable", skip_serializing_if = "Option::is_none")]
+    pub target_table: Option<String>,
+    #[serde(
+        rename = "useCustomSortingKey",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_custom_sorting_key: Option<bool>,
 }
 
 /// `ClickPipePostgresSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostgresSource {
-    #[serde(default)]
-    pub authentication: ClickPipePostgresSourceAuthentication,
-    #[serde(rename = "caCertificate", default)]
-    pub ca_certificate: String,
-    #[serde(default)]
-    pub database: String,
-    #[serde(rename = "disableTls", default)]
-    pub disable_tls: bool,
-    #[serde(default)]
-    pub host: String,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
-    #[serde(default)]
-    pub port: i64,
-    #[serde(default)]
-    pub settings: ClickPipePostgresPipeSettings,
-    #[serde(rename = "skipCertVerification", default)]
-    pub skip_cert_verification: bool,
-    #[serde(rename = "tableMappings", default)]
-    pub table_mappings: Vec<ClickPipePostgresPipeTableMapping>,
-    #[serde(rename = "tlsHost", default)]
-    pub tls_host: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipePostgresSourceAuthentication>,
+    #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
+    pub disable_tls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipePostgresPipeSettingsResponse>,
+    #[serde(
+        rename = "skipCertVerification",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub skip_cert_verification: Option<bool>,
+    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
+    pub table_mappings: Option<Vec<ClickPipePostgresPipeTableMappingResponse>>,
+    #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
+    pub tls_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickPipePostgresSourceType>,
 }
 
 /// `ClickPipePubSubSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePubSubSource {
-    #[serde(
-        rename = "ackDeadline",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
     pub ack_deadline: Option<i64>,
-    pub authentication: ClickPipePubSubSourceAuthentication,
-    #[serde(
-        rename = "enableOrdering",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipePubSubSourceAuthentication>,
+    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]
     pub enable_ordering: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
-    pub format: ClickPipePubSubSourceFormat,
-    #[serde(rename = "projectId")]
-    pub project_id: String,
-    #[serde(
-        rename = "seekTimestamp",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ClickPipePubSubSourceFormat>,
+    #[serde(rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
     pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(rename = "seekType")]
-    pub seek_type: ClickPipePubSubSourceSeektype,
-    pub topic: String,
+    #[serde(rename = "seekType", skip_serializing_if = "Option::is_none")]
+    pub seek_type: Option<ClickPipePubSubSourceSeektype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
 }
 
 /// `ClickPipeScaling` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeScaling {
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
     pub concurrency: i64,
-    #[serde(rename = "replicaCpuMillicores", default)]
+    #[serde(rename = "replicaCpuMillicores")]
     pub replica_cpu_millicores: i64,
-    #[serde(rename = "replicaMemoryGb", default)]
+    #[serde(rename = "replicaMemoryGb")]
     pub replica_memory_gb: f64,
-    #[serde(default)]
     pub replicas: i64,
+}
+
+/// `ClickPipeScaling` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickPipeScaling`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeScalingResponse {
+    #[cfg(feature = "deprecated-fields")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<i64>,
+    #[serde(
+        rename = "replicaCpuMillicores",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replica_cpu_millicores: Option<i64>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<i64>,
 }
 
 /// `ClickPipeScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeScalingPatchRequest {
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub concurrency: Option<i64>,
     #[serde(
         rename = "replicaCpuMillicores",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub replica_cpu_millicores: Option<i64>,
-    #[serde(
-        rename = "replicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub replica_memory_gb: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub replicas: Option<i64>,
 }
 
 /// `ClickPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSettings {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_max_download_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_max_insert_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_max_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_min_insert_block_size_bytes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_file_count: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_insert_bytes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_polling_interval_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_use_cluster_function: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming_max_insert_wait_ms: Option<i64>,
+}
+
+/// `ClickPipeSettings` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickPipeSettings`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeSettingsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_max_download_threads: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_max_insert_threads: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_max_threads: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_min_insert_block_size_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_parallel_distributed_insert_select: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clickhouse_parallel_view_processing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_concurrency: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_file_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_max_insert_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_polling_interval_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_storage_use_cluster_function: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub streaming_max_insert_wait_ms: Option<i64>,
 }
 
 /// `ClickPipeSettingsPutRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSettingsPutRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_max_download_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_max_insert_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_max_threads: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_min_insert_block_size_bytes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_file_count: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_max_insert_bytes: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_polling_interval_ms: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_use_cluster_function: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub streaming_max_insert_wait_ms: Option<i64>,
 }
 
 /// `ClickPipeSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeSource {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bigquery: Option<ClickPipeBigQuerySource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kafka: Option<ClickPipeKafkaSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub kinesis: Option<ClickPipeKinesisSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mongodb: Option<ClickPipeMongoDBSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mysql: Option<ClickPipeMySQLSource>,
-    #[serde(
-        rename = "objectStorage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none")]
     pub object_storage: Option<ClickPipeObjectStorageSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres: Option<ClickPipePostgresSource>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePubSubSource>,
 }
 
 /// `ClickPipeStatePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeStatePatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<ClickPipeStatePatchRequestCommand>,
 }
 
 /// `ClickPipesCdcScaling` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipesCdcScaling {
-    #[serde(rename = "replicaCpuMillicores", default)]
-    pub replica_cpu_millicores: i64,
-    #[serde(rename = "replicaMemoryGb", default)]
-    pub replica_memory_gb: f64,
+    #[serde(
+        rename = "replicaCpuMillicores",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replica_cpu_millicores: Option<i64>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
 }
 
 /// `ClickPipesCdcScalingPatchRequest` from the ClickHouse Cloud API.
@@ -10434,15 +11177,10 @@ pub struct ClickPipesCdcScaling {
 pub struct ClickPipesCdcScalingPatchRequest {
     #[serde(
         rename = "replicaCpuMillicores",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub replica_cpu_millicores: Option<i64>,
-    #[serde(
-        rename = "replicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub replica_memory_gb: Option<f64>,
 }
 
@@ -10453,11 +11191,22 @@ pub struct ClickStackAggregatedColumn {
     pub agg_fn: String,
     #[serde(rename = "mvColumn")]
     pub mv_column: String,
-    #[serde(
-        rename = "sourceColumn",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sourceColumn", skip_serializing_if = "Option::is_none")]
+    pub source_column: Option<String>,
+}
+
+/// `ClickStackAggregatedColumn` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAggregatedColumn`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAggregatedColumnResponse {
+    #[serde(rename = "aggFn", skip_serializing_if = "Option::is_none")]
+    pub agg_fn: Option<String>,
+    #[serde(rename = "mvColumn", skip_serializing_if = "Option::is_none")]
+    pub mv_column: Option<String>,
+    #[serde(rename = "sourceColumn", skip_serializing_if = "Option::is_none")]
     pub source_column: Option<String>,
 }
 
@@ -10469,131 +11218,159 @@ pub struct ClickStackAlertChannelEmail {
     pub r#type: ClickStackAlertChannelEmailType,
 }
 
+/// `ClickStackAlertChannelEmail` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertChannelEmail`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertChannelEmailResponse {
+    #[serde(rename = "emailRecipients", skip_serializing_if = "Option::is_none")]
+    pub email_recipients: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackAlertChannelEmailType>,
+}
+
 /// `ClickStackAlertChannelWebhook` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertChannelWebhook {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub severity: Option<ClickStackAlertChannelWebhookSeverity>,
-    #[serde(
-        rename = "slackChannelId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "slackChannelId", skip_serializing_if = "Option::is_none")]
     pub slack_channel_id: Option<String>,
     pub r#type: ClickStackAlertChannelWebhookType,
     #[serde(rename = "webhookId")]
     pub webhook_id: String,
-    #[serde(
-        rename = "webhookService",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "webhookService", skip_serializing_if = "Option::is_none")]
+    pub webhook_service: Option<String>,
+}
+
+/// `ClickStackAlertChannelWebhook` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackAlertChannelWebhook`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackAlertChannelWebhookResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<ClickStackAlertChannelWebhookSeverity>,
+    #[serde(rename = "slackChannelId", skip_serializing_if = "Option::is_none")]
+    pub slack_channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackAlertChannelWebhookType>,
+    #[serde(rename = "webhookId", skip_serializing_if = "Option::is_none")]
+    pub webhook_id: Option<String>,
+    #[serde(rename = "webhookService", skip_serializing_if = "Option::is_none")]
     pub webhook_service: Option<String>,
 }
 
 /// `ClickStackAlertExecutionError` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertExecutionError {
-    #[serde(default)]
-    pub message: String,
-    #[serde(default)]
-    pub timestamp: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub r#type: ClickStackAlertExecutionErrorType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackAlertExecutionErrorType>,
 }
 
 /// `ClickStackAlertResponse` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertResponse {
-    #[serde(default)]
-    pub channel: ClickStackAlertChannel,
-    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<ClickStackAlertChannelResponse>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(
-        rename = "dashboardId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
-    #[serde(rename = "executionErrors", default)]
-    pub execution_errors: Vec<ClickStackAlertExecutionError>,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "executionErrors", skip_serializing_if = "Option::is_none")]
+    pub execution_errors: Option<Vec<ClickStackAlertExecutionError>>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub interval: ClickStackAlertResponseInterval,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<ClickStackAlertResponseInterval>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     #[serde(
         rename = "numConsecutiveWindows",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub num_consecutive_windows: Option<i64>,
-    #[serde(
-        rename = "savedSearchId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedSearchId", skip_serializing_if = "Option::is_none")]
     pub saved_search_id: Option<String>,
     #[serde(
         rename = "scheduleOffsetMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub schedule_offset_minutes: Option<i64>,
-    #[serde(
-        rename = "scheduleStartAt",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
     pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub silenced: Option<ClickStackAlertSilenced>,
-    #[serde(default)]
-    pub source: ClickStackAlertResponseSource,
-    #[serde(default)]
-    pub state: ClickStackAlertResponseState,
-    #[serde(rename = "teamId", default)]
-    pub team_id: String,
-    #[serde(default)]
-    pub threshold: f64,
-    #[serde(
-        rename = "thresholdMax",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<ClickStackAlertResponseSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ClickStackAlertResponseState>,
+    #[serde(rename = "teamId", skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
+    #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none")]
     pub threshold_max: Option<f64>,
-    #[serde(rename = "thresholdType", default)]
-    pub threshold_type: ClickStackAlertResponseThresholdtype,
-    #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "thresholdType", skip_serializing_if = "Option::is_none")]
+    pub threshold_type: Option<ClickStackAlertResponseThresholdtype>,
+    #[serde(rename = "tileId", skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
-    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ClickStackAlertSilenced` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackAlertSilenced {
-    #[serde(default)]
-    pub at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
-    #[serde(default)]
-    pub until: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ClickStackBackgroundChart` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackBackgroundChart {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<ClickStackChartColor>,
     pub r#type: ClickStackBackgroundChartType,
+}
+
+/// `ClickStackBackgroundChart` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackBackgroundChart`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBackgroundChartResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackBackgroundChartType>,
 }
 
 /// `ClickStackBarBuilderChartConfig` from the ClickHouse Cloud API.
@@ -10601,27 +11378,50 @@ pub struct ClickStackBackgroundChart {
 pub struct ClickStackBarBuilderChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub align_date_range_to_granularity: Option<bool>,
-    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
     pub as_ratio: Option<bool>,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackBarBuilderChartConfigDisplaytype,
-    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
     pub fill_nulls: Option<bool>,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+}
+
+/// `ClickStackBarBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackBarBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBarBuilderChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackBarBuilderChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// `ClickStackBarRawSqlChartConfig` from the ClickHouse Cloud API.
@@ -10629,8 +11429,7 @@ pub struct ClickStackBarBuilderChartConfig {
 pub struct ClickStackBarRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub align_date_range_to_granularity: Option<bool>,
     #[serde(rename = "configType")]
@@ -10639,41 +11438,101 @@ pub struct ClickStackBarRawSqlChartConfig {
     pub connection_id: String,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackBarRawSqlChartConfigDisplaytype,
-    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
     pub fill_nulls: Option<bool>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackBarRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackBarRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBarRawSqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackBarRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackBarRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
 }
 
 /// `ClickStackBetweenColorCondition` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackBetweenColorCondition {
     pub color: ClickStackChartColor,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub operator: ClickStackBetweenColorConditionOperator,
     pub value: Vec<f64>,
+}
+
+/// `ClickStackBetweenColorCondition` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackBetweenColorCondition`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackBetweenColorConditionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Option<ClickStackBetweenColorConditionOperator>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Vec<f64>>,
 }
 
 /// `ClickStackCASLPermission` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCASLPermission {
     pub action: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conditions: Option<ClickStackCASLPermissionConditions>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub integration: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub inverted: Option<bool>,
     pub subject: String,
+}
+
+/// `ClickStackCASLPermission` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackCASLPermission`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCASLPermissionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conditions: Option<ClickStackCASLPermissionConditions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inverted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 /// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API.
@@ -10681,21 +11540,40 @@ pub struct ClickStackCASLPermission {
 pub struct ClickStackCategoricalBarBuilderChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackCategoricalBarBuilderChartConfigDisplaytype,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
     pub order_by: Option<String>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+}
+
+/// `ClickStackCategoricalBarBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackCategoricalBarBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCategoricalBarBuilderChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackCategoricalBarBuilderChartConfigDisplaytype>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// `ClickStackCategoricalBarRawSqlChartConfig` from the ClickHouse Cloud API.
@@ -10707,101 +11585,101 @@ pub struct ClickStackCategoricalBarRawSqlChartConfig {
     pub connection_id: String,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackCategoricalBarRawSqlChartConfigDisplaytype,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
 }
 
+/// `ClickStackCategoricalBarRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackCategoricalBarRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackCategoricalBarRawSqlChartConfigResponse {
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackCategoricalBarRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackCategoricalBarRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+}
+
 /// `ClickStackConnection` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackConnection {
-    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     #[serde(
         rename = "hyperdxSettingPrefix",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub hyperdx_setting_prefix: Option<String>,
-    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(
         rename = "isPrometheusEndpoint",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub is_prometheus_endpoint: Option<bool>,
-    pub name: String,
-    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 /// `ClickStackCreateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateAlertRequest {
-    #[serde(default)]
     pub channel: ClickStackAlertChannel,
-    #[serde(
-        rename = "dashboardId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(default)]
     pub interval: ClickStackCreateAlertRequestInterval,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     #[serde(
         rename = "numConsecutiveWindows",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub num_consecutive_windows: Option<i64>,
-    #[serde(
-        rename = "savedSearchId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedSearchId", skip_serializing_if = "Option::is_none")]
     pub saved_search_id: Option<String>,
     #[serde(
         rename = "scheduleOffsetMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub schedule_offset_minutes: Option<i64>,
-    #[serde(
-        rename = "scheduleStartAt",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
     pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(default)]
     pub source: ClickStackCreateAlertRequestSource,
-    #[serde(default)]
     pub threshold: f64,
-    #[serde(
-        rename = "thresholdMax",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none")]
     pub threshold_max: Option<f64>,
-    #[serde(rename = "thresholdType", default)]
+    #[serde(rename = "thresholdType")]
     pub threshold_type: ClickStackCreateAlertRequestThresholdtype,
-    #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tileId", skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
 }
 
@@ -10811,18 +11689,16 @@ pub struct ClickStackCreateConnectionRequest {
     pub host: String,
     #[serde(
         rename = "hyperdxSettingPrefix",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub hyperdx_setting_prefix: Option<String>,
     #[serde(
         rename = "isPrometheusEndpoint",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub is_prometheus_endpoint: Option<bool>,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     pub username: String,
 }
@@ -10830,30 +11706,18 @@ pub struct ClickStackCreateConnectionRequest {
 /// `ClickStackCreateDashboardRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateDashboardRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub containers: Option<Vec<ClickStackDashboardContainer>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackFilterInput>>,
     pub name: String,
-    #[serde(
-        rename = "savedFilterValues",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedFilterValues", skip_serializing_if = "Option::is_none")]
     pub saved_filter_values: Option<Vec<ClickStackSavedFilterValue>>,
-    #[serde(
-        rename = "savedQuery",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedQuery", skip_serializing_if = "Option::is_none")]
     pub saved_query: Option<String>,
-    #[serde(
-        rename = "savedQueryLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedQueryLanguage", skip_serializing_if = "Option::is_none")]
     pub saved_query_language: Option<ClickStackCreateDashboardRequestSavedquerylanguage>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
     pub tiles: Vec<ClickStackTileInput>,
 }
@@ -10861,7 +11725,7 @@ pub struct ClickStackCreateDashboardRequest {
 /// `ClickStackCreateRoleRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackCreateRoleRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub name: String,
     pub permissions: Vec<ClickStackCASLPermission>,
@@ -10870,15 +11734,36 @@ pub struct ClickStackCreateRoleRequest {
 /// `ClickStackDashboardContainer` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackDashboardContainer {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bordered: Option<bool>,
     pub collapsed: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub collapsible: Option<bool>,
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tabs: Option<Vec<ClickStackDashboardContainerTab>>,
     pub title: String,
+}
+
+/// `ClickStackDashboardContainer` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackDashboardContainer`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackDashboardContainerResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bordered: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collapsed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collapsible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<Vec<ClickStackDashboardContainerTabResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// `ClickStackDashboardContainerTab` from the ClickHouse Cloud API.
@@ -10888,50 +11773,72 @@ pub struct ClickStackDashboardContainerTab {
     pub title: String,
 }
 
+/// `ClickStackDashboardContainerTab` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackDashboardContainerTab`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackDashboardContainerTabResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
 /// `ClickStackDashboardResponse` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackDashboardResponse {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub containers: Option<Vec<ClickStackDashboardContainer>>,
-    #[serde(default)]
-    pub filters: Vec<ClickStackFilter>,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(
-        rename = "savedFilterValues",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    pub saved_filter_values: Option<Vec<ClickStackSavedFilterValue>>,
-    #[serde(
-        rename = "savedQuery",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub containers: Option<Vec<ClickStackDashboardContainerResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<ClickStackFilterResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "savedFilterValues", skip_serializing_if = "Option::is_none")]
+    pub saved_filter_values: Option<Vec<ClickStackSavedFilterValueResponse>>,
+    #[serde(rename = "savedQuery", skip_serializing_if = "Option::is_none")]
     pub saved_query: Option<String>,
-    #[serde(
-        rename = "savedQueryLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedQueryLanguage", skip_serializing_if = "Option::is_none")]
     pub saved_query_language: Option<ClickStackDashboardResponseSavedquerylanguage>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub tiles: Vec<ClickStackTileOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tiles: Option<Vec<ClickStackTileOutput>>,
 }
 
 /// `ClickStackEqualityColorCondition` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackEqualityColorCondition {
     pub color: ClickStackChartColor,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub operator: ClickStackEqualityColorConditionOperator,
     /// A finite number or a string; the spec models this as `oneOf number|string`.
     pub value: serde_json::Value,
+}
+
+/// `ClickStackEqualityColorCondition` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackEqualityColorCondition`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackEqualityColorConditionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Option<ClickStackEqualityColorConditionOperator>,
+    /// A finite number or a string; the spec models this as `oneOf number|string`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>,
 }
 
 /// `ClickStackEventPatternsChartConfig` from the ClickHouse Cloud API.
@@ -10939,78 +11846,96 @@ pub struct ClickStackEqualityColorCondition {
 pub struct ClickStackEventPatternsChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackEventPatternsChartConfigDisplaytype,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub select: Option<String>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackEventPatternsChartConfigWherelanguage>,
+}
+
+/// `ClickStackEventPatternsChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackEventPatternsChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackEventPatternsChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackEventPatternsChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackEventPatternsChartConfigWherelanguage>,
 }
 
 /// `ClickStackFilter` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilter {
-    #[serde(
-        rename = "appliesToSourceIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
     pub applies_to_source_ids: Option<Vec<String>>,
     pub expression: String,
     pub id: String,
     pub name: String,
     #[serde(rename = "sourceId")]
     pub source_id: String,
-    #[serde(
-        rename = "sourceMetricType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
     pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
     pub r#type: ClickStackFilterType,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackFilterWherelanguage>,
+}
+
+/// `ClickStackFilter` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackFilter`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackFilterResponse {
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
+    pub applies_to_source_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
+    pub source_metric_type: Option<ClickStackFilterSourcemetrictype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackFilterType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackFilterWherelanguage>,
 }
 
 /// `ClickStackFilterInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackFilterInput {
-    #[serde(
-        rename = "appliesToSourceIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "appliesToSourceIds", skip_serializing_if = "Option::is_none")]
     pub applies_to_source_ids: Option<Vec<String>>,
     pub expression: String,
     pub name: String,
     #[serde(rename = "sourceId")]
     pub source_id: String,
-    #[serde(
-        rename = "sourceMetricType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sourceMetricType", skip_serializing_if = "Option::is_none")]
     pub source_metric_type: Option<ClickStackFilterInputSourcemetrictype>,
     pub r#type: ClickStackFilterInputType,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackFilterInputWherelanguage>,
 }
 
@@ -11021,21 +11946,40 @@ pub struct ClickStackFilterSettingsColumn {
     pub name: String,
 }
 
+/// `ClickStackFilterSettingsColumn` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackFilterSettingsColumn`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackFilterSettingsColumnResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// `ClickStackGenericWebhook` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackGenericWebhook {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub id: String,
-    pub name: String,
-    pub service: ClickStackGenericWebhookService,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ClickStackGenericWebhookService>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
@@ -11044,72 +11988,109 @@ pub struct ClickStackGenericWebhook {
 pub struct ClickStackHeatmapChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackHeatmapChartConfigDisplaytype,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
     pub select: Vec<ClickStackHeatmapSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
-    #[serde(rename = "where", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackHeatmapChartConfigWherelanguage>,
+}
+
+/// `ClickStackHeatmapChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackHeatmapChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackHeatmapChartConfigDisplaytype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackHeatmapSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "where", skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackHeatmapChartConfigWherelanguage>,
 }
 
 /// `ClickStackHeatmapSelectItem` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackHeatmapSelectItem {
-    #[serde(
-        rename = "countExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "countExpression", skip_serializing_if = "Option::is_none")]
     pub count_expression: Option<String>,
-    #[serde(
-        rename = "heatmapScaleType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "heatmapScaleType", skip_serializing_if = "Option::is_none")]
     pub heatmap_scale_type: Option<ClickStackHeatmapSelectItemHeatmapscaletype>,
     #[serde(rename = "valueExpression")]
     pub value_expression: String,
 }
 
+/// `ClickStackHeatmapSelectItem` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackHeatmapSelectItem`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHeatmapSelectItemResponse {
+    #[serde(rename = "countExpression", skip_serializing_if = "Option::is_none")]
+    pub count_expression: Option<String>,
+    #[serde(rename = "heatmapScaleType", skip_serializing_if = "Option::is_none")]
+    pub heatmap_scale_type: Option<ClickStackHeatmapSelectItemHeatmapscaletype>,
+    #[serde(rename = "valueExpression", skip_serializing_if = "Option::is_none")]
+    pub value_expression: Option<String>,
+}
+
 /// `ClickStackHighlightedAttributeExpression` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackHighlightedAttributeExpression {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    #[serde(
-        rename = "luceneExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "luceneExpression", skip_serializing_if = "Option::is_none")]
     pub lucene_expression: Option<String>,
     #[serde(rename = "sqlExpression")]
     pub sql_expression: String,
 }
 
+/// `ClickStackHighlightedAttributeExpression` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackHighlightedAttributeExpression`]: every
+/// field is `Option<T>`, so a field the API drops or sends as `null`
+/// deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackHighlightedAttributeExpressionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(rename = "luceneExpression", skip_serializing_if = "Option::is_none")]
+    pub lucene_expression: Option<String>,
+    #[serde(rename = "sqlExpression", skip_serializing_if = "Option::is_none")]
+    pub sql_expression: Option<String>,
+}
+
 /// `ClickStackIncidentIOWebhook` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackIncidentIOWebhook {
-    #[serde(rename = "createdAt")]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub id: String,
-    pub name: String,
-    pub service: ClickStackIncidentIOWebhookService,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ClickStackIncidentIOWebhookService>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
@@ -11118,39 +12099,64 @@ pub struct ClickStackIncidentIOWebhook {
 pub struct ClickStackLineBuilderChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub align_date_range_to_granularity: Option<bool>,
-    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
     pub as_ratio: Option<bool>,
     #[serde(
         rename = "compareToPreviousPeriod",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub compare_to_previous_period: Option<bool>,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackLineBuilderChartConfigDisplaytype,
-    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
     pub fill_nulls: Option<bool>,
-    #[serde(
-        rename = "fitYAxisToData",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
     pub fit_y_axis_to_data: Option<bool>,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+}
+
+/// `ClickStackLineBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackLineBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackLineBuilderChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackLineBuilderChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// `ClickStackLineRawSqlChartConfig` from the ClickHouse Cloud API.
@@ -11158,14 +12164,12 @@ pub struct ClickStackLineBuilderChartConfig {
 pub struct ClickStackLineRawSqlChartConfig {
     #[serde(
         rename = "alignDateRangeToGranularity",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub align_date_range_to_granularity: Option<bool>,
     #[serde(
         rename = "compareToPreviousPeriod",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub compare_to_previous_period: Option<bool>,
     #[serde(rename = "configType")]
@@ -11174,157 +12178,248 @@ pub struct ClickStackLineRawSqlChartConfig {
     pub connection_id: String,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackLineRawSqlChartConfigDisplaytype,
-    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
     pub fill_nulls: Option<bool>,
-    #[serde(
-        rename = "fitYAxisToData",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
     pub fit_y_axis_to_data: Option<bool>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
 }
 
+/// `ClickStackLineRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackLineRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackLineRawSqlChartConfigResponse {
+    #[serde(
+        rename = "alignDateRangeToGranularity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub align_date_range_to_granularity: Option<bool>,
+    #[serde(
+        rename = "compareToPreviousPeriod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compare_to_previous_period: Option<bool>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackLineRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackLineRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "fillNulls", skip_serializing_if = "Option::is_none")]
+    pub fill_nulls: Option<bool>,
+    #[serde(rename = "fitYAxisToData", skip_serializing_if = "Option::is_none")]
+    pub fit_y_axis_to_data: Option<bool>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
+}
+
 /// `ClickStackLogSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackLogSource {
-    #[serde(
-        rename = "bodyExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "bodyExpression", skip_serializing_if = "Option::is_none")]
     pub body_expression: Option<String>,
     pub connection: String,
     #[serde(rename = "defaultTableSelectExpression")]
     pub default_table_select_expression: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
     #[serde(
         rename = "displayedTimestampValueExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub displayed_timestamp_value_expression: Option<String>,
     #[serde(
         rename = "eventAttributesExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub event_attributes_expression: Option<String>,
-    #[serde(
-        rename = "filterSettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "filterSettings", skip_serializing_if = "Option::is_none")]
     pub filter_settings: Option<ClickStackSourceFilterSettings>,
     pub from: ClickStackSourceFrom,
     #[serde(
         rename = "highlightedRowAttributeExpressions",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub highlighted_row_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
     #[serde(
         rename = "highlightedTraceAttributeExpressions",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub highlighted_trace_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(
         rename = "implicitColumnExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub implicit_column_expression: Option<String>,
     pub kind: ClickStackLogSourceKind,
     #[serde(
         rename = "knownColumnsListExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub known_columns_list_expression: Option<String>,
-    #[serde(
-        rename = "materializedViews",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
     pub materialized_views: Option<Vec<ClickStackMaterializedView>>,
     #[serde(
         rename = "metadataMaterializedViews",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub metadata_materialized_views: Option<ClickStackLogSourceMetadataMaterializedViews>,
-    #[serde(
-        rename = "metricSourceId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none")]
     pub metric_source_id: Option<String>,
     pub name: String,
-    #[serde(
-        rename = "querySettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(
         rename = "resourceAttributesExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
         rename = "serviceNameExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub service_name_expression: Option<String>,
     #[serde(
         rename = "severityTextExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub severity_text_expression: Option<String>,
-    #[serde(
-        rename = "spanIdExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "spanIdExpression", skip_serializing_if = "Option::is_none")]
     pub span_id_expression: Option<String>,
     #[serde(rename = "timestampValueExpression")]
     pub timestamp_value_expression: String,
-    #[serde(
-        rename = "traceIdExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "traceIdExpression", skip_serializing_if = "Option::is_none")]
     pub trace_id_expression: Option<String>,
-    #[serde(
-        rename = "traceSourceId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "traceSourceId", skip_serializing_if = "Option::is_none")]
     pub trace_source_id: Option<String>,
     #[serde(
         rename = "useTextIndexForImplicitColumn",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_text_index_for_implicit_column:
+        Option<ClickStackLogSourceUsetextindexforimplicitcolumn>,
+}
+
+/// `ClickStackLogSource` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackLogSource`]: every field is `Option<T>`, so
+/// a field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackLogSourceResponse {
+    #[serde(rename = "bodyExpression", skip_serializing_if = "Option::is_none")]
+    pub body_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(
+        rename = "defaultTableSelectExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_table_select_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(
+        rename = "displayedTimestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub displayed_timestamp_value_expression: Option<String>,
+    #[serde(
+        rename = "eventAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub event_attributes_expression: Option<String>,
+    #[serde(rename = "filterSettings", skip_serializing_if = "Option::is_none")]
+    pub filter_settings: Option<ClickStackSourceFilterSettingsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<ClickStackSourceFromResponse>,
+    #[serde(
+        rename = "highlightedRowAttributeExpressions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub highlighted_row_attribute_expressions:
+        Option<Vec<ClickStackHighlightedAttributeExpressionResponse>>,
+    #[serde(
+        rename = "highlightedTraceAttributeExpressions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub highlighted_trace_attribute_expressions:
+        Option<Vec<ClickStackHighlightedAttributeExpressionResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "implicitColumnExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub implicit_column_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ClickStackLogSourceKind>,
+    #[serde(
+        rename = "knownColumnsListExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub known_columns_list_expression: Option<String>,
+    #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
+    pub materialized_views: Option<Vec<ClickStackMaterializedViewResponse>>,
+    #[serde(
+        rename = "metadataMaterializedViews",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metadata_materialized_views: Option<ClickStackLogSourceMetadataMaterializedViewsResponse>,
+    #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none")]
+    pub metric_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
+    pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(
+        rename = "serviceNameExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub service_name_expression: Option<String>,
+    #[serde(
+        rename = "severityTextExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub severity_text_expression: Option<String>,
+    #[serde(rename = "spanIdExpression", skip_serializing_if = "Option::is_none")]
+    pub span_id_expression: Option<String>,
+    #[serde(
+        rename = "timestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timestamp_value_expression: Option<String>,
+    #[serde(rename = "traceIdExpression", skip_serializing_if = "Option::is_none")]
+    pub trace_id_expression: Option<String>,
+    #[serde(rename = "traceSourceId", skip_serializing_if = "Option::is_none")]
+    pub trace_source_id: Option<String>,
+    #[serde(
+        rename = "useTextIndexForImplicitColumn",
+        skip_serializing_if = "Option::is_none"
     )]
     pub use_text_index_for_implicit_column:
         Option<ClickStackLogSourceUsetextindexforimplicitcolumn>,
@@ -11333,12 +12428,26 @@ pub struct ClickStackLogSource {
 /// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackLogSourceMetadataMaterializedViews {
-    #[serde(default)]
     pub granularity: String,
-    #[serde(rename = "keyRollupTable", default)]
+    #[serde(rename = "keyRollupTable")]
     pub key_rollup_table: String,
-    #[serde(rename = "kvRollupTable", default)]
+    #[serde(rename = "kvRollupTable")]
     pub kv_rollup_table: String,
+}
+
+/// `ClickStackLogSourceMetadataMaterializedViews` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackLogSourceMetadataMaterializedViews`]: every
+/// field is `Option<T>`, so a field the API drops or sends as `null`
+/// deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackLogSourceMetadataMaterializedViewsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "keyRollupTable", skip_serializing_if = "Option::is_none")]
+    pub key_rollup_table: Option<String>,
+    #[serde(rename = "kvRollupTable", skip_serializing_if = "Option::is_none")]
+    pub kv_rollup_table: Option<String>,
 }
 
 /// `ClickStackMarkdownChartConfig` from the ClickHouse Cloud API.
@@ -11346,7 +12455,20 @@ pub struct ClickStackLogSourceMetadataMaterializedViews {
 pub struct ClickStackMarkdownChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackMarkdownChartConfigDisplaytype,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub markdown: Option<String>,
+}
+
+/// `ClickStackMarkdownChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackMarkdownChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMarkdownChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackMarkdownChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub markdown: Option<String>,
 }
 
@@ -11366,7 +12488,7 @@ pub struct ClickStackMaterializedView {
     pub database_name: String,
     #[serde(rename = "dimensionColumns")]
     pub dimension_columns: String,
-    #[serde(rename = "minDate", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "minDate", skip_serializing_if = "Option::is_none")]
     pub min_date: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "minGranularity")]
     pub min_granularity: ClickStackMaterializedViewMingranularity,
@@ -11376,37 +12498,91 @@ pub struct ClickStackMaterializedView {
     pub timestamp_column: String,
 }
 
+/// `ClickStackMaterializedView` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackMaterializedView`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMaterializedViewResponse {
+    #[serde(rename = "aggregatedColumns", skip_serializing_if = "Option::is_none")]
+    pub aggregated_columns: Option<Vec<ClickStackAggregatedColumnResponse>>,
+    #[serde(rename = "databaseName", skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(rename = "dimensionColumns", skip_serializing_if = "Option::is_none")]
+    pub dimension_columns: Option<String>,
+    #[serde(rename = "minDate", skip_serializing_if = "Option::is_none")]
+    pub min_date: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "minGranularity", skip_serializing_if = "Option::is_none")]
+    pub min_granularity: Option<ClickStackMaterializedViewMingranularity>,
+    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+    #[serde(rename = "timestampColumn", skip_serializing_if = "Option::is_none")]
+    pub timestamp_column: Option<String>,
+}
+
 /// `ClickStackMetricSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackMetricSource {
     pub connection: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
     pub from: ClickStackMetricSourceFrom,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub kind: ClickStackMetricSourceKind,
-    #[serde(
-        rename = "logSourceId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "logSourceId", skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
     #[serde(rename = "metricTables")]
     pub metric_tables: ClickStackMetricTables,
     pub name: String,
-    #[serde(
-        rename = "querySettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(rename = "resourceAttributesExpression")]
     pub resource_attributes_expression: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(rename = "timestampValueExpression")]
     pub timestamp_value_expression: String,
+}
+
+/// `ClickStackMetricSource` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackMetricSource`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMetricSourceResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<ClickStackMetricSourceFromResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ClickStackMetricSourceKind>,
+    #[serde(rename = "logSourceId", skip_serializing_if = "Option::is_none")]
+    pub log_source_id: Option<String>,
+    #[serde(rename = "metricTables", skip_serializing_if = "Option::is_none")]
+    pub metric_tables: Option<ClickStackMetricTablesResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
+    pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(
+        rename = "timestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timestamp_value_expression: Option<String>,
 }
 
 /// `ClickStackMetricSourceFrom` from the ClickHouse Cloud API.
@@ -11414,53 +12590,95 @@ pub struct ClickStackMetricSource {
 pub struct ClickStackMetricSourceFrom {
     #[serde(rename = "databaseName")]
     pub database_name: String,
-    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+}
+
+/// `ClickStackMetricSourceFrom` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackMetricSourceFrom`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMetricSourceFromResponse {
+    #[serde(rename = "databaseName", skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]
     pub table_name: Option<String>,
 }
 
 /// `ClickStackMetricTables` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackMetricTables {
-    #[serde(rename = "exponential histogram", default)]
+    #[serde(rename = "exponential histogram")]
     pub exponential_histogram: String,
-    #[serde(default)]
     pub gauge: String,
-    #[serde(default)]
     pub histogram: String,
-    #[serde(default)]
     pub sum: String,
-    #[serde(default)]
     pub summary: String,
+}
+
+/// `ClickStackMetricTables` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackMetricTables`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackMetricTablesResponse {
+    #[serde(
+        rename = "exponential histogram",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub exponential_histogram: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gauge: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub histogram: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sum: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// `ClickStackNumberBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberBuilderChartConfig {
-    #[serde(
-        rename = "backgroundChart",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
     pub background_chart: Option<ClickStackBackgroundChart>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<ClickStackChartColor>,
-    #[serde(
-        rename = "colorRules",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
     pub color_rules: Option<Vec<ClickStackNumberTileColorCondition>>,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackNumberBuilderChartConfigDisplaytype,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+}
+
+/// `ClickStackNumberBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackNumberBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackNumberBuilderChartConfigResponse {
+    #[serde(rename = "backgroundChart", skip_serializing_if = "Option::is_none")]
+    pub background_chart: Option<ClickStackBackgroundChartResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "colorRules", skip_serializing_if = "Option::is_none")]
+    pub color_rules: Option<Vec<ClickStackNumberTileColorConditionResponse>>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackNumberBuilderChartConfigDisplaytype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// `ClickStackNumberChartSeries` from the ClickHouse Cloud API.
@@ -11468,29 +12686,17 @@ pub struct ClickStackNumberBuilderChartConfig {
 pub struct ClickStackNumberChartSeries {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackNumberChartSeriesAggfn,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<f64>,
-    #[serde(
-        rename = "metricDataType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricDataType", skip_serializing_if = "Option::is_none")]
     pub metric_data_type: Option<ClickStackNumberChartSeriesMetricdatatype>,
-    #[serde(
-        rename = "metricName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
     pub metric_name: Option<String>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
@@ -11503,30 +12709,52 @@ pub struct ClickStackNumberChartSeries {
 /// `ClickStackNumberFormat` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberFormat {
-    #[serde(default)]
     pub average: bool,
-    #[serde(rename = "currencySymbol", default)]
+    #[serde(rename = "currencySymbol")]
     pub currency_symbol: String,
-    #[serde(rename = "decimalBytes", default)]
+    #[serde(rename = "decimalBytes")]
     pub decimal_bytes: bool,
-    #[serde(default)]
     pub factor: f64,
-    #[serde(default)]
     pub mantissa: i64,
-    #[serde(rename = "numericUnit", default)]
+    #[serde(rename = "numericUnit")]
     pub numeric_unit: ClickStackNumberFormatNumericunit,
-    #[serde(default)]
     pub output: ClickStackNumberFormatOutput,
-    #[serde(rename = "thousandSeparated", default)]
+    #[serde(rename = "thousandSeparated")]
     pub thousand_separated: bool,
-    #[serde(default)]
     pub unit: String,
+}
+
+/// `ClickStackNumberFormat` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackNumberFormat`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackNumberFormatResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub average: Option<bool>,
+    #[serde(rename = "currencySymbol", skip_serializing_if = "Option::is_none")]
+    pub currency_symbol: Option<String>,
+    #[serde(rename = "decimalBytes", skip_serializing_if = "Option::is_none")]
+    pub decimal_bytes: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factor: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mantissa: Option<i64>,
+    #[serde(rename = "numericUnit", skip_serializing_if = "Option::is_none")]
+    pub numeric_unit: Option<ClickStackNumberFormatNumericunit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<ClickStackNumberFormatOutput>,
+    #[serde(rename = "thousandSeparated", skip_serializing_if = "Option::is_none")]
+    pub thousand_separated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 /// `ClickStackNumberRawSqlChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumberRawSqlChartConfig {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<ClickStackChartColor>,
     #[serde(rename = "configType")]
     pub config_type: ClickStackNumberRawSqlChartConfigConfigtype,
@@ -11534,46 +12762,93 @@ pub struct ClickStackNumberRawSqlChartConfig {
     pub connection_id: String,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackNumberRawSqlChartConfigDisplaytype,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackNumberRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackNumberRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackNumberRawSqlChartConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackNumberRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackNumberRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
 }
 
 /// `ClickStackNumericColorCondition` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackNumericColorCondition {
     pub color: ClickStackChartColor,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub operator: ClickStackNumericColorConditionOperator,
     pub value: f64,
 }
 
+/// `ClickStackNumericColorCondition` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackNumericColorCondition`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackNumericColorConditionResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<ClickStackChartColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Option<ClickStackNumericColorConditionOperator>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+}
+
 /// `ClickStackOnClickDashboard` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackOnClickDashboard {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackOnClickFilterTemplate>>,
     pub target: ClickStackOnClickTarget,
     pub r#type: ClickStackOnClickDashboardType,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackOnClickDashboardWherelanguage>,
-    #[serde(
-        rename = "whereTemplate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereTemplate", skip_serializing_if = "Option::is_none")]
+    pub where_template: Option<String>,
+}
+
+/// `ClickStackOnClickDashboard` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackOnClickDashboard`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickDashboardResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<ClickStackOnClickFilterTemplateResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<ClickStackOnClickTargetResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackOnClickDashboardType>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackOnClickDashboardWherelanguage>,
+    #[serde(rename = "whereTemplate", skip_serializing_if = "Option::is_none")]
     pub where_template: Option<String>,
 }
 
@@ -11585,6 +12860,19 @@ pub struct ClickStackOnClickExternal {
     pub url_template: String,
 }
 
+/// `ClickStackOnClickExternal` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackOnClickExternal`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickExternalResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackOnClickExternalType>,
+    #[serde(rename = "urlTemplate", skip_serializing_if = "Option::is_none")]
+    pub url_template: Option<String>,
+}
+
 /// `ClickStackOnClickFilterTemplate` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackOnClickFilterTemplate {
@@ -11593,24 +12881,50 @@ pub struct ClickStackOnClickFilterTemplate {
     pub template: String,
 }
 
+/// `ClickStackOnClickFilterTemplate` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackOnClickFilterTemplate`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickFilterTemplateResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ClickStackOnClickFilterTemplateKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+}
+
 /// `ClickStackOnClickSearch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackOnClickSearch {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackOnClickFilterTemplate>>,
     pub target: ClickStackOnClickTarget,
     pub r#type: ClickStackOnClickSearchType,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackOnClickSearchWherelanguage>,
-    #[serde(
-        rename = "whereTemplate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereTemplate", skip_serializing_if = "Option::is_none")]
+    pub where_template: Option<String>,
+}
+
+/// `ClickStackOnClickSearch` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackOnClickSearch`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickSearchResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<ClickStackOnClickFilterTemplateResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<ClickStackOnClickTargetResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackOnClickSearchType>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackOnClickSearchWherelanguage>,
+    #[serde(rename = "whereTemplate", skip_serializing_if = "Option::is_none")]
     pub where_template: Option<String>,
 }
 
@@ -11621,6 +12935,19 @@ pub struct ClickStackOnClickTargetIdVariant {
     pub mode: ClickStackOnClickTargetIdVariantMode,
 }
 
+/// `ClickStackOnClickTargetIdVariant` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackOnClickTargetIdVariant`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickTargetIdVariantResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ClickStackOnClickTargetIdVariantMode>,
+}
+
 /// `ClickStackOnClickTargetTemplateVariant` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackOnClickTargetTemplateVariant {
@@ -11628,19 +12955,38 @@ pub struct ClickStackOnClickTargetTemplateVariant {
     pub template: String,
 }
 
+/// `ClickStackOnClickTargetTemplateVariant` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackOnClickTargetTemplateVariant`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackOnClickTargetTemplateVariantResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ClickStackOnClickTargetTemplateVariantMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+}
+
 /// `ClickStackPagerDutyAPIWebhook` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackPagerDutyAPIWebhook {
-    #[serde(rename = "createdAt")]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub id: String,
-    pub name: String,
-    pub service: ClickStackPagerDutyAPIWebhookService,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ClickStackPagerDutyAPIWebhookService>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
@@ -11649,21 +12995,40 @@ pub struct ClickStackPagerDutyAPIWebhook {
 pub struct ClickStackPieBuilderChartConfig {
     #[serde(rename = "displayType")]
     pub display_type: ClickStackPieBuilderChartConfigDisplaytype,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<i64>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
     pub order_by: Option<String>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+}
+
+/// `ClickStackPieBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPieBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPieBuilderChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackPieBuilderChartConfigDisplaytype>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// `ClickStackPieRawSqlChartConfig` from the ClickHouse Cloud API.
@@ -11675,39 +13040,82 @@ pub struct ClickStackPieRawSqlChartConfig {
     pub connection_id: String,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackPieRawSqlChartConfigDisplaytype,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackPieRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPieRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPieRawSqlChartConfigResponse {
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackPieRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackPieRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
 }
 
 /// `ClickStackPromqlSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackPromqlSource {
     pub connection: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
     pub from: ClickStackSourceFrom,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub kind: ClickStackPromqlSourceKind,
     pub name: String,
-    #[serde(
-        rename = "querySettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(rename = "timestampValueExpression")]
     pub timestamp_value_expression: String,
+}
+
+/// `ClickStackPromqlSource` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackPromqlSource`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackPromqlSourceResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<ClickStackSourceFromResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ClickStackPromqlSourceKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
+    pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(
+        rename = "timestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timestamp_value_expression: Option<String>,
 }
 
 /// `ClickStackQuerySetting` from the ClickHouse Cloud API.
@@ -11717,19 +13125,38 @@ pub struct ClickStackQuerySetting {
     pub value: String,
 }
 
+/// `ClickStackQuerySetting` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackQuerySetting`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackQuerySettingResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setting: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
 /// `ClickStackRole` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackRole {
-    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub id: String,
-    #[serde(rename = "isPredefined")]
-    pub is_predefined: bool,
-    pub name: String,
-    pub permissions: Vec<ClickStackCASLPermission>,
-    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "isPredefined", skip_serializing_if = "Option::is_none")]
+    pub is_predefined: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<ClickStackCASLPermissionResponse>>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -11737,38 +13164,52 @@ pub struct ClickStackRole {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSavedFilterValue {
     pub condition: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackSavedFilterValueType>,
+}
+
+/// `ClickStackSavedFilterValue` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSavedFilterValue`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedFilterValueResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickStackSavedFilterValueType>,
 }
 
 /// `ClickStackSavedSearch` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSavedSearch {
-    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub filters: Option<Vec<ClickStackSavedSearchFilter>>,
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Vec<ClickStackSavedSearchFilterResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
     pub order_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub select: Option<String>,
-    #[serde(rename = "sourceId")]
-    pub source_id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
-    #[serde(rename = "teamId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "teamId", skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
-    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackSavedSearchWherelanguage>,
 }
 
@@ -11776,31 +13217,40 @@ pub struct ClickStackSavedSearch {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSavedSearchFilter {
     pub condition: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickStackSavedSearchFilterType>,
+}
+
+/// `ClickStackSavedSearchFilter` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSavedSearchFilter`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSavedSearchFilterResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickStackSavedSearchFilterType>,
 }
 
 /// `ClickStackSavedSearchInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSavedSearchInput {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackSavedSearchFilter>>,
     pub name: String,
-    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
     pub order_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub select: Option<String>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackSavedSearchInputWherelanguage>,
 }
 
@@ -11812,10 +13262,29 @@ pub struct ClickStackSearchChartConfig {
     pub select: String,
     #[serde(rename = "sourceId")]
     pub source_id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
     #[serde(rename = "whereLanguage")]
     pub where_language: ClickStackSearchChartConfigWherelanguage,
+}
+
+/// `ClickStackSearchChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSearchChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSearchChartConfigResponse {
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackSearchChartConfigDisplaytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<String>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackSearchChartConfigWherelanguage>,
 }
 
 /// `ClickStackSearchChartSeries` from the ClickHouse Cloud API.
@@ -11835,47 +13304,52 @@ pub struct ClickStackSearchChartSeries {
 pub struct ClickStackSelectItem {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackSelectItemAggfn,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<ClickStackSelectItemLevel>,
-    #[serde(
-        rename = "metricName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
     pub metric_name: Option<String>,
-    #[serde(
-        rename = "metricType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricType", skip_serializing_if = "Option::is_none")]
     pub metric_type: Option<ClickStackSelectItemMetrictype>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(
-        rename = "periodAggFn",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "periodAggFn", skip_serializing_if = "Option::is_none")]
     pub period_agg_fn: Option<ClickStackSelectItemPeriodaggfn>,
-    #[serde(
-        rename = "valueExpression",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "valueExpression", skip_serializing_if = "Option::is_none")]
     pub value_expression: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#where: Option<String>,
-    #[serde(
-        rename = "whereLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
+    pub where_language: Option<ClickStackSelectItemWherelanguage>,
+}
+
+/// `ClickStackSelectItem` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSelectItem`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSelectItemResponse {
+    #[serde(rename = "aggFn", skip_serializing_if = "Option::is_none")]
+    pub agg_fn: Option<ClickStackSelectItemAggfn>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<ClickStackSelectItemLevel>,
+    #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
+    pub metric_name: Option<String>,
+    #[serde(rename = "metricType", skip_serializing_if = "Option::is_none")]
+    pub metric_type: Option<ClickStackSelectItemMetrictype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "periodAggFn", skip_serializing_if = "Option::is_none")]
+    pub period_agg_fn: Option<ClickStackSelectItemPeriodaggfn>,
+    #[serde(rename = "valueExpression", skip_serializing_if = "Option::is_none")]
+    pub value_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#where: Option<String>,
+    #[serde(rename = "whereLanguage", skip_serializing_if = "Option::is_none")]
     pub where_language: Option<ClickStackSelectItemWherelanguage>,
 }
 
@@ -11883,60 +13357,99 @@ pub struct ClickStackSelectItem {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSessionSource {
     pub connection: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
     pub from: ClickStackSourceFrom,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub kind: ClickStackSessionSourceKind,
     pub name: String,
-    #[serde(
-        rename = "querySettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
         rename = "timestampValueExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub timestamp_value_expression: Option<String>,
     #[serde(rename = "traceSourceId")]
     pub trace_source_id: String,
 }
 
+/// `ClickStackSessionSource` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSessionSource`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSessionSourceResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<ClickStackSourceFromResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ClickStackSessionSourceKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
+    pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(
+        rename = "timestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timestamp_value_expression: Option<String>,
+    #[serde(rename = "traceSourceId", skip_serializing_if = "Option::is_none")]
+    pub trace_source_id: Option<String>,
+}
+
 /// `ClickStackSlackAPIWebhook` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSlackAPIWebhook {
-    #[serde(rename = "createdAt")]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub id: String,
-    pub name: String,
-    pub service: ClickStackSlackAPIWebhookService,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ClickStackSlackAPIWebhookService>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
 /// `ClickStackSlackWebhook` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSlackWebhook {
-    #[serde(rename = "createdAt")]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub id: String,
-    pub name: String,
-    pub service: ClickStackSlackWebhookService,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<ClickStackSlackWebhookService>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
@@ -11950,6 +13463,21 @@ pub struct ClickStackSourceFilterSettings {
     pub table_name: String,
 }
 
+/// `ClickStackSourceFilterSettings` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSourceFilterSettings`]: every field is
+/// `Option<T>`, so a field the API drops or sends as `null` deserializes to
+/// `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSourceFilterSettingsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickStackFilterSettingsColumnResponse>>,
+    #[serde(rename = "databaseName", skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+}
+
 /// `ClickStackSourceFrom` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackSourceFrom {
@@ -11959,36 +13487,76 @@ pub struct ClickStackSourceFrom {
     pub table_name: String,
 }
 
+/// `ClickStackSourceFrom` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackSourceFrom`]: every field is `Option<T>`, so
+/// a field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackSourceFromResponse {
+    #[serde(rename = "databaseName", skip_serializing_if = "Option::is_none")]
+    pub database_name: Option<String>,
+    #[serde(rename = "tableName", skip_serializing_if = "Option::is_none")]
+    pub table_name: Option<String>,
+}
+
 /// `ClickStackTableBuilderChartConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTableBuilderChartConfig {
-    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
     pub as_ratio: Option<bool>,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackTableBuilderChartConfigDisplaytype,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
     #[serde(
         rename = "groupByColumnsOnLeft",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub group_by_columns_on_left: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub having: Option<String>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none")]
     pub on_click: Option<ClickStackOnClick>,
-    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
     pub order_by: Option<String>,
     pub select: Vec<ClickStackSelectItem>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
+}
+
+/// `ClickStackTableBuilderChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackTableBuilderChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackTableBuilderChartConfigResponse {
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
+    pub as_ratio: Option<bool>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackTableBuilderChartConfigDisplaytype>,
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+    #[serde(
+        rename = "groupByColumnsOnLeft",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub group_by_columns_on_left: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub having: Option<String>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none")]
+    pub on_click: Option<ClickStackOnClickResponse>,
+    #[serde(rename = "orderBy", skip_serializing_if = "Option::is_none")]
+    pub order_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select: Option<Vec<ClickStackSelectItemResponse>>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
 }
 
 /// `ClickStackTableChartSeries` from the ClickHouse Cloud API.
@@ -11996,33 +13564,21 @@ pub struct ClickStackTableBuilderChartConfig {
 pub struct ClickStackTableChartSeries {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackTableChartSeriesAggfn,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
     #[serde(rename = "groupBy")]
     pub group_by: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<f64>,
-    #[serde(
-        rename = "metricDataType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricDataType", skip_serializing_if = "Option::is_none")]
     pub metric_data_type: Option<ClickStackTableChartSeriesMetricdatatype>,
-    #[serde(
-        rename = "metricName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
     pub metric_name: Option<String>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "sortOrder", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sortOrder", skip_serializing_if = "Option::is_none")]
     pub sort_order: Option<ClickStackTableChartSeriesSortorder>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
@@ -12041,42 +13597,57 @@ pub struct ClickStackTableRawSqlChartConfig {
     pub connection_id: String,
     #[serde(rename = "displayType")]
     pub display_type: ClickStackTableRawSqlChartConfigDisplaytype,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
-    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none")]
     pub on_click: Option<ClickStackOnClick>,
-    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     #[serde(rename = "sqlTemplate")]
     pub sql_template: String,
+}
+
+/// `ClickStackTableRawSqlChartConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackTableRawSqlChartConfig`]: every field is `Option<T>`, so a field
+/// the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackTableRawSqlChartConfigResponse {
+    #[serde(rename = "configType", skip_serializing_if = "Option::is_none")]
+    pub config_type: Option<ClickStackTableRawSqlChartConfigConfigtype>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
+    pub display_type: Option<ClickStackTableRawSqlChartConfigDisplaytype>,
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+    pub number_format: Option<ClickStackNumberFormatResponse>,
+    #[serde(rename = "onClick", skip_serializing_if = "Option::is_none")]
+    pub on_click: Option<ClickStackOnClickResponse>,
+    #[serde(rename = "sourceId", skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(rename = "sqlTemplate", skip_serializing_if = "Option::is_none")]
+    pub sql_template: Option<String>,
 }
 
 /// `ClickStackTileInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTileInput {
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "asRatio", skip_serializing_if = "Option::is_none")]
     pub as_ratio: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ClickStackTileConfig>,
-    #[serde(
-        rename = "containerId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "containerId", skip_serializing_if = "Option::is_none")]
     pub container_id: Option<String>,
     pub h: i64,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub name: String,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub series: Option<Vec<ClickStackDashboardChartSeries>>,
-    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<String>,
     pub w: i64,
     pub x: i64,
@@ -12084,24 +13655,29 @@ pub struct ClickStackTileInput {
 }
 
 /// `ClickStackTileOutput` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTileOutput {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub config: Option<ClickStackTileConfig>,
-    #[serde(
-        rename = "containerId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ClickStackTileConfigResponse>,
+    #[serde(rename = "containerId", skip_serializing_if = "Option::is_none")]
     pub container_id: Option<String>,
-    pub h: i64,
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub h: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "tabId", skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<String>,
-    pub w: i64,
-    pub x: i64,
-    pub y: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub w: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<i64>,
 }
 
 /// `ClickStackTimeChartSeries` from the ClickHouse Cloud API.
@@ -12109,37 +13685,21 @@ pub struct ClickStackTileOutput {
 pub struct ClickStackTimeChartSeries {
     #[serde(rename = "aggFn")]
     pub agg_fn: ClickStackTimeChartSeriesAggfn,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
-    #[serde(
-        rename = "displayType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayType", skip_serializing_if = "Option::is_none")]
     pub display_type: Option<ClickStackTimeChartSeriesDisplaytype>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
     #[serde(rename = "groupBy")]
     pub group_by: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<f64>,
-    #[serde(
-        rename = "metricDataType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricDataType", skip_serializing_if = "Option::is_none")]
     pub metric_data_type: Option<ClickStackTimeChartSeriesMetricdatatype>,
-    #[serde(
-        rename = "metricName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricName", skip_serializing_if = "Option::is_none")]
     pub metric_name: Option<String>,
-    #[serde(
-        rename = "numberFormat",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
     pub number_format: Option<ClickStackNumberFormat>,
     #[serde(rename = "sourceId")]
     pub source_id: String,
@@ -12153,9 +13713,9 @@ pub struct ClickStackTimeChartSeries {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTraceSource {
     pub connection: String,
-    #[serde(rename = "defaultTableSelectExpression", default)]
+    #[serde(rename = "defaultTableSelectExpression")]
     pub default_table_select_expression: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled: Option<bool>,
     #[serde(rename = "durationExpression")]
     pub duration_expression: String,
@@ -12163,103 +13723,70 @@ pub struct ClickStackTraceSource {
     pub duration_precision: i64,
     #[serde(
         rename = "eventAttributesExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub event_attributes_expression: Option<String>,
-    #[serde(
-        rename = "filterSettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "filterSettings", skip_serializing_if = "Option::is_none")]
     pub filter_settings: Option<ClickStackSourceFilterSettings>,
     pub from: ClickStackSourceFrom,
     #[serde(
         rename = "highlightedRowAttributeExpressions",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub highlighted_row_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
     #[serde(
         rename = "highlightedTraceAttributeExpressions",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub highlighted_trace_attribute_expressions:
         Option<Vec<ClickStackHighlightedAttributeExpression>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(
         rename = "implicitColumnExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub implicit_column_expression: Option<String>,
     pub kind: ClickStackTraceSourceKind,
     #[serde(
         rename = "knownColumnsListExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub known_columns_list_expression: Option<String>,
-    #[serde(
-        rename = "logSourceId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "logSourceId", skip_serializing_if = "Option::is_none")]
     pub log_source_id: Option<String>,
-    #[serde(
-        rename = "materializedViews",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
     pub materialized_views: Option<Vec<ClickStackMaterializedView>>,
     #[serde(
         rename = "metadataMaterializedViews",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub metadata_materialized_views: Option<ClickStackTraceSourceMetadataMaterializedViews>,
-    #[serde(
-        rename = "metricSourceId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none")]
     pub metric_source_id: Option<String>,
     pub name: String,
     #[serde(rename = "parentSpanIdExpression")]
     pub parent_span_id_expression: String,
-    #[serde(
-        rename = "querySettings",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
     pub query_settings: Option<Vec<ClickStackQuerySetting>>,
     #[serde(
         rename = "resourceAttributesExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub resource_attributes_expression: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
     #[serde(
         rename = "serviceNameExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub service_name_expression: Option<String>,
-    #[serde(
-        rename = "sessionSourceId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "sessionSourceId", skip_serializing_if = "Option::is_none")]
     pub session_source_id: Option<String>,
     #[serde(
         rename = "spanEventsValueExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub span_events_value_expression: Option<String>,
     #[serde(rename = "spanIdExpression")]
@@ -12270,14 +13797,12 @@ pub struct ClickStackTraceSource {
     pub span_name_expression: String,
     #[serde(
         rename = "statusCodeExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub status_code_expression: Option<String>,
     #[serde(
         rename = "statusMessageExpression",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub status_message_expression: Option<String>,
     #[serde(rename = "timestampValueExpression")]
@@ -12286,8 +13811,132 @@ pub struct ClickStackTraceSource {
     pub trace_id_expression: String,
     #[serde(
         rename = "useTextIndexForImplicitColumn",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_text_index_for_implicit_column:
+        Option<ClickStackTraceSourceUsetextindexforimplicitcolumn>,
+}
+
+/// `ClickStackTraceSource` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackTraceSource`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackTraceSourceResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    #[serde(
+        rename = "defaultTableSelectExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_table_select_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(rename = "durationExpression", skip_serializing_if = "Option::is_none")]
+    pub duration_expression: Option<String>,
+    #[serde(rename = "durationPrecision", skip_serializing_if = "Option::is_none")]
+    pub duration_precision: Option<i64>,
+    #[serde(
+        rename = "eventAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub event_attributes_expression: Option<String>,
+    #[serde(rename = "filterSettings", skip_serializing_if = "Option::is_none")]
+    pub filter_settings: Option<ClickStackSourceFilterSettingsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<ClickStackSourceFromResponse>,
+    #[serde(
+        rename = "highlightedRowAttributeExpressions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub highlighted_row_attribute_expressions:
+        Option<Vec<ClickStackHighlightedAttributeExpressionResponse>>,
+    #[serde(
+        rename = "highlightedTraceAttributeExpressions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub highlighted_trace_attribute_expressions:
+        Option<Vec<ClickStackHighlightedAttributeExpressionResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "implicitColumnExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub implicit_column_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ClickStackTraceSourceKind>,
+    #[serde(
+        rename = "knownColumnsListExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub known_columns_list_expression: Option<String>,
+    #[serde(rename = "logSourceId", skip_serializing_if = "Option::is_none")]
+    pub log_source_id: Option<String>,
+    #[serde(rename = "materializedViews", skip_serializing_if = "Option::is_none")]
+    pub materialized_views: Option<Vec<ClickStackMaterializedViewResponse>>,
+    #[serde(
+        rename = "metadataMaterializedViews",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub metadata_materialized_views: Option<ClickStackTraceSourceMetadataMaterializedViewsResponse>,
+    #[serde(rename = "metricSourceId", skip_serializing_if = "Option::is_none")]
+    pub metric_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        rename = "parentSpanIdExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_span_id_expression: Option<String>,
+    #[serde(rename = "querySettings", skip_serializing_if = "Option::is_none")]
+    pub query_settings: Option<Vec<ClickStackQuerySettingResponse>>,
+    #[serde(
+        rename = "resourceAttributesExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_attributes_expression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
+    #[serde(
+        rename = "serviceNameExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub service_name_expression: Option<String>,
+    #[serde(rename = "sessionSourceId", skip_serializing_if = "Option::is_none")]
+    pub session_source_id: Option<String>,
+    #[serde(
+        rename = "spanEventsValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub span_events_value_expression: Option<String>,
+    #[serde(rename = "spanIdExpression", skip_serializing_if = "Option::is_none")]
+    pub span_id_expression: Option<String>,
+    #[serde(rename = "spanKindExpression", skip_serializing_if = "Option::is_none")]
+    pub span_kind_expression: Option<String>,
+    #[serde(rename = "spanNameExpression", skip_serializing_if = "Option::is_none")]
+    pub span_name_expression: Option<String>,
+    #[serde(
+        rename = "statusCodeExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status_code_expression: Option<String>,
+    #[serde(
+        rename = "statusMessageExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status_message_expression: Option<String>,
+    #[serde(
+        rename = "timestampValueExpression",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timestamp_value_expression: Option<String>,
+    #[serde(rename = "traceIdExpression", skip_serializing_if = "Option::is_none")]
+    pub trace_id_expression: Option<String>,
+    #[serde(
+        rename = "useTextIndexForImplicitColumn",
+        skip_serializing_if = "Option::is_none"
     )]
     pub use_text_index_for_implicit_column:
         Option<ClickStackTraceSourceUsetextindexforimplicitcolumn>,
@@ -12296,72 +13945,64 @@ pub struct ClickStackTraceSource {
 /// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackTraceSourceMetadataMaterializedViews {
-    #[serde(default)]
     pub granularity: String,
-    #[serde(rename = "keyRollupTable", default)]
+    #[serde(rename = "keyRollupTable")]
     pub key_rollup_table: String,
-    #[serde(rename = "kvRollupTable", default)]
+    #[serde(rename = "kvRollupTable")]
     pub kv_rollup_table: String,
+}
+
+/// `ClickStackTraceSourceMetadataMaterializedViews` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ClickStackTraceSourceMetadataMaterializedViews`]:
+/// every field is `Option<T>`, so a field the API drops or sends as `null`
+/// deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickStackTraceSourceMetadataMaterializedViewsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+    #[serde(rename = "keyRollupTable", skip_serializing_if = "Option::is_none")]
+    pub key_rollup_table: Option<String>,
+    #[serde(rename = "kvRollupTable", skip_serializing_if = "Option::is_none")]
+    pub kv_rollup_table: Option<String>,
 }
 
 /// `ClickStackUpdateAlertRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateAlertRequest {
-    #[serde(default)]
     pub channel: ClickStackAlertChannel,
-    #[serde(
-        rename = "dashboardId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "dashboardId", skip_serializing_if = "Option::is_none")]
     pub dashboard_id: Option<String>,
-    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "groupBy", skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
-    #[serde(default)]
     pub interval: ClickStackUpdateAlertRequestInterval,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     #[serde(
         rename = "numConsecutiveWindows",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub num_consecutive_windows: Option<i64>,
-    #[serde(
-        rename = "savedSearchId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedSearchId", skip_serializing_if = "Option::is_none")]
     pub saved_search_id: Option<String>,
     #[serde(
         rename = "scheduleOffsetMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub schedule_offset_minutes: Option<i64>,
-    #[serde(
-        rename = "scheduleStartAt",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "scheduleStartAt", skip_serializing_if = "Option::is_none")]
     pub schedule_start_at: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(default)]
     pub source: ClickStackUpdateAlertRequestSource,
-    #[serde(default)]
     pub threshold: f64,
-    #[serde(
-        rename = "thresholdMax",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "thresholdMax", skip_serializing_if = "Option::is_none")]
     pub threshold_max: Option<f64>,
-    #[serde(rename = "thresholdType", default)]
+    #[serde(rename = "thresholdType")]
     pub threshold_type: ClickStackUpdateAlertRequestThresholdtype,
-    #[serde(rename = "tileId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tileId", skip_serializing_if = "Option::is_none")]
     pub tile_id: Option<String>,
 }
 
@@ -12371,18 +14012,16 @@ pub struct ClickStackUpdateConnectionRequest {
     pub host: String,
     #[serde(
         rename = "hyperdxSettingPrefix",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub hyperdx_setting_prefix: Option<String>,
     #[serde(
         rename = "isPrometheusEndpoint",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub is_prometheus_endpoint: Option<bool>,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     pub username: String,
 }
@@ -12390,30 +14029,18 @@ pub struct ClickStackUpdateConnectionRequest {
 /// `ClickStackUpdateDashboardRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateDashboardRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub containers: Option<Vec<ClickStackDashboardContainer>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub filters: Option<Vec<ClickStackFilter>>,
     pub name: String,
-    #[serde(
-        rename = "savedFilterValues",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedFilterValues", skip_serializing_if = "Option::is_none")]
     pub saved_filter_values: Option<Vec<ClickStackSavedFilterValue>>,
-    #[serde(
-        rename = "savedQuery",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedQuery", skip_serializing_if = "Option::is_none")]
     pub saved_query: Option<String>,
-    #[serde(
-        rename = "savedQueryLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "savedQueryLanguage", skip_serializing_if = "Option::is_none")]
     pub saved_query_language: Option<ClickStackUpdateDashboardRequestSavedquerylanguage>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
     pub tiles: Vec<ClickStackTileInput>,
 }
@@ -12421,45 +14048,51 @@ pub struct ClickStackUpdateDashboardRequest {
 /// `ClickStackUpdateRoleRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackUpdateRoleRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub permissions: Vec<ClickStackCASLPermission>,
 }
 
 /// `ClickStackValidateDashboardError` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackValidateDashboardError {
-    pub message: String,
-    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// `ClickStackValidateDashboardResponse` from the ClickHouse Cloud API.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackValidateDashboardResponse {
-    pub errors: Vec<ClickStackValidateDashboardError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<Vec<ClickStackValidateDashboardError>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub normalized: Option<ClickStackValidateDashboardResponseNormalized>,
-    pub valid: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid: Option<bool>,
 }
 
 /// `ClickStackWebhookInput` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickStackWebhookInput {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<ClickStackWebhookInputHeaders>,
     pub name: String,
-    #[serde(
-        rename = "queryParams",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "queryParams", skip_serializing_if = "Option::is_none")]
     pub query_params: Option<ClickStackWebhookInputQueryParams>,
-    #[serde(default)]
     pub service: ClickStackWebhookInputService,
     pub url: String,
 }
@@ -12469,48 +14102,33 @@ pub struct ClickStackWebhookInput {
 pub struct CreateReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
-    #[serde(default)]
     pub description: String,
     #[serde(
         rename = "gcpServiceAttachment",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub gcp_service_attachment: Option<String>,
-    #[serde(
-        rename = "mskAuthentication",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "mskAuthentication", skip_serializing_if = "Option::is_none")]
     pub msk_authentication: Option<CreateReversePrivateEndpointMskauthentication>,
-    #[serde(
-        rename = "mskClusterArn",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "mskClusterArn", skip_serializing_if = "Option::is_none")]
     pub msk_cluster_arn: Option<String>,
-    #[serde(default)]
     pub r#type: CreateReversePrivateEndpointType,
     #[serde(
         rename = "vpcEndpointServiceName",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_endpoint_service_name: Option<String>,
     #[serde(
         rename = "vpcResourceConfigurationId",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_configuration_id: Option<String>,
     #[serde(
         rename = "vpcResourceShareArn",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_share_arn: Option<String>,
 }
@@ -12518,450 +14136,458 @@ pub struct CreateReversePrivateEndpoint {
 /// `CurrentScaling` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CurrentScaling {
-    #[serde(rename = "activeEntryId", default)]
-    pub active_entry_id: uuid::Uuid,
-    #[serde(rename = "effectiveAutoscalingMode", default)]
-    pub effective_autoscaling_mode: CurrentScalingEffectiveautoscalingmode,
-    #[serde(rename = "effectiveIdleScaling", default)]
-    pub effective_idle_scaling: bool,
-    #[serde(rename = "effectiveIdleTimeoutMinutes", default)]
-    pub effective_idle_timeout_minutes: i64,
-    #[serde(rename = "effectiveMaxReplicaMemoryGb", default)]
-    pub effective_max_replica_memory_gb: f64,
-    #[serde(rename = "effectiveMaxReplicas", default)]
-    pub effective_max_replicas: i64,
-    #[serde(rename = "effectiveMinReplicaMemoryGb", default)]
-    pub effective_min_replica_memory_gb: f64,
-    #[serde(rename = "effectiveMinReplicas", default)]
-    pub effective_min_replicas: i64,
+    #[serde(rename = "activeEntryId", skip_serializing_if = "Option::is_none")]
+    pub active_entry_id: Option<uuid::Uuid>,
+    #[serde(
+        rename = "effectiveAutoscalingMode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_autoscaling_mode: Option<CurrentScalingEffectiveautoscalingmode>,
+    #[serde(
+        rename = "effectiveIdleScaling",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_idle_scaling: Option<bool>,
+    #[serde(
+        rename = "effectiveIdleTimeoutMinutes",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_idle_timeout_minutes: Option<i64>,
+    #[serde(
+        rename = "effectiveMaxReplicaMemoryGb",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_max_replica_memory_gb: Option<f64>,
+    #[serde(
+        rename = "effectiveMaxReplicas",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_max_replicas: Option<i64>,
+    #[serde(
+        rename = "effectiveMinReplicaMemoryGb",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_min_replica_memory_gb: Option<f64>,
+    #[serde(
+        rename = "effectiveMinReplicas",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub effective_min_replicas: Option<i64>,
 }
 
 /// `CustomPrivateDnsMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CustomPrivateDnsMapping {
-    #[serde(
-        rename = "privateDnsName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
+    pub private_dns_name: Option<String>,
+}
+
+/// `CustomPrivateDnsMapping` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`CustomPrivateDnsMapping`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CustomPrivateDnsMappingResponse {
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
     pub private_dns_name: Option<String>,
 }
 
 /// `GcpBackupBucket` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucket {
-    #[serde(rename = "accessKeyId", default)]
-    pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
-    pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
-    pub bucket_provider: GcpBackupBucketBucketprovider,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "accessKeyId", skip_serializing_if = "Option::is_none")]
+    pub access_key_id: Option<String>,
+    #[serde(rename = "bucketPath", skip_serializing_if = "Option::is_none")]
+    pub bucket_path: Option<String>,
+    #[serde(rename = "bucketProvider", skip_serializing_if = "Option::is_none")]
+    pub bucket_provider: Option<GcpBackupBucketBucketprovider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
 }
 
 /// `GcpBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucketPatchRequestV1 {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: GcpBackupBucketPatchRequestV1Bucketprovider,
-    #[serde(rename = "secretAccessKey", default)]
+    #[serde(rename = "secretAccessKey")]
     pub secret_access_key: String,
 }
 
 /// `GcpBackupBucketPostRequestV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucketPostRequestV1 {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: GcpBackupBucketPostRequestV1Bucketprovider,
-    #[serde(rename = "secretAccessKey", default)]
+    #[serde(rename = "secretAccessKey")]
     pub secret_access_key: String,
 }
 
 /// `GcpBackupBucketProperties` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GcpBackupBucketProperties {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "bucketPath", default)]
+    #[serde(rename = "bucketPath")]
     pub bucket_path: String,
-    #[serde(rename = "bucketProvider", default)]
+    #[serde(rename = "bucketProvider")]
     pub bucket_provider: GcpBackupBucketPropertiesBucketprovider,
 }
 
 /// `InstancePrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstancePrivateEndpoint {
-    #[serde(rename = "cloudProvider", default)]
-    pub cloud_provider: InstancePrivateEndpointCloudprovider,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub region: InstancePrivateEndpointRegion,
+    #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<InstancePrivateEndpointCloudprovider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<InstancePrivateEndpointRegion>,
 }
 
 /// `InstancePrivateEndpointsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstancePrivateEndpointsPatch {
-    #[serde(default)]
     pub add: Vec<String>,
-    #[serde(default)]
     pub remove: Vec<String>,
 }
 
 /// `InstanceServiceQueryApiEndpointsPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstanceServiceQueryApiEndpointsPostRequest {
-    #[serde(rename = "allowedOrigins", default)]
+    #[serde(rename = "allowedOrigins")]
     pub allowed_origins: String,
-    #[serde(rename = "openApiKeys", default)]
+    #[serde(rename = "openApiKeys")]
     pub open_api_keys: Vec<String>,
-    #[serde(default)]
     pub roles: Vec<String>,
 }
 
 /// `InstanceTagsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstanceTagsPatch {
-    #[serde(default)]
     pub add: Vec<ResourceTagsV1>,
-    #[serde(default)]
     pub remove: Vec<ResourceTagsV1>,
 }
 
 /// `Invitation` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Invitation {
-    #[serde(rename = "assignedRoles", default)]
-    pub assigned_roles: Vec<AssignedRole>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub email: String,
-    #[serde(rename = "expireAt", default)]
-    pub expire_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
+    #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
+    pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub role: InvitationRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<InvitationRole>,
 }
 
 /// `InvitationPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InvitationPostRequest {
-    #[serde(rename = "assignedRoleIds", default)]
+    #[serde(rename = "assignedRoleIds")]
     pub assigned_role_ids: Vec<String>,
-    #[serde(default)]
     pub email: String,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<InvitationPostRequestRole>,
 }
 
 /// `IpAccessListEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct IpAccessListEntry {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
     pub source: String,
+}
+
+/// `IpAccessListEntry` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`IpAccessListEntry`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct IpAccessListEntryResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// `IpAccessListPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct IpAccessListPatch {
-    #[serde(default)]
     pub add: Vec<IpAccessListEntry>,
-    #[serde(default)]
     pub remove: Vec<IpAccessListEntry>,
 }
 
 /// `License` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct License {
-    #[serde(rename = "environmentFingerprint", default)]
+    #[serde(rename = "environmentFingerprint")]
     pub environment_fingerprint: String,
-    #[serde(default)]
     pub expiration: String,
-    #[serde(default)]
     pub id: String,
-    #[serde(default)]
     pub memory: String,
-    #[serde(default)]
     pub name: String,
 }
 
 /// `Member` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Member {
-    #[serde(rename = "assignedRoles", default)]
-    pub assigned_roles: Vec<AssignedRole>,
-    #[serde(default)]
-    pub email: String,
-    #[serde(rename = "joinedAt", default)]
-    pub joined_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub name: String,
+    #[serde(rename = "assignedRoles", skip_serializing_if = "Option::is_none")]
+    pub assigned_roles: Option<Vec<AssignedRole>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(rename = "joinedAt", skip_serializing_if = "Option::is_none")]
+    pub joined_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub role: MemberRole,
-    #[serde(rename = "userId", default)]
-    pub user_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<MemberRole>,
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 /// `MemberPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MemberPatchRequest {
-    #[serde(
-        rename = "assignedRoleIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
     pub assigned_role_ids: Option<Vec<String>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<MemberPatchRequestRole>,
 }
 
 /// `MskIamUser` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MskIamUser {
-    #[serde(rename = "accessKeyId", default)]
+    #[serde(rename = "accessKeyId")]
     pub access_key_id: String,
-    #[serde(rename = "secretKey", default)]
+    #[serde(rename = "secretKey")]
     pub secret_key: String,
 }
 
 /// `MutualTLS` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct MutualTLS {
-    #[serde(default)]
     pub certificate: String,
-    #[serde(rename = "privateKey", default)]
+    #[serde(rename = "privateKey")]
     pub private_key: String,
 }
 
 /// `Organization` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Organization {
-    #[serde(rename = "byocConfig", default)]
-    pub byoc_config: Vec<ByocConfig>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "privateEndpoints", default)]
-    pub private_endpoints: Vec<OrganizationPrivateEndpoint>,
+    #[serde(rename = "byocConfig", skip_serializing_if = "Option::is_none")]
+    pub byoc_config: Option<Vec<ByocConfig>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]
+    pub private_endpoints: Option<Vec<OrganizationPrivateEndpoint>>,
 }
 
 /// `OrganizationCloudRegionPrivateEndpointConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationCloudRegionPrivateEndpointConfig {
-    #[serde(rename = "endpointServiceId", default)]
-    pub endpoint_service_id: String,
+    #[serde(rename = "endpointServiceId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_service_id: Option<String>,
 }
 
 /// `OrganizationPatchPrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPatchPrivateEndpoint {
-    #[serde(rename = "cloudProvider", default)]
+    #[serde(rename = "cloudProvider")]
     pub cloud_provider: OrganizationPatchPrivateEndpointCloudprovider,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default)]
     pub id: String,
-    #[serde(default)]
     pub region: OrganizationPatchPrivateEndpointRegion,
 }
 
 /// `OrganizationPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPatchRequest {
-    #[serde(
-        rename = "enableCoreDumps",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        rename = "privateEndpoints",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]
     pub private_endpoints: Option<OrganizationPrivateEndpointsPatch>,
 }
 
 /// `OrganizationPrivateEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPrivateEndpoint {
-    #[serde(rename = "cloudProvider", default)]
-    pub cloud_provider: OrganizationPrivateEndpointCloudprovider,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub region: OrganizationPrivateEndpointRegion,
+    #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
+    pub cloud_provider: Option<OrganizationPrivateEndpointCloudprovider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<OrganizationPrivateEndpointRegion>,
 }
 
 /// `OrganizationPrivateEndpointsPatch` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationPrivateEndpointsPatch {
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub add: Option<Vec<OrganizationPatchPrivateEndpoint>>,
-    #[serde(default)]
     pub remove: Vec<OrganizationPatchPrivateEndpoint>,
 }
 
 /// `OrganizationQuota` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OrganizationQuota {
-    pub adjustable: bool,
-    pub description: String,
-    pub name: String,
-    #[serde(rename = "quotaCode")]
-    pub quota_code: OrganizationQuotaQuotacode,
-    pub scope: OrganizationQuotaScope,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adjustable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "quotaCode", skip_serializing_if = "Option::is_none")]
+    pub quota_code: Option<OrganizationQuotaQuotacode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<OrganizationQuotaScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<i64>,
-    pub value: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<i64>,
 }
 
 /// `PLAIN` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PLAIN {
-    #[serde(default)]
     pub password: String,
-    #[serde(default)]
     pub username: String,
 }
 
 /// `PostgresService` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresService {
-    #[serde(rename = "connectionString", default)]
-    pub connection_string: String,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: PgCreatedAtProperty,
-    #[serde(rename = "haType", default)]
-    pub ha_type: PgHaType,
-    #[serde(default)]
-    pub hostname: String,
-    #[serde(default)]
-    pub id: PgIdProperty,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: PgIsPrimaryProperty,
-    #[serde(default)]
-    pub name: PgNameProperty,
-    #[serde(default)]
-    pub password: String,
-    #[serde(rename = "postgresVersion", default)]
-    pub postgres_version: PgVersion,
-    #[serde(default)]
-    pub provider: PgProvider,
-    #[serde(default)]
-    pub region: PgRegion,
-    #[serde(default)]
-    pub size: PgSize,
-    #[serde(default)]
-    pub state: PgStateProperty,
-    #[serde(rename = "storageSize", default)]
-    pub storage_size: PgStorageSize,
-    #[serde(default)]
-    pub tags: PgTags,
-    #[serde(default)]
-    pub username: String,
+    #[serde(rename = "connectionString", skip_serializing_if = "Option::is_none")]
+    pub connection_string: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<PgCreatedAtProperty>,
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
+    pub ha_type: Option<PgHaType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<PgIdProperty>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<PgIsPrimaryProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<PgNameProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none")]
+    pub postgres_version: Option<PgVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PgProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<PgRegion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<PgSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<PgStateProperty>,
+    #[serde(rename = "storageSize", skip_serializing_if = "Option::is_none")]
+    pub storage_size: Option<PgStorageSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<PgTagsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 /// `PostgresServiceListItem` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceListItem {
-    #[serde(rename = "createdAt", default)]
-    pub created_at: PgCreatedAtProperty,
-    #[serde(rename = "haType", default)]
-    pub ha_type: PgHaType,
-    #[serde(default)]
-    pub id: PgIdProperty,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: PgIsPrimaryProperty,
-    #[serde(default)]
-    pub name: PgNameProperty,
-    #[serde(rename = "postgresVersion", default)]
-    pub postgres_version: PgVersion,
-    #[serde(default)]
-    pub provider: PgProvider,
-    #[serde(default)]
-    pub region: PgRegion,
-    #[serde(default)]
-    pub size: PgSize,
-    #[serde(default)]
-    pub state: PgStateProperty,
-    #[serde(default)]
-    pub tags: PgTags,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<PgCreatedAtProperty>,
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
+    pub ha_type: Option<PgHaType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<PgIdProperty>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<PgIsPrimaryProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<PgNameProperty>,
+    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none")]
+    pub postgres_version: Option<PgVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PgProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<PgRegion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<PgSize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<PgStateProperty>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<PgTagsResponse>,
 }
 
 /// `PostgresServicePasswordResource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePasswordResource {
-    #[serde(default)]
-    pub password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// `PostgresServicePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePatchRequest {
-    #[serde(rename = "haType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<PgNameProperty>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PgSize>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
 /// `PostgresServicePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServicePostRequest {
-    #[serde(rename = "haType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "haType", skip_serializing_if = "Option::is_none")]
     pub ha_type: Option<PgHaType>,
     pub name: PgNameProperty,
-    #[serde(
-        rename = "pgBouncerConfig",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfig>,
-    #[serde(
-        rename = "postgresVersion",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "postgresVersion", skip_serializing_if = "Option::is_none")]
     pub postgres_version: Option<PgVersion>,
     pub provider: PgProvider,
     pub region: PgRegion,
     pub size: PgSize,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
@@ -12969,15 +14595,11 @@ pub struct PostgresServicePostRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceReadReplicaRequest {
     pub name: PgNameProperty,
-    #[serde(
-        rename = "pgBouncerConfig",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfig>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
@@ -12985,251 +14607,258 @@ pub struct PostgresServiceReadReplicaRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceRestoreRequest {
     pub name: PgNameProperty,
-    #[serde(
-        rename = "pgBouncerConfig",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
     pub pg_bouncer_config: Option<PgBouncerConfig>,
-    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfig>,
     #[serde(rename = "restoreTarget")]
     pub restore_target: PgPitrRestoreTargetProperty,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<PgTags>,
 }
 
 /// `PostgresServiceSetPassword` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceSetPassword {
-    #[serde(default)]
     pub password: PgPassword,
 }
 
 /// `PostgresServiceSetState` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceSetState {
-    #[serde(default)]
     pub command: PostgresServiceSetStateCommand,
 }
 
 /// `PostgresMetricDataPoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetricDataPoint {
-    #[serde(default)]
-    pub timestamp: i64,
-    #[serde(default)]
-    pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
 }
 
 /// `PostgresMetricSeries` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetricSeries {
-    #[serde(rename = "dataPoints", default)]
-    pub data_points: Vec<PostgresMetricDataPoint>,
-    #[serde(default)]
-    pub label: String,
+    #[serde(rename = "dataPoints", skip_serializing_if = "Option::is_none")]
+    pub data_points: Option<Vec<PostgresMetricDataPoint>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// `PostgresMetric` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetric {
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub key: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub series: Vec<PostgresMetricSeries>,
-    #[serde(default)]
-    pub unit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series: Option<Vec<PostgresMetricSeries>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 /// `PostgresMetrics` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresMetrics {
-    #[serde(default)]
-    pub metrics: Vec<PostgresMetric>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<Vec<PostgresMetric>>,
 }
 
 /// `PostgresQueryExecution` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresQueryExecution {
-    #[serde(default)]
-    pub app: String,
-    #[serde(rename = "cpuSysTimeUs", default)]
-    pub cpu_sys_time_us: i64,
-    #[serde(rename = "cpuUserTimeUs", default)]
-    pub cpu_user_time_us: i64,
-    #[serde(rename = "dbName", default)]
-    pub db_name: String,
-    #[serde(rename = "dbOperation", default)]
-    pub db_operation: String,
-    #[serde(rename = "dbUser", default)]
-    pub db_user: String,
-    #[serde(rename = "durationUs", default)]
-    pub duration_us: i64,
-    #[serde(rename = "errElevel", skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(rename = "cpuSysTimeUs", skip_serializing_if = "Option::is_none")]
+    pub cpu_sys_time_us: Option<i64>,
+    #[serde(rename = "cpuUserTimeUs", skip_serializing_if = "Option::is_none")]
+    pub cpu_user_time_us: Option<i64>,
+    #[serde(rename = "dbName", skip_serializing_if = "Option::is_none")]
+    pub db_name: Option<String>,
+    #[serde(rename = "dbOperation", skip_serializing_if = "Option::is_none")]
+    pub db_operation: Option<String>,
+    #[serde(rename = "dbUser", skip_serializing_if = "Option::is_none")]
+    pub db_user: Option<String>,
+    #[serde(rename = "durationUs", skip_serializing_if = "Option::is_none")]
+    pub duration_us: Option<i64>,
+    #[serde(rename = "errElevel", skip_serializing_if = "Option::is_none")]
     pub err_elevel: Option<i64>,
-    #[serde(
-        rename = "errMessage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "errMessage", skip_serializing_if = "Option::is_none")]
     pub err_message: Option<String>,
-    #[serde(
-        rename = "errSqlstate",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "errSqlstate", skip_serializing_if = "Option::is_none")]
     pub err_sqlstate: Option<String>,
-    #[serde(rename = "jitDeformTimeUs", default)]
-    pub jit_deform_time_us: i64,
-    #[serde(rename = "jitEmissionTimeUs", default)]
-    pub jit_emission_time_us: i64,
-    #[serde(rename = "jitFunctions", default)]
-    pub jit_functions: i64,
-    #[serde(rename = "jitGenerationTimeUs", default)]
-    pub jit_generation_time_us: i64,
-    #[serde(rename = "jitInliningTimeUs", default)]
-    pub jit_inlining_time_us: i64,
-    #[serde(rename = "jitOptimizationTimeUs", default)]
-    pub jit_optimization_time_us: i64,
-    #[serde(rename = "localBlksDirtied", default)]
-    pub local_blks_dirtied: i64,
-    #[serde(rename = "localBlksHit", default)]
-    pub local_blks_hit: i64,
-    #[serde(rename = "localBlksRead", default)]
-    pub local_blks_read: i64,
-    #[serde(rename = "localBlksWritten", default)]
-    pub local_blks_written: i64,
-    #[serde(rename = "parallelWorkersLaunched", default)]
-    pub parallel_workers_launched: i64,
-    #[serde(rename = "parallelWorkersPlanned", default)]
-    pub parallel_workers_planned: i64,
-    #[serde(default)]
-    pub pid: String,
-    #[serde(rename = "queryId", default)]
-    pub query_id: String,
-    #[serde(rename = "queryText", default)]
-    pub query_text: String,
-    #[serde(default)]
-    pub rows: i64,
-    #[serde(rename = "serverRole", default)]
-    pub server_role: String,
-    #[serde(rename = "sharedBlkReadTimeUs", default)]
-    pub shared_blk_read_time_us: i64,
-    #[serde(rename = "sharedBlkWriteTimeUs", default)]
-    pub shared_blk_write_time_us: i64,
-    #[serde(rename = "sharedBlksDirtied", default)]
-    pub shared_blks_dirtied: i64,
-    #[serde(rename = "sharedBlksHit", default)]
-    pub shared_blks_hit: i64,
-    #[serde(rename = "sharedBlksRead", default)]
-    pub shared_blks_read: i64,
-    #[serde(rename = "sharedBlksWritten", default)]
-    pub shared_blks_written: i64,
-    #[serde(rename = "spanId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "jitDeformTimeUs", skip_serializing_if = "Option::is_none")]
+    pub jit_deform_time_us: Option<i64>,
+    #[serde(rename = "jitEmissionTimeUs", skip_serializing_if = "Option::is_none")]
+    pub jit_emission_time_us: Option<i64>,
+    #[serde(rename = "jitFunctions", skip_serializing_if = "Option::is_none")]
+    pub jit_functions: Option<i64>,
+    #[serde(
+        rename = "jitGenerationTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub jit_generation_time_us: Option<i64>,
+    #[serde(rename = "jitInliningTimeUs", skip_serializing_if = "Option::is_none")]
+    pub jit_inlining_time_us: Option<i64>,
+    #[serde(
+        rename = "jitOptimizationTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub jit_optimization_time_us: Option<i64>,
+    #[serde(rename = "localBlksDirtied", skip_serializing_if = "Option::is_none")]
+    pub local_blks_dirtied: Option<i64>,
+    #[serde(rename = "localBlksHit", skip_serializing_if = "Option::is_none")]
+    pub local_blks_hit: Option<i64>,
+    #[serde(rename = "localBlksRead", skip_serializing_if = "Option::is_none")]
+    pub local_blks_read: Option<i64>,
+    #[serde(rename = "localBlksWritten", skip_serializing_if = "Option::is_none")]
+    pub local_blks_written: Option<i64>,
+    #[serde(
+        rename = "parallelWorkersLaunched",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parallel_workers_launched: Option<i64>,
+    #[serde(
+        rename = "parallelWorkersPlanned",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parallel_workers_planned: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<String>,
+    #[serde(rename = "queryId", skip_serializing_if = "Option::is_none")]
+    pub query_id: Option<String>,
+    #[serde(rename = "queryText", skip_serializing_if = "Option::is_none")]
+    pub query_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<i64>,
+    #[serde(rename = "serverRole", skip_serializing_if = "Option::is_none")]
+    pub server_role: Option<String>,
+    #[serde(
+        rename = "sharedBlkReadTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shared_blk_read_time_us: Option<i64>,
+    #[serde(
+        rename = "sharedBlkWriteTimeUs",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shared_blk_write_time_us: Option<i64>,
+    #[serde(rename = "sharedBlksDirtied", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_dirtied: Option<i64>,
+    #[serde(rename = "sharedBlksHit", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_hit: Option<i64>,
+    #[serde(rename = "sharedBlksRead", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_read: Option<i64>,
+    #[serde(rename = "sharedBlksWritten", skip_serializing_if = "Option::is_none")]
+    pub shared_blks_written: Option<i64>,
+    #[serde(rename = "spanId", skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
-    #[serde(rename = "tempBlkReadTimeUs", default)]
-    pub temp_blk_read_time_us: i64,
-    #[serde(rename = "tempBlkWriteTimeUs", default)]
-    pub temp_blk_write_time_us: i64,
-    #[serde(rename = "tempBlksRead", default)]
-    pub temp_blks_read: i64,
-    #[serde(rename = "tempBlksWritten", default)]
-    pub temp_blks_written: i64,
-    #[serde(default)]
-    pub timestamp: String,
-    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "tempBlkReadTimeUs", skip_serializing_if = "Option::is_none")]
+    pub temp_blk_read_time_us: Option<i64>,
+    #[serde(rename = "tempBlkWriteTimeUs", skip_serializing_if = "Option::is_none")]
+    pub temp_blk_write_time_us: Option<i64>,
+    #[serde(rename = "tempBlksRead", skip_serializing_if = "Option::is_none")]
+    pub temp_blks_read: Option<i64>,
+    #[serde(rename = "tempBlksWritten", skip_serializing_if = "Option::is_none")]
+    pub temp_blks_written: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
-    #[serde(rename = "walBytes", default)]
-    pub wal_bytes: i64,
-    #[serde(rename = "walFpi", default)]
-    pub wal_fpi: i64,
-    #[serde(rename = "walRecords", default)]
-    pub wal_records: i64,
+    #[serde(rename = "walBytes", skip_serializing_if = "Option::is_none")]
+    pub wal_bytes: Option<i64>,
+    #[serde(rename = "walFpi", skip_serializing_if = "Option::is_none")]
+    pub wal_fpi: Option<i64>,
+    #[serde(rename = "walRecords", skip_serializing_if = "Option::is_none")]
+    pub wal_records: Option<i64>,
 }
 
 /// `PostgresSlowQueryPattern` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresSlowQueryPattern {
-    #[serde(default)]
-    pub app: String,
-    #[serde(rename = "avgDurationUs", default)]
-    pub avg_duration_us: i64,
-    #[serde(rename = "callCount", default)]
-    pub call_count: i64,
-    #[serde(rename = "dbName", default)]
-    pub db_name: String,
-    #[serde(rename = "dbOperation", default)]
-    pub db_operation: String,
-    #[serde(rename = "dbUser", default)]
-    pub db_user: String,
-    #[serde(rename = "errorCount", default)]
-    pub error_count: i64,
-    #[serde(rename = "maxDurationUs", default)]
-    pub max_duration_us: i64,
-    #[serde(rename = "p50DurationUs", default)]
-    pub p50_duration_us: i64,
-    #[serde(rename = "p95DurationUs", default)]
-    pub p95_duration_us: i64,
-    #[serde(rename = "p99DurationUs", default)]
-    pub p99_duration_us: i64,
-    #[serde(rename = "queryId", default)]
-    pub query_id: String,
-    #[serde(rename = "queryText", default)]
-    pub query_text: String,
-    #[serde(rename = "totalCpuTimeUs", default)]
-    pub total_cpu_time_us: i64,
-    #[serde(rename = "totalDurationUs", default)]
-    pub total_duration_us: i64,
-    #[serde(rename = "totalRows", default)]
-    pub total_rows: i64,
-    #[serde(rename = "totalSharedBlksHit", default)]
-    pub total_shared_blks_hit: i64,
-    #[serde(rename = "totalSharedBlksRead", default)]
-    pub total_shared_blks_read: i64,
-    #[serde(rename = "totalWalBytes", default)]
-    pub total_wal_bytes: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(rename = "avgDurationUs", skip_serializing_if = "Option::is_none")]
+    pub avg_duration_us: Option<i64>,
+    #[serde(rename = "callCount", skip_serializing_if = "Option::is_none")]
+    pub call_count: Option<i64>,
+    #[serde(rename = "dbName", skip_serializing_if = "Option::is_none")]
+    pub db_name: Option<String>,
+    #[serde(rename = "dbOperation", skip_serializing_if = "Option::is_none")]
+    pub db_operation: Option<String>,
+    #[serde(rename = "dbUser", skip_serializing_if = "Option::is_none")]
+    pub db_user: Option<String>,
+    #[serde(rename = "errorCount", skip_serializing_if = "Option::is_none")]
+    pub error_count: Option<i64>,
+    #[serde(rename = "maxDurationUs", skip_serializing_if = "Option::is_none")]
+    pub max_duration_us: Option<i64>,
+    #[serde(rename = "p50DurationUs", skip_serializing_if = "Option::is_none")]
+    pub p50_duration_us: Option<i64>,
+    #[serde(rename = "p95DurationUs", skip_serializing_if = "Option::is_none")]
+    pub p95_duration_us: Option<i64>,
+    #[serde(rename = "p99DurationUs", skip_serializing_if = "Option::is_none")]
+    pub p99_duration_us: Option<i64>,
+    #[serde(rename = "queryId", skip_serializing_if = "Option::is_none")]
+    pub query_id: Option<String>,
+    #[serde(rename = "queryText", skip_serializing_if = "Option::is_none")]
+    pub query_text: Option<String>,
+    #[serde(rename = "totalCpuTimeUs", skip_serializing_if = "Option::is_none")]
+    pub total_cpu_time_us: Option<i64>,
+    #[serde(rename = "totalDurationUs", skip_serializing_if = "Option::is_none")]
+    pub total_duration_us: Option<i64>,
+    #[serde(rename = "totalRows", skip_serializing_if = "Option::is_none")]
+    pub total_rows: Option<i64>,
+    #[serde(rename = "totalSharedBlksHit", skip_serializing_if = "Option::is_none")]
+    pub total_shared_blks_hit: Option<i64>,
+    #[serde(
+        rename = "totalSharedBlksRead",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub total_shared_blks_read: Option<i64>,
+    #[serde(rename = "totalWalBytes", skip_serializing_if = "Option::is_none")]
+    pub total_wal_bytes: Option<i64>,
 }
 
 /// `PostgresSlowQueryPatternDetail` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresSlowQueryPatternDetail {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub aggregate: Option<PostgresSlowQueryPattern>,
-    #[serde(rename = "recentExecutions", default)]
-    pub recent_executions: Vec<PostgresQueryExecution>,
+    #[serde(rename = "recentExecutions", skip_serializing_if = "Option::is_none")]
+    pub recent_executions: Option<Vec<PostgresQueryExecution>>,
 }
 
 /// `PrivateEndpointConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PrivateEndpointConfig {
-    #[serde(rename = "endpointServiceId", default)]
-    pub endpoint_service_id: String,
-    #[serde(rename = "privateDnsHostname", default)]
-    pub private_dns_hostname: String,
+    #[serde(rename = "endpointServiceId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_service_id: Option<String>,
+    #[serde(rename = "privateDnsHostname", skip_serializing_if = "Option::is_none")]
+    pub private_dns_hostname: Option<String>,
 }
 
 /// `RBACPolicy` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RBACPolicy {
-    #[serde(rename = "allowDeny", default)]
-    pub allow_deny: RBACPolicyAllowdeny,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub permissions: Vec<String>,
-    #[serde(default)]
-    pub resources: Vec<String>,
-    #[serde(rename = "roleId", default)]
-    pub role_id: String,
-    #[serde(default)]
-    pub tags: RBACPolicyTags,
-    #[serde(rename = "tenantId", default)]
-    pub tenant_id: String,
+    #[serde(rename = "allowDeny", skip_serializing_if = "Option::is_none")]
+    pub allow_deny: Option<RBACPolicyAllowdeny>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Vec<String>>,
+    #[serde(rename = "roleId", skip_serializing_if = "Option::is_none")]
+    pub role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<RBACPolicyTagsResponse>,
+    #[serde(rename = "tenantId", skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 /// `RBACPolicyCreateRequest` from the ClickHouse Cloud API.
@@ -13239,47 +14868,75 @@ pub struct RBACPolicyCreateRequest {
     pub allow_deny: RBACPolicyCreateRequestAllowdeny,
     pub permissions: Vec<String>,
     pub resources: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<RBACPolicyTags>,
 }
 
 /// `RBACPolicyTags` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RBACPolicyTags {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub grants: Option<Vec<String>>,
-    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none")]
+    pub role_v2: Option<RBACPolicyTagsRolev2>,
+}
+
+/// `RBACPolicyTags` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`RBACPolicyTags`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RBACPolicyTagsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grants: Option<Vec<String>>,
+    #[serde(rename = "roleV2", skip_serializing_if = "Option::is_none")]
     pub role_v2: Option<RBACPolicyTagsRolev2>,
 }
 
 /// `RBACRole` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RBACRole {
-    #[serde(default)]
-    pub actors: Vec<String>,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "ownerId", default)]
-    pub owner_id: String,
-    #[serde(default)]
-    pub policies: Vec<RBACPolicy>,
-    #[serde(rename = "tenantId", default)]
-    pub tenant_id: String,
-    #[serde(default)]
-    pub r#type: RBACRoleType,
-    #[serde(rename = "updatedAt", default)]
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actors: Option<Vec<String>>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "ownerId", skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<RBACPolicy>>,
+    #[serde(rename = "tenantId", skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<RBACRoleType>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// `ResourceTagsV1` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ResourceTagsV1 {
     pub key: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// `ResourceTagsV1` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`ResourceTagsV1`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing. Writing a fetched tag back to the API goes through
+/// `TryFrom<ResourceTagsV1Response>` (see [`crate::convert`]), because a tag
+/// without a key cannot be sent.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ResourceTagsV1Response {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
 }
 
@@ -13288,60 +14945,47 @@ pub struct ResourceTagsV1 {
 pub struct ReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
-    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
-    #[serde(default)]
-    pub description: String,
-    #[serde(rename = "dnsNames", default)]
-    pub dns_names: Vec<String>,
-    #[serde(rename = "endpointId", default)]
-    pub endpoint_id: String,
+    pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMappingResponse>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "dnsNames", skip_serializing_if = "Option::is_none")]
+    pub dns_names: Option<Vec<String>>,
+    #[serde(rename = "endpointId", skip_serializing_if = "Option::is_none")]
+    pub endpoint_id: Option<String>,
     #[serde(
         rename = "gcpServiceAttachment",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub gcp_service_attachment: Option<String>,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(
-        rename = "mskAuthentication",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "mskAuthentication", skip_serializing_if = "Option::is_none")]
     pub msk_authentication: Option<ReversePrivateEndpointMskauthentication>,
-    #[serde(
-        rename = "mskClusterArn",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "mskClusterArn", skip_serializing_if = "Option::is_none")]
     pub msk_cluster_arn: Option<String>,
-    #[serde(rename = "privateDnsNames", default)]
-    pub private_dns_names: Vec<String>,
-    #[serde(rename = "serviceId", default)]
-    pub service_id: uuid::Uuid,
-    #[serde(default)]
-    pub status: ReversePrivateEndpointStatus,
-    #[serde(default)]
-    pub r#type: ReversePrivateEndpointType,
+    #[serde(rename = "privateDnsNames", skip_serializing_if = "Option::is_none")]
+    pub private_dns_names: Option<Vec<String>>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ReversePrivateEndpointStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ReversePrivateEndpointType>,
     #[serde(
         rename = "vpcEndpointServiceName",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_endpoint_service_name: Option<String>,
     #[serde(
         rename = "vpcResourceConfigurationId",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_configuration_id: Option<String>,
     #[serde(
         rename = "vpcResourceShareArn",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_share_arn: Option<String>,
 }
@@ -13357,194 +15001,133 @@ pub struct RoleCreateRequest {
 /// `RoleUpdateRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RoleUpdateRequest {
-    #[serde(default)]
     pub actors: Vec<String>,
-    #[serde(default)]
     pub name: String,
-    #[serde(default)]
     pub policies: Vec<RBACPolicyCreateRequest>,
 }
 
 /// `ScalingSchedule` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingSchedule {
-    #[serde(
-        rename = "activeEntryId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "activeEntryId", skip_serializing_if = "Option::is_none")]
     pub active_entry_id: Option<uuid::Uuid>,
-    #[serde(rename = "baseConfig", default)]
-    pub base_config: ScalingScheduleBaseConfig,
-    #[serde(default)]
-    pub entries: Vec<ScalingScheduleEntry>,
+    #[serde(rename = "baseConfig", skip_serializing_if = "Option::is_none")]
+    pub base_config: Option<ScalingScheduleBaseConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entries: Option<Vec<ScalingScheduleEntry>>,
 }
 
 /// `ScalingScheduleBaseConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleBaseConfig {
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: i64,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxReplicas", default)]
-    pub max_replicas: i64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minReplicas", default)]
-    pub min_replicas: i64,
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<i64>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
+    pub max_replicas: Option<i64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
+    pub min_replicas: Option<i64>,
 }
 
 /// `ScalingScheduleEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleEntry {
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "endHourUtc", default)]
-    pub end_hour_utc: i64,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "endHourUtc", skip_serializing_if = "Option::is_none")]
+    pub end_hour_utc: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<i64>,
-    #[serde(rename = "isActiveNow", default)]
-    pub is_active_now: bool,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "isActiveNow", skip_serializing_if = "Option::is_none")]
+    pub is_active_now: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<i64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<i64>,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "startHourUtc", default)]
-    pub start_hour_utc: i64,
-    #[serde(default)]
-    pub weekdays: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "startHourUtc", skip_serializing_if = "Option::is_none")]
+    pub start_hour_utc: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekdays: Option<Vec<i64>>,
 }
 
 /// `ScalingScheduleEntryRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingScheduleEntryRequest {
-    #[serde(
-        rename = "autoscalingMode",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
-    #[serde(rename = "endHourUtc", default)]
+    #[serde(rename = "endHourUtc")]
     pub end_hour_utc: i64,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<i64>,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<i64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<i64>,
-    #[serde(default)]
     pub name: String,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<i64>,
-    #[serde(rename = "startHourUtc", default)]
+    #[serde(rename = "startHourUtc")]
     pub start_hour_utc: i64,
-    #[serde(default)]
     pub weekdays: Vec<i64>,
 }
 
 /// `ScalingSchedulePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScalingSchedulePostRequest {
-    #[serde(default)]
     pub entries: Vec<ScalingScheduleEntryRequest>,
 }
+
+// The `Scim*` family below is strict in both directions, deliberately. The spec
+// defines the SCIM schemas but declares no SCIM path, so no `Client` method
+// sends or returns one: the family is reachable from neither a request root nor
+// a response root, and the analyzer resolves such operation-unreferenced schemas
+// in request position. Making the SCIM list/response envelopes all-`Option`
+// would therefore report `FieldOptionalityMismatch` drift while protecting no
+// actual response. `scim_models_are_outside_the_response_tree` in
+// `tests/spec_coverage_test.rs` pins that premise: if SCIM operations are ever
+// added to `client.rs`, the envelopes they return must be split first.
 
 /// `ScimEnterpriseManager` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimEnterpriseManager {
-    #[serde(rename = "displayName", default)]
+    #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimEnterpriseUser` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimEnterpriseUser {
-    #[serde(rename = "costCenter", default)]
+    #[serde(rename = "costCenter")]
     pub cost_center: String,
-    #[serde(default)]
     pub department: String,
-    #[serde(default)]
     pub division: String,
-    #[serde(rename = "employeeNumber", default)]
+    #[serde(rename = "employeeNumber")]
     pub employee_number: String,
-    #[serde(default)]
     pub manager: ScimEnterpriseManager,
-    #[serde(default)]
     pub organization: String,
 }
 
@@ -13553,14 +15136,10 @@ pub struct ScimEnterpriseUser {
 pub struct ScimGroup {
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
     pub id: uuid::Uuid,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
     pub meta: ScimGroupMeta,
     pub schemas: Vec<String>,
@@ -13583,9 +15162,9 @@ pub struct ScimGroupListResponse {
 /// `ScimGroupMember` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimGroupMember {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
     pub value: String,
 }
@@ -13596,7 +15175,7 @@ pub struct ScimGroupMeta {
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "lastModified")]
     pub last_modified: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(rename = "resourceType")]
     pub resource_type: String,
@@ -13607,13 +15186,9 @@ pub struct ScimGroupMeta {
 pub struct ScimGroupPostRequest {
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
     pub schemas: Vec<String>,
 }
@@ -13623,17 +15198,13 @@ pub struct ScimGroupPostRequest {
 pub struct ScimGroupPutRequest {
     #[serde(rename = "displayName")]
     pub display_name: String,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<ScimGroupMeta>,
     pub schemas: Vec<String>,
 }
@@ -13664,9 +15235,9 @@ pub struct ScimPatchOp {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimPatchOperation {
     pub op: ScimPatchOperationOp,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
 }
 
@@ -13674,100 +15245,70 @@ pub struct ScimPatchOperation {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUser {
     pub active: bool,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<ScimUserAddress>>,
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub emails: Vec<ScimUserEmail>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub entitlements: Option<Vec<ScimUserEntitlement>>,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
     pub meta: ScimUserMeta,
     pub name: ScimUserName,
-    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]
     pub nick_name: Option<String>,
-    #[serde(
-        rename = "phoneNumbers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "phoneNumbers", skip_serializing_if = "Option::is_none")]
     pub phone_numbers: Option<Vec<ScimUserPhoneNumber>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub photos: Option<Vec<ScimUserPhoto>>,
-    #[serde(
-        rename = "preferredLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "preferredLanguage", skip_serializing_if = "Option::is_none")]
     pub preferred_language: Option<String>,
-    #[serde(
-        rename = "profileUrl",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "profileUrl", skip_serializing_if = "Option::is_none")]
     pub profile_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<ScimUserRole>>,
     pub schemas: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(rename = "userName")]
     pub user_name: String,
-    #[serde(rename = "userType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "userType", skip_serializing_if = "Option::is_none")]
     pub user_type: Option<String>,
-    #[serde(
-        rename = "x509Certificates",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "x509Certificates", skip_serializing_if = "Option::is_none")]
     pub x509_certificates: Option<Vec<ScimX509Certificate>>,
 }
 
 /// `ScimUserAddress` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserAddress {
-    #[serde(default)]
     pub country: String,
-    #[serde(default)]
     pub formatted: String,
-    #[serde(default)]
     pub locality: String,
-    #[serde(rename = "postalCode", default)]
+    #[serde(rename = "postalCode")]
     pub postal_code: String,
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub region: String,
-    #[serde(rename = "streetAddress", default)]
+    #[serde(rename = "streetAddress")]
     pub street_address: String,
-    #[serde(default)]
     pub r#type: String,
 }
 
 /// `ScimUserEmail` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserEmail {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
     pub value: String,
 }
@@ -13775,35 +15316,25 @@ pub struct ScimUserEmail {
 /// `ScimUserEntitlement` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserEntitlement {
-    #[serde(default)]
     pub display: String,
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserGroup` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserGroup {
-    #[serde(default)]
     pub display: String,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserIm` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserIm {
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
@@ -13813,7 +15344,7 @@ pub struct ScimUserMeta {
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "lastModified")]
     pub last_modified: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
     #[serde(rename = "resourceType")]
     pub resource_type: String,
@@ -13822,221 +15353,159 @@ pub struct ScimUserMeta {
 /// `ScimUserName` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserName {
-    #[serde(rename = "familyName", default)]
+    #[serde(rename = "familyName")]
     pub family_name: String,
-    #[serde(default)]
     pub formatted: String,
-    #[serde(rename = "givenName", default)]
+    #[serde(rename = "givenName")]
     pub given_name: String,
-    #[serde(rename = "honorificPrefix", default)]
+    #[serde(rename = "honorificPrefix")]
     pub honorific_prefix: String,
-    #[serde(rename = "honorificSuffix", default)]
+    #[serde(rename = "honorificSuffix")]
     pub honorific_suffix: String,
-    #[serde(rename = "middleName", default)]
+    #[serde(rename = "middleName")]
     pub middle_name: String,
 }
 
 /// `ScimUserPhoneNumber` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPhoneNumber {
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserPhoto` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPhoto {
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimUserPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPostRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<ScimUserAddress>>,
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub emails: Vec<ScimUserEmail>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub entitlements: Option<Vec<ScimUserEntitlement>>,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<ScimUserName>,
-    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]
     pub nick_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    #[serde(
-        rename = "phoneNumbers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "phoneNumbers", skip_serializing_if = "Option::is_none")]
     pub phone_numbers: Option<Vec<ScimUserPhoneNumber>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub photos: Option<Vec<ScimUserPhoto>>,
-    #[serde(
-        rename = "preferredLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "preferredLanguage", skip_serializing_if = "Option::is_none")]
     pub preferred_language: Option<String>,
-    #[serde(
-        rename = "profileUrl",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "profileUrl", skip_serializing_if = "Option::is_none")]
     pub profile_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<ScimUserRole>>,
     pub schemas: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(
         rename = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub urn_ietf_params_scim_schemas_extension_enterprise_2_0_user: Option<ScimEnterpriseUser>,
     #[serde(rename = "userName")]
     pub user_name: String,
-    #[serde(rename = "userType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "userType", skip_serializing_if = "Option::is_none")]
     pub user_type: Option<String>,
-    #[serde(
-        rename = "x509Certificates",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "x509Certificates", skip_serializing_if = "Option::is_none")]
     pub x509_certificates: Option<Vec<ScimX509Certificate>>,
 }
 
 /// `ScimUserPutRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserPutRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub addresses: Option<Vec<ScimUserAddress>>,
-    #[serde(
-        rename = "displayName",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub emails: Vec<ScimUserEmail>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub entitlements: Option<Vec<ScimUserEntitlement>>,
-    #[serde(
-        rename = "externalId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub meta: Option<ScimUserMeta>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<ScimUserName>,
-    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]
     pub nick_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    #[serde(
-        rename = "phoneNumbers",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "phoneNumbers", skip_serializing_if = "Option::is_none")]
     pub phone_numbers: Option<Vec<ScimUserPhoneNumber>>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub photos: Option<Vec<ScimUserPhoto>>,
-    #[serde(
-        rename = "preferredLanguage",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "preferredLanguage", skip_serializing_if = "Option::is_none")]
     pub preferred_language: Option<String>,
-    #[serde(
-        rename = "profileUrl",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "profileUrl", skip_serializing_if = "Option::is_none")]
     pub profile_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<ScimUserRole>>,
     pub schemas: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(
         rename = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub urn_ietf_params_scim_schemas_extension_enterprise_2_0_user: Option<ScimEnterpriseUser>,
     #[serde(rename = "userName")]
     pub user_name: String,
-    #[serde(rename = "userType", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "userType", skip_serializing_if = "Option::is_none")]
     pub user_type: Option<String>,
-    #[serde(
-        rename = "x509Certificates",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "x509Certificates", skip_serializing_if = "Option::is_none")]
     pub x509_certificates: Option<Vec<ScimX509Certificate>>,
 }
 
 /// `ScimUserRole` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimUserRole {
-    #[serde(default)]
     pub display: String,
-    #[serde(default)]
     pub primary: bool,
-    #[serde(default)]
     pub r#type: String,
-    #[serde(default)]
     pub value: String,
 }
 
 /// `ScimX509Certificate` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimX509Certificate {
-    #[serde(default)]
     pub value: String,
 }
 
@@ -14045,9 +15514,9 @@ pub struct ScimX509Certificate {
 pub struct ScimAuthenticationScheme {
     pub description: String,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub primary: Option<bool>,
-    #[serde(rename = "specUri", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "specUri", skip_serializing_if = "Option::is_none")]
     pub spec_uri: Option<String>,
     #[serde(rename = "type")]
     pub r#type: String,
@@ -14109,36 +15578,24 @@ pub struct ScimSchema {
 /// `ScimSchemaAttribute` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ScimSchemaAttribute {
-    #[serde(
-        rename = "canonicalValues",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "canonicalValues", skip_serializing_if = "Option::is_none")]
     pub canonical_values: Option<Vec<String>>,
-    #[serde(rename = "caseExact", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "caseExact", skip_serializing_if = "Option::is_none")]
     pub case_exact: Option<bool>,
     pub description: String,
     #[serde(rename = "multiValued")]
     pub multi_valued: bool,
     pub mutability: String,
     pub name: String,
-    #[serde(
-        rename = "referenceTypes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "referenceTypes", skip_serializing_if = "Option::is_none")]
     pub reference_types: Option<Vec<String>>,
     pub required: bool,
     pub returned: String,
-    #[serde(
-        rename = "subAttributes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "subAttributes", skip_serializing_if = "Option::is_none")]
     pub sub_attributes: Option<Vec<ScimSchemaAttribute>>,
     #[serde(rename = "type")]
     pub r#type: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uniqueness: Option<String>,
 }
 
@@ -14179,11 +15636,7 @@ pub struct ScimServiceProviderConfig {
     pub bulk: ScimServiceProviderConfigBulk,
     #[serde(rename = "changePassword")]
     pub change_password: ScimBooleanFeature,
-    #[serde(
-        rename = "documentationUri",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "documentationUri", skip_serializing_if = "Option::is_none")]
     pub documentation_uri: Option<String>,
     pub etag: ScimBooleanFeature,
     pub filter: ScimServiceProviderConfigFilter,
@@ -14228,265 +15681,240 @@ pub struct ScimServiceProviderConfigPatch {
 /// `ServicPrivateEndpointePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicPrivateEndpointePostRequest {
-    #[serde(default)]
     pub description: String,
-    #[serde(default)]
     pub id: String,
 }
 
 /// `Service` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Service {
-    #[serde(rename = "availablePrivateEndpointIds", default)]
-    pub available_private_endpoint_ids: Vec<String>,
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "byocId", default)]
-    pub byoc_id: String,
-    #[serde(rename = "clickhouseVersion", default)]
-    pub clickhouse_version: String,
-    #[serde(rename = "complianceType", default)]
-    pub compliance_type: ServiceCompliancetype,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "currentScaling", default)]
-    pub current_scaling: CurrentScaling,
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: String,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
+    #[serde(
+        rename = "availablePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub available_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
+    #[serde(rename = "clickhouseVersion", skip_serializing_if = "Option::is_none")]
+    pub clickhouse_version: Option<String>,
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
+    pub compliance_type: Option<ServiceCompliancetype>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "currentScaling", skip_serializing_if = "Option::is_none")]
+    pub current_scaling: Option<CurrentScaling>,
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<String>,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
     #[serde(
         rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(
-        rename = "encryptionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
-    #[serde(rename = "encryptionRoleId", default)]
-    pub encryption_role_id: String,
-    #[serde(default)]
-    pub endpoints: Vec<ServiceEndpoint>,
-    #[serde(rename = "hasTransparentDataEncryption", default)]
-    pub has_transparent_data_encryption: bool,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: f64,
-    #[serde(rename = "ipAccessList", default)]
-    pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: bool,
-    #[serde(rename = "isReadonly", default)]
-    pub is_readonly: bool,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxReplicas", default)]
-    pub max_replicas: f64,
+    #[serde(rename = "encryptionRoleId", skip_serializing_if = "Option::is_none")]
+    pub encryption_role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<ServiceEndpoint>>,
+    #[serde(
+        rename = "hasTransparentDataEncryption",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<f64>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntryResponse>>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
+    pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "maxTotalMemoryGb", default)]
-    pub max_total_memory_gb: f64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minReplicas", default)]
-    pub min_replicas: f64,
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_total_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
+    pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "minTotalMemoryGb", default)]
-    pub min_total_memory_gb: f64,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "numReplicas", default)]
-    pub num_replicas: f64,
-    #[serde(rename = "privateEndpointIds", default)]
-    pub private_endpoint_ids: Vec<String>,
-    #[serde(default)]
-    pub profile: ServiceProfile,
-    #[serde(default)]
-    pub provider: ServiceProvider,
-    #[serde(default)]
-    pub region: ServiceRegion,
-    #[serde(rename = "releaseChannel", default)]
-    pub release_channel: ServiceReleasechannel,
-    #[serde(rename = "replicaMemoryGb", default)]
-    pub replica_memory_gb: f64,
-    #[serde(rename = "scalingSchedule", default)]
-    pub scaling_schedule: ScalingSchedule,
-    #[serde(default)]
-    pub state: ServiceState,
-    #[serde(default)]
-    pub tags: Vec<ResourceTagsV1>,
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_total_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
+    pub num_replicas: Option<f64>,
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ServiceProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ServiceProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<ServiceRegion>,
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<ServiceReleasechannel>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+    #[serde(rename = "scalingSchedule", skip_serializing_if = "Option::is_none")]
+    pub scaling_schedule: Option<ScalingSchedule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ServiceState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<ResourceTagsV1Response>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub tier: ServiceTier,
-    #[serde(rename = "transparentDataEncryptionKeyId", default)]
-    pub transparent_data_encryption_key_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ServiceTier>,
+    #[serde(
+        rename = "transparentDataEncryptionKeyId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transparent_data_encryption_key_id: Option<String>,
 }
 
 /// `ServiceAccount` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceAccount {
-    #[serde(rename = "serviceAccountFile", default)]
+    #[serde(rename = "serviceAccountFile")]
     pub service_account_file: String,
 }
 
 /// `ServiceClickhouseSetting` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSetting {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingSchemaEntry {
-    #[serde(rename = "deprecationNotice", default)]
-    pub deprecation_notice: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub r#enum: Vec<i64>,
-    #[serde(default)]
-    pub example: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub r#type: String,
-    #[serde(default)]
-    pub warning: String,
+    #[serde(rename = "deprecationNotice", skip_serializing_if = "Option::is_none")]
+    pub deprecation_notice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#enum: Option<Vec<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub example: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 /// `ServiceClickhouseSettingWarning` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingWarning {
-    #[serde(default)]
-    pub message: String,
-    #[serde(default)]
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// `ServiceClickhouseSettingsList` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsList {
-    #[serde(default)]
-    pub settings: Vec<ServiceClickhouseSetting>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Vec<ServiceClickhouseSetting>>,
 }
 
 /// `ServiceClickhouseSettingsPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<String>,
 }
 
 /// `ServiceClickhouseSettingsPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchResponse {
-    #[serde(default)]
-    pub settings: String,
-    #[serde(default)]
-    pub warnings: Vec<ServiceClickhouseSettingWarning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<ServiceClickhouseSettingWarning>>,
 }
 
 /// `ServiceClickhouseSettingsSchema` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsSchema {
-    #[serde(default)]
-    pub settings: Vec<ServiceClickhouseSettingSchemaEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Vec<ServiceClickhouseSettingSchemaEntry>>,
 }
 
 /// `ServiceEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceEndpoint {
-    #[serde(default)]
-    pub host: String,
-    #[serde(default)]
-    pub port: f64,
-    #[serde(default)]
-    pub protocol: ServiceEndpointProtocol,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ServiceEndpointProtocol>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
 }
 
 /// `ServiceEndpointChange` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceEndpointChange {
-    #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
     pub protocol: ServiceEndpointChangeProtocol,
 }
 
 /// `ServicePasswordPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePasswordPatchRequest {
-    #[serde(
-        rename = "newDoubleSha1Hash",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "newDoubleSha1Hash", skip_serializing_if = "Option::is_none")]
     pub new_double_sha1_hash: Option<String>,
-    #[serde(
-        rename = "newPasswordHash",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "newPasswordHash", skip_serializing_if = "Option::is_none")]
     pub new_password_hash: Option<String>,
 }
 
 /// `ServicePasswordPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePasswordPatchResponse {
-    #[serde(default)]
-    pub password: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
 }
 
 /// `ServicePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePatchRequest {
-    #[serde(
-        rename = "enableCoreDumps",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<ServiceEndpointChange>>,
-    #[serde(
-        rename = "ipAccessList",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
     pub ip_access_list: Option<IpAccessListPatch>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        rename = "privateEndpointIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<InstancePrivateEndpointsPatch>,
-    #[serde(
-        rename = "releaseChannel",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<ServicePatchRequestReleasechannel>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<InstanceTagsPatch>,
     #[serde(
         rename = "transparentDataEncryptionKeyId",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub transparent_data_encryption_key_id: Option<String>,
 }
@@ -14494,384 +15922,261 @@ pub struct ServicePatchRequest {
 /// `ServicePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostRequest {
-    #[serde(
-        rename = "autoscalingMode",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
-    #[serde(rename = "backupId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "backupId", skip_serializing_if = "Option::is_none")]
     pub backup_id: Option<uuid::Uuid>,
-    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
     pub byoc_id: Option<String>,
-    #[serde(
-        rename = "complianceType",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
     pub compliance_type: Option<ServicePostRequestCompliancetype>,
-    #[serde(
-        rename = "dataWarehouseId",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
     pub data_warehouse_id: Option<String>,
-    #[serde(
-        rename = "enableCoreDumps",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
     pub enable_core_dumps: Option<bool>,
     #[serde(
         rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(
-        rename = "encryptionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoints: Option<Vec<ServiceEndpointChange>>,
     #[serde(
         rename = "hasTransparentDataEncryption",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub has_transparent_data_encryption: Option<bool>,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<f64>,
-    #[serde(rename = "ipAccessList", default)]
+    #[serde(rename = "ipAccessList")]
     pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(
-        rename = "isReadonly",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none")]
     pub is_readonly: Option<bool>,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "maxTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "minTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
-    #[serde(default)]
     pub name: String,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "privateEndpointIds",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<Vec<String>>,
     #[serde(
         rename = "privatePreviewTermsChecked",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub private_preview_terms_checked: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<ServicePostRequestProfile>,
-    #[serde(default)]
     pub provider: ServicePostRequestProvider,
-    #[serde(default)]
     pub region: ServicePostRequestRegion,
-    #[serde(
-        rename = "releaseChannel",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<ServicePostRequestReleasechannel>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<ResourceTagsV1>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tier: Option<ServicePostRequestTier>,
 }
 
 /// `ServicePostResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostResponse {
-    #[serde(default)]
-    pub password: String,
-    #[serde(default)]
-    pub service: Service,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<Service>,
 }
 
 /// `ServiceQueryAPIEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceQueryAPIEndpoint {
-    #[serde(rename = "allowedOrigins", default)]
-    pub allowed_origins: String,
-    #[serde(default)]
-    pub id: String,
-    #[serde(rename = "openApiKeys", default)]
-    pub open_api_keys: Vec<String>,
-    #[serde(default)]
-    pub roles: Vec<String>,
+    #[serde(rename = "allowedOrigins", skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "openApiKeys", skip_serializing_if = "Option::is_none")]
+    pub open_api_keys: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<String>>,
 }
 
 /// `ServiceReplicaScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceReplicaScalingPatchRequest {
-    #[serde(
-        rename = "autoscalingMode",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
     pub autoscaling_mode: Option<AutoscalingMode>,
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<f64>,
-    #[serde(
-        rename = "maxReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "maxReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
     pub max_replicas: Option<f64>,
-    #[serde(
-        rename = "minReplicaMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
-    #[serde(
-        rename = "minReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
     pub min_replicas: Option<f64>,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<f64>,
 }
 
 /// `ServiceScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceScalingPatchRequest {
-    #[serde(
-        rename = "idleScaling",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
     pub idle_scaling: Option<bool>,
-    #[serde(
-        rename = "idleTimeoutMinutes",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_minutes: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "maxTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(
-        rename = "minTotalMemoryGb",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
-    #[serde(
-        rename = "numReplicas",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
     pub num_replicas: Option<f64>,
 }
 
 /// `ServiceScalingPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceScalingPatchResponse {
-    #[serde(rename = "availablePrivateEndpointIds", default)]
-    pub available_private_endpoint_ids: Vec<String>,
-    #[serde(rename = "autoscalingMode", default)]
-    pub autoscaling_mode: AutoscalingMode,
-    #[serde(rename = "byocId", default)]
-    pub byoc_id: String,
-    #[serde(rename = "clickhouseVersion", default)]
-    pub clickhouse_version: String,
-    #[serde(rename = "complianceType", default)]
-    pub compliance_type: ServiceScalingPatchResponseCompliancetype,
-    #[serde(rename = "createdAt", default)]
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    #[serde(rename = "currentScaling", default)]
-    pub current_scaling: CurrentScaling,
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: String,
-    #[serde(rename = "enableCoreDumps", default)]
-    pub enable_core_dumps: bool,
+    #[serde(
+        rename = "availablePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub available_private_endpoint_ids: Option<Vec<String>>,
+    #[serde(rename = "autoscalingMode", skip_serializing_if = "Option::is_none")]
+    pub autoscaling_mode: Option<AutoscalingMode>,
+    #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
+    pub byoc_id: Option<String>,
+    #[serde(rename = "clickhouseVersion", skip_serializing_if = "Option::is_none")]
+    pub clickhouse_version: Option<String>,
+    #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]
+    pub compliance_type: Option<ServiceScalingPatchResponseCompliancetype>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "currentScaling", skip_serializing_if = "Option::is_none")]
+    pub current_scaling: Option<CurrentScaling>,
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<String>,
+    #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
+    pub enable_core_dumps: Option<bool>,
     #[serde(
         rename = "encryptionAssumedRoleIdentifier",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub encryption_assumed_role_identifier: Option<String>,
-    #[serde(
-        rename = "encryptionKey",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
+    #[serde(rename = "encryptionKey", skip_serializing_if = "Option::is_none")]
     pub encryption_key: Option<String>,
-    #[serde(rename = "encryptionRoleId", default)]
-    pub encryption_role_id: String,
-    #[serde(default)]
-    pub endpoints: Vec<ServiceEndpoint>,
-    #[serde(rename = "hasTransparentDataEncryption", default)]
-    pub has_transparent_data_encryption: bool,
-    #[serde(rename = "iamRole", default)]
-    pub iam_role: String,
-    #[serde(default)]
-    pub id: uuid::Uuid,
-    #[serde(rename = "idleScaling", default)]
-    pub idle_scaling: bool,
-    #[serde(rename = "idleTimeoutMinutes", default)]
-    pub idle_timeout_minutes: f64,
-    #[serde(rename = "ipAccessList", default)]
-    pub ip_access_list: Vec<IpAccessListEntry>,
-    #[serde(rename = "isPrimary", default)]
-    pub is_primary: bool,
-    #[serde(rename = "isReadonly", default)]
-    pub is_readonly: bool,
-    #[serde(rename = "maxReplicaMemoryGb", default)]
-    pub max_replica_memory_gb: f64,
-    #[serde(rename = "maxReplicas", default)]
-    pub max_replicas: f64,
+    #[serde(rename = "encryptionRoleId", skip_serializing_if = "Option::is_none")]
+    pub encryption_role_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoints: Option<Vec<ServiceEndpoint>>,
+    #[serde(
+        rename = "hasTransparentDataEncryption",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub has_transparent_data_encryption: Option<bool>,
+    #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
+    pub iam_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "idleScaling", skip_serializing_if = "Option::is_none")]
+    pub idle_scaling: Option<bool>,
+    #[serde(rename = "idleTimeoutMinutes", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_minutes: Option<f64>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntryResponse>>,
+    #[serde(rename = "isPrimary", skip_serializing_if = "Option::is_none")]
+    pub is_primary: Option<bool>,
+    #[serde(rename = "isReadonly", skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_replica_memory_gb: Option<f64>,
+    #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
+    pub max_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "maxTotalMemoryGb", default)]
-    pub max_total_memory_gb: f64,
-    #[serde(rename = "minReplicaMemoryGb", default)]
-    pub min_replica_memory_gb: f64,
-    #[serde(rename = "minReplicas", default)]
-    pub min_replicas: f64,
+    #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub max_total_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_replica_memory_gb: Option<f64>,
+    #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
+    pub min_replicas: Option<f64>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(rename = "minTotalMemoryGb", default)]
-    pub min_total_memory_gb: f64,
-    #[serde(default)]
-    pub name: String,
-    #[serde(rename = "numReplicas", default)]
-    pub num_replicas: f64,
-    #[serde(rename = "privateEndpointIds", default)]
-    pub private_endpoint_ids: Vec<String>,
-    #[serde(default)]
-    pub profile: ServiceScalingPatchResponseProfile,
-    #[serde(default)]
-    pub provider: ServiceScalingPatchResponseProvider,
-    #[serde(default)]
-    pub region: ServiceScalingPatchResponseRegion,
-    #[serde(rename = "releaseChannel", default)]
-    pub release_channel: ServiceScalingPatchResponseReleasechannel,
-    #[serde(rename = "replicaMemoryGb", default)]
-    pub replica_memory_gb: f64,
-    #[serde(rename = "scalingSchedule", default)]
-    pub scaling_schedule: ScalingSchedule,
-    #[serde(default)]
-    pub state: ServiceScalingPatchResponseState,
-    #[serde(default)]
-    pub tags: Vec<ResourceTagsV1>,
+    #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub min_total_memory_gb: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
+    pub num_replicas: Option<f64>,
+    #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
+    pub private_endpoint_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ServiceScalingPatchResponseProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ServiceScalingPatchResponseProvider>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<ServiceScalingPatchResponseRegion>,
+    #[serde(rename = "releaseChannel", skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<ServiceScalingPatchResponseReleasechannel>,
+    #[serde(rename = "replicaMemoryGb", skip_serializing_if = "Option::is_none")]
+    pub replica_memory_gb: Option<f64>,
+    #[serde(rename = "scalingSchedule", skip_serializing_if = "Option::is_none")]
+    pub scaling_schedule: Option<ScalingSchedule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ServiceScalingPatchResponseState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<ResourceTagsV1Response>>,
     #[cfg(feature = "deprecated-fields")]
-    #[serde(default)]
-    pub tier: ServiceScalingPatchResponseTier,
-    #[serde(rename = "transparentDataEncryptionKeyId", default)]
-    pub transparent_data_encryption_key_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ServiceScalingPatchResponseTier>,
+    #[serde(
+        rename = "transparentDataEncryptionKeyId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub transparent_data_encryption_key_id: Option<String>,
 }
 
 /// `ServiceStatePatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceStatePatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<ServiceStatePatchRequestCommand>,
 }
 
 /// `UpgradeWindow` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpgradeWindow {
-    #[serde(default)]
-    pub duration: i64,
-    #[serde(rename = "startHourUtc", default)]
-    pub start_hour_utc: i64,
-    #[serde(default)]
-    pub weekday: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<i64>,
+    #[serde(rename = "startHourUtc", skip_serializing_if = "Option::is_none")]
+    pub start_hour_utc: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weekday: Option<i64>,
 }
 
 /// `UpgradeWindowPutRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpgradeWindowPutRequest {
-    #[serde(rename = "startHourUtc", default)]
+    #[serde(rename = "startHourUtc")]
     pub start_hour_utc: i64,
-    #[serde(default)]
     pub weekday: i64,
 }
 
@@ -14880,8 +16185,7 @@ pub struct UpgradeWindowPutRequest {
 pub struct UpdateReversePrivateEndpoint {
     #[serde(
         rename = "customPrivateDnsMappings",
-        skip_serializing_if = "Option::is_none",
-        default
+        skip_serializing_if = "Option::is_none"
     )]
     pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
 }
@@ -14889,166 +16193,284 @@ pub struct UpdateReversePrivateEndpoint {
 /// `UsageCost` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageCost {
-    #[serde(default)]
-    pub costs: Vec<UsageCostRecord>,
-    #[serde(rename = "grandTotalCHC", default)]
-    pub grand_total_chc: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub costs: Option<Vec<UsageCostRecord>>,
+    #[serde(rename = "grandTotalCHC", skip_serializing_if = "Option::is_none")]
+    pub grand_total_chc: Option<f64>,
 }
 
 /// `UsageCostMetrics` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageCostMetrics {
-    #[serde(rename = "backupCHC", default)]
-    pub backup_chc: f64,
-    #[serde(rename = "computeCHC", default)]
-    pub compute_chc: f64,
-    #[serde(rename = "dataTransferCHC", default)]
-    pub data_transfer_chc: f64,
-    #[serde(rename = "initialLoadCHC", default)]
-    pub initial_load_chc: f64,
-    #[serde(rename = "interRegionTier1DataTransferCHC", default)]
-    pub inter_region_tier1_data_transfer_chc: f64,
-    #[serde(rename = "interRegionTier2DataTransferCHC", default)]
-    pub inter_region_tier2_data_transfer_chc: f64,
-    #[serde(rename = "interRegionTier3DataTransferCHC", default)]
-    pub inter_region_tier3_data_transfer_chc: f64,
-    #[serde(rename = "interRegionTier4DataTransferCHC", default)]
-    pub inter_region_tier4_data_transfer_chc: f64,
-    #[serde(rename = "publicDataTransferCHC", default)]
-    pub public_data_transfer_chc: f64,
-    #[serde(rename = "storageCHC", default)]
-    pub storage_chc: f64,
+    #[serde(rename = "backupCHC", skip_serializing_if = "Option::is_none")]
+    pub backup_chc: Option<f64>,
+    #[serde(rename = "computeCHC", skip_serializing_if = "Option::is_none")]
+    pub compute_chc: Option<f64>,
+    #[serde(rename = "dataTransferCHC", skip_serializing_if = "Option::is_none")]
+    pub data_transfer_chc: Option<f64>,
+    #[serde(rename = "initialLoadCHC", skip_serializing_if = "Option::is_none")]
+    pub initial_load_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier1DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier1_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier2DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier2_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier3DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier3_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "interRegionTier4DataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub inter_region_tier4_data_transfer_chc: Option<f64>,
+    #[serde(
+        rename = "publicDataTransferCHC",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub public_data_transfer_chc: Option<f64>,
+    #[serde(rename = "storageCHC", skip_serializing_if = "Option::is_none")]
+    pub storage_chc: Option<f64>,
 }
 
 /// `UsageCostRecord` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UsageCostRecord {
-    #[serde(rename = "dataWarehouseId", default)]
-    pub data_warehouse_id: uuid::Uuid,
-    #[serde(default)]
-    pub date: String,
-    #[serde(rename = "entityId", default)]
-    pub entity_id: uuid::Uuid,
-    #[serde(rename = "entityName", default)]
-    pub entity_name: String,
-    #[serde(rename = "entityType", default)]
-    pub entity_type: UsageCostRecordEntitytype,
-    #[serde(default)]
-    pub locked: bool,
-    #[serde(default)]
-    pub metrics: UsageCostMetrics,
-    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none", default)]
+    #[serde(rename = "dataWarehouseId", skip_serializing_if = "Option::is_none")]
+    pub data_warehouse_id: Option<uuid::Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(rename = "entityId", skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<uuid::Uuid>,
+    #[serde(rename = "entityName", skip_serializing_if = "Option::is_none")]
+    pub entity_name: Option<String>,
+    #[serde(rename = "entityType", skip_serializing_if = "Option::is_none")]
+    pub entity_type: Option<UsageCostRecordEntitytype>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<UsageCostMetrics>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
     pub service_id: Option<uuid::Uuid>,
-    #[serde(rename = "totalCHC", default)]
-    pub total_chc: f64,
+    #[serde(rename = "totalCHC", skip_serializing_if = "Option::is_none")]
+    pub total_chc: Option<f64>,
 }
 
 /// `pgBouncerConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PgBouncerConfig {}
 
+/// `pgBouncerConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`PgBouncerConfig`]: every field is `Option<T>`, so a
+/// field the API drops or sends as `null` deserializes to `None` instead of
+/// failing. The schema currently declares no properties.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PgBouncerConfigResponse {}
+
 /// `pgConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PgConfig {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_max_workers: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_naptime: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_cost_delay: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_cost_limit: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_cache_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_io_concurrency: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub maintenance_work_mem: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_maintenance_workers: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_wal_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_worker_processes: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub min_wal_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub random_page_cost: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_compression: Option<PgConfigWalCompression>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_keep_size: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_sender_timeout: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_mem: Option<serde_json::Value>,
+}
+
+/// `pgConfig` from the ClickHouse Cloud API, in response position.
+///
+/// Response variant of [`PgConfig`]: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PgConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_max_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_naptime: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_cost_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_cost_limit: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_cache_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_io_concurrency: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_session_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel_maintenance_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_parallel_workers_per_gather: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_wal_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_worker_processes: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_wal_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub random_page_cost: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statement_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_compression: Option<PgConfigWalCompression>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_sender_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub work_mem: Option<serde_json::Value>,
 }
 
 /// `postgresInstanceConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresInstanceConfig {
-    #[serde(rename = "pgBouncerConfig", default)]
-    pub pg_bouncer_config: PgBouncerConfig,
-    #[serde(rename = "pgConfig", default)]
-    pub pg_config: PgConfig,
-}
-
-/// `postgresInstanceUpdateConfigResponse` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct PostgresInstanceUpdateConfigResponse {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub message: Option<String>,
     #[serde(rename = "pgBouncerConfig")]
     pub pg_bouncer_config: PgBouncerConfig,
     #[serde(rename = "pgConfig")]
     pub pg_config: PgConfig,
 }
 
+/// `postgresInstanceConfig` from the ClickHouse Cloud API, in response
+/// position.
+///
+/// Response variant of [`PostgresInstanceConfig`]: every field is `Option<T>`,
+/// so a field the API drops or sends as `null` deserializes to `None` instead
+/// of failing. Writing a fetched configuration back to the API goes through
+/// `TryFrom<PostgresInstanceConfigResponse>` (see [`crate::convert`]), which
+/// forces every absent required field to be resolved explicitly.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresInstanceConfigResponse {
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_bouncer_config: Option<PgBouncerConfigResponse>,
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_config: Option<PgConfigResponse>,
+}
+
+/// `postgresInstanceUpdateConfigResponse` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresInstanceUpdateConfigResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(rename = "pgBouncerConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_bouncer_config: Option<PgBouncerConfigResponse>,
+    #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
+    pub pg_config: Option<PgConfigResponse>,
+}
+
 /// Standard API response wrapper.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", default, rename = "requestId")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "requestId")]
     pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<T>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl Default for BackupBucket {
     fn default() -> Self {
-        Self::AwsBackupBucket(AwsBackupBucket::default())
+        // Every field of a response variant is `Option<T>`, so the derived
+        // `AwsBackupBucket::default()` leaves `bucketProvider` absent and
+        // serializes to `{}` — which deserializes back through the
+        // discriminator dispatch as `Unknown`, not as this variant. Naming the
+        // variant's own wire value keeps the default round-tripping.
+        Self::AwsBackupBucket(AwsBackupBucket {
+            bucket_provider: Some(AwsBackupBucketBucketprovider::default()),
+            ..AwsBackupBucket::default()
+        })
     }
 }
 
@@ -15126,6 +16548,14 @@ impl Default for ClickStackTileConfig {
 
 impl Default for ClickStackWebhook {
     fn default() -> Self {
-        Self::ClickStackSlackWebhook(ClickStackSlackWebhook::default())
+        // Every field of this response-only union's variants is `Option<T>`,
+        // so the derived `ClickStackSlackWebhook::default()` leaves `service`
+        // absent and serializes to `{}` — which deserializes back through the
+        // discriminator dispatch as `Unknown`, not as this variant. Naming the
+        // variant's own wire value keeps the default round-tripping.
+        Self::ClickStackSlackWebhook(ClickStackSlackWebhook {
+            service: Some(ClickStackSlackWebhookService::default()),
+            ..ClickStackSlackWebhook::default()
+        })
     }
 }

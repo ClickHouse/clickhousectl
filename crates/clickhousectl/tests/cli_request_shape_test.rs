@@ -1472,6 +1472,375 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
     );
 }
 
+// ── Provisioning cleanup (issue #314) ──────────────────────────────────────
+//
+// Every field of a key-creation or endpoint-upsert response is `Option<T>`,
+// so provisioning can fail *after* the key exists. Each of those failures
+// must delete the key it created, otherwise every retry leaves another
+// orphaned key in the org.
+
+const QUERY_TEST_KEY_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+/// Mount a key-creation POST returning `result`, plus a key DELETE, on the
+/// control plane. `result` lets each test omit exactly the field under test.
+async fn mount_key_create_and_delete(control: &MockServer, result: Value) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .mount(control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-key-delete",
+        })))
+        .mount(control)
+        .await;
+}
+
+/// Run `cloud service query` in an empty project dir (no stored key, so the
+/// provisioning path runs) against `control`, with API key env creds.
+fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        // Provisioning must fail before the query runs; pin the query host to
+        // a closed port so a regression cannot reach the production host.
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", "http://127.0.0.1:1")
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert!(
+        !output.status.success(),
+        "provisioning with an incomplete response must fail\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    (dir, String::from_utf8_lossy(&output.stderr).to_string())
+}
+
+/// The key UUIDs the control plane was asked to delete.
+async fn recorded_key_deletes(control: &MockServer) -> Vec<String> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::DELETE)
+        .map(|r| r.url.path().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn service_query_deletes_the_key_when_the_create_response_omits_the_secret() {
+    let control = start_mock_control_plane_with_service().await;
+    // `keySecret` absent: the key exists but cannot authenticate anything.
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+        }),
+    )
+    .await;
+
+    let (dir, stderr) = invoke_service_query_provisioning(&control);
+    assert!(
+        stderr.contains("keySecret"),
+        "stderr should name the missing field:\n{stderr}",
+    );
+
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "the unusable key must be deleted exactly once",
+    );
+
+    // The key was never bound, so no endpoint upsert was attempted, and
+    // nothing was persisted locally.
+    let upserts = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().ends_with("/serviceQueryEndpoint"))
+        .count();
+    assert_eq!(upserts, 0, "a keyless credential must not be bound");
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+async fn service_query_keeps_the_key_when_the_endpoint_response_omits_the_id() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+    // No endpoint configured yet (404), and the upsert succeeds but answers
+    // without `id`. The key is bound and usable: the echoed id is diagnostic
+    // only, so provisioning completes rather than discarding the credential.
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "roles": ["sql_console_admin"] },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .mount(&control)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "a bound, usable key must not be discarded over an unused echoed id",
+    );
+
+    // The credential is persisted, with `endpoint_id` omitted rather than
+    // written as a placeholder.
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    let key = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(key["key_id"], "provisioned-key-id");
+    assert_eq!(key["key_secret"], "provisioned-key-secret");
+    assert!(
+        key.get("endpoint_id").is_none(),
+        "an absent endpoint id must not be stored: {stored}",
+    );
+}
+
+#[tokio::test]
+async fn service_query_deletes_the_key_when_the_endpoint_get_omits_open_api_keys() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+    // A 200 endpoint GET whose `openApiKeys` is absent leaves the currently
+    // bound keys unknown. The upsert replaces the list wholesale, so binding
+    // on top of an assumed-empty list would revoke them.
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "roles": ["sql_console_admin"] },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .mount(&control)
+        .await;
+
+    let (dir, stderr) = invoke_service_query_provisioning(&control);
+
+    let upserts = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
+        .count();
+    assert_eq!(
+        upserts, 0,
+        "the endpoint must not be rebound from an unknown key list",
+    );
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "the unbindable key must be deleted exactly once",
+    );
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+    assert!(
+        stderr.contains("'openApiKeys'"),
+        "stderr should name the omitted field:\n{stderr}",
+    );
+}
+
+/// Provision against an endpoint GET that reports `existing_keys`, and return
+/// the `openApiKeys` the upsert was sent, plus the project dir.
+async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile::TempDir, Value) {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": existing_keys },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .mount(&control)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "a successfully bound key must not be discarded",
+    );
+    let upsert = control
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
+        .expect("the endpoint upsert must be sent");
+    let body: Value = serde_json::from_slice(&upsert.body).unwrap();
+    (dir, body["openApiKeys"].clone())
+}
+
+#[tokio::test]
+async fn service_query_binds_the_new_key_when_the_endpoint_reports_no_keys() {
+    // An explicitly empty `openApiKeys` is a real answer, not an omission.
+    let (dir, sent_keys) = provision_against_endpoint_with_keys(serde_json::json!([])).await;
+    assert_eq!(sent_keys, serde_json::json!([QUERY_TEST_KEY_UUID]));
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["endpoint_id"], "ep-1",
+        "an echoed endpoint id is recorded",
+    );
+}
+
+#[tokio::test]
+async fn service_query_merges_the_new_key_into_the_reported_keys() {
+    let existing = "99999999-8888-7777-6666-555555555555";
+    let (_dir, sent_keys) =
+        provision_against_endpoint_with_keys(serde_json::json!([existing])).await;
+    assert_eq!(
+        sent_keys,
+        serde_json::json!([existing, QUERY_TEST_KEY_UUID]),
+        "an existing binding must survive the upsert",
+    );
+}
+
 // ── Idled / stopped services (query host 206 protocol) ─────────────────────
 //
 // An idled or stopped service answers the run request with 206 and
@@ -2025,5 +2394,227 @@ async fn schema_discover_kinesis_posts_source_body() {
         body["source"].get("kafka").is_none(),
         "kafka leaked into kinesis schema-discovery body: {}",
         body["source"],
+    );
+}
+
+// ── Generated service passwords are never silently dropped ─────────────────
+//
+// `service reset-password` without either hash flag sends an empty PATCH
+// body, which asks the API to generate a password returned exactly once. A
+// response without one loses that credential, so both output modes must fail
+// instead of reporting a successful reset.
+
+async fn run_service_reset_password(
+    password_response: Value,
+    extra_args: &[&str],
+) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/password$",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": password_response,
+            "status": 200,
+            "requestId": "stub-reset-password",
+        })))
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let mut args: Vec<&str> = vec![
+        "cloud",
+        "--url",
+        &url,
+        "service",
+        "reset-password",
+        "svc-id",
+        "--org-id",
+        "org-1",
+    ];
+    args.extend(extra_args);
+
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args(&args)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn service_reset_password_fails_when_the_generated_password_is_absent() {
+    for extra_args in [&[][..], &["--json"][..]] {
+        let output = run_service_reset_password(serde_json::json!({}), extra_args).await;
+        assert!(
+            !output.status.success(),
+            "a generation reset with no password must fail for args {extra_args:?}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("omitted the generated password"),
+            "stderr should name the omitted password for args {extra_args:?}:\n{stderr}",
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("Password reset for service")
+                && !stdout.contains("no plaintext password returned"),
+            "no success output may precede the failure for args {extra_args:?}:\n{stdout}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_reset_password_succeeds_for_a_hash_reset_without_a_password() {
+    let output =
+        run_service_reset_password(serde_json::json!({}), &["--new-password-hash", "e3b0c442"])
+            .await;
+    assert_success(&output);
+    // Agent detection can force --json here, so assert only what holds in
+    // both output modes: the reset succeeds and shows no password.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("New password"),
+        "a hash reset must not report a password:\n{stdout}",
+    );
+}
+
+#[tokio::test]
+async fn service_reset_password_treats_a_double_sha1_only_reset_as_generation() {
+    // The API ignores `newDoubleSha1Hash` unless `newPasswordHash` is also
+    // sent, and generates a password instead — so the mode is generation and a
+    // response without a password loses the new credential.
+    let output = run_service_reset_password(
+        serde_json::json!({}),
+        &["--new-double-sha1-hash", "aabbccdd"],
+    )
+    .await;
+    assert!(
+        !output.status.success(),
+        "a double-SHA1-only reset with no password must fail\nstdout:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("omitted the generated password"),
+        "stderr should name the omitted password:\n{stderr}",
+    );
+}
+
+#[tokio::test]
+async fn service_reset_password_json_prints_the_generated_password() {
+    let output =
+        run_service_reset_password(serde_json::json!({ "password": "s3cret" }), &["--json"]).await;
+    assert_success(&output);
+    let body: Value =
+        serde_json::from_slice(&output.stdout).expect("--json output wasn't valid JSON");
+    assert_eq!(body["password"], "s3cret");
+}
+
+// ── Generated API key material is never silently dropped ───────────────────
+//
+// `key create` without the pre-hash flags asks the API to generate a key pair
+// returned exactly once. A response missing `keyId`/`keySecret` loses that
+// credential, so validation runs before either output branch — `--json` (which
+// agent detection also turns on by itself) must not print the incomplete
+// response and exit zero.
+
+async fn run_key_create(result: Value, extra_args: &[&str]) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let mut args: Vec<&str> = vec![
+        "cloud", "--url", &url, "key", "create", "--name", "ci", "--org-id", "org-1",
+    ];
+    args.extend(extra_args);
+
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args(&args)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn key_create_fails_when_the_generated_material_is_absent() {
+    for extra_args in [&[][..], &["--json"][..]] {
+        let output = run_key_create(
+            serde_json::json!({
+                "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" },
+                "keyId": "generated-key-id",
+            }),
+            extra_args,
+        )
+        .await;
+        assert!(
+            !output.status.success(),
+            "a generated key create with no secret must fail for args {extra_args:?}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("omitted the generated key material"),
+            "stderr should name the omitted material for args {extra_args:?}:\n{stderr}",
+        );
+        // Neither the human confirmation nor the incomplete response body may
+        // reach stdout ahead of the failure.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("API key created!") && !stdout.contains("generated-key-id"),
+            "no success output may precede the failure for args {extra_args:?}:\n{stdout}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_create_json_prints_the_raw_response() {
+    let result = serde_json::json!({
+        "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" },
+        "keyId": "generated-key-id",
+        "keySecret": "generated-key-secret",
+    });
+    let output = run_key_create(result.clone(), &["--json"]).await;
+    assert_success(&output);
+    let body: Value =
+        serde_json::from_slice(&output.stdout).expect("--json output wasn't valid JSON");
+    // --json reflects the key set the API sent; nothing is synthesized from
+    // the resolved material.
+    assert_eq!(body, result);
+}
+
+#[tokio::test]
+async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
+    let output = run_key_create(
+        serde_json::json!({ "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" } }),
+        &[
+            "--hash-key-id",
+            "0f1e2d3c",
+            "--hash-key-id-suffix",
+            "3c",
+            "--hash-key-secret",
+            "4b5a6978",
+        ],
+    )
+    .await;
+    assert_success(&output);
+    // Agent detection can force --json here, so assert only what holds in
+    // both output modes: no key material is reported.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("Key Secret"),
+        "a pre-hashed create must not report key material:\n{stdout}",
     );
 }

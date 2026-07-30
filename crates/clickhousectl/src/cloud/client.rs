@@ -492,8 +492,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -627,8 +627,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -763,8 +763,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -818,8 +818,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -883,8 +883,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -998,8 +998,8 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error(e))?;
         Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
+            status: response.status,
+            request_id: response.request_id,
         })
     }
 
@@ -1042,7 +1042,7 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettings> {
+    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
         let response = self
             .api()
             .click_pipe_settings_get(org_id, service_id, clickpipe_id)
@@ -1057,7 +1057,7 @@ impl CloudClient {
         service_id: &str,
         clickpipe_id: &str,
         request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettings> {
+    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
         let response = self
             .api()
             .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
@@ -1085,7 +1085,10 @@ impl CloudClient {
         let orgs = self.list_organizations().await?;
         match orgs.len() {
             0 => Err(CloudError::new("No organization found for this API key")),
-            1 => Ok(orgs[0].id.to_string()),
+            1 => orgs[0]
+                .id
+                .map(|id| id.to_string())
+                .ok_or_else(|| CloudError::new("Organization response is missing its id")),
             _ => Err(CloudError::new(
                 "Multiple organizations found. Specify --org-id to choose one. \
                  Use `clickhousectl cloud org list` to see your organizations.",

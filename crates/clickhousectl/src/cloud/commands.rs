@@ -1,6 +1,6 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials;
-use crate::cloud::output::print_human;
+use crate::cloud::output::{ABSENT, or_absent, print_human};
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
     AutoscalingMode, BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
@@ -8,15 +8,43 @@ use clickhouse_cloud_api::models::{
     IpAccessListPatch, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1,
-    ServicPrivateEndpointePostRequest, Service, ServiceEndpointChange,
+    ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
     ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
     ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
     ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
+    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequestCommand,
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
+
+/// Comma-joins the rendered items of a response list.
+///
+/// An absent list renders as [`ABSENT`]; an absent field of an individual item
+/// renders as [`ABSENT`] inside the join, so a partially-returned list stays
+/// readable.
+fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String {
+    match items {
+        Some(items) => items.iter().map(render).collect::<Vec<_>>().join(", "),
+        None => ABSENT.to_string(),
+    }
+}
+
+/// `host:port` of a service's first endpoint, for list tables.
+///
+/// Renders [`ABSENT`] when the API returned no endpoints, and keeps whichever
+/// half of a partial endpoint it did return (`host` alone, or `-:port`).
+fn first_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> String {
+    endpoints
+        .and_then(|endpoints| endpoints.first())
+        .map(|endpoint| match (endpoint.host.as_deref(), endpoint.port) {
+            (Some(host), Some(port)) => format!("{host}:{port}"),
+            (Some(host), None) => host.to_string(),
+            (None, Some(port)) => format!("{ABSENT}:{port}"),
+            (None, None) => ABSENT.to_string(),
+        })
+        .unwrap_or_else(|| ABSENT.to_string())
+}
 
 /// Resolve org ID from explicit arg or auto-detect
 pub(super) async fn resolve_org_id(
@@ -40,7 +68,10 @@ async fn resolve_service(
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
-            let matches: Vec<_> = services.into_iter().filter(|s| s.name == name).collect();
+            let matches: Vec<_> = services
+                .into_iter()
+                .filter(|s| s.name.as_deref() == Some(name))
+                .collect();
             match matches.len() {
                 0 => Err(format!("no service found with name '{}'", name).into()),
                 1 => Ok(matches.into_iter().next().unwrap()),
@@ -382,8 +413,8 @@ pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn st
         let rows: Vec<Row> = orgs
             .into_iter()
             .map(|o| Row {
-                name: o.name.clone(),
-                id: o.id.to_string(),
+                name: or_absent(o.name.as_deref()),
+                id: or_absent(o.id),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -444,20 +475,13 @@ pub async fn service_list(
         }
         let rows: Vec<Row> = services
             .into_iter()
-            .map(|svc| {
-                let endpoint = svc
-                    .endpoints
-                    .first()
-                    .map(|e| format!("{}:{}", e.host, e.port))
-                    .unwrap_or_else(|| "-".to_string());
-                Row {
-                    name: svc.name.clone(),
-                    id: svc.id.to_string(),
-                    state: svc.state.to_string(),
-                    provider: svc.provider.to_string(),
-                    region: svc.region.to_string(),
-                    endpoint,
-                }
+            .map(|svc| Row {
+                name: or_absent(svc.name.as_deref()),
+                id: or_absent(svc.id),
+                state: or_absent(svc.state.as_ref()),
+                provider: or_absent(svc.provider.as_ref()),
+                region: or_absent(svc.region.as_ref()),
+                endpoint: first_endpoint(svc.endpoints.as_deref()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -845,6 +869,49 @@ fn build_backup_config_update_request(
     }
 }
 
+/// The post-create hint showing how to query the new service.
+///
+/// The hint is only useful with a real service id: an absent id would render a
+/// command line the user cannot run, so the hint is dropped rather than printed
+/// with a placeholder id in it.
+fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
+    service_id.map(|id| {
+        format!(
+            "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"\n\
+             (the Query API endpoint is provisioned automatically on first use)",
+            id
+        )
+    })
+}
+
+/// The post-create credentials block, or the warning that replaces it.
+///
+/// The generated password is returned once, so a placeholder in its place would
+/// be read as the credential itself. An absent password therefore gets the
+/// omission plus the command that mints a usable one; the create succeeded and
+/// the password is recoverable, so this is a warning rather than an error. An
+/// empty string is a password the API sent.
+fn service_credentials_block(password: Option<&str>, service_id: Option<uuid::Uuid>) -> String {
+    match (password, service_id) {
+        (Some(password), _) => format!(
+            "Credentials (save these, password shown only once):\n  Username: default\n  \
+             Password: {}",
+            password
+        ),
+        (None, Some(id)) => format!(
+            "WARNING: the API response omitted the one-time password, so it cannot be shown.\n\
+             The service was created; reset the password to get a usable credential:\n  \
+             clickhousectl cloud service reset-password {}",
+            id
+        ),
+        (None, None) => "WARNING: the API response omitted the one-time password, so it cannot be \
+                         shown.\nThe service was created; once you have its id, reset the password \
+                         with `clickhousectl cloud service reset-password <service-id>` to get a \
+                         usable credential."
+            .to_string(),
+    }
+}
+
 pub async fn service_create(
     client: &CloudClient,
     opts: CreateServiceOptions,
@@ -856,26 +923,55 @@ pub async fn service_create(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
 
     let response = client.create_service(&org_id, &request).await?;
-    let svc_id = response.service.id.to_string();
 
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
+        let service_id = response.service.as_ref().and_then(|svc| svc.id);
         println!("Service created successfully!");
         println!();
-        print_human(&response.service)?;
-        println!();
-        println!("Credentials (save these, password shown only once):");
-        println!("  Username: default");
-        println!("  Password: {}", response.password);
+        if let Some(service) = &response.service {
+            print_human(service)?;
+        }
         println!();
         println!(
-            "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"",
-            svc_id
+            "{}",
+            service_credentials_block(response.password.as_deref(), service_id)
         );
-        println!("(the Query API endpoint is provisioned automatically on first use)");
+        if let Some(hint) = service_query_hint(service_id) {
+            println!();
+            println!("{}", hint);
+        }
     }
     Ok(())
+}
+
+/// Classifies one poll of a service's state while waiting for a stop to land.
+///
+/// Returns `true` once the service has stopped. An absent state cannot be
+/// classified and the loop has no other exit, so treating it as "not stopped
+/// yet" would poll forever: fail instead of waiting on a state the API is not
+/// reporting.
+fn classify_stop_poll_state(
+    state: Option<&ServiceState>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let state = state
+        .ok_or(
+            "the API response omitted the service state while waiting for the service to stop, \
+             so the stop cannot be confirmed",
+        )?
+        .to_string();
+    if matches!(state.as_str(), "stopped" | "idle") {
+        return Ok(true);
+    }
+    if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
+        return Err(format!(
+            "service entered unexpected state '{}' while waiting for stop",
+            state
+        )
+        .into());
+    }
+    Ok(false)
 }
 
 pub async fn service_delete(
@@ -889,7 +985,9 @@ pub async fn service_delete(
 
     if force {
         let svc = client.get_service(&org_id, service_id).await?;
-        let state = svc.state.to_string();
+        // An absent state matches nothing: skip the stop and let the delete
+        // call decide, rather than guessing the service is running.
+        let state = or_absent(svc.state.as_ref());
         if matches!(state.as_str(), "running" | "idle" | "starting") {
             eprintln!("Stopping service {} before deletion...", service_id);
             client
@@ -900,17 +998,9 @@ pub async fn service_delete(
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let svc = client.get_service(&org_id, service_id).await?;
-                let state = svc.state.to_string();
-                eprintln!("  state: {}", state);
-                if matches!(state.as_str(), "stopped" | "idle") {
+                eprintln!("  state: {}", or_absent(svc.state.as_ref()));
+                if classify_stop_poll_state(svc.state.as_ref())? {
                     break;
-                }
-                if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
-                    return Err(format!(
-                        "service entered unexpected state '{}' while waiting for stop",
-                        state
-                    )
-                    .into());
                 }
             }
         }
@@ -941,7 +1031,11 @@ pub async fn service_start(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} starting (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} starting (state: {})",
+            or_absent(svc.name.as_deref()),
+            or_absent(svc.state.as_ref())
+        );
     }
     Ok(())
 }
@@ -961,7 +1055,11 @@ pub async fn service_stop(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} stopping (state: {})", svc.name, svc.state);
+        println!(
+            "Service {} stopping (state: {})",
+            or_absent(svc.name.as_deref()),
+            or_absent(svc.state.as_ref())
+        );
     }
     Ok(())
 }
@@ -982,7 +1080,12 @@ pub async fn clickpipe_list(
     } else {
         println!("ClickPipes:");
         for cp in &clickpipes {
-            println!("  {} ({}) - {}", cp.name, cp.id, cp.state);
+            println!(
+                "  {} ({}) - {}",
+                or_absent(cp.name.as_deref()),
+                or_absent(cp.id.as_ref()),
+                or_absent(cp.state.as_ref())
+            );
         }
     }
     Ok(())
@@ -1353,10 +1456,11 @@ pub async fn clickpipe_schema_discover(
         }
         let rows: Vec<Row> = response
             .fields
+            .unwrap_or_default()
             .into_iter()
             .map(|f| Row {
-                name: f.name,
-                r#type: f.r#type,
+                name: or_absent(f.name),
+                r#type: or_absent(f.r#type),
                 optional: match f.optional {
                     Some(true) => "true".to_string(),
                     Some(false) => "false".to_string(),
@@ -1438,7 +1542,9 @@ pub async fn clickpipe_state(
     } else {
         println!(
             "ClickPipe {} {} (state: {})",
-            clickpipe.name, command, clickpipe.state
+            or_absent(clickpipe.name.as_deref()),
+            command,
+            or_absent(clickpipe.state.as_ref())
         );
     }
     Ok(())
@@ -1470,10 +1576,14 @@ pub async fn clickpipe_scale(
     if json {
         println!("{}", serde_json::to_string_pretty(&clickpipe)?);
     } else {
-        println!("ClickPipe {} scaling updated", clickpipe.name);
-        println!("  Replicas: {}", clickpipe.scaling.replicas);
-        println!("  CPU: {}m", clickpipe.scaling.replica_cpu_millicores);
-        println!("  Memory: {} GB", clickpipe.scaling.replica_memory_gb);
+        let scaling = clickpipe.scaling.unwrap_or_default();
+        println!(
+            "ClickPipe {} scaling updated",
+            or_absent(clickpipe.name.as_deref())
+        );
+        println!("  Replicas: {}", or_absent(scaling.replicas));
+        println!("  CPU: {}m", or_absent(scaling.replica_cpu_millicores));
+        println!("  Memory: {} GB", or_absent(scaling.replica_memory_gb));
     }
     Ok(())
 }
@@ -1625,9 +1735,9 @@ fn print_created(
         println!("{}", serde_json::to_string_pretty(clickpipe)?);
     } else {
         println!("ClickPipe created successfully!");
-        println!("  Name: {}", clickpipe.name);
-        println!("  ID: {}", clickpipe.id);
-        println!("  State: {}", clickpipe.state);
+        println!("  Name: {}", or_absent(clickpipe.name.as_deref()));
+        println!("  ID: {}", or_absent(clickpipe.id.as_ref()));
+        println!("  State: {}", or_absent(clickpipe.state.as_ref()));
     }
     Ok(())
 }
@@ -1964,10 +2074,10 @@ pub async fn backup_list(
         let rows: Vec<Row> = backups
             .into_iter()
             .map(|b| Row {
-                id: b.id.to_string(),
-                status: b.status.to_string(),
-                size: format_bytes(b.size_in_bytes),
-                created: b.started_at.to_rfc3339(),
+                id: or_absent(b.id),
+                status: or_absent(b.status.as_ref()),
+                size: or_absent(b.size_in_bytes.map(format_bytes)),
+                created: or_absent(b.started_at.map(|at| at.to_rfc3339())),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2041,9 +2151,9 @@ pub async fn service_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} updated", svc.name);
-        println!("  ID: {}", svc.id);
-        println!("  State: {}", svc.state);
+        println!("Service {} updated", or_absent(svc.name.as_deref()));
+        println!("  ID: {}", or_absent(svc.id));
+        println!("  State: {}", or_absent(svc.state.as_ref()));
     }
     Ok(())
 }
@@ -2098,20 +2208,30 @@ pub async fn service_scale(
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Service {} scaling updated", svc.name);
-        println!("  Autoscaling Mode: {}", svc.autoscaling_mode);
+        println!("Service {} scaling updated", or_absent(svc.name.as_deref()));
+        println!(
+            "  Autoscaling Mode: {}",
+            or_absent(svc.autoscaling_mode.as_ref())
+        );
         match svc.autoscaling_mode {
-            AutoscalingMode::Horizontal => {
-                println!("  Min Replicas: {}", svc.min_replicas);
-                println!("  Max Replicas: {}", svc.max_replicas);
-                println!("  Memory/Replica: {} GB", svc.replica_memory_gb);
+            Some(AutoscalingMode::Horizontal) => {
+                println!("  Min Replicas: {}", or_absent(svc.min_replicas));
+                println!("  Max Replicas: {}", or_absent(svc.max_replicas));
+                println!("  Memory/Replica: {} GB", or_absent(svc.replica_memory_gb));
             }
-            AutoscalingMode::Vertical => {
-                println!("  Min Memory/Replica: {} GB", svc.min_replica_memory_gb);
-                println!("  Max Memory/Replica: {} GB", svc.max_replica_memory_gb);
-                println!("  Replicas: {}", svc.num_replicas);
+            Some(AutoscalingMode::Vertical) => {
+                println!(
+                    "  Min Memory/Replica: {} GB",
+                    or_absent(svc.min_replica_memory_gb)
+                );
+                println!(
+                    "  Max Memory/Replica: {} GB",
+                    or_absent(svc.max_replica_memory_gb)
+                );
+                println!("  Replicas: {}", or_absent(svc.num_replicas));
             }
-            // A mode this CLI version doesn't know; don't guess which fields apply.
+            // A mode this CLI version doesn't know, or one the API did not
+            // return; don't guess which fields apply.
             _ => {}
         }
     }
@@ -2128,17 +2248,69 @@ pub async fn service_reset_password(
     let request = build_service_password_patch_request(&opts);
     let resp = client.reset_password(&org_id, service_id, &request).await?;
 
+    // Resolve before either output branch, so --json cannot report success
+    // over a response that dropped the one-time generated password.
+    let outcome =
+        resolve_reset_password_outcome(generation_requested(&request), resp.password.as_deref())?;
+
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("Password reset for service {}", service_id);
-        if resp.password.is_empty() {
-            println!("  Password hash updated; no plaintext password returned");
-        } else {
-            println!("  New password: {}", resp.password);
+        match outcome {
+            ResetPasswordOutcome::Generated(password) => {
+                println!("  New password: {}", password)
+            }
+            ResetPasswordOutcome::HashUpdated => {
+                println!("  Password hash updated; no plaintext password returned")
+            }
         }
     }
     Ok(())
+}
+
+/// What a `service reset-password` response says about the new credential.
+#[derive(Debug)]
+enum ResetPasswordOutcome<'a> {
+    /// The API generated the password; it is returned once and never again.
+    Generated(&'a str),
+    /// The caller supplied a hash, so the API generates no plaintext password.
+    HashUpdated,
+}
+
+/// Whether the PATCH body asks the API to generate a password.
+///
+/// `newPasswordHash` alone decides it: the spec says `newDoubleSha1Hash` "will
+/// be ignored and the generated password will be used" when `newPasswordHash`
+/// is absent, and that the response carries a password "only if there was no
+/// 'newPasswordHash' in the request". So a double-SHA1-only body is still a
+/// generation request, and treating it as a hash update would discard the
+/// generated password the API rotated to.
+fn generation_requested(request: &ServicePasswordPatchRequest) -> bool {
+    request.new_password_hash.is_none()
+}
+
+/// Resolves what to report from the request mode and the response.
+///
+/// The mode is read from the request rather than inferred from what came back:
+/// only a hash request explains a response without a password, and an absent
+/// one on a generation request means the new credential is lost.
+fn resolve_reset_password_outcome(
+    generation_requested: bool,
+    password: Option<&str>,
+) -> Result<ResetPasswordOutcome<'_>, Box<dyn std::error::Error>> {
+    if !generation_requested {
+        return Ok(ResetPasswordOutcome::HashUpdated);
+    }
+    match password {
+        Some(password) => Ok(ResetPasswordOutcome::Generated(password)),
+        None => Err(
+            "the API response omitted the generated password, so it cannot be shown: the \
+                     service password may already have been rotated — run the reset again to get \
+                     a password you can use"
+                .into(),
+        ),
+    }
 }
 
 pub async fn query_endpoint_get(
@@ -2176,8 +2348,11 @@ pub async fn query_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Query endpoint created for service {}", service_id);
-        println!("  ID: {}", ep.id);
-        println!("  Roles: {}", ep.roles.join(", "));
+        println!("  ID: {}", or_absent(ep.id.as_deref()));
+        println!(
+            "  Roles: {}",
+            or_absent(ep.roles.as_ref().map(|roles| roles.join(", ")))
+        );
     }
     Ok(())
 }
@@ -2219,7 +2394,17 @@ pub async fn service_query(
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
     let service =
         resolve_service(client, &org_id, opts.name.as_deref(), opts.id.as_deref()).await?;
-    let service_id = service.id.to_string();
+    // The whole query path is keyed on the service id: prefer the one the API
+    // echoed, and fall back to the one the user passed if the response omitted
+    // it.
+    let service_id = match service.id {
+        Some(id) => id.to_string(),
+        None => opts
+            .id
+            .clone()
+            .ok_or("the API response is missing the service id")?,
+    };
+    let service_name = or_absent(service.name.as_deref());
 
     let format = opts.format.unwrap_or_else(default_query_format);
 
@@ -2241,12 +2426,12 @@ pub async fn service_query(
         };
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service.name);
+                eprint_waking_service(&service_name);
                 run(true).await
             }
             other => other,
         };
-        result.map_err(|e| convert_query_error(client, e, &service.name))?
+        result.map_err(|e| convert_query_error(client, e, &service_name))?
     } else {
         let key = match credentials::get_service_query_key(&service_id) {
             Some(k) => k,
@@ -2259,13 +2444,13 @@ pub async fn service_query(
             None => {
                 eprintln!(
                     "Provisioning Query API endpoint + key for service '{}'...",
-                    service.name
+                    service_name
                 );
                 crate::cloud::service_query::ensure_service_query_setup(
                     client,
                     &org_id,
                     &service_id,
-                    &service.name,
+                    &service_name,
                 )
                 .await?
             }
@@ -2287,12 +2472,12 @@ pub async fn service_query(
         };
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service.name);
+                eprint_waking_service(&service_name);
                 run(true).await
             }
             other => other,
         };
-        result.map_err(|e| convert_query_error(client, e, &service.name))?
+        result.map_err(|e| convert_query_error(client, e, &service_name))?
     };
 
     use futures_util::StreamExt;
@@ -2403,8 +2588,8 @@ pub async fn private_endpoint_create(
         println!("{}", serde_json::to_string_pretty(&ep)?);
     } else {
         println!("Private endpoint created for service {}", service_id);
-        println!("  Endpoint ID: {}", ep.id);
-        println!("  Description: {}", ep.description);
+        println!("  Endpoint ID: {}", or_absent(ep.id.as_deref()));
+        println!("  Description: {}", or_absent(ep.description.as_deref()));
     }
     Ok(())
 }
@@ -2445,7 +2630,11 @@ pub async fn org_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&org)?);
     } else {
-        println!("Organization updated: {} ({})", org.name, org.id);
+        println!(
+            "Organization updated: {} ({})",
+            or_absent(org.name.as_deref()),
+            or_absent(org.id)
+        );
     }
     Ok(())
 }
@@ -2490,8 +2679,12 @@ pub async fn org_usage(
     if json {
         println!("{}", serde_json::to_string_pretty(&usage)?);
     } else {
-        println!("Grand Total: {:.2} CHC", usage.grand_total_chc);
-        if usage.costs.is_empty() {
+        println!(
+            "Grand Total: {} CHC",
+            or_absent(usage.grand_total_chc.map(|total| format!("{total:.2}")))
+        );
+        let costs = usage.costs.unwrap_or_default();
+        if costs.is_empty() {
             println!("No usage cost records found");
             return Ok(());
         }
@@ -2505,13 +2698,12 @@ pub async fn org_usage(
             #[tabled(rename = "Total (CHC)")]
             total: String,
         }
-        let rows: Vec<Row> = usage
-            .costs
+        let rows: Vec<Row> = costs
             .iter()
             .map(|cost| Row {
-                entity: cost.entity_name.clone(),
-                date: cost.date.clone(),
-                total: format!("{:.2}", cost.total_chc),
+                entity: or_absent(cost.entity_name.as_deref()),
+                date: or_absent(cost.date.as_deref()),
+                total: or_absent(cost.total_chc.map(|total| format!("{total:.2}"))),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2553,15 +2745,12 @@ pub async fn member_list(
         let rows: Vec<Row> = members
             .into_iter()
             .map(|m| Row {
-                email: m.email.clone(),
-                user_id: m.user_id.clone(),
-                roles: m
-                    .assigned_roles
-                    .iter()
-                    .map(|r| r.role_name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                name: m.name.clone(),
+                email: or_absent(m.email.as_deref()),
+                user_id: or_absent(m.user_id.as_deref()),
+                roles: join_absent(m.assigned_roles.as_deref(), |r| {
+                    or_absent(r.role_name.as_deref())
+                }),
+                name: or_absent(m.name.as_deref()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2611,7 +2800,7 @@ pub async fn member_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&member)?);
     } else {
-        println!("Member {} updated", member.email);
+        println!("Member {} updated", or_absent(member.email.as_deref()));
     }
     Ok(())
 }
@@ -2667,15 +2856,12 @@ pub async fn invitation_list(
         let rows: Vec<Row> = invitations
             .into_iter()
             .map(|inv| Row {
-                email: inv.email.clone(),
-                id: inv.id.to_string(),
-                roles: inv
-                    .assigned_roles
-                    .iter()
-                    .map(|r| r.role_name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                expires: inv.expire_at.to_rfc3339(),
+                email: or_absent(inv.email.as_deref()),
+                id: or_absent(inv.id),
+                roles: join_absent(inv.assigned_roles.as_deref(), |r| {
+                    or_absent(r.role_name.as_deref())
+                }),
+                expires: or_absent(inv.expire_at.map(|at| at.to_rfc3339())),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2704,7 +2890,11 @@ pub async fn invitation_create(
     if json {
         println!("{}", serde_json::to_string_pretty(&inv)?);
     } else {
-        println!("Invitation sent to {} ({})", inv.email, inv.id);
+        println!(
+            "Invitation sent to {} ({})",
+            or_absent(inv.email.as_deref()),
+            or_absent(inv.id)
+        );
     }
     Ok(())
 }
@@ -2778,9 +2968,9 @@ pub async fn key_list(
         let rows: Vec<Row> = keys
             .into_iter()
             .map(|k| Row {
-                name: k.name.clone(),
-                id: k.id.to_string(),
-                state: k.state.to_string(),
+                name: or_absent(k.name.as_deref()),
+                id: or_absent(k.id),
+                state: or_absent(k.state.as_ref()),
                 expires: k
                     .expire_at
                     .map(|t| t.to_rfc3339())
@@ -2790,6 +2980,53 @@ pub async fn key_list(
         println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
+}
+
+/// What a `key create` response says about the key's credentials.
+#[derive(Debug)]
+enum KeyCreateMaterial<'a> {
+    /// The API returned the generated pair; it is shown once and never again.
+    Generated {
+        key_id: &'a str,
+        key_secret: &'a str,
+    },
+    /// The caller supplied pre-hashed credentials, so no pair is generated.
+    PreHashed,
+}
+
+/// Resolves the credentials to print from the request mode and the response.
+///
+/// Only a pre-hashed request explains a response without key material, so the
+/// mode is read from the request rather than inferred from what came back: an
+/// absent `keyId`/`keySecret` on a generated-key request means the one-time
+/// secret is lost, which is an error, not a "no key material returned" notice.
+fn resolve_key_create_material<'a>(
+    pre_hashed: bool,
+    key_id: Option<&'a str>,
+    key_secret: Option<&'a str>,
+    key_name: Option<&str>,
+) -> Result<KeyCreateMaterial<'a>, Box<dyn std::error::Error>> {
+    if pre_hashed {
+        return Ok(KeyCreateMaterial::PreHashed);
+    }
+    match (key_id, key_secret) {
+        (Some(key_id), Some(key_secret)) => Ok(KeyCreateMaterial::Generated { key_id, key_secret }),
+        _ => {
+            // Name the key when the response did return it, so the user knows
+            // which one to look for.
+            let named = match key_name {
+                Some(name) => format!(" '{}'", name),
+                None => String::new(),
+            };
+            Err(format!(
+                "the API response omitted the generated key material, so the one-time key secret \
+                 cannot be shown: the key{} may still have been created — list the organization's \
+                 keys and delete it if so",
+                named
+            )
+            .into())
+        }
+    }
 }
 
 pub async fn key_create(
@@ -2804,22 +3041,31 @@ pub async fn key_create(
 
     let resp = client.create_api_key(&org_id, &request).await?;
 
+    let name = resp.key.as_ref().and_then(|key| key.name.as_deref());
+    // Resolve before either output branch, so --json cannot report success
+    // over a response that dropped the one-time key material.
+    let material = resolve_key_create_material(
+        request.hash_data.is_some(),
+        resp.key_id.as_deref(),
+        resp.key_secret.as_deref(),
+        name,
+    )?;
+
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
     } else {
         println!("API key created!");
-        println!("  Name: {}", resp.key.name);
-        if !resp.key_id.is_empty() {
-            println!("  Key ID: {}", resp.key_id);
-        }
-        if !resp.key_secret.is_empty() {
-            println!("  Key Secret: {}", resp.key_secret);
-        }
-        if !resp.key_id.is_empty() || !resp.key_secret.is_empty() {
-            println!();
-            println!("Save the key secret now — it will not be shown again.");
-        } else {
-            println!("  Pre-hashed credentials accepted; no generated key material returned");
+        println!("  Name: {}", or_absent(name));
+        match material {
+            KeyCreateMaterial::Generated { key_id, key_secret } => {
+                println!("  Key ID: {}", key_id);
+                println!("  Key Secret: {}", key_secret);
+                println!();
+                println!("Save the key secret now — it will not be shown again.");
+            }
+            KeyCreateMaterial::PreHashed => {
+                println!("  Pre-hashed credentials accepted; no generated key material returned");
+            }
         }
     }
     Ok(())
@@ -2859,9 +3105,9 @@ pub async fn key_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&key)?);
     } else {
-        println!("API key {} updated", key.name);
-        println!("  ID: {}", key.id);
-        println!("  State: {}", key.state);
+        println!("API key {} updated", or_absent(key.name.as_deref()));
+        println!("  ID: {}", or_absent(key.id));
+        println!("  State: {}", or_absent(key.state.as_ref()));
     }
     Ok(())
 }
@@ -2917,9 +3163,9 @@ pub async fn activity_list(
         let rows: Vec<Row> = activities
             .into_iter()
             .map(|a| Row {
-                id: a.id.clone(),
-                activity_type: a.r#type.to_string(),
-                created: a.created_at.to_rfc3339(),
+                id: or_absent(a.id.as_deref()),
+                activity_type: or_absent(a.r#type.as_ref()),
+                created: or_absent(a.created_at.map(|at| at.to_rfc3339())),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2984,12 +3230,18 @@ pub async fn backup_config_update(
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
         println!("Backup configuration updated for service {}", service_id);
-        println!("  Backup period: {} hours", config.backup_period_in_hours);
+        println!(
+            "  Backup period: {} hours",
+            or_absent(config.backup_period_in_hours)
+        );
         println!(
             "  Retention: {} hours",
-            config.backup_retention_period_in_hours
+            or_absent(config.backup_retention_period_in_hours)
         );
-        println!("  Start time: {}", config.backup_start_time);
+        println!(
+            "  Start time: {}",
+            or_absent(config.backup_start_time.as_deref())
+        );
     }
     Ok(())
 }
@@ -3013,6 +3265,240 @@ fn format_bytes(bytes: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_endpoint_keeps_the_present_half_of_a_partial_endpoint() {
+        let endpoint = |host: Option<&str>, port: Option<f64>| ServiceEndpoint {
+            host: host.map(str::to_string),
+            port,
+            ..Default::default()
+        };
+
+        assert_eq!(first_endpoint(None), ABSENT);
+        assert_eq!(first_endpoint(Some(&[])), ABSENT);
+        assert_eq!(
+            first_endpoint(Some(&[endpoint(Some("host"), Some(9440.0))])),
+            "host:9440"
+        );
+        assert_eq!(
+            first_endpoint(Some(&[endpoint(Some("host"), None)])),
+            "host"
+        );
+        assert_eq!(
+            first_endpoint(Some(&[endpoint(None, Some(9440.0))])),
+            format!("{ABSENT}:9440")
+        );
+        assert_eq!(first_endpoint(Some(&[endpoint(None, None)])), ABSENT);
+    }
+
+    #[test]
+    fn service_query_hint_is_dropped_when_the_id_is_absent() {
+        assert_eq!(service_query_hint(None), None);
+
+        let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
+        let hint = service_query_hint(Some(id)).unwrap();
+        assert!(
+            hint.contains("--id a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"),
+            "hint should name the service: {hint}"
+        );
+        assert!(hint.contains("provisioned automatically on first use"));
+    }
+
+    #[test]
+    fn service_credentials_block_shows_the_password_the_api_sent() {
+        let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
+        assert_eq!(
+            service_credentials_block(Some("s3cret"), Some(id)),
+            "Credentials (save these, password shown only once):\n  Username: default\n  \
+             Password: s3cret"
+        );
+    }
+
+    #[test]
+    fn service_credentials_block_treats_an_empty_password_as_sent() {
+        assert_eq!(
+            service_credentials_block(Some(""), None),
+            "Credentials (save these, password shown only once):\n  Username: default\n  \
+             Password: "
+        );
+    }
+
+    #[test]
+    fn service_credentials_block_warns_with_the_reset_command_when_the_password_is_absent() {
+        let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
+        let block = service_credentials_block(None, Some(id));
+        assert!(
+            !block.contains(&format!("Password: {ABSENT}")),
+            "an absent password must not render a placeholder credential: {block}"
+        );
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains(
+                "clickhousectl cloud service reset-password a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"
+            ),
+            "the warning should name the exact recovery command: {block}"
+        );
+    }
+
+    #[test]
+    fn service_credentials_block_warns_generically_when_the_service_id_is_absent() {
+        let block = service_credentials_block(None, None);
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains("clickhousectl cloud service reset-password <service-id>"),
+            "without an id the warning should stay generic: {block}"
+        );
+    }
+
+    #[test]
+    fn classify_stop_poll_state_fails_on_an_absent_state() {
+        let err = classify_stop_poll_state(None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the API response omitted the service state while waiting for the service to stop, \
+             so the stop cannot be confirmed"
+        );
+    }
+
+    #[test]
+    fn classify_stop_poll_state_separates_stopped_waiting_and_failed() {
+        assert!(classify_stop_poll_state(Some(&ServiceState::Stopped)).unwrap());
+        assert!(classify_stop_poll_state(Some(&ServiceState::Idle)).unwrap());
+        assert!(!classify_stop_poll_state(Some(&ServiceState::Stopping)).unwrap());
+        assert!(!classify_stop_poll_state(Some(&ServiceState::Running)).unwrap());
+        // An unrecognized state keeps the loop polling rather than failing.
+        assert!(
+            !classify_stop_poll_state(Some(&ServiceState::Unknown("hibernating".into()))).unwrap()
+        );
+
+        let err = classify_stop_poll_state(Some(&ServiceState::Failed)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "service entered unexpected state 'failed' while waiting for stop"
+        );
+        // "deleted" is not a typed variant, so it arrives through the catch-all.
+        let err =
+            classify_stop_poll_state(Some(&ServiceState::Unknown("deleted".into()))).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "service entered unexpected state 'deleted' while waiting for stop"
+        );
+    }
+
+    #[test]
+    fn resolve_key_create_material_returns_the_generated_pair() {
+        let material =
+            resolve_key_create_material(false, Some("key-id"), Some("key-secret"), Some("ci"))
+                .unwrap();
+        match material {
+            KeyCreateMaterial::Generated { key_id, key_secret } => {
+                assert_eq!(key_id, "key-id");
+                assert_eq!(key_secret, "key-secret");
+            }
+            KeyCreateMaterial::PreHashed => panic!("expected the generated pair"),
+        }
+    }
+
+    #[test]
+    fn resolve_key_create_material_reports_pre_hashed_regardless_of_response() {
+        assert!(matches!(
+            resolve_key_create_material(true, None, None, Some("ci")).unwrap(),
+            KeyCreateMaterial::PreHashed
+        ));
+        // The mode comes from the request, so echoed material does not change it.
+        assert!(matches!(
+            resolve_key_create_material(true, Some("key-id"), None, None).unwrap(),
+            KeyCreateMaterial::PreHashed
+        ));
+    }
+
+    #[test]
+    fn resolve_key_create_material_fails_when_generated_material_is_absent() {
+        let err = resolve_key_create_material(false, None, Some("key-secret"), Some("ci"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the generated key material"),
+            "unexpected error: {err}"
+        );
+        assert!(err.contains("the key 'ci' may still have been created"));
+
+        // An empty string is material the API did send, so it is not absent.
+        let material = resolve_key_create_material(false, Some(""), Some(""), Some("ci")).unwrap();
+        assert!(matches!(material, KeyCreateMaterial::Generated { .. }));
+
+        // Without a name the message stays grammatical.
+        let err = resolve_key_create_material(false, Some("key-id"), None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("the key may still have been created"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn generation_is_requested_unless_a_password_hash_is_sent() {
+        let request = |new_password_hash: Option<&str>, new_double_sha1_hash: Option<&str>| {
+            ServicePasswordPatchRequest {
+                new_password_hash: new_password_hash.map(str::to_string),
+                new_double_sha1_hash: new_double_sha1_hash.map(str::to_string),
+            }
+        };
+        assert!(generation_requested(&request(None, None)));
+        // The API ignores `newDoubleSha1Hash` without `newPasswordHash` and
+        // generates a password anyway, so this is still a generation request:
+        // reporting "hash updated" would discard the new credential.
+        assert!(generation_requested(&request(None, Some("sha1"))));
+        assert!(!generation_requested(&request(Some("sha256"), None)));
+        assert!(!generation_requested(&request(
+            Some("sha256"),
+            Some("sha1")
+        )));
+    }
+
+    #[test]
+    fn resolve_reset_password_outcome_returns_the_generated_password() {
+        match resolve_reset_password_outcome(true, Some("s3cret")).unwrap() {
+            ResetPasswordOutcome::Generated(password) => assert_eq!(password, "s3cret"),
+            ResetPasswordOutcome::HashUpdated => panic!("expected the generated password"),
+        }
+
+        // An empty string is a password the API did send, so it is not absent.
+        assert!(matches!(
+            resolve_reset_password_outcome(true, Some("")).unwrap(),
+            ResetPasswordOutcome::Generated("")
+        ));
+    }
+
+    #[test]
+    fn resolve_reset_password_outcome_reports_hash_updated_regardless_of_response() {
+        assert!(matches!(
+            resolve_reset_password_outcome(false, None).unwrap(),
+            ResetPasswordOutcome::HashUpdated
+        ));
+        // The mode comes from the request, so an echoed password does not
+        // turn a hash reset into a generated one.
+        assert!(matches!(
+            resolve_reset_password_outcome(false, Some("s3cret")).unwrap(),
+            ResetPasswordOutcome::HashUpdated
+        ));
+    }
+
+    #[test]
+    fn resolve_reset_password_outcome_fails_when_the_generated_password_is_absent() {
+        let err = resolve_reset_password_outcome(true, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the generated password"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("may already have been rotated") && err.contains("run the reset again"),
+            "unexpected error: {err}"
+        );
+    }
 
     #[test]
     fn parse_tag_rejects_empty_keys() {

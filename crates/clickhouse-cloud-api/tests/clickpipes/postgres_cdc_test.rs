@@ -87,7 +87,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         let services = resp.result.ok_or("postgres list returned no result")?;
                         let leftover: Vec<_> = services
                             .into_iter()
-                            .filter(|s| filters_match_tags(&filters, &s.tags))
+                            .filter(|s| {
+                                filters_match_tags(&filters, s.tags.as_deref().unwrap_or_default())
+                            })
                             .collect();
                         Ok(leftover)
                     }
@@ -151,27 +153,31 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         let pg_created = pg_create_resp?
             .result
             .ok_or("postgres create returned no result")?;
-        let postgres_id = pg_created.id.to_string();
+        let postgres_id = pg_created
+            .id
+            .ok_or("postgres create returned no id")?
+            .to_string();
         // The create response is the only API surface guaranteed to return
         // credentials: from July 31, 2026 the get endpoint stops echoing
         // `password` and `connectionString`, so capture everything
         // credential-derived here rather than from the polled get below.
-        let pg_username = pg_created.username.clone();
-        let pg_password = pg_created.password.clone();
+        let pg_username = pg_created.username.clone().unwrap_or_default();
+        let pg_password = pg_created.password.clone().unwrap_or_default();
+        let pg_connection_string = pg_created.connection_string.clone().unwrap_or_default();
         assert!(
-            !pg_created.connection_string.is_empty(),
-            "postgres create returned empty connection string"
+            !pg_connection_string.is_empty(),
+            "postgres create returned no connection string"
         );
-        let pg_port = parse_pg_port(&pg_created.connection_string).unwrap_or(5432);
-        let pg_database = parse_pg_database(&pg_created.connection_string)
-            .unwrap_or_else(|| "postgres".to_string());
+        let pg_port = parse_pg_port(&pg_connection_string).unwrap_or(5432);
+        let pg_database =
+            parse_pg_database(&pg_connection_string).unwrap_or_else(|| "postgres".to_string());
         assert!(
             !pg_username.is_empty(),
-            "postgres create returned empty username"
+            "postgres create returned no username"
         );
         assert!(
             !pg_password.is_empty(),
-            "postgres create returned empty password"
+            "postgres create returned no password"
         );
         cleanup.register_postgres(postgres_id.clone());
         eprintln!("  provisioned postgres id <redacted>");
@@ -179,8 +185,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         let ch_created = ch_create_resp?
             .result
             .ok_or("service create returned no result")?;
-        let clickhouse_id = ch_created.service.id.to_string();
-        let clickhouse_password = ch_created.password.clone();
+        let clickhouse_service = require_field(ch_created.service, "service")?;
+        let clickhouse_id = require_field(clickhouse_service.id, "service.id")?.to_string();
+        let clickhouse_password = require_field(ch_created.password.clone(), "password")?;
         cleanup.register_service(clickhouse_id.clone());
         eprintln!("  provisioned clickhouse id <redacted>");
 
@@ -197,7 +204,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 async move {
                     let resp = client.postgres_service_get(&org_id, &postgres_id).await?;
                     let svc = resp.result.ok_or("postgres get returned no result")?;
-                    if svc.state.to_string() == "running" {
+                    if svc
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.to_string() == "running")
+                    {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -216,7 +227,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 async move {
                     let resp = client.instance_get(&org_id, &clickhouse_id).await?;
                     let svc = resp.result.ok_or("service get returned no result")?;
-                    let state = svc.state.to_string();
+                    let state = service_state(&svc);
                     if matches!(state.as_str(), "running" | "idle") {
                         Ok(Some(svc))
                     } else {
@@ -227,13 +238,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         );
         let (pg_ready, ch_ready) = tokio::try_join!(pg_ready_fut, ch_ready_fut)?;
 
-        assert!(!pg_ready.hostname.is_empty(), "empty pg hostname");
-        let ch_endpoint = ch_ready
-            .endpoints
-            .iter()
-            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-            .ok_or("ClickHouse service has no https endpoint")?
-            .clone();
+        let pg_hostname = pg_ready.hostname.clone().unwrap_or_default();
+        assert!(!pg_hostname.is_empty(), "postgres get returned no hostname");
+        let ch_endpoint = https_endpoint(&ch_ready)?;
         let ch_username = ch_endpoint
             .username
             .clone()
@@ -248,7 +255,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             .await
             .ok();
         let pg_client = connect_postgres(
-            &pg_ready.hostname,
+            &pg_hostname,
             pg_port,
             &pg_database,
             &pg_username,
@@ -280,7 +287,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         password: pg_password.clone(),
                     },
                     database: pg_database.clone(),
-                    host: pg_ready.hostname.clone(),
+                    host: pg_hostname.clone(),
                     port: pg_port as i64,
                     settings: ClickPipePostgresPipeSettings {
                         // `cdc` does snapshot + ongoing replication. The API
@@ -320,7 +327,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             .await?
             .result
             .ok_or("clickpipe create returned no result")?;
-        let clickpipe_id = pipe.id.to_string();
+        let clickpipe_id = clickpipe_id(&pipe)?;
         cleanup.register_clickpipe(clickhouse_id.clone(), clickpipe_id.clone());
         eprintln!("  provisioned clickpipe id <redacted>");
 
@@ -343,12 +350,14 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         .await?;
                     let pipe = resp.result.ok_or("clickpipe get returned no result")?;
                     match pipe.state {
-                        ClickPipeState::Running => Ok(Some(pipe)),
-                        ClickPipeState::Failed | ClickPipeState::InternalError => Err(format!(
-                            "clickpipe entered terminal failure state {}",
-                            pipe.state
-                        )
-                        .into()),
+                        Some(ClickPipeState::Running) => Ok(Some(pipe)),
+                        Some(ClickPipeState::Failed) | Some(ClickPipeState::InternalError) => {
+                            Err(format!(
+                                "clickpipe entered terminal failure state {}",
+                                clickpipe_state(&pipe)
+                            )
+                            .into())
+                        }
                         _ => Ok(None),
                     }
                 }
@@ -361,8 +370,8 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         log_phase("Verify seed rows in ClickHouse");
 
         let ch_query = ClickHouseQuery::new(
-            &ch_endpoint.host,
-            ch_endpoint.port as u16,
+            &require_field(ch_endpoint.host.clone(), "endpoints[].host")?,
+            require_field(ch_endpoint.port, "endpoints[].port")? as u16,
             &ch_username,
             &clickhouse_password,
         );
@@ -471,16 +480,16 @@ fn duration_from_env_or(name: &str, default_secs: u64) -> TestResult<Duration> {
     }
 }
 
-fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
+fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1Response]) -> bool {
     filters.iter().all(|filter| {
         let Some(expr) = filter.strip_prefix("tag:") else {
             return true;
         };
         let Some((key, value)) = expr.split_once('=') else {
-            return tags.iter().any(|t| t.key == expr);
+            return tags.iter().any(|t| t.key.as_deref() == Some(expr));
         };
         tags.iter()
-            .any(|t| t.key == key && t.value.as_deref() == Some(value))
+            .any(|t| t.key.as_deref() == Some(key) && t.value.as_deref() == Some(value))
     })
 }
 

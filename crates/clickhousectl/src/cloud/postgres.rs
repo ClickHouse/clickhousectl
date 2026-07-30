@@ -1,13 +1,14 @@
 use crate::cloud::cli::parse_datetime;
 use crate::cloud::client::CloudClient;
 use crate::cloud::commands::{parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::output::{ABSENT, or_absent};
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgConfig, PgHaType, PgProvider, PgVersion, PostgresInstanceConfig,
-    PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
+    ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgVersion,
+    PostgresInstanceConfig, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
     PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    ResourceTagsV1,
+    ResourceTagsV1, ResourceTagsV1Response,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -264,6 +265,34 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::er
         .map_err(|e| format!("failed to parse {} as JSON: {}", path.display(), e).into())
 }
 
+/// Builds the `postgres config` write body from a user-supplied JSON document.
+///
+/// The document root must be a JSON object; anything else (a scalar, an array,
+/// `null`) is rejected rather than read as "no sections", which would send an
+/// empty body and reset the configuration.
+///
+/// The API rejects a body that omits either `pgConfig` or `pgBouncerConfig`, and
+/// the request model is strict (no serde defaults), so an omitted key of an
+/// object root resolves to an empty object here — explicitly, at the point of use.
+fn instance_config_from_json(
+    doc: &serde_json::Value,
+) -> Result<PostgresInstanceConfig, Box<dyn std::error::Error>> {
+    let root = doc
+        .as_object()
+        .ok_or("configuration document must be a JSON object")?;
+    let section = |key: &str| {
+        root.get(key)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}))
+    };
+    Ok(PostgresInstanceConfig {
+        pg_config: serde_json::from_value(section("pgConfig"))
+            .map_err(|e| format!("invalid pgConfig: {}", e))?,
+        pg_bouncer_config: serde_json::from_value(section("pgBouncerConfig"))
+            .map_err(|e| format!("invalid pgBouncerConfig: {}", e))?,
+    })
+}
+
 /// Parse `--set key=value` overrides into a JSON object.
 ///
 /// Each value is parsed as JSON first (so `max_connections=500` becomes a number),
@@ -336,11 +365,18 @@ fn apply_filter(item: &PostgresServiceListItem, filters: &[String]) -> bool {
         let Some((key, val)) = filter.split_once('=') else {
             continue;
         };
+        // A response field the API omitted matches no filter value.
         let matches = match key.trim() {
-            "state" => format!("{:?}", item.state).eq_ignore_ascii_case(val),
-            "region" => item.region == val,
-            "name" => item.name == val,
-            "provider" => format!("{:?}", item.provider).eq_ignore_ascii_case(val),
+            "state" => item
+                .state
+                .as_ref()
+                .is_some_and(|s| format!("{:?}", s).eq_ignore_ascii_case(val)),
+            "region" => item.region.as_deref() == Some(val),
+            "name" => item.name.as_deref() == Some(val),
+            "provider" => item
+                .provider
+                .as_ref()
+                .is_some_and(|p| format!("{:?}", p).eq_ignore_ascii_case(val)),
             _ => true,
         };
         if !matches {
@@ -350,41 +386,52 @@ fn apply_filter(item: &PostgresServiceListItem, filters: &[String]) -> bool {
     true
 }
 
-fn state_label(s: &clickhouse_cloud_api::models::PgStateProperty) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| format!("{:?}", s))
+fn state_label(s: Option<&clickhouse_cloud_api::models::PgStateProperty>) -> String {
+    match s {
+        Some(s) => serde_json::to_value(s)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("{:?}", s)),
+        None => ABSENT.to_string(),
+    }
 }
 
-fn enum_label<T: serde::Serialize>(v: &T) -> String {
-    serde_json::to_value(v)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_default()
+fn enum_label<T: serde::Serialize>(v: Option<&T>) -> String {
+    match v {
+        Some(v) => serde_json::to_value(v)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default(),
+        None => ABSENT.to_string(),
+    }
 }
 
 fn render_postgres_service(svc: &PostgresService) {
-    println!("  ID: {}", svc.id);
-    println!("  Name: {}", svc.name);
-    println!("  State: {}", state_label(&svc.state));
-    println!("  Provider: {}", enum_label(&svc.provider));
-    println!("  Region: {}", svc.region);
-    println!("  Size: {}", enum_label(&svc.size));
-    println!("  Storage (GB): {}", svc.storage_size);
-    println!("  PG version: {}", enum_label(&svc.postgres_version));
-    println!("  HA type: {}", enum_label(&svc.ha_type));
-    println!("  Primary: {}", svc.is_primary);
-    println!("  Host: {}", svc.hostname);
-    println!("  Username: {}", svc.username);
-    println!("  Created: {}", svc.created_at.to_rfc3339());
-    if !svc.tags.is_empty() {
-        let tags: Vec<String> = svc
-            .tags
+    println!("  ID: {}", or_absent(svc.id.as_ref()));
+    println!("  Name: {}", or_absent(svc.name.as_deref()));
+    println!("  State: {}", state_label(svc.state.as_ref()));
+    println!("  Provider: {}", enum_label(svc.provider.as_ref()));
+    println!("  Region: {}", or_absent(svc.region.as_deref()));
+    println!("  Size: {}", enum_label(svc.size.as_ref()));
+    println!("  Storage (GB): {}", or_absent(svc.storage_size));
+    println!(
+        "  PG version: {}",
+        enum_label(svc.postgres_version.as_ref())
+    );
+    println!("  HA type: {}", enum_label(svc.ha_type.as_ref()));
+    println!("  Primary: {}", or_absent(svc.is_primary));
+    println!("  Host: {}", or_absent(svc.hostname.as_deref()));
+    println!("  Username: {}", or_absent(svc.username.as_deref()));
+    println!(
+        "  Created: {}",
+        or_absent(svc.created_at.map(|c| c.to_rfc3339()))
+    );
+    if let Some(svc_tags) = svc.tags.as_ref().filter(|t| !t.is_empty()) {
+        let tags: Vec<String> = svc_tags
             .iter()
-            .map(|t| match &t.value {
-                Some(v) => format!("{}={}", t.key, v),
-                None => t.key.clone(),
+            .map(|t| match (t.key.as_deref(), t.value.as_deref()) {
+                (key, Some(value)) => format!("{}={}", or_absent(key), value),
+                (key, None) => or_absent(key).to_string(),
             })
             .collect();
         println!("  Tags: {}", tags.join(", "));
@@ -406,6 +453,30 @@ fn merge_tags(
         .collect();
     merged.extend(add.iter().cloned());
     merged
+}
+
+/// Merges `--add-tag`/`--remove-tag` against the tag list a GET returned.
+///
+/// An omitted `tags` in the response is indistinguishable from a field the API
+/// dropped, so a read-modify-write must not proceed on it: `tags` is replaced
+/// wholesale by the PATCH, so merging against an assumed empty set would delete
+/// every tag the service still has. A returned tag without a key cannot be sent
+/// back either, so say so rather than dropping it from the merged set.
+fn merge_response_tags(
+    current: Option<Vec<ResourceTagsV1Response>>,
+    add: &[ResourceTagsV1],
+    remove_keys: &[String],
+) -> Result<Vec<ResourceTagsV1>, Box<dyn std::error::Error>> {
+    let current = current.ok_or(
+        "the API response omitted the tags field, so --add-tag/--remove-tag cannot be merged \
+         safely: an update replaces the tag set wholesale, and merging against an assumed empty \
+         set would delete any tags the service already has",
+    )?;
+    let existing = current
+        .into_iter()
+        .map(ResourceTagsV1::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(merge_tags(&existing, add, remove_keys))
 }
 
 // ---------------------------------------------------------------------------
@@ -505,14 +576,18 @@ pub async fn postgres_list(
     let rows: Vec<Row> = filtered
         .into_iter()
         .map(|i| Row {
-            name: i.name.clone(),
-            id: i.id.to_string(),
-            state: state_label(&i.state),
-            region: i.region.clone(),
-            size: enum_label(&i.size),
-            pg: enum_label(&i.postgres_version),
-            ha: enum_label(&i.ha_type),
-            primary: if i.is_primary { "yes" } else { "no" }.to_string(),
+            name: or_absent(i.name.as_deref()),
+            id: or_absent(i.id.as_ref()),
+            state: state_label(i.state.as_ref()),
+            region: or_absent(i.region.as_deref()),
+            size: enum_label(i.size.as_ref()),
+            pg: enum_label(i.postgres_version.as_ref()),
+            ha: enum_label(i.ha_type.as_ref()),
+            primary: match i.is_primary {
+                Some(true) => "yes".to_string(),
+                Some(false) => "no".to_string(),
+                None => ABSENT.to_string(),
+            },
         })
         .collect();
 
@@ -545,6 +620,48 @@ pub async fn postgres_get(
     Ok(())
 }
 
+/// The post-create credentials block, or the warning that replaces it.
+///
+/// The password is returned once, so a placeholder in its place would be read
+/// as the credential itself. An absent password therefore gets the omission
+/// plus the command that mints a usable one; the create succeeded and the
+/// password is recoverable, so this is a warning rather than an error. An empty
+/// string is a password the API sent.
+///
+/// `connection_string` is the non-empty connection string the same response
+/// carried, if any: the spec says it embeds the service password, so when it is
+/// present the credential is not actually lost and telling the user to reset
+/// would rotate a working password for nothing.
+fn postgres_credentials_block(
+    username: Option<&str>,
+    password: Option<&str>,
+    connection_string: Option<&str>,
+    postgres_id: Option<&PgIdProperty>,
+) -> String {
+    match (password, connection_string, postgres_id) {
+        (Some(password), _, _) => format!(
+            "Credentials (save these — password shown only once):\n  Username: {}\n  Password: {}",
+            or_absent(username),
+            password
+        ),
+        (None, Some(_), _) => "WARNING: the API response omitted the `password` field, so the \
+                               password cannot be shown on its own.\nThe connection string below \
+                               embeds it, so no password reset is needed."
+            .to_string(),
+        (None, None, Some(id)) => format!(
+            "WARNING: the API response omitted the one-time password, so it cannot be shown.\n\
+             The service was created; reset the password to get a usable credential:\n  \
+             clickhousectl cloud postgres reset-password {} --generate",
+            id
+        ),
+        (None, None, None) => "WARNING: the API response omitted the one-time password, so it \
+                               cannot be shown.\nThe service was created; once you have its id, \
+                               reset the password with `clickhousectl cloud postgres \
+                               reset-password <postgres-id> --generate` to get a usable credential."
+            .to_string(),
+    }
+}
+
 pub async fn postgres_create(
     client: &CloudClient,
     opts: PostgresCreateOptions<'_>,
@@ -569,7 +686,7 @@ pub async fn postgres_create(
         .transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<clickhouse_cloud_api::models::PgBouncerConfig>)
+        .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
 
     let req = PostgresServicePostRequest {
@@ -598,11 +715,21 @@ pub async fn postgres_create(
         println!();
         render_postgres_service(&svc);
         println!();
-        println!("Credentials (save these — password shown only once):");
-        println!("  Username: {}", svc.username);
-        println!("  Password: {}", svc.password);
-        if !svc.connection_string.is_empty() {
-            println!("  Connection string: {}", svc.connection_string);
+        let connection_string = svc
+            .connection_string
+            .as_deref()
+            .filter(|conn| !conn.is_empty());
+        println!(
+            "{}",
+            postgres_credentials_block(
+                svc.username.as_deref(),
+                svc.password.as_deref(),
+                connection_string,
+                svc.id.as_ref()
+            )
+        );
+        if let Some(conn) = connection_string {
+            println!("  Connection string: {}", conn);
         }
     }
     Ok(())
@@ -631,7 +758,7 @@ pub async fn postgres_update(
             .map_err(|e| client.convert_error(e))?;
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
-        Some(merge_tags(&current.tags, &add, opts.remove_tag))
+        Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     } else {
         None
     };
@@ -750,7 +877,7 @@ pub async fn postgres_config_replace(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let cfg: PostgresInstanceConfig = load_json_file(file)?;
+    let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
     let resp = client
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
@@ -783,19 +910,16 @@ pub async fn postgres_config_patch(
         return Err("provide --set key=value... or --file PATH".into());
     }
 
-    let cfg: PostgresInstanceConfig = if let Some(path) = file {
-        load_json_file(path)?
+    let cfg = if let Some(path) = file {
+        instance_config_from_json(&load_json_file::<serde_json::Value>(path)?)?
     } else {
-        // Build a PostgresInstanceConfig from --set entries by constructing
-        // a JSON object { "pgConfig": { ... overrides ... }, "pgBouncerConfig": {} }
-        // and deserializing, which merges with #[serde(default)] field defaults.
+        // Build the request body from --set entries: the overrides become the
+        // pgConfig object, and pgBouncerConfig resolves to `{}`.
         let overrides = parse_pg_config_overrides(sets)?;
-        let wrapper = serde_json::json!({
+        instance_config_from_json(&serde_json::json!({
             "pgConfig": serde_json::Value::Object(overrides),
-            "pgBouncerConfig": {},
-        });
-        serde_json::from_value(wrapper)
-            .map_err(|e| format!("failed to build config from --set entries: {}", e))?
+        }))
+        .map_err(|e| format!("failed to build config from --set entries: {}", e))?
     };
 
     let resp = client
@@ -845,14 +969,15 @@ pub async fn postgres_reset_password(
         .await
         .map_err(|e| client.convert_error(e))?;
     let out = unwrap_api(resp)?;
+    // Emit what the user now needs to use: the API echoes the password back, but
+    // fall back to the one we sent if the response omits it.
+    let password = out.password.unwrap_or(pw);
 
     if json {
-        // Return the password that was set (the API also echoes it back, but always
-        // emit what the user now needs to use).
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "password": out.password,
+                "password": password,
             }))?
         );
     } else {
@@ -860,7 +985,7 @@ pub async fn postgres_reset_password(
         if generate {
             println!();
             println!("Generated password (save this — not recoverable):");
-            println!("  {}", out.password);
+            println!("  {}", password);
         }
     }
     Ok(())
@@ -880,7 +1005,7 @@ pub async fn postgres_read_replica_create(
         .transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<clickhouse_cloud_api::models::PgBouncerConfig>)
+        .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
 
     let req = PostgresServiceReadReplicaRequest {
@@ -921,7 +1046,7 @@ pub async fn postgres_restore(
         .transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<clickhouse_cloud_api::models::PgBouncerConfig>)
+        .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
     let restore_target = chrono::DateTime::parse_from_rfc3339(opts.restore_target)
         .map_err(|e| format!("invalid restore-target: {}", e))?
@@ -1557,5 +1682,217 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].key, "env");
         assert_eq!(out[0].value.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn merge_response_tags_refuses_absent_tags() {
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let err = merge_response_tags(None, &add, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the tags field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn merge_response_tags_merges_an_empty_tag_list() {
+        // `Some(vec![])` is the API saying "no tags", which is safe to merge on.
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let out = merge_response_tags(Some(vec![]), &add, &[]).unwrap();
+        assert_eq!(out, add);
+    }
+
+    #[test]
+    fn merge_response_tags_merges_returned_tags() {
+        let current = vec![
+            ResourceTagsV1Response {
+                key: Some("env".into()),
+                value: Some("dev".into()),
+            },
+            ResourceTagsV1Response {
+                key: Some("team".into()),
+                value: Some("data".into()),
+            },
+        ];
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let out = merge_response_tags(Some(current), &add, &["team".to_string()]).unwrap();
+        assert_eq!(out, add);
+    }
+
+    #[test]
+    fn merge_response_tags_refuses_a_returned_tag_without_a_key() {
+        let current = vec![ResourceTagsV1Response {
+            key: None,
+            value: Some("dev".into()),
+        }];
+        let err = merge_response_tags(Some(current), &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("key"), "unexpected error: {err}");
+    }
+
+    fn pg_test_id() -> PgIdProperty {
+        PgIdProperty::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap()
+    }
+
+    #[test]
+    fn postgres_credentials_block_shows_the_password_the_api_sent() {
+        assert_eq!(
+            postgres_credentials_block(Some("pg_user"), Some("s3cret"), None, Some(&pg_test_id())),
+            "Credentials (save these — password shown only once):\n  Username: pg_user\n  \
+             Password: s3cret"
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_treats_an_empty_password_as_sent() {
+        assert_eq!(
+            postgres_credentials_block(None, Some(""), None, None),
+            format!(
+                "Credentials (save these — password shown only once):\n  Username: {ABSENT}\n  \
+                 Password: "
+            )
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_points_at_the_connection_string_instead_of_a_reset() {
+        // The connection string embeds the password, so the credential isn't
+        // lost and a reset would rotate a working password for nothing.
+        let block = postgres_credentials_block(
+            Some("pg_user"),
+            None,
+            Some("postgresql://pg_user:s3cret@host:5432/postgres"),
+            Some(&pg_test_id()),
+        );
+        assert!(
+            !block.contains("reset-password"),
+            "a recoverable password must not be reset: {block}"
+        );
+        assert!(
+            block.contains("connection string below embeds it"),
+            "the warning should point at the connection string: {block}"
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_warns_with_the_reset_command_when_the_password_is_absent() {
+        let block = postgres_credentials_block(Some("pg_user"), None, None, Some(&pg_test_id()));
+        assert!(
+            !block.contains(&format!("Password: {ABSENT}")),
+            "an absent password must not render a placeholder credential: {block}"
+        );
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains(
+                "clickhousectl cloud postgres reset-password \
+                 a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 --generate"
+            ),
+            "the warning should name the exact recovery command: {block}"
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_warns_generically_when_the_service_id_is_absent() {
+        let block = postgres_credentials_block(Some("pg_user"), None, None, None);
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains("clickhousectl cloud postgres reset-password <postgres-id> --generate"),
+            "without an id the warning should stay generic: {block}"
+        );
+    }
+
+    #[test]
+    fn instance_config_from_json_fills_omitted_sections() {
+        // The request model is strict, so the handler resolves an omitted
+        // section to `{}` — the minimal body the API accepts.
+        let cfg = instance_config_from_json(&serde_json::json!({
+            "pgConfig": { "max_connections": 500 },
+        }))
+        .unwrap();
+        assert_eq!(cfg.pg_config.max_connections, Some(serde_json::json!(500)));
+        assert_eq!(cfg.pg_bouncer_config, PgBouncerConfig::default());
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            serde_json::json!({ "pgConfig": { "max_connections": 500 }, "pgBouncerConfig": {} })
+        );
+
+        let empty = instance_config_from_json(&serde_json::json!({})).unwrap();
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
+        );
+    }
+
+    #[test]
+    fn instance_config_from_json_accepts_both_sections() {
+        let cfg = instance_config_from_json(&serde_json::json!({
+            "pgConfig": { "max_connections": 500, "work_mem": "64MB" },
+            "pgBouncerConfig": {},
+        }))
+        .unwrap();
+        assert_eq!(cfg.pg_config.max_connections, Some(serde_json::json!(500)));
+        assert_eq!(cfg.pg_config.work_mem, Some(serde_json::json!("64MB")));
+        assert_eq!(cfg.pg_bouncer_config, PgBouncerConfig::default());
+    }
+
+    #[test]
+    fn instance_config_from_json_refuses_a_non_object_root() {
+        // A non-object root must not read as "no sections": that would send
+        // `{"pgConfig": {}, "pgBouncerConfig": {}}` and reset the config.
+        for root in [
+            serde_json::Value::Null,
+            serde_json::json!([{ "pgConfig": {} }]),
+            serde_json::json!("pgConfig"),
+            serde_json::json!(7),
+            serde_json::json!(true),
+        ] {
+            let err = instance_config_from_json(&root).unwrap_err().to_string();
+            assert_eq!(err, "configuration document must be a JSON object");
+        }
+    }
+
+    #[test]
+    fn instance_config_from_json_reports_an_invalid_section() {
+        let err = instance_config_from_json(&serde_json::json!({ "pgConfig": 7 }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid pgConfig"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn absent_response_fields_render_as_a_dash() {
+        let item = PostgresServiceListItem::default();
+        assert_eq!(or_absent(item.name.as_deref()), ABSENT);
+        assert_eq!(state_label(item.state.as_ref()), ABSENT);
+        assert_eq!(enum_label(item.size.as_ref()), ABSENT);
+    }
+
+    #[test]
+    fn apply_filter_does_not_match_absent_response_fields() {
+        let absent = PostgresServiceListItem::default();
+        assert!(!apply_filter(&absent, &["region=us-east-1".to_string()]));
+        assert!(!apply_filter(&absent, &["state=running".to_string()]));
+        // An unknown filter key stays permissive, as before.
+        assert!(apply_filter(&absent, &["bogus=1".to_string()]));
+
+        let present = PostgresServiceListItem {
+            region: Some("us-east-1".to_string()),
+            state: Some(clickhouse_cloud_api::models::PgStateProperty::Running),
+            ..Default::default()
+        };
+        assert!(apply_filter(&present, &["region=us-east-1".to_string()]));
+        assert!(apply_filter(&present, &["state=running".to_string()]));
     }
 }
