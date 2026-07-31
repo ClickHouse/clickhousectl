@@ -14,11 +14,12 @@
 //! Tests run as cargo integration tests:
 //!     cargo test -p clickhousectl --test cli_request_shape_test
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use wiremock::matchers::{header, method, path, path_regex};
+use wiremock::matchers::{body_string_contains, header, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
@@ -1304,6 +1305,69 @@ async fn start_mock_query_host() -> MockServer {
     mock
 }
 
+fn write_stored_service_query_key(project_dir: &Path) {
+    let ch_dir = project_dir.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    let creds = serde_json::json!({
+        "service_query_keys": {
+            QUERY_TEST_SERVICE_ID: {
+                "key_id": "stored-key-id",
+                "key_secret": "stored-key-secret",
+                "endpoint_id": "ep-1",
+                "service_name": "demo",
+                "created_at": "2026-05-11T12:00:00Z",
+            }
+        }
+    });
+    std::fs::write(
+        ch_dir.join("credentials.json"),
+        serde_json::to_vec(&creds).unwrap(),
+    )
+    .unwrap();
+}
+
+fn stored_key_service_query_command(
+    control: &MockServer,
+    query_host: &MockServer,
+    project_dir: &Path,
+) -> Command {
+    let mut command = Command::new(clickhousectl_binary());
+    command
+        .env("DO_NOT_TRACK", "1")
+        .args(["cloud", "--url"])
+        .arg(control.uri())
+        .args([
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .current_dir(project_dir)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri());
+    command
+}
+
+async fn received_query_sql(query_host: &MockServer) -> Vec<String> {
+    query_host
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            body["sql"].as_str().unwrap().to_string()
+        })
+        .collect()
+}
+
+fn statement_text(sql: &str) -> &str {
+    sql.trim().trim_end_matches(';').trim_end()
+}
+
 #[tokio::test]
 async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
     let control = start_mock_control_plane_with_service().await;
@@ -1399,45 +1463,10 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
     // control-plane creds come from the env tier (the credentials file
     // carries only service_query_keys, no api_key/api_secret).
     let dir = tempfile::tempdir().unwrap();
-    let ch_dir = dir.path().join(".clickhouse");
-    std::fs::create_dir_all(&ch_dir).unwrap();
-    let creds = serde_json::json!({
-        "service_query_keys": {
-            QUERY_TEST_SERVICE_ID: {
-                "key_id": "stored-key-id",
-                "key_secret": "stored-key-secret",
-                "endpoint_id": "ep-1",
-                "service_name": "demo",
-                "created_at": "2026-05-11T12:00:00Z",
-            }
-        }
-    });
-    std::fs::write(
-        ch_dir.join("credentials.json"),
-        serde_json::to_vec(&creds).unwrap(),
-    )
-    .unwrap();
+    write_stored_service_query_key(dir.path());
 
-    let url = control.uri();
-    let output = Command::new(clickhousectl_binary())
-        .env("DO_NOT_TRACK", "1")
-        .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--org-id",
-            "org-1",
-            "--query",
-            "SELECT 1",
-        ])
-        .current_dir(dir.path())
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+    let output = stored_key_service_query_command(&control, &query_host, dir.path())
+        .args(["--query", "SELECT 1"])
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -1470,6 +1499,130 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
             .map(|r| format!("{} {}", r.method, r.url.path()))
             .collect::<Vec<_>>(),
     );
+}
+
+// ── Multi-statement query files (issue #333) ──────────────────────────────
+//
+// The Query API accepts only one statement per request, while the local
+// client accepts multi-statement `--queries-file` input. The cloud command
+// preserves that CLI contract by splitting files and sending their statements
+// serially, streaming each response before it moves to the next statement.
+
+#[tokio::test]
+async fn service_query_file_sends_statements_sequentially_and_concatenates_output() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    let dir = tempfile::tempdir().unwrap();
+    write_stored_service_query_key(dir.path());
+    std::fs::write(dir.path().join("queries.sql"), "SELECT 1;\nSELECT 2;\n").unwrap();
+
+    let output = stored_key_service_query_command(&control, &query_host, dir.path())
+        .args([
+            "--queries-file",
+            "queries.sql",
+            "--database",
+            "analytics",
+            "--format",
+            "TabSeparated",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n1\n");
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let sql: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body["database"], "analytics");
+            assert_eq!(
+                request
+                    .url
+                    .query_pairs()
+                    .find(|(key, _)| key == "format")
+                    .map(|(_, value)| value.to_string())
+                    .as_deref(),
+                Some("TabSeparated")
+            );
+            body["sql"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(statement_text(&sql[0]), "SELECT 1");
+    assert_eq!(statement_text(&sql[1]), "SELECT 2");
+}
+
+#[tokio::test]
+async fn service_query_file_dash_splits_statements_read_from_stdin() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    let dir = tempfile::tempdir().unwrap();
+    write_stored_service_query_key(dir.path());
+
+    let mut child = stored_key_service_query_command(&control, &query_host, dir.path())
+        .args(["--queries-file", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"SELECT 10;\nSELECT 20;\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n1\n");
+    let sql = received_query_sql(&query_host).await;
+    assert_eq!(sql.len(), 2);
+    assert_eq!(statement_text(&sql[0]), "SELECT 10");
+    assert_eq!(statement_text(&sql[1]), "SELECT 20");
+}
+
+#[tokio::test]
+async fn service_query_file_stops_before_later_statements_after_failure() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(body_string_contains("SELECT broken"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_string(r#"{"error":{"code":"62","details":"test syntax error"}}"#),
+        )
+        .with_priority(1)
+        .mount(&query_host)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .with_priority(5)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_stored_service_query_key(dir.path());
+    std::fs::write(
+        dir.path().join("queries.sql"),
+        "SELECT 1;\nSELECT broken;\nSELECT 3;\n",
+    )
+    .unwrap();
+
+    let output = stored_key_service_query_command(&control, &query_host, dir.path())
+        .args(["--queries-file", "queries.sql"])
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+
+    let sql = received_query_sql(&query_host).await;
+    assert_eq!(sql.len(), 2, "the third statement must not be submitted");
+    assert_eq!(statement_text(&sql[0]), "SELECT 1");
+    assert_eq!(statement_text(&sql[1]), "SELECT broken");
 }
 
 // ── Provisioning cleanup (issue #314) ──────────────────────────────────────

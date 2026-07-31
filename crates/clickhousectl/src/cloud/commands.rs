@@ -2389,7 +2389,10 @@ pub async fn service_query(
     client: &CloudClient,
     opts: ServiceQueryOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let sql = read_query_sql(opts.query.as_deref(), opts.queries_file.as_deref())?;
+    let statements = crate::cloud::query_file::read_query_statements(
+        opts.query.as_deref(),
+        opts.queries_file.as_deref(),
+    )?;
 
     let org_id = resolve_org_id(client, opts.org_id.as_deref()).await?;
     let service =
@@ -2408,30 +2411,14 @@ pub async fn service_query(
 
     let format = opts.format.unwrap_or_else(default_query_format);
 
-    let response = if client.is_bearer_auth() {
+    let query_auth = if client.is_bearer_auth() {
         // OAuth: the Query API authenticates the user's bearer token
         // directly, SQL-console style — the query runs as the user's own
         // cloud identity, with no per-service Query API key and no
         // query-endpoint configuration needed on the service.
         // `--no-auto-enable` is a no-op here since nothing is ever
         // provisioned.
-        let run = |wake: bool| {
-            client.api().run_query_bearer(
-                &service_id,
-                &sql,
-                opts.database.as_deref(),
-                &format,
-                wake,
-            )
-        };
-        let result = match run(false).await {
-            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service_name);
-                run(true).await
-            }
-            other => other,
-        };
-        result.map_err(|e| convert_query_error(client, e, &service_name))?
+        ServiceQueryAuth::Bearer
     } else {
         let key = match credentials::get_service_query_key(&service_id) {
             Some(k) => k,
@@ -2455,44 +2442,100 @@ pub async fn service_query(
                 .await?
             }
         };
-
-        // The query host normally wakes an idled service on its own for
-        // Query API key auth, but handle the wake confirmation here too so
-        // both auth paths behave the same if it ever asks.
-        let run = |wake: bool| {
-            client.api().run_query(
-                &service_id,
-                &key.key_id,
-                &key.key_secret,
-                &sql,
-                opts.database.as_deref(),
-                &format,
-                wake,
-            )
-        };
-        let result = match run(false).await {
-            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service_name);
-                run(true).await
-            }
-            other => other,
-        };
-        result.map_err(|e| convert_query_error(client, e, &service_name))?
+        ServiceQueryAuth::Basic(key)
     };
 
     use futures_util::StreamExt;
     use std::io::Write as _;
-    let mut stream = response.bytes_stream();
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|e| -> Box<dyn std::error::Error> {
-            format!("Failed to read query response: {e}").into()
-        })?;
-        handle.write_all(&bytes)?;
+    for sql in statements {
+        let response = run_service_query_statement(
+            client,
+            &query_auth,
+            &service_id,
+            &sql,
+            opts.database.as_deref(),
+            &format,
+            &service_name,
+        )
+        .await?;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk.map_err(|e| -> Box<dyn std::error::Error> {
+                format!("Failed to read query response: {e}").into()
+            })?;
+            handle.write_all(&bytes)?;
+        }
+        // Make successful earlier statements visible even if a later one
+        // fails, and surface a broken output pipe before executing more SQL.
+        handle.flush()?;
     }
-    handle.flush()?;
     Ok(())
+}
+
+enum ServiceQueryAuth {
+    Bearer,
+    Basic(credentials::ServiceQueryKey),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_service_query_statement(
+    client: &CloudClient,
+    auth: &ServiceQueryAuth,
+    service_id: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    wake: bool,
+) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+    match auth {
+        ServiceQueryAuth::Bearer => {
+            client
+                .api()
+                .run_query_bearer(service_id, sql, database, format, wake)
+                .await
+        }
+        ServiceQueryAuth::Basic(key) => {
+            client
+                .api()
+                .run_query(
+                    service_id,
+                    &key.key_id,
+                    &key.key_secret,
+                    sql,
+                    database,
+                    format,
+                    wake,
+                )
+                .await
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_service_query_statement(
+    client: &CloudClient,
+    auth: &ServiceQueryAuth,
+    service_id: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    service_name: &str,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let result =
+        match send_service_query_statement(client, auth, service_id, sql, database, format, false)
+            .await
+        {
+            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
+                eprint_waking_service(service_name);
+                send_service_query_statement(client, auth, service_id, sql, database, format, true)
+                    .await
+            }
+            other => other,
+        };
+
+    result.map_err(|e| convert_query_error(client, e, service_name))
 }
 
 /// Stderr notice shown when the query host reports the service is idled and
@@ -2516,45 +2559,6 @@ fn convert_query_error(
         .into(),
         other => client.convert_error(other).into(),
     }
-}
-
-fn read_query_sql(
-    inline: Option<&str>,
-    queries_file: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    use std::io::Read as _;
-
-    if let Some(q) = inline {
-        let trimmed = q.trim();
-        if trimmed.is_empty() {
-            return Err("--query was empty".into());
-        }
-        return Ok(q.to_string());
-    }
-
-    if let Some(path) = queries_file {
-        let mut content = String::new();
-        if path == "-" {
-            std::io::stdin().read_to_string(&mut content)?;
-        } else {
-            content = std::fs::read_to_string(path)?;
-        }
-        if content.trim().is_empty() {
-            return Err("queries file was empty".into());
-        }
-        return Ok(content);
-    }
-
-    if std::io::stdin().is_terminal() {
-        return Err("no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.".into());
-    }
-
-    let mut content = String::new();
-    std::io::stdin().read_to_string(&mut content)?;
-    if content.trim().is_empty() {
-        return Err("no SQL received on stdin".into());
-    }
-    Ok(content)
 }
 
 fn default_query_format() -> String {

@@ -833,6 +833,8 @@ CONTEXT FOR AGENTS:
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
+  --queries-file statements are sent sequentially in file order; execution
+  stops on the first failure. Use --queries-file - to read a file from stdin.
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
   on a TTY, TabSeparated when piped.")]
     Query {
@@ -848,7 +850,7 @@ CONTEXT FOR AGENTS:
         #[arg(long, short)]
         query: Option<String>,
 
-        /// Execute queries from a SQL file (use "-" for stdin)
+        /// Execute a SQL file sequentially; stops on the first failure (use "-" for stdin)
         #[arg(long)]
         queries_file: Option<String>,
 

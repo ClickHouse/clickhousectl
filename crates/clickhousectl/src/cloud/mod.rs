@@ -5,6 +5,7 @@ pub mod commands;
 pub mod credentials;
 pub mod output;
 pub mod postgres;
+pub mod query_file;
 pub mod service_query;
 pub mod types;
 
