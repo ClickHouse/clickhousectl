@@ -362,10 +362,11 @@ clickhousectl cloud org update <org-id> --name "Renamed Org"
 clickhousectl cloud org update <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
-clickhousectl cloud org prometheus <org-id> --filtered-metrics true
-clickhousectl cloud org usage <org-id> \
+clickhousectl cloud org prometheus --filtered-metrics true
+clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31
+# Add --org-id <org-id> to either command when your credentials access multiple organizations.
 ```
 
 ### Services

@@ -118,6 +118,112 @@ async fn invoke_cli_capture_body(mock: &MockServer, cli_args: &[&str]) -> Value 
     serde_json::from_slice(&post.body).expect("POST body wasn't valid JSON")
 }
 
+// ── Organization auto-detection (issue #337) ───────────────────────────────
+
+const AUTO_DETECTED_ORG_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+async fn start_mock_org_auto_detection_api() -> MockServer {
+    let mock = MockServer::start().await;
+    let orgs = serde_json::json!({
+        "result": [{ "id": AUTO_DETECTED_ORG_ID, "name": "Only org" }],
+        "status": 200,
+        "requestId": "stub-org-list",
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(orgs))
+        .mount(&mock)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string("metric 1\n"))
+        .mount(&mock)
+        .await;
+
+    let usage = serde_json::json!({
+        "result": { "grandTotalCHC": 0.0, "costs": [] },
+        "status": 200,
+        "requestId": "stub-org-usage",
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(usage))
+        .mount(&mock)
+        .await;
+
+    mock
+}
+
+fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url, "--json"];
+    args.extend(cli_args);
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn org_prometheus_auto_detects_the_only_organization() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "prometheus", "--filtered-metrics", "true"],
+    );
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "metric 1\n\n");
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url.path(), "/v1/organizations");
+    assert_eq!(
+        requests[1].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus")
+    );
+    assert_eq!(requests[1].url.query(), Some("filtered_metrics=true"));
+}
+
+#[tokio::test]
+async fn org_usage_auto_detects_the_only_organization() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "usage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+    );
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url.path(), "/v1/organizations");
+    assert_eq!(
+        requests[1].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost")
+    );
+    let query = requests[1]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    assert!(query.contains(&("from_date".into(), "2025-01-01".into())));
+    assert!(query.contains(&("to_date".into(), "2025-01-31".into())));
+}
+
 // ── Bug 1: Postgres CDC must NOT send publicationName / replicationSlotName ─
 //
 // `cdc` replication mode creates the slot + publication server-side; the

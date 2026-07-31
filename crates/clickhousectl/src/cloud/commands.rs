@@ -2641,11 +2641,12 @@ pub async fn org_update(
 
 pub async fn org_prometheus(
     client: &CloudClient,
-    org_id: &str,
+    org_id: Option<&str>,
     filtered_metrics: Option<bool>,
     _json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prom = client.get_org_prometheus(org_id, filtered_metrics).await?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let prom = client.get_org_prometheus(&org_id, filtered_metrics).await?;
     println!("{}", prom);
     Ok(())
 }
@@ -2666,14 +2667,15 @@ pub async fn service_prometheus(
 
 pub async fn org_usage(
     client: &CloudClient,
-    org_id: &str,
+    org_id: Option<&str>,
     from_date: &str,
     to_date: &str,
     filters: &[String],
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
     let usage = client
-        .get_org_usage(org_id, from_date, to_date, filters)
+        .get_org_usage(&org_id, from_date, to_date, filters)
         .await?;
 
     if json {

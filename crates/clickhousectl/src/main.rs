@@ -533,15 +533,25 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
             OrgCommands::Prometheus {
                 org_id,
                 filtered_metrics,
-            } => cloud::commands::org_prometheus(&client, &org_id, filtered_metrics, json).await,
+            } => {
+                cloud::commands::org_prometheus(&client, org_id.as_deref(), filtered_metrics, json)
+                    .await
+            }
             OrgCommands::Usage {
                 org_id,
                 from_date,
                 to_date,
                 filter,
             } => {
-                cloud::commands::org_usage(&client, &org_id, &from_date, &to_date, &filter, json)
-                    .await
+                cloud::commands::org_usage(
+                    &client,
+                    org_id.as_deref(),
+                    &from_date,
+                    &to_date,
+                    &filter,
+                    json,
+                )
+                .await
             }
         },
         CloudCommands::Service { command } => match command {
