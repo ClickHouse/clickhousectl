@@ -143,8 +143,11 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("PgConfig", "work_mem"),
 ];
 
-// Follow-up remediation is tracked in #296. Remove entries as their Rust API
-// types become checkable; stale acknowledgements are actionable findings.
+// Follow-up remediation is tracked in #296. The inline UDF-attach 424 error
+// response has no public client/model type, so its enum constraints remain
+// deliberately acknowledged until typed error responses are supported. Remove
+// entries as their Rust API types become checkable; stale acknowledgements are
+// actionable findings.
 const ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS: &[&str] = &[
     "/components/schemas/ApiKey/properties/roles/items",
     "/components/schemas/ApiKeyPatchRequest/properties/roles/items",
@@ -157,4 +160,6 @@ const ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS: &[&str] = &[
     "/components/schemas/UpgradeWindowPutRequest/properties/startHourUtc",
     "/paths/~1v1~1organizations~1{organizationId}~1postgres~1{postgresId}~1slowQueryPatterns/get/parameters/8/schema",
     "/paths/~1v1~1organizations~1{organizationId}~1postgres~1{postgresId}~1slowQueryPatterns/get/parameters/9/schema",
+    "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/code",
+    "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/serviceState",
 ];
