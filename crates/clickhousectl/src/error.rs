@@ -42,6 +42,9 @@ pub enum Error {
     #[error("No matching version found for: {0}")]
     NoMatchingVersion(String),
 
+    #[error("{0}")]
+    InvalidVersion(String),
+
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 

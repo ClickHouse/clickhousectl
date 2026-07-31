@@ -34,7 +34,7 @@ pub fn parse_version_spec(input: &str) -> Result<VersionSpec> {
     let input = input.trim();
 
     if input.is_empty() {
-        return Err(Error::NoMatchingVersion("empty version".to_string()));
+        return Err(Error::InvalidVersion("empty version".to_string()));
     }
 
     // Keywords
@@ -51,7 +51,7 @@ pub fn parse_version_spec(input: &str) -> Result<VersionSpec> {
     // Validate all parts are numeric
     for part in &parts {
         if part.parse::<u32>().is_err() {
-            return Err(Error::NoMatchingVersion(format!(
+            return Err(Error::InvalidVersion(format!(
                 "invalid version '{}': all parts must be numeric",
                 input
             )));
@@ -68,12 +68,12 @@ pub fn parse_version_spec(input: &str) -> Result<VersionSpec> {
             let minor: u32 = parts[1].parse().unwrap();
             Ok(VersionSpec::Minor(major, minor))
         }
-        3 => Err(Error::NoMatchingVersion(format!(
+        3 => Err(Error::InvalidVersion(format!(
             "3-part version '{}' is not supported. Use a full 4-part version (e.g., {}.1)",
             input, input
         ))),
         4 => Ok(VersionSpec::Exact(input.to_string())),
-        _ => Err(Error::NoMatchingVersion(format!(
+        _ => Err(Error::InvalidVersion(format!(
             "invalid version '{}': expected 1-2 or 4 parts",
             input
         ))),
@@ -129,26 +129,40 @@ mod tests {
     #[test]
     fn test_parse_3_part_rejected() {
         let err = parse_version_spec("25.12.9").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("3-part version"), "got: {}", msg);
-        assert!(msg.contains("25.12.9.1"), "should hint at 4-part: {}", msg);
+        assert!(matches!(&err, Error::InvalidVersion(_)));
+        assert_eq!(
+            err.to_string(),
+            "3-part version '25.12.9' is not supported. Use a full 4-part version (e.g., 25.12.9.1)"
+        );
     }
 
     #[test]
     fn test_parse_5_part_rejected() {
-        assert!(parse_version_spec("25.12.9.61.2").is_err());
+        let err = parse_version_spec("25.12.9.61.2").unwrap_err();
+        assert!(matches!(&err, Error::InvalidVersion(_)));
+        assert_eq!(
+            err.to_string(),
+            "invalid version '25.12.9.61.2': expected 1-2 or 4 parts"
+        );
     }
 
     #[test]
     fn test_parse_empty_rejected() {
-        assert!(parse_version_spec("").is_err());
+        let err = parse_version_spec("").unwrap_err();
+        assert!(matches!(&err, Error::InvalidVersion(_)));
+        assert_eq!(err.to_string(), "empty version");
     }
 
     #[test]
     fn test_parse_non_numeric_rejected() {
-        assert!(parse_version_spec("foo").is_err());
-        assert!(parse_version_spec("25.foo").is_err());
-        assert!(parse_version_spec("abc.12.9.61").is_err());
+        for input in ["foo", "25.foo", "abc.12.9.61"] {
+            let err = parse_version_spec(input).unwrap_err();
+            assert!(matches!(&err, Error::InvalidVersion(_)));
+            assert_eq!(
+                err.to_string(),
+                format!("invalid version '{input}': all parts must be numeric")
+            );
+        }
     }
 
     #[test]
