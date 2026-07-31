@@ -9,17 +9,14 @@ use crate::version_manager::spec::VersionSpec;
 use std::os::unix::fs::PermissionsExt;
 
 /// Install a version spec, trying installed versions first before any remote call.
-/// Matches the UX of `install_resolved`'s post-resolve local check, but avoids the
-/// network round-trip when a local match exists.
+/// An installed match is a successful no-op regardless of whether the spec is
+/// exact or partial.
 pub async fn install_local_first(
     spec: &VersionSpec,
     platform: &Platform,
     force: bool,
 ) -> Result<String> {
     if !force && let Some(local) = try_resolve_local(spec) {
-        if matches!(spec, VersionSpec::Exact(_)) {
-            return Err(Error::VersionAlreadyInstalled(local));
-        }
         eprintln!("ClickHouse {} is already installed as {}", spec, local);
         eprintln!("Use --force to re-download the latest build");
         return Ok(local);
