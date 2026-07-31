@@ -4,7 +4,7 @@
 //! and command-line arguments to recover server metadata (project root, name,
 //! ports, version). Used for orphaned server recovery and global server listing.
 
-use std::process::Command;
+use std::{collections::HashMap, process::Command};
 
 /// A ClickHouse process discovered via OS-level process inspection.
 #[derive(Debug, Clone)]
@@ -23,10 +23,15 @@ pub struct DiscoveredProcess {
 /// meaning they were started by this CLI. Other ClickHouse processes are ignored.
 pub fn discover_clickhouse_processes() -> Vec<DiscoveredProcess> {
     let pids = find_clickhouse_pids();
+    let cwds = get_process_cwds(&pids);
     let mut discovered = Vec::new();
 
     for pid in pids {
-        if let Some(proc) = inspect_process(pid) {
+        let Some(cwd) = cwds.get(&pid) else {
+            continue;
+        };
+
+        if let Some(proc) = inspect_process(pid, cwd) {
             discovered.push(proc);
         }
     }
@@ -48,9 +53,8 @@ fn find_clickhouse_pids() -> Vec<u32> {
 }
 
 /// Inspect a single process to extract server metadata from its cwd and cmdline.
-fn inspect_process(pid: u32) -> Option<DiscoveredProcess> {
-    let cwd = get_process_cwd(pid)?;
-    let (project_root, server_name) = parse_server_cwd(&cwd)?;
+fn inspect_process(pid: u32, cwd: &str) -> Option<DiscoveredProcess> {
+    let (project_root, server_name) = parse_server_cwd(cwd)?;
     let cmdline = get_process_cmdline(pid).unwrap_or_default();
     let http_port = parse_port_flag(&cmdline, "--http_port");
     let tcp_port = parse_port_flag(&cmdline, "--tcp_port");
@@ -66,35 +70,67 @@ fn inspect_process(pid: u32) -> Option<DiscoveredProcess> {
     })
 }
 
-/// Get the current working directory of a process (macOS).
+/// Get the current working directories of processes (macOS).
+///
+/// Resolving every PID in one `lsof` invocation avoids paying its relatively
+/// high startup cost once per ClickHouse process on the machine.
 #[cfg(target_os = "macos")]
-fn get_process_cwd(pid: u32) -> Option<String> {
+fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
     // -a is required to AND the conditions; without it macOS lsof OR's
     // -d and -p, returning the cwd of every process on the system.
     let output = Command::new("lsof")
-        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid_list])
+        .output();
 
-    if !output.status.success() {
-        return None;
-    }
+    let Ok(output) = output else {
+        return HashMap::new();
+    };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(path) = line.strip_prefix('n') {
-            return Some(path.to_string());
-        }
-    }
-    None
+    // `lsof` can report a non-zero status when a selected process exits during
+    // inspection. Keep any complete records it emitted for the remaining PIDs.
+    parse_lsof_cwds(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// Get the current working directory of a process (Linux).
+/// Parse `lsof -Fn` output into process working directories.
+///
+/// `p<pid>` starts a process record and `n<path>` names its cwd. Other fields
+/// (such as `fcwd`) are intentionally ignored.
+#[cfg(any(target_os = "macos", test))]
+fn parse_lsof_cwds(output: &str) -> HashMap<u32, String> {
+    let mut current_pid = None;
+    let mut cwds = HashMap::new();
+
+    for line in output.lines() {
+        if let Some(pid) = line.strip_prefix('p') {
+            current_pid = pid.parse().ok();
+        } else if let (Some(pid), Some(path)) = (current_pid, line.strip_prefix('n')) {
+            cwds.insert(pid, path.to_string());
+        }
+    }
+
+    cwds
+}
+
+/// Get the current working directories of processes (Linux).
 #[cfg(target_os = "linux")]
-fn get_process_cwd(pid: u32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{}/cwd", pid))
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
+fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
+    pids.iter()
+        .filter_map(|&pid| {
+            std::fs::read_link(format!("/proc/{pid}/cwd"))
+                .ok()
+                .and_then(|path| path.to_str().map(|path| (pid, path.to_string())))
+        })
+        .collect()
 }
 
 /// Get the command-line string of a process.
@@ -160,6 +196,50 @@ pub fn parse_version_from_cmdline(cmdline: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── parse_lsof_cwds tests ─────────────────────────────────────────
+
+    #[test]
+    fn parse_lsof_cwds_attributes_each_path_to_its_pid() {
+        let output = concat!(
+            "p101\n",
+            "fcwd\n",
+            "n/Users/al/project one/.clickhouse/servers/default/data\n",
+            "p202\n",
+            "fcwd\n",
+            "n/Users/al/project-two/.clickhouse/servers/test/data\n",
+        );
+
+        let cwds = parse_lsof_cwds(output);
+
+        assert_eq!(cwds.len(), 2);
+        assert_eq!(
+            cwds.get(&101).map(String::as_str),
+            Some("/Users/al/project one/.clickhouse/servers/default/data")
+        );
+        assert_eq!(
+            cwds.get(&202).map(String::as_str),
+            Some("/Users/al/project-two/.clickhouse/servers/test/data")
+        );
+    }
+
+    #[test]
+    fn parse_lsof_cwds_ignores_incomplete_and_malformed_records() {
+        let output = concat!(
+            "n/path-before-any-pid\n",
+            "pnot-a-pid\n",
+            "n/path-for-invalid-pid\n",
+            "p303\n",
+            "fcwd\n",
+            "p404\n",
+            "n/path-for-404\n",
+        );
+
+        let cwds = parse_lsof_cwds(output);
+
+        assert_eq!(cwds.len(), 1);
+        assert_eq!(cwds.get(&404).map(String::as_str), Some("/path-for-404"));
+    }
 
     // ── parse_server_cwd tests ─────────────────────────────────────────
 
