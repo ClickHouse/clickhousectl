@@ -42,6 +42,7 @@ body:
       description: How did you install clickhousectl?
       options:
         - Quick install script (curl ... | sh)
+        - Homebrew (brew tap clickhouse/tap)
         - cargo binstall
         - npm
         - pip / pipx / uv (PyPI)
