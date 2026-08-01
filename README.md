@@ -331,12 +331,17 @@ clickhousectl cloud auth status    # Show current auth state (including read-onl
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: 
+Credential resolution order:
 1. CLI flags
 2. `.clickhouse/credentials.json`
 3. Environment variables exported in your session
 4. Environment variables from `.env`
 5. OAuth tokens.
+
+When environment credentials are configured but a credentials file or explicit
+CLI flags take precedence, clickhousectl prints a one-line note to stderr.
+`cloud auth status` also marks the environment credentials as configured but
+inactive and identifies the source that outranked them.
 
 ### Debugging which credential source was used
 

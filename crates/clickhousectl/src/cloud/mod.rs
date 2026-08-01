@@ -12,6 +12,6 @@ pub mod types;
 mod types_test;
 
 pub use client::{
-    AuthSource, CloudClient, CloudError, CloudErrorKind, dotenv_env_provenance, env_cred_presence,
-    resolve_active_auth_source,
+    AuthSource, CloudClient, CloudError, CloudErrorKind, EnvCredPresence, dotenv_env_provenance,
+    env_cred_presence, resolve_active_auth_source,
 };

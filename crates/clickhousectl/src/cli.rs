@@ -50,6 +50,15 @@ CONTEXT FOR AGENTS:
 
     /// Work with serverless ClickHouse in ClickHouse Cloud
     #[command(after_help = "\
+CREDENTIAL PRECEDENCE:
+  1. --api-key / --api-secret command-line flags
+  2. Project credentials in .clickhouse/credentials.json
+  3. CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET (shell, then .env)
+  4. OAuth tokens from `cloud auth login`
+
+Higher-precedence credentials override lower-precedence credentials. Use
+`clickhousectl cloud auth status` to see which configured source is active.
+
 CONTEXT FOR AGENTS:
   Used for managing ClickHouse Cloud infrastructure. You need to have a ClickHouse Cloud account and be authenticated.
   OAuth login (`cloud auth login`) is read-only — it can list and inspect resources but cannot create, modify, or delete.
@@ -153,6 +162,27 @@ pub struct UpdateArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cloud_help_documents_credential_precedence() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand")
+            .render_long_help()
+            .to_string();
+
+        let precedence = help.split_once("CREDENTIAL PRECEDENCE:").unwrap().1;
+        let flags = precedence.find("1. --api-key / --api-secret").unwrap();
+        let file = precedence
+            .find("2. Project credentials in .clickhouse/credentials.json")
+            .unwrap();
+        let env = precedence.find("3. CLICKHOUSE_CLOUD_API_KEY").unwrap();
+        let oauth = precedence.find("4. OAuth tokens").unwrap();
+        assert!(flags < file && file < env && env < oauth, "{help}");
+        assert!(help.contains("Higher-precedence credentials override lower-precedence"));
+    }
 
     #[test]
     fn parses_skills_all_and_agent_flags() {

@@ -209,6 +209,30 @@ fn json_output(flag: bool) -> bool {
     flag || is_ai_agent::detect().is_some()
 }
 
+/// Explain when a configured environment credential cannot participate in
+/// authentication because a higher-precedence source won. Keep this notice on
+/// stderr so it does not contaminate `--json` output.
+fn ignored_env_credentials_notice(
+    active: cloud::AuthSource,
+    env_creds: cloud::EnvCredPresence,
+) -> Option<String> {
+    let configured = match (env_creds.key, env_creds.secret) {
+        (true, true) => {
+            "CLICKHOUSE_CLOUD_API_KEY and CLICKHOUSE_CLOUD_API_SECRET are set but ignored"
+        }
+        (true, false) => "CLICKHOUSE_CLOUD_API_KEY is set but ignored",
+        (false, true) => "CLICKHOUSE_CLOUD_API_SECRET is set but ignored",
+        (false, false) => return None,
+    };
+    let winner = match active {
+        cloud::AuthSource::CliFlags => "CLI flags",
+        cloud::AuthSource::CredentialsFile => "credentials file",
+        cloud::AuthSource::EnvVars | cloud::AuthSource::OAuthTokens => return None,
+    };
+
+    Some(format!("note: {configured}; using {winner} — see --debug"))
+}
+
 async fn run(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Local(args) => local::run(args.command, json_output(args.json)).await,
@@ -418,9 +442,15 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                         // one value is actually exported in the shell. Use
                         // the same rule as `dotenv_env_provenance()` so the
                         // table and `--debug describe()` stay consistent.
-                        let status = match cloud::dotenv_env_provenance() {
-                            Some(path) => format!("Active (from {})", path.display()),
-                            None => "Active".into(),
+                        let provenance = cloud::dotenv_env_provenance()
+                            .map(|path| format!(" (from {})", path.display()))
+                            .unwrap_or_default();
+                        let status = match active {
+                            Some(cloud::AuthSource::EnvVars) => format!("Active{provenance}"),
+                            Some(cloud::AuthSource::CredentialsFile) => format!(
+                                "Configured{provenance} (inactive, outranked by credentials file)"
+                            ),
+                            _ => format!("Configured{provenance} (inactive)"),
                         };
                         rows.push(AuthRow {
                             auth_type: "Env vars".into(),
@@ -487,6 +517,12 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
         args.url.as_deref(),
     )
     .map_err(cloud_error_to_top_level)?;
+
+    if let Some(notice) =
+        ignored_env_credentials_notice(client.auth_source(), cloud::env_cred_presence())
+    {
+        eprintln!("{notice}");
+    }
 
     if args.debug {
         eprintln!("[debug] auth source: {}", client.auth_source().describe());
@@ -1400,6 +1436,61 @@ mod tests {
     #[test]
     fn json_output_true_when_flag_set() {
         assert!(json_output(true));
+    }
+
+    #[test]
+    fn ignored_env_notice_names_the_overridden_variables_and_winner() {
+        assert_eq!(
+            ignored_env_credentials_notice(
+                cloud::AuthSource::CredentialsFile,
+                cloud::EnvCredPresence {
+                    key: true,
+                    secret: true,
+                },
+            )
+            .as_deref(),
+            Some(
+                "note: CLICKHOUSE_CLOUD_API_KEY and CLICKHOUSE_CLOUD_API_SECRET are set but \
+                 ignored; using credentials file — see --debug"
+            )
+        );
+        assert_eq!(
+            ignored_env_credentials_notice(
+                cloud::AuthSource::CliFlags,
+                cloud::EnvCredPresence {
+                    key: true,
+                    secret: false,
+                },
+            )
+            .as_deref(),
+            Some(
+                "note: CLICKHOUSE_CLOUD_API_KEY is set but ignored; using CLI flags — see --debug"
+            )
+        );
+    }
+
+    #[test]
+    fn ignored_env_notice_is_absent_when_env_wins_or_is_unset() {
+        assert!(
+            ignored_env_credentials_notice(
+                cloud::AuthSource::EnvVars,
+                cloud::EnvCredPresence {
+                    key: true,
+                    secret: true,
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            ignored_env_credentials_notice(
+                cloud::AuthSource::CredentialsFile,
+                cloud::EnvCredPresence {
+                    key: false,
+                    secret: false,
+                },
+            )
+            .is_none()
+        );
     }
 
     fn parse(args: &[&str]) -> Commands {

@@ -14,7 +14,7 @@
 //! Tests run as cargo integration tests:
 //!     cargo test -p clickhousectl --test cli_request_shape_test
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -160,6 +160,7 @@ async fn start_mock_org_auto_detection_api() -> MockServer {
 }
 
 fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
     let url = mock.uri();
     let mut args = vec!["cloud", "--url", &url, "--json"];
     args.extend(cli_args);
@@ -167,9 +168,106 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .env("DO_NOT_TRACK", "1")
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
         .args(args)
         .output()
         .expect("failed to spawn clickhousectl")
+}
+
+fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
+    let credentials_dir = root.join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": key,
+            "api_secret": secret,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+// ── Credential precedence visibility (issue #336) ─────────────────────────
+
+#[tokio::test]
+async fn credentials_file_reports_that_environment_credentials_are_ignored() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [],
+            "status": 200,
+            "requestId": "stub-org-list",
+        })))
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    let url = mock.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
+        .current_dir(dir.path())
+        .args(["cloud", "--url", &url, "--json", "org", "list"])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "note: CLICKHOUSE_CLOUD_API_KEY and CLICKHOUSE_CLOUD_API_SECRET are set but ignored; \
+         using credentials file — see --debug\n"
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    let authorization = requests[0]
+        .headers
+        .get("Authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "file-key:file-secret",
+        )
+    );
+    assert_eq!(authorization, expected);
+}
+
+#[test]
+fn auth_status_marks_outranked_environment_credentials_inactive() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
+        .current_dir(dir.path())
+        .args(["cloud", "--json", "auth", "status"])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+    assert!(output.stderr.is_empty());
+    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let env = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["type"] == "Env vars")
+        .unwrap();
+    assert_eq!(
+        env["status"],
+        "Configured (inactive, outranked by credentials file)"
+    );
+    assert_eq!(env["active"], "-");
 }
 
 // ── Service deletion errors (issue #335) ──────────────────────────────────

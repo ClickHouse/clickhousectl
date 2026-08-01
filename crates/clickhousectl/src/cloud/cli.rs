@@ -148,11 +148,11 @@ CONTEXT FOR AGENTS:
 
 #[derive(Args)]
 pub struct CloudArgs {
-    /// API key (or set CLICKHOUSE_CLOUD_API_KEY)
+    /// API key override (highest precedence; see `cloud --help` for all sources)
     #[arg(long, global = true)]
     pub api_key: Option<String>,
 
-    /// API secret (or set CLICKHOUSE_CLOUD_API_SECRET)
+    /// API secret override (highest precedence; see `cloud --help` for all sources)
     #[arg(long, global = true)]
     pub api_secret: Option<String>,
 
