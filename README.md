@@ -176,14 +176,16 @@ clickhousectl local server list
 clickhousectl local server list --global                  # List servers across all projects
 
 # Stop servers
-clickhousectl local server stop default                   # Stop by name
+clickhousectl local server stop                           # Stop "default"
+clickhousectl local server stop dev                       # Stop by name
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
 clickhousectl local server stop-all                       # Stop all running servers
 clickhousectl local server stop-all --global              # Stop all servers system-wide
 
 # Remove a stopped server and its data
-clickhousectl local server remove test
+clickhousectl local server remove                         # Remove "default"
+clickhousectl local server remove test                    # Remove by name
 
 # Write connection env vars to .env file
 clickhousectl local server dotenv                        # From "default" server → .env
@@ -192,7 +194,7 @@ clickhousectl local server dotenv --local                # Write to .env.local i
 clickhousectl local server dotenv --user default --password secret --database mydb  # Include credentials
 ```
 
-**Idempotent stop:** `server stop <name>` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
+**Idempotent stop:** `server stop [name]` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. The name defaults to "default". An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
@@ -249,9 +251,11 @@ clickhousectl local postgres client --name dev --query "SELECT 1"
 clickhousectl local postgres dotenv --name dev
 
 # Stop / remove. Pass --version when more than one major shares a name.
+clickhousectl local postgres stop                         # Stop "default"
 clickhousectl local postgres stop dev
 clickhousectl local postgres stop dev --version 17        # disambiguate
 clickhousectl local postgres stop-all                     # Stop all Postgres instances in this project
+clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
 

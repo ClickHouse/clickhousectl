@@ -179,7 +179,7 @@ CONTEXT FOR AGENTS:
   ClickHouse's built-in defaults (via config.d), so it can contain just the settings you want
   to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
   file's contents (they are forced as command-line overrides).
-  Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop <name>` to stop one.")]
+  Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop [name]` to stop one.")]
     Start {
         /// Server name (default: \"default\", or random if default is already running)
         #[arg(long)]
@@ -238,14 +238,16 @@ CONTEXT FOR AGENTS:
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a named ClickHouse server. Use the name from `clickhousectl local server list`.
+  Stops a ClickHouse server. The name defaults to \"default\"; use `clickhousectl local server list`
+  to find other server names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data directory is preserved — restart with `clickhousectl local server start --name <name>`.
   Idempotent: a server that exists but is already stopped exits 0 (no error).
   An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
-        /// Name of the server to stop
+        /// Name of the server to stop (default: "default")
+        #[arg(default_value = "default")]
         name: String,
 
         /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
@@ -275,9 +277,11 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  Related: `clickhousectl local server stop <name>` to stop first, `clickhousectl local server list` to see servers.")]
+  The name defaults to \"default\".
+  Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
-        /// Name of the server to remove
+        /// Name of the server to remove (default: "default")
+        #[arg(default_value = "default")]
         name: String,
     },
 
@@ -362,7 +366,8 @@ CONTEXT FOR AGENTS:
 
     /// Stop a running Postgres container by name
     Stop {
-        /// Name of the server to stop
+        /// Name of the server to stop (default: "default")
+        #[arg(default_value = "default")]
         name: String,
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
@@ -374,7 +379,8 @@ CONTEXT FOR AGENTS:
 
     /// Remove a stopped Postgres server and its data directory
     Remove {
-        /// Name of the server to remove
+        /// Name of the server to remove (default: "default")
+        #[arg(default_value = "default")]
         name: String,
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
@@ -525,5 +531,84 @@ mod tests {
         else {
             panic!("expected server configs");
         };
+    }
+
+    #[test]
+    fn server_stop_name_defaults_to_default() {
+        let LocalCommands::Server {
+            command: ServerCommands::Stop { name, .. },
+        } = local_command(&["server", "stop"])
+        else {
+            panic!("expected server stop");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn server_remove_name_defaults_to_default() {
+        let LocalCommands::Server {
+            command: ServerCommands::Remove { name },
+        } = local_command(&["server", "remove"])
+        else {
+            panic!("expected server remove");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn postgres_stop_name_defaults_to_default() {
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Stop { name, .. },
+        } = local_command(&["postgres", "stop"])
+        else {
+            panic!("expected postgres stop");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn postgres_remove_name_defaults_to_default() {
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Remove { name, .. },
+        } = local_command(&["postgres", "remove"])
+        else {
+            panic!("expected postgres remove");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn teardown_commands_preserve_explicit_names() {
+        let LocalCommands::Server {
+            command: ServerCommands::Stop { name, .. },
+        } = local_command(&["server", "stop", "analytics"])
+        else {
+            panic!("expected server stop");
+        };
+        assert_eq!(name, "analytics");
+
+        let LocalCommands::Server {
+            command: ServerCommands::Remove { name },
+        } = local_command(&["server", "remove", "analytics"])
+        else {
+            panic!("expected server remove");
+        };
+        assert_eq!(name, "analytics");
+
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Stop { name, .. },
+        } = local_command(&["postgres", "stop", "warehouse"])
+        else {
+            panic!("expected postgres stop");
+        };
+        assert_eq!(name, "warehouse");
+
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Remove { name, .. },
+        } = local_command(&["postgres", "remove", "warehouse"])
+        else {
+            panic!("expected postgres remove");
+        };
+        assert_eq!(name, "warehouse");
     }
 }
