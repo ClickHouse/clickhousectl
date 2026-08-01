@@ -172,6 +172,36 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .expect("failed to spawn clickhousectl")
 }
 
+// ── Service deletion errors (issue #335) ──────────────────────────────────
+
+#[tokio::test]
+async fn service_delete_running_conflict_suggests_force() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "status": 409,
+            "error": "CONFLICT: Only instance in one of the following states: \
+                      'provisioning','starting','awaking','idle','stopped','degraded','failed' \
+                      can be terminated. Current state: 'running'"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["service", "delete", "svc-1", "--org-id", "org-1"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: service is running and cannot be deleted. Use --force to stop it first, or \
+         `clickhousectl cloud service stop svc-1`.\n"
+    );
+}
+
 #[tokio::test]
 async fn org_prometheus_auto_detects_the_only_organization() {
     let mock = start_mock_org_auto_detection_api().await;
