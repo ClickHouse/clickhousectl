@@ -4,9 +4,11 @@
 //! spellings of an installed version to both be successful no-ops.
 //!
 //! Strategy: spawn the binary with `HOME=<tempdir>`, pre-seed a fake installed
-//! version, run both partial and exact `local install` commands, and assert that:
+//! version, run both partial and exact `local install` commands in human-output
+//! mode, and assert that:
 //!   - the command exits 0,
 //!   - stderr says "already installed",
+//!   - stdout has no generic "Installed version" confirmation,
 //!   - stderr does NOT say "Resolving" (which only prints on the remote path).
 //!
 //! Network calls aren't mocked because the version-manager URLs aren't currently
@@ -36,10 +38,14 @@ fn install_with_existing_version(installed_version: &str, requested_spec: &str) 
     perms.set_mode(0o755);
     std::fs::set_permissions(&binary, perms).unwrap();
 
-    Command::new(clickhousectl_binary())
+    let mut command = Command::new(clickhousectl_binary());
+    command
+        // Prevent coding-agent detection from switching the subprocess to JSON
+        // so this exercises the human output reported in issue #328.
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", tempdir.path())
-        .args(["local", "install", requested_spec, "--json"])
+        .args(["local", "install", requested_spec])
         .output()
         .expect("run clickhousectl")
 }
@@ -59,6 +65,11 @@ fn local_install_minor_with_existing_match_does_not_hit_network() {
         stderr.contains("already installed"),
         "expected 'already installed' in stderr, got: {}",
         stderr
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "expected no generic install confirmation, got: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
     assert!(
         !stderr.contains("Resolving"),
@@ -90,6 +101,11 @@ fn local_install_exact_with_existing_match_is_a_successful_no_op() {
         stderr.contains("Use --force to re-download the latest build"),
         "expected --force hint, got: {}",
         stderr
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "expected no generic install confirmation, got: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
     assert!(
         !stderr.contains("Resolving"),

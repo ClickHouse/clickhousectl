@@ -105,7 +105,14 @@ async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
         version,
         set_as_default,
     };
-    output::print_output(&out, json);
+    // The version manager already emits outcome-aware human output: a real
+    // install is confirmed there, while a no-op says that the existing build
+    // is being reused. The generic display text always says "Installed", so
+    // reserve it for structured output to avoid a duplicate or misleading
+    // human confirmation.
+    if json {
+        output::print_output(&out, true);
+    }
 
     Ok(())
 }
