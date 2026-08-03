@@ -16792,6 +16792,8 @@ pub struct UdfCreateRequestV1 {
     pub send_chunk_header: Option<bool>,
     #[serde(rename = "type")]
     pub r#type: UdfCreateRequestV1Type,
+    #[serde(rename = "uploadId")]
+    pub upload_id: String,
 }
 
 /// Inline enum for `UdfCreateRequestV1.type`.
@@ -16849,6 +16851,8 @@ pub struct UdfCreateRequestV2 {
     pub send_chunk_header: Option<bool>,
     #[serde(rename = "type")]
     pub r#type: UdfCreateRequestV2Type,
+    #[serde(rename = "uploadId")]
+    pub upload_id: String,
 }
 
 /// Inline enum for `UdfCreateRequestV2.type`.

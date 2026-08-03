@@ -1301,12 +1301,14 @@ fn udf_create_request_variants_keep_required_fields_strict() {
     // it selects a known request shape, serde rejects a body missing a required
     // field rather than inventing a default value.
     assert!(
-        serde_json::from_str::<UdfCreateRequestV1>(r#"{"type":"executable","runtime":"native"}"#,)
-            .is_err()
+        serde_json::from_str::<UdfCreateRequestV1>(
+            r#"{"arguments":[],"functionName":"my_udf","returnType":"String","runtime":"native","type":"executable"}"#,
+        )
+        .is_err()
     );
     assert!(
-        serde_json::from_str::<UdfVersionCreateRequestV2>(
-            r#"{"type":"executable_pool","runtime":"native"}"#,
+        serde_json::from_str::<UdfCreateRequestV2>(
+            r#"{"arguments":[],"functionName":"my_udf","returnType":"String","runtime":"native","type":"executable_pool"}"#,
         )
         .is_err()
     );
@@ -1320,6 +1322,7 @@ fn udf_create_request_variants_keep_required_fields_strict() {
         return_type: "UInt64".to_string(),
         runtime: UdfRuntime::Native,
         r#type: UdfCreateRequestV1Type::Executable,
+        upload_id: "upload-1".to_string(),
         ..Default::default()
     };
     assert_eq!(
@@ -1330,6 +1333,7 @@ fn udf_create_request_variants_keep_required_fields_strict() {
             "returnType": "UInt64",
             "runtime": "native",
             "type": "executable",
+            "uploadId": "upload-1",
         })
     );
 }

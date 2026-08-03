@@ -2557,7 +2557,8 @@ async fn create_udf_encodes_request_body() {
             "functionName": "my_udf",
             "returnType": "String",
             "runtime": "python3.11",
-            "type": "executable"
+            "type": "executable",
+            "uploadId": "upload-1"
         })))
         .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
         .mount(&s)
@@ -2569,6 +2570,7 @@ async fn create_udf_encodes_request_body() {
         return_type: "String".to_string(),
         runtime: UdfRuntime::Python3_11,
         r#type: UdfCreateRequestV1Type::Executable,
+        upload_id: "upload-1".to_string(),
         ..Default::default()
     });
     assert_eq!(
