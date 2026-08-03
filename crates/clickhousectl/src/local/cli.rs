@@ -228,7 +228,7 @@ CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
   Processes that exited unexpectedly are retained and shown as stopped.
   Running ClickHouse entries also show their PID, version, and ports.
-  Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop <name>` to stop one.")]
+  Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop [name]` to stop one.")]
     List {
         /// System-wide maintenance only: list servers across all projects. You almost certainly want the default project-scoped list instead.
         #[arg(long)]
