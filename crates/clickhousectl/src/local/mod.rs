@@ -816,7 +816,23 @@ fn list_servers_local(json: bool) -> Result<()> {
                             } else {
                                 None
                             };
-                            let http_port = if is_ch { Some(info.http_port) } else { None };
+                            // ClickHouse resolves its version and ports on each
+                            // start, so stopped entries expose identity only.
+                            let version = if !is_ch || running {
+                                Some(info.version)
+                            } else {
+                                None
+                            };
+                            let http_port = if is_ch && running {
+                                Some(info.http_port)
+                            } else {
+                                None
+                            };
+                            let tcp_port = if !is_ch || running {
+                                Some(info.tcp_port)
+                            } else {
+                                None
+                            };
                             // For Postgres the disk key is `<name>-pg<major>`;
                             // show users the friendly name without the suffix.
                             let display = if is_ch {
@@ -827,9 +843,9 @@ fn list_servers_local(json: bool) -> Result<()> {
                             (
                                 display,
                                 pid,
-                                Some(info.version),
+                                version,
                                 http_port,
-                                Some(info.tcp_port),
+                                tcp_port,
                                 info.engine.as_str().to_string(),
                                 info.container_id,
                             )

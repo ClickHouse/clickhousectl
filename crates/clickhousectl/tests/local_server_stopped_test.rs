@@ -66,10 +66,10 @@ fn assert_stopped_list(output: &Output) {
     let server = &body["servers"][0];
     assert_eq!(server["name"], "default");
     assert_eq!(server["running"], false);
-    assert_eq!(server["version"], "25.12.9.61");
-    assert_eq!(server["http_port"], 8123);
-    assert_eq!(server["tcp_port"], 9000);
     assert!(server.get("pid").is_none());
+    assert!(server.get("version").is_none());
+    assert!(server.get("http_port").is_none());
+    assert!(server.get("tcp_port").is_none());
 }
 
 struct ProcessGuard {
@@ -142,6 +142,9 @@ fn stopping_clickhouse_retains_metadata_and_lists_it_as_stopped() {
 
     let saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
     assert_eq!(saved["pid"], 0);
+    assert_eq!(saved["version"], "");
+    assert_eq!(saved["http_port"], 0);
+    assert_eq!(saved["tcp_port"], 0);
     assert_stopped_list(&run(
         project.path(),
         home.path(),
@@ -164,6 +167,9 @@ fn stale_clickhouse_metadata_is_retained_as_stopped() {
 
     let saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
     assert_eq!(saved["pid"], 0);
+    assert_eq!(saved["version"], "");
+    assert_eq!(saved["http_port"], 0);
+    assert_eq!(saved["tcp_port"], 0);
 
     let second = run(
         project.path(),

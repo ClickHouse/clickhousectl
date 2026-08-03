@@ -50,11 +50,12 @@ pub struct ServerInfo {
     pub name: String,
     /// Active ClickHouse process PID; 0 when stopped or for Postgres.
     pub pid: u32,
-    /// ClickHouse version like "25.12.5.44", or "postgres:<tag>" for Postgres.
+    /// Running ClickHouse version like "25.12.5.44", empty when stopped, or
+    /// "postgres:<tag>" for Postgres.
     pub version: String,
-    /// Unused for Postgres (set to 0).
+    /// Running ClickHouse HTTP port; 0 when stopped or for Postgres.
     pub http_port: u16,
-    /// TCP port for ClickHouse; mapped host port for Postgres.
+    /// Running ClickHouse TCP port, 0 when stopped, or mapped host port for Postgres.
     pub tcp_port: u16,
     pub started_at: String,
     pub cwd: String,
@@ -180,6 +181,9 @@ pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
     };
     if info.engine == Engine::Clickhouse && info.pid == pid {
         info.pid = 0;
+        info.version.clear();
+        info.http_port = 0;
+        info.tcp_port = 0;
         save_server_info(&info)?;
     }
     Ok(())
