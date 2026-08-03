@@ -321,6 +321,7 @@ async fn start_server(
     http_port: Option<u16>,
     tcp_port: Option<u16>,
     foreground: bool,
+    no_wait: bool,
     config_file: Option<String>,
     args: Vec<String>,
     json: bool,
@@ -442,9 +443,15 @@ async fn start_server(
         .unwrap_or_default();
 
     if !foreground {
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        let child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
+        let log_path = server::server_log_path(&server_name);
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)?;
+        cmd.stdout(log.try_clone()?);
+        cmd.stderr(log);
+        let mut child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
         let pid = child.id();
 
         let info = server::ServerInfo {
@@ -460,8 +467,19 @@ async fn start_server(
         };
         server::save_server_info(&info)?;
 
-        // Check that it actually started
-        server::check_spawn_health(pid, &server_name)?;
+        if no_wait {
+            server::check_spawn_health(&mut child, &server_name, &log_path).await?;
+        } else {
+            server::wait_for_server_ready(
+                &mut child,
+                &server_name,
+                http_port,
+                tcp_port,
+                &log_path,
+                server::STARTUP_TIMEOUT,
+            )
+            .await?;
+        }
 
         let out = output::ServerStartOutput {
             name: server_name,
@@ -669,6 +687,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             http_port,
             tcp_port,
             foreground,
+            no_wait,
             config_file,
             args,
         } => {
@@ -678,6 +697,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
                 http_port,
                 tcp_port,
                 foreground,
+                no_wait,
                 config_file,
                 args,
                 json,

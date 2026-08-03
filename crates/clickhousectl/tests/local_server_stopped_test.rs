@@ -113,6 +113,7 @@ fn stopping_clickhouse_retains_metadata_and_lists_it_as_stopped() {
             "start",
             "--version",
             "25.12.9.61",
+            "--no-wait",
         ],
     );
     assert!(

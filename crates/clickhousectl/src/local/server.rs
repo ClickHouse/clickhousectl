@@ -3,10 +3,16 @@ use crate::init;
 use crate::local::discovery;
 use crate::local::docker;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const DEFAULT_HTTP_PORT: u16 = 8123;
 const DEFAULT_TCP_PORT: u16 = 9000;
+pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const SPAWN_HEALTH_DELAY: Duration = Duration::from_millis(300);
+const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
+const STARTUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 const ADJECTIVES: &[&str] = &[
     "bold", "calm", "dark", "fast", "gold", "keen", "loud", "neat", "pale", "red", "slim", "tall",
@@ -107,6 +113,11 @@ pub fn server_meta_path_for_recovery(name: &str) -> PathBuf {
 /// Data directory for a ClickHouse server: .clickhouse/servers/<name>/data/.
 pub fn server_data_dir(name: &str) -> PathBuf {
     servers_dir().join(name).join("data")
+}
+
+/// Combined stdout/stderr log for a background ClickHouse server.
+pub fn server_log_path(name: &str) -> PathBuf {
+    servers_dir().join(name).join("server.log")
 }
 
 /// Disk identifier for a Postgres instance: `<name>-pg<major>`. Used in the
@@ -451,22 +462,127 @@ fn generate_random_name() -> String {
     tag
 }
 
-/// Wait a moment after spawn and check if the process is still alive.
-/// Returns Ok if alive, Err with details if it died immediately.
-pub fn check_spawn_health(pid: u32, name: &str) -> Result<()> {
-    // Give it a moment to start (or fail)
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
-    if !is_process_alive(pid) {
-        let _ = mark_server_stopped(name, pid);
+/// Wait a moment after spawn and check if the child exited immediately.
+pub async fn check_spawn_health(
+    child: &mut std::process::Child,
+    name: &str,
+    log_path: &Path,
+) -> Result<()> {
+    tokio::time::sleep(SPAWN_HEALTH_DELAY).await;
+    if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
+        let _ = mark_server_stopped(name, child.id());
         return Err(Error::Exec(format!(
-            "Server '{}' exited immediately after starting. \
-             Check if another server is using the same ports, \
-             or run in foreground to see the error output.",
-            name
+            "Server '{}' exited immediately after starting ({}). See server log: {}",
+            name,
+            status,
+            log_path.display()
         )));
     }
     Ok(())
+}
+
+async fn stop_starting_child(
+    child: &mut std::process::Child,
+    name: &str,
+) -> std::result::Result<(), String> {
+    let pid = child.id();
+    if child.try_wait().map_err(|e| e.to_string())?.is_none()
+        && let Err(signal_error) = send_signal(pid, libc::SIGTERM)
+        && child.try_wait().map_err(|e| e.to_string())?.is_none()
+    {
+        return Err(signal_error.to_string());
+    }
+
+    let deadline = tokio::time::Instant::now() + STARTUP_SHUTDOWN_TIMEOUT;
+    loop {
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return mark_server_stopped(name, pid).map_err(|e| e.to_string());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
+    }
+
+    child.kill().map_err(|e| e.to_string())?;
+    child.wait().map_err(|e| e.to_string())?;
+    mark_server_stopped(name, pid).map_err(|e| e.to_string())
+}
+
+/// Wait until ClickHouse responds to HTTP health checks and accepts TCP connections.
+pub async fn wait_for_server_ready(
+    child: &mut std::process::Child,
+    name: &str,
+    http_port: u16,
+    tcp_port: u16,
+    log_path: &Path,
+    timeout: Duration,
+) -> Result<()> {
+    let started = tokio::time::Instant::now();
+    check_spawn_health(child, name, log_path).await?;
+    let health_client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(CONNECT_TIMEOUT)
+        .build()?;
+    let health_url = format!("http://localhost:{http_port}/ping");
+
+    loop {
+        if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
+            let _ = mark_server_stopped(name, child.id());
+            return Err(Error::Exec(format!(
+                "Server '{}' exited before becoming ready on HTTP port {} and TCP port {} ({}). \
+                 See server log: {}",
+                name,
+                http_port,
+                tcp_port,
+                status,
+                log_path.display()
+            )));
+        }
+
+        let tcp_ready = matches!(
+            tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                tokio::net::TcpStream::connect(("localhost", tcp_port))
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        let http_ready = if tcp_ready {
+            match health_client.get(&health_url).send().await {
+                Ok(response) if response.status().is_success() => {
+                    response.text().await.is_ok_and(|body| body.trim() == "Ok.")
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+        if tcp_ready && http_ready {
+            return Ok(());
+        }
+
+        if started.elapsed() >= timeout {
+            let pid = child.id();
+            let cleanup = match stop_starting_child(child, name).await {
+                Ok(()) => " and was stopped".to_string(),
+                Err(error) => format!("; failed to stop PID {}: {}", pid, error),
+            };
+            return Err(Error::Exec(format!(
+                "Server '{}' did not become ready on HTTP port {} and TCP port {} within {} seconds{}. \
+                 See server log: {}",
+                name,
+                http_port,
+                tcp_port,
+                timeout.as_secs(),
+                cleanup,
+                log_path.display()
+            )));
+        }
+
+        tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
+    }
 }
 
 /// Check if a TCP port is available by attempting to bind to it.
@@ -486,7 +602,8 @@ fn find_free_port(start: u16) -> Option<u16> {
 /// we picked non-default ports.
 pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u16, u16, bool)> {
     let http = match http_port {
-        Some(p) => p,
+        Some(p) if is_port_available(p) => p,
+        Some(p) => return Err(Error::Exec(format!("HTTP port {} is already in use", p))),
         None => {
             if is_port_available(DEFAULT_HTTP_PORT) {
                 DEFAULT_HTTP_PORT
@@ -498,7 +615,8 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
     };
 
     let tcp = match tcp_port {
-        Some(p) => p,
+        Some(p) if is_port_available(p) => p,
+        Some(p) => return Err(Error::Exec(format!("TCP port {} is already in use", p))),
         None => {
             if is_port_available(DEFAULT_TCP_PORT) {
                 DEFAULT_TCP_PORT
@@ -677,5 +795,42 @@ mod tests {
     fn stopped_and_out_of_range_pids_are_never_alive() {
         assert!(!is_process_alive(0));
         assert!(!is_process_alive(u32::MAX));
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_stops_child() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "exec sleep 10"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        let error = wait_for_server_ready(
+            &mut child,
+            "readiness-timeout-test",
+            0,
+            0,
+            Path::new("server.log"),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("did not become ready"));
+        assert!(error.contains("server.log"));
+        assert!(!is_process_alive(pid));
+    }
+
+    #[test]
+    fn explicit_ports_must_be_available() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let http_error = resolve_ports(Some(port), None).unwrap_err();
+        assert!(http_error.to_string().contains("HTTP port"));
+
+        let tcp_error = resolve_ports(None, Some(port)).unwrap_err();
+        assert!(tcp_error.to_string().contains("TCP port"));
     }
 }

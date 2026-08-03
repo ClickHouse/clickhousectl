@@ -172,6 +172,7 @@ CONTEXT FOR AGENTS:
   Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
   Use --http-port and --tcp-port to set explicit ports.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
+  Background starts wait for HTTP health and TCP connections. Use --no-wait to return after spawning.
   If --name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
   Use --config <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
@@ -200,6 +201,10 @@ CONTEXT FOR AGENTS:
         /// Run server in foreground (default: background)
         #[arg(long, alias = "fg", short = 'F')]
         foreground: bool,
+
+        /// Return after spawning without waiting for HTTP and TCP readiness
+        #[arg(long, conflicts_with = "foreground")]
+        no_wait: bool,
 
         /// Overlay a named config file from ~/.clickhouse/configs/ on top of the defaults (see `server configs`)
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
@@ -513,15 +518,46 @@ mod tests {
     #[test]
     fn server_start_config_file_defaults_to_none() {
         let LocalCommands::Server {
-            command: ServerCommands::Start {
-                config_file, args, ..
-            },
+            command:
+                ServerCommands::Start {
+                    config_file,
+                    no_wait,
+                    args,
+                    ..
+                },
         } = local_command(&["server", "start"])
         else {
             panic!("expected server start");
         };
         assert_eq!(config_file, None);
+        assert!(!no_wait);
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parses_server_start_no_wait() {
+        let LocalCommands::Server {
+            command: ServerCommands::Start { no_wait, .. },
+        } = local_command(&["server", "start", "--no-wait"])
+        else {
+            panic!("expected server start");
+        };
+        assert!(no_wait);
+    }
+
+    #[test]
+    fn server_start_no_wait_conflicts_with_foreground() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "--no-wait",
+            "--foreground",
+        ])
+        .err()
+        .expect("flags should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
