@@ -161,11 +161,14 @@ async fn start_mock_org_auto_detection_api() -> MockServer {
 
 fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
     let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
     let url = mock.uri();
     let mut args = vec!["cloud", "--url", &url, "--json"];
     args.extend(cli_args);
     Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(dir.path())
