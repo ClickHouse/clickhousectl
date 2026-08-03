@@ -196,6 +196,8 @@ clickhousectl local server dotenv --user default --password secret --database my
 
 **Idempotent stop:** `server stop [name]` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. The name defaults to "default". An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
 
+Stopping a server preserves both its data and metadata, so it remains visible in `server list` with a `stopped` status. The displayed version and ports are from its last run; starting the same name again resumes the existing data directory.
+
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
@@ -272,8 +274,10 @@ All server data lives inside `.clickhouse/` in your project directory:
 ├── .gitignore              # auto-created, ignores everything
 ├── credentials.json        # cloud API credentials (if configured)
 └── servers/
+    ├── default.json         # ClickHouse metadata and last known state
     ├── default/
     │   └── data/           # ClickHouse data files for "default" server
+    ├── dev.json             # ClickHouse metadata and last known state
     └── dev/
         └── data/           # ClickHouse data files for "dev" server
 ```

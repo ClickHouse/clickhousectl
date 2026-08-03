@@ -274,6 +274,9 @@ fn run_client(
             .iter()
             .find(|e| e.name == server_name)
             .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+        if !entry.running {
+            return Err(Error::ServerNotRunning(server_name.to_string()));
+        }
         let info = entry
             .info
             .as_ref()
@@ -492,7 +495,7 @@ async fn start_server(
         );
 
         let status = child.wait().map_err(|e| Error::Exec(e.to_string()))?;
-        server::remove_server_info(&server_name);
+        server::mark_server_stopped(&server_name, pid)?;
 
         if !status.success()
             && let Some(code) = status.code()
@@ -527,6 +530,9 @@ fn dotenv_server(
         .iter()
         .find(|e| e.name == server_name)
         .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+    if !entry.running {
+        return Err(Error::ServerNotRunning(server_name.to_string()));
+    }
     let info = entry
         .info
         .as_ref()

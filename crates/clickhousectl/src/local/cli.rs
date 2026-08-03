@@ -226,7 +226,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
-  Automatically cleans up stale entries for processes that are no longer running.
+  Processes that exited unexpectedly are retained and shown as stopped.
   Shows name, status (running/stopped), PID, version, and ports.
   Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop <name>` to stop one.")]
     List {
@@ -241,7 +241,8 @@ CONTEXT FOR AGENTS:
   Stops a ClickHouse server. The name defaults to \"default\"; use `clickhousectl local server list`
   to find other server names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
-  The server's data directory is preserved — restart with `clickhousectl local server start --name <name>`.
+  The server's data and metadata are preserved so it remains visible in `server list`.
+  Restart with `clickhousectl local server start --name <name>`.
   Idempotent: a server that exists but is already stopped exits 0 (no error).
   An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
@@ -264,7 +265,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Stops all running ClickHouse server instances.
   Sends SIGTERM first, then SIGKILL if processes don't exit.
-  Data directories are preserved.
+  Data and metadata are preserved, and stopped servers remain visible in `server list`.
   Related: `clickhousectl local server list` to see servers.")]
     StopAll {
         /// System-wide maintenance only: stop all servers across all projects. You almost certainly want the default project-scoped stop-all instead.

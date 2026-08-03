@@ -48,7 +48,7 @@ fn default_engine() -> Engine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub name: String,
-    /// Process PID for ClickHouse; 0 for Postgres (use `container_id` instead).
+    /// Active ClickHouse process PID; 0 when stopped or for Postgres.
     pub pid: u32,
     /// ClickHouse version like "25.12.5.44", or "postgres:<tag>" for Postgres.
     pub version: String,
@@ -170,6 +170,21 @@ pub fn remove_server_info(name: &str) {
     let _ = std::fs::remove_file(server_meta_path(name));
 }
 
+/// Mark a ClickHouse server as stopped without discarding its metadata.
+///
+/// The PID match avoids overwriting metadata when a newer process was already
+/// recorded before this transition began.
+pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
+    let Some(mut info) = load_info(name) else {
+        return Ok(());
+    };
+    if info.engine == Engine::Clickhouse && info.pid == pid {
+        info.pid = 0;
+        save_server_info(&info)?;
+    }
+    Ok(())
+}
+
 /// Engine-aware liveness check.
 fn is_alive(info: &ServerInfo) -> bool {
     match info.engine {
@@ -227,10 +242,9 @@ pub fn find_pg_instances(name: &str) -> Vec<ServerInfo> {
 }
 
 /// Load server metadata only if the underlying process/container is alive.
-/// Does **not** auto-delete stale metadata — `list_all_servers` is the single
-/// place that GCs ClickHouse entries whose PID is gone, so callers like
-/// `is_server_running` and `resolve_name` can read the metadata without side
-/// effects.
+/// Does not update stale metadata. `list_all_servers` is the single place that
+/// marks ClickHouse entries stopped when their PID is gone, so callers like
+/// `is_server_running` and `resolve_name` can read metadata without side effects.
 fn load_running_info(name: &str) -> Option<ServerInfo> {
     let info = load_info(name)?;
     if is_alive(&info) { Some(info) } else { None }
@@ -267,25 +281,26 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
             continue;
         }
 
-        let info = load_info(stem);
-        let running = match &info {
+        let mut info = load_info(stem);
+        let mut running = match &info {
             Some(i) => is_alive(i),
             None => false,
         };
 
-        // GC stale ClickHouse metadata: process is gone for good. Postgres
-        // entries stay so `start` can resume the existing container.
+        // A dead ClickHouse PID can result from a crash or a global stop. Keep
+        // the metadata and normalize it to the same stopped sentinel Postgres
+        // uses so the instance remains discoverable.
         if let Some(i) = &info
             && !running
             && i.engine == Engine::Clickhouse
+            && i.pid != 0
         {
-            let _ = std::fs::remove_file(server_meta_path(stem));
-            entries.push(ServerEntry {
-                name: stem.to_string(),
-                running: false,
-                info: None,
-            });
-            continue;
+            let stale_pid = i.pid;
+            let _ = mark_server_stopped(stem, stale_pid);
+            // Reload because a concurrent restart may have replaced the stale
+            // PID before `mark_server_stopped` acquired the latest metadata.
+            info = load_info(stem);
+            running = info.as_ref().is_some_and(is_alive);
         }
 
         entries.push(ServerEntry {
@@ -319,7 +334,7 @@ pub fn running_server_count() -> usize {
 }
 
 fn is_process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    pid != 0 && i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) == 0 })
 }
 
 /// Send a signal to a process and return an error if the signal could not be delivered
@@ -365,8 +380,8 @@ fn kill_process(pid: u32) -> Result<()> {
 
 /// Stop a running server by name.
 ///
-/// * ClickHouse: SIGTERM (then SIGKILL on timeout); metadata is removed
-///   because the process is gone for good.
+/// * ClickHouse: SIGTERM (then SIGKILL on timeout); metadata is retained with
+///   PID 0 so the stopped instance remains discoverable.
 /// * Postgres: stops the container only — does **not** remove it, and keeps
 ///   the metadata file so a subsequent `start` resumes the same container
 ///   (preserving the password and any other PGDATA-encoded settings).
@@ -376,7 +391,7 @@ pub fn kill_server(name: &str) -> Result<()> {
     match info.engine {
         Engine::Clickhouse => {
             kill_process(info.pid)?;
-            remove_server_info(name);
+            mark_server_stopped(name, info.pid)?;
         }
         Engine::Postgres => {
             let id = info.container_id.as_deref().ok_or_else(|| {
@@ -439,7 +454,7 @@ pub fn check_spawn_health(pid: u32, name: &str) -> Result<()> {
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     if !is_process_alive(pid) {
-        remove_server_info(name);
+        let _ = mark_server_stopped(name, pid);
         return Err(Error::Exec(format!(
             "Server '{}' exited immediately after starting. \
              Check if another server is using the same ports, \
@@ -652,5 +667,11 @@ mod tests {
         assert_eq!(parsed.engine, Engine::Postgres);
         assert_eq!(parsed.container_id.as_deref(), Some("abc123"));
         assert!(json.contains("\"engine\":\"postgres\""));
+    }
+
+    #[test]
+    fn stopped_and_out_of_range_pids_are_never_alive() {
+        assert!(!is_process_alive(0));
+        assert!(!is_process_alive(u32::MAX));
     }
 }
