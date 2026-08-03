@@ -111,7 +111,7 @@ async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
     // reserve it for structured output to avoid a duplicate or misleading
     // human confirmation.
     if json {
-        output::print_output(&out, true);
+        output::print_output(&out, json);
     }
 
     Ok(())
