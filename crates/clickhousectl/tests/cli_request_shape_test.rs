@@ -224,6 +224,46 @@ async fn org_usage_auto_detects_the_only_organization() {
     assert!(query.contains(&("to_date".into(), "2025-01-31".into())));
 }
 
+#[tokio::test]
+async fn org_prometheus_accepts_legacy_positional_org_id() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &["org", "prometheus", AUTO_DETECTED_ORG_ID]);
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus")
+    );
+}
+
+#[tokio::test]
+async fn org_usage_accepts_legacy_positional_org_id() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "usage",
+            AUTO_DETECTED_ORG_ID,
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+    );
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost")
+    );
+}
+
 // ── Bug 1: Postgres CDC must NOT send publicationName / replicationSlotName ─
 //
 // `cdc` replication mode creates the slot + publication server-side; the
