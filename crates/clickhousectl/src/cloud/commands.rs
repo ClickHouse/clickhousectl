@@ -993,6 +993,39 @@ fn service_delete_error(error: CloudError, force: bool, service_id: &str) -> Clo
     }
 }
 
+/// Delete only a query API key whose exact management resource ID was saved
+/// when clickhousectl provisioned it. A legacy record is not enough evidence
+/// to select a cloud key, so it is deliberately left alone.
+async fn cleanup_service_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(key) = credentials::get_service_query_key(service_id) else {
+        return Ok(false);
+    };
+    let Some(api_key_id) = key.api_key_id else {
+        eprintln!(
+            "Warning: the stored query key for service {service_id} predates exact API key IDs; \
+             service deletion will continue without unsafe name-based key cleanup."
+        );
+        return Ok(false);
+    };
+
+    client
+        .delete_api_key_if_exists(org_id, &api_key_id)
+        .await
+        .map_err(|mut error| {
+            error.message = format!(
+                "failed to delete the auto-provisioned query API key for service \
+                 {service_id}: {}",
+                error.message
+            );
+            error
+        })?;
+    Ok(true)
+}
+
 pub async fn service_delete(
     client: &CloudClient,
     service_id: &str,
@@ -1003,10 +1036,13 @@ pub async fn service_delete(
     let org_id = resolve_org_id(client, org_id).await?;
 
     if force {
-        let svc = client.get_service(&org_id, service_id).await?;
+        let svc = client.get_service_if_exists(&org_id, service_id).await?;
         // An absent state matches nothing: skip the stop and let the delete
         // call decide, rather than guessing the service is running.
-        let state = or_absent(svc.state.as_ref());
+        let state = svc
+            .as_ref()
+            .map(|service| or_absent(service.state.as_ref()))
+            .unwrap_or_default();
         if matches!(state.as_str(), "running" | "idle" | "starting") {
             eprintln!("Stopping service {} before deletion...", service_id);
             client
@@ -1025,13 +1061,22 @@ pub async fn service_delete(
         }
     }
 
+    // The service must not disappear while its auto-provisioned key remains
+    // active. A cleanup failure therefore stops before the service DELETE and
+    // leaves the local record intact for retry.
+    if cleanup_service_query_key(client, &org_id, service_id).await? {
+        credentials::remove_service_query_key(service_id)?;
+    }
+
     let response = client
-        .delete_service(&org_id, service_id)
+        .delete_service_if_exists(&org_id, service_id)
         .await
         .map_err(|error| service_delete_error(error, force, service_id))?;
-    let _ = credentials::remove_service_query_key(service_id);
+    credentials::remove_service_query_key(service_id)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
+    } else if response.is_none() {
+        println!("Service {} is already absent", service_id);
     } else {
         println!("Service {} deletion initiated", service_id);
     }

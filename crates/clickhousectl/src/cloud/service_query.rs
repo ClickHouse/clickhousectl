@@ -8,7 +8,7 @@
 
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
@@ -39,6 +39,24 @@ fn require_credential_pair(
     let key_id = require_field(key_response.key_id.clone(), "keyId")?;
     let key_secret = require_field(key_response.key_secret.clone(), "keySecret")?;
     Ok((key_id, key_secret))
+}
+
+fn build_service_query_key(
+    api_key_id: String,
+    key_id: String,
+    key_secret: String,
+    endpoint_id: Option<String>,
+    service_name: &str,
+    created_at: DateTime<Utc>,
+) -> ServiceQueryKey {
+    ServiceQueryKey {
+        api_key_id: Some(api_key_id),
+        key_id,
+        key_secret,
+        endpoint_id,
+        service_name: service_name.to_string(),
+        created_at,
+    }
 }
 
 /// Discard the API key created for a provisioning attempt that then failed,
@@ -118,13 +136,14 @@ pub async fn ensure_service_query_setup(
     // `id` is diagnostic only, never an auth input: persist the record
     // without it rather than deleting a working credential and leaving a
     // dangling UUID in the endpoint's `openApiKeys`.
-    let stored = ServiceQueryKey {
+    let stored = build_service_query_key(
+        api_key_uuid,
         key_id,
         key_secret,
-        endpoint_id: endpoint.id,
-        service_name: service_name.to_string(),
-        created_at: Utc::now(),
-    };
+        endpoint.id,
+        service_name,
+        Utc::now(),
+    );
     credentials::set_service_query_key(service_id, stored.clone())?;
 
     Ok(stored)
@@ -223,6 +242,28 @@ mod tests {
             err.to_string(),
             "the API response is missing required field 'keySecret'"
         );
+    }
+
+    #[test]
+    fn stored_query_key_keeps_the_management_resource_id() {
+        let created_at = DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let key = build_service_query_key(
+            "api-key-uuid".into(),
+            "query-key-id".into(),
+            "query-key-secret".into(),
+            Some("endpoint-id".into()),
+            "demo",
+            created_at,
+        );
+
+        assert_eq!(key.api_key_id.as_deref(), Some("api-key-uuid"));
+        assert_eq!(key.key_id, "query-key-id");
+        assert_eq!(key.key_secret, "query-key-secret");
+        assert_eq!(key.endpoint_id.as_deref(), Some("endpoint-id"));
+        assert_eq!(key.service_name, "demo");
+        assert_eq!(key.created_at, created_at);
     }
 
     fn endpoint(

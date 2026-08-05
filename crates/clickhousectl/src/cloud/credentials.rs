@@ -16,6 +16,12 @@ pub struct Credentials {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceQueryKey {
+    /// Management API resource ID used to delete this exact key.
+    ///
+    /// Records written before this field was introduced remain usable for
+    /// queries, but cannot be safely cleaned up by service deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_id: Option<String>,
     pub key_id: String,
     pub key_secret: String,
     /// The query endpoint the key is bound to, when the upsert echoed it.
@@ -110,6 +116,7 @@ mod tests {
         creds.service_query_keys.insert(
             "svc-1".into(),
             ServiceQueryKey {
+                api_key_id: Some("api-key-uuid".into()),
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: Some("ep".into()),
@@ -121,8 +128,10 @@ mod tests {
         );
 
         let s = serde_json::to_string(&creds).unwrap();
+        assert!(s.contains("\"api_key_id\":\"api-key-uuid\""));
         let back: Credentials = serde_json::from_str(&s).unwrap();
         let key = back.service_query_keys.get("svc-1").unwrap();
+        assert_eq!(key.api_key_id.as_deref(), Some("api-key-uuid"));
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
@@ -135,6 +144,7 @@ mod tests {
         creds.service_query_keys.insert(
             "svc-1".into(),
             ServiceQueryKey {
+                api_key_id: Some("api-key-uuid".into()),
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: None,
@@ -155,14 +165,18 @@ mod tests {
     }
 
     #[test]
-    fn existing_credentials_files_with_an_endpoint_id_still_deserialize() {
-        // Files written before `endpoint_id` became optional carry it as a
-        // bare string and must keep loading.
+    fn existing_query_keys_without_an_api_key_id_still_deserialize() {
+        // Existing files contain query credentials and an endpoint ID, but
+        // not the management resource ID added for exact cloud-side cleanup.
         let raw = r#"{"service_query_keys":{"svc-1":{"key_id":"kid","key_secret":"sec",
             "endpoint_id":"ep","service_name":"demo","created_at":"2026-05-11T12:00:00Z"}}}"#;
         let creds: Credentials = serde_json::from_str(raw).unwrap();
         let key = creds.service_query_keys.get("svc-1").unwrap();
+        assert_eq!(key.api_key_id, None);
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
         assert_eq!(key.key_id, "kid");
+
+        let written = serde_json::to_string(&creds).unwrap();
+        assert!(!written.contains("api_key_id"));
     }
 }
