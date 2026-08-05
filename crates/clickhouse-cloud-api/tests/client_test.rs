@@ -64,7 +64,7 @@ async fn list_organizations() {
 
     let client = Client::with_base_url(mock_server.uri(), "test-key", "test-secret");
     let resp = client.organization_get_list().await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
     assert_eq!(orgs[0].name.as_deref(), Some("Test Org"));
@@ -334,7 +334,7 @@ async fn delete_byoc_infrastructure() {
         .organization_byoc_infrastructure_delete("org-1", "byoc-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -427,7 +427,7 @@ async fn delete_invitation() {
         .await;
 
     let resp = c.invitation_delete("org-1", "inv-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -552,7 +552,7 @@ async fn delete_api_key() {
         .await;
 
     let resp = c.openapi_key_delete("org-1", "key-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -656,7 +656,7 @@ async fn delete_member() {
         .await;
 
     let resp = c.member_delete("org-1", "user-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -767,7 +767,7 @@ async fn get_service_details() {
     let svc = resp.result.unwrap();
     assert_eq!(svc.name.as_deref(), Some("prod-service"));
     assert_eq!(svc.provider, Some(ServiceProvider::Gcp));
-    assert_eq!(svc.num_replicas, Some(3.0));
+    assert_eq!(svc.num_replicas, Some(3));
 }
 
 #[tokio::test]
@@ -811,7 +811,7 @@ async fn delete_service() {
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
     let resp = client.instance_delete("org-123", "svc-456").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 #[tokio::test]
@@ -882,7 +882,7 @@ async fn update_replica_scaling() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/services/svc-1/replicaScaling"))
-        .and(body_partial_json(serde_json::json!({"numReplicas": 5.0, "minReplicaMemoryGb": 16.0, "maxReplicaMemoryGb": 64.0})))
+        .and(body_partial_json(serde_json::json!({"numReplicas": 5, "minReplicaMemoryGb": 16.0, "maxReplicaMemoryGb": 64.0})))
         .respond_with(ok_json(serde_json::json!({
             "id": "11111111-2222-3333-4444-555555555555",
             "name": "svc-1",
@@ -894,7 +894,7 @@ async fn update_replica_scaling() {
         .await;
 
     let body = ServiceReplicaScalingPatchRequest {
-        num_replicas: Some(5.0),
+        num_replicas: Some(5),
         min_replica_memory_gb: Some(16.0),
         max_replica_memory_gb: Some(64.0),
         ..Default::default()
@@ -904,7 +904,7 @@ async fn update_replica_scaling() {
         .await
         .unwrap();
     let result = resp.result.unwrap();
-    assert_eq!(result.num_replicas, Some(5.0));
+    assert_eq!(result.num_replicas, Some(5));
 }
 
 #[tokio::test]
@@ -914,7 +914,7 @@ async fn update_scaling_deprecated() {
 
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/services/svc-1/scaling"))
-        .and(body_partial_json(serde_json::json!({"numReplicas": 3.0})))
+        .and(body_partial_json(serde_json::json!({"numReplicas": 3})))
         .respond_with(ok_json(serde_json::json!({
             "id": "11111111-2222-3333-4444-555555555555",
             "name": "svc-1",
@@ -924,7 +924,7 @@ async fn update_scaling_deprecated() {
         .await;
 
     let body = ServiceScalingPatchRequest {
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         ..Default::default()
     };
     let resp = c
@@ -932,7 +932,7 @@ async fn update_scaling_deprecated() {
         .await
         .unwrap();
     let svc = resp.result.unwrap();
-    assert_eq!(svc.num_replicas, Some(3.0));
+    assert_eq!(svc.num_replicas, Some(3));
 }
 
 #[tokio::test]
@@ -1102,7 +1102,7 @@ async fn delete_query_endpoint() {
         .instance_query_endpoint_delete("org-1", "svc-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -1310,7 +1310,7 @@ async fn delete_backup_bucket() {
         .await;
 
     let resp = c.backup_bucket_delete("org-1", "svc-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -1495,7 +1495,7 @@ async fn delete_click_pipe() {
         .click_pipe_delete("org-1", "svc-1", "pipe-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 #[tokio::test]
@@ -1800,7 +1800,7 @@ async fn delete_reverse_private_endpoint() {
         .click_pipe_reverse_private_endpoint_delete("org-1", "svc-1", "rpe-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -1923,7 +1923,7 @@ async fn delete_alert() {
         .click_stack_delete_alert("org-1", "svc-1", "alert-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -2060,7 +2060,7 @@ async fn delete_saved_search() {
         .click_stack_delete_saved_search("org-1", "svc-1", "search-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -2190,7 +2190,7 @@ async fn delete_dashboard() {
         .click_stack_delete_dashboard("org-1", "svc-1", "dash-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -2336,7 +2336,7 @@ async fn delete_source() {
         .click_stack_delete_source("org-1", "svc-1", "source-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 #[tokio::test]
@@ -2371,7 +2371,7 @@ async fn delete_udf() {
 
     assert_eq!(
         c.udf_delete("org-1", "my_udf").await.unwrap().status,
-        Some(200.0)
+        Some(200)
     );
 }
 
@@ -2391,7 +2391,7 @@ async fn detach_udf() {
             .await
             .unwrap()
             .status,
-        Some(200.0)
+        Some(200)
     );
 }
 
@@ -2409,7 +2409,7 @@ async fn delete_udf_version() {
             .await
             .unwrap()
             .status,
-        Some(200.0)
+        Some(200)
     );
 }
 
@@ -2812,7 +2812,7 @@ async fn delete_role() {
         .click_stack_delete_role("org-1", "svc-1", "role-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -2995,7 +2995,7 @@ async fn delete_webhook() {
         .click_stack_delete_webhook("org-1", "svc-1", "webhook-1")
         .await
         .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 #[tokio::test]
@@ -3220,7 +3220,7 @@ async fn delete_postgres_service() {
         .await;
 
     let resp = c.postgres_service_delete("org-1", "pg-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 #[tokio::test]
@@ -4022,7 +4022,7 @@ async fn scaling_schedule_delete_succeeds() {
         .await;
 
     let resp = c.scaling_schedule_delete("org-1", "svc-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================
@@ -4092,7 +4092,7 @@ async fn upgrade_window_delete_succeeds() {
         .await;
 
     let resp = c.upgrade_window_delete("org-1", "svc-1").await.unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
 }
 
 // ===========================================================================

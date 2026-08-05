@@ -120,6 +120,48 @@ pub fn response_tree(client_rs: &str, models_rs: &str) -> Result<ResponseTree, A
     })
 }
 
+/// Lists direct OpenAPI `integer` properties represented as `f64` in a request
+/// model or a model reachable from a wired `Client` response.
+///
+/// The analyzer resolves request/response split variants with the same mapping
+/// used by drift analysis. Response targets are additionally constrained to the
+/// Rust response tree, so unused schemas do not expand the policy surface.
+pub fn integer_model_fields_typed_as_float(
+    spec_json: &str,
+    client_rs: &str,
+    models_rs: &str,
+    config: &AnalyzerConfig,
+) -> Result<BTreeSet<(String, String)>, AnalyzeError> {
+    let spec = serde_json::from_str(spec_json).map_err(AnalyzeError::SpecJson)?;
+    let spec = OpenApiInventory::build(&spec, config).map_err(AnalyzeError::SpecInventory)?;
+    let rust = RustInventory::parse(client_rs, models_rs, "").map_err(AnalyzeError::RustSource)?;
+    let response_types = rust.response_reachable_types();
+    let mut offenders = BTreeSet::new();
+
+    for ((schema_name, property_name), property) in &spec.properties {
+        if property.schema_type.as_deref() != Some("integer") {
+            continue;
+        }
+        for (rust_name, direction) in compare::field_check_targets(&rust, &spec, schema_name) {
+            if direction == compare::Direction::Response && !response_types.contains(&rust_name) {
+                continue;
+            }
+            let Some(field) = rust
+                .structs
+                .get(&rust_name)
+                .and_then(|info| info.fields.get(property_name))
+            else {
+                continue;
+            };
+            if rust.terminal_type(&field.rust_type).as_deref() == Some("f64") {
+                offenders.insert((rust_name, property_name.clone()));
+            }
+        }
+    }
+
+    Ok(offenders)
+}
+
 /// Lists every public model struct field in `models_rs` that carries a
 /// field-level `#[serde(default)]` (a container-level one reports every field
 /// of its struct), as `StructName.rust_field_name`.
@@ -194,6 +236,84 @@ mod tests {
             BTreeSet::from([("WidgetLeaf".to_string(), "value".to_string())]),
             "request-only fields (WidgetPostRequest.note) must not be reported, \
              and Option fields with skip_serializing_if (Widget.name) are compliant"
+        );
+    }
+
+    #[test]
+    fn integer_float_inventory_resolves_split_models_and_ignores_number_fields() {
+        let spec = r##"{
+            "paths": {
+                "/widgets": {
+                    "get": {
+                        "operationId": "getWidgets",
+                        "responses": {
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/Widget"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "post": {
+                        "operationId": "createWidget",
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Widget"}
+                                }
+                            }
+                        },
+                        "responses": {}
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "Widget": {
+                        "type": "object",
+                        "properties": {
+                            "count": {"type": "integer"},
+                            "nullableCount": {"type": ["integer", "null"]},
+                            "ratio": {"type": "number"}
+                        }
+                    }
+                }
+            }
+        }"##;
+        let client = r#"
+            pub struct Client;
+            impl Client {
+                pub async fn get_widgets(&self) -> Result<WidgetResponse, Error> {
+                    unimplemented!()
+                }
+            }
+        "#;
+        let models = r#"
+            pub struct Widget {
+                pub count: f64,
+                #[serde(rename = "nullableCount")]
+                pub nullable_count: Option<f64>,
+                pub ratio: f64,
+            }
+            pub struct WidgetResponse {
+                pub count: Option<f64>,
+                #[serde(rename = "nullableCount")]
+                pub nullable_count: Option<f64>,
+                pub ratio: Option<f64>,
+            }
+        "#;
+
+        assert_eq!(
+            integer_model_fields_typed_as_float(spec, client, models, &AnalyzerConfig::default())
+                .unwrap(),
+            BTreeSet::from([
+                ("Widget".to_string(), "count".to_string()),
+                ("Widget".to_string(), "nullableCount".to_string()),
+                ("WidgetResponse".to_string(), "count".to_string()),
+                ("WidgetResponse".to_string(), "nullableCount".to_string()),
+            ])
         );
     }
 }

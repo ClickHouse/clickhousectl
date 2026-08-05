@@ -612,8 +612,8 @@ pub struct BackupConfigUpdateOptions {
 /// Resolved horizontal-autoscaling fields for a service create/scale request.
 struct HorizontalAutoscaling {
     autoscaling_mode: Option<AutoscalingMode>,
-    min_replicas: Option<f64>,
-    max_replicas: Option<f64>,
+    min_replicas: Option<i64>,
+    max_replicas: Option<i64>,
 }
 
 /// Resolve the horizontal-autoscaling fields shared by `service create` and
@@ -648,8 +648,8 @@ fn resolve_horizontal_autoscaling(
         .transpose()?;
     Ok(HorizontalAutoscaling {
         autoscaling_mode,
-        min_replicas: min_replicas.map(f64::from),
-        max_replicas: max_replicas.map(f64::from),
+        min_replicas: min_replicas.map(i64::from),
+        max_replicas: max_replicas.map(i64::from),
     })
 }
 
@@ -686,7 +686,7 @@ fn build_create_service_request(
         ip_access_list,
         min_replica_memory_gb: opts.min_replica_memory_gb.map(f64::from),
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
-        num_replicas: opts.num_replicas.map(f64::from),
+        num_replicas: opts.num_replicas.map(i64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
         backup_id: opts
@@ -2208,7 +2208,7 @@ fn build_service_scale_request(
         max_replica_memory_gb: opts.max_replica_memory_gb.map(f64::from),
         min_replicas: horizontal.min_replicas,
         max_replicas: horizontal.max_replicas,
-        num_replicas: opts.num_replicas.map(f64::from),
+        num_replicas: opts.num_replicas.map(i64::from),
         idle_scaling: opts.idle_scaling,
         idle_timeout_minutes: opts.idle_timeout_minutes.map(f64::from),
     })
@@ -3292,7 +3292,7 @@ mod tests {
 
     #[test]
     fn first_endpoint_keeps_the_present_half_of_a_partial_endpoint() {
-        let endpoint = |host: Option<&str>, port: Option<f64>| ServiceEndpoint {
+        let endpoint = |host: Option<&str>, port: Option<i64>| ServiceEndpoint {
             host: host.map(str::to_string),
             port,
             ..Default::default()
@@ -3301,7 +3301,7 @@ mod tests {
         assert_eq!(first_endpoint(None), ABSENT);
         assert_eq!(first_endpoint(Some(&[])), ABSENT);
         assert_eq!(
-            first_endpoint(Some(&[endpoint(Some("host"), Some(9440.0))])),
+            first_endpoint(Some(&[endpoint(Some("host"), Some(9440))])),
             "host:9440"
         );
         assert_eq!(
@@ -3309,7 +3309,7 @@ mod tests {
             "host"
         );
         assert_eq!(
-            first_endpoint(Some(&[endpoint(None, Some(9440.0))])),
+            first_endpoint(Some(&[endpoint(None, Some(9440))])),
             format!("{ABSENT}:9440")
         );
         assert_eq!(first_endpoint(Some(&[endpoint(None, None)])), ABSENT);
@@ -3910,8 +3910,10 @@ mod tests {
         let request = build_create_service_request(&opts).unwrap();
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["autoscalingMode"], "horizontal");
-        assert_eq!(json["minReplicas"], 2.0);
-        assert_eq!(json["maxReplicas"], 8.0);
+        assert_eq!(json["minReplicas"], 2);
+        assert_eq!(json["maxReplicas"], 8);
+        assert!(json["minReplicas"].is_i64());
+        assert!(json["maxReplicas"].is_i64());
         // Vertical fields stay absent.
         assert!(json.get("numReplicas").is_none());
         assert!(json.get("minReplicaMemoryGb").is_none());
@@ -3935,8 +3937,8 @@ mod tests {
         let request = build_create_service_request(&opts).unwrap();
         let json = serde_json::to_value(&request).unwrap();
         assert!(json.get("autoscalingMode").is_none());
-        assert_eq!(json["minReplicas"], 1.0);
-        assert_eq!(json["maxReplicas"], 4.0);
+        assert_eq!(json["minReplicas"], 1);
+        assert_eq!(json["maxReplicas"], 4);
     }
 
     #[test]
@@ -3956,7 +3958,8 @@ mod tests {
         assert!(json.get("autoscalingMode").is_none());
         assert!(json.get("minReplicas").is_none());
         assert!(json.get("maxReplicas").is_none());
-        assert_eq!(json["numReplicas"], 3.0);
+        assert_eq!(json["numReplicas"], 3);
+        assert!(json["numReplicas"].is_i64());
     }
 
     #[test]
@@ -4030,8 +4033,8 @@ mod tests {
         let request = build_service_scale_request(&opts).unwrap();
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["autoscalingMode"], "horizontal");
-        assert_eq!(json["minReplicas"], 2.0);
-        assert_eq!(json["maxReplicas"], 8.0);
+        assert_eq!(json["minReplicas"], 2);
+        assert_eq!(json["maxReplicas"], 8);
         assert!(json.get("numReplicas").is_none());
         assert!(json.get("minReplicaMemoryGb").is_none());
         assert!(json.get("maxReplicaMemoryGb").is_none());
@@ -4051,7 +4054,7 @@ mod tests {
         let request = build_service_scale_request(&opts).unwrap();
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["autoscalingMode"], "vertical");
-        assert_eq!(json["numReplicas"], 3.0);
+        assert_eq!(json["numReplicas"], 3);
         assert_eq!(json["minReplicaMemoryGb"], 8.0);
         assert_eq!(json["maxReplicaMemoryGb"], 32.0);
         assert!(json.get("minReplicas").is_none());
@@ -4073,8 +4076,8 @@ mod tests {
         let request = build_service_scale_request(&opts).unwrap();
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["autoscalingMode"], "horizontal");
-        assert_eq!(json["minReplicas"], 2.0);
-        assert_eq!(json["maxReplicas"], 8.0);
+        assert_eq!(json["minReplicas"], 2);
+        assert_eq!(json["maxReplicas"], 8);
         assert_eq!(json["minReplicaMemoryGb"], 16.0);
         assert_eq!(json["maxReplicaMemoryGb"], 16.0);
         assert!(json.get("numReplicas").is_none());

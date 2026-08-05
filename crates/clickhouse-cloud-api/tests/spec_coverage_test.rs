@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use clickhouse_openapi_analyzer::config::clickhouse_cloud_config;
 use clickhouse_openapi_analyzer::{
-    AnalysisInput, analyze, model_fields_with_serde_default, response_tree,
+    AnalysisInput, analyze, integer_model_fields_typed_as_float, model_fields_with_serde_default,
+    response_tree,
 };
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
@@ -88,6 +89,25 @@ fn every_response_tree_option_field_omits_none_when_serialized() {
         "response fields must omit None instead of serializing null; add \
          skip_serializing_if to: {:?}",
         tree.option_fields_missing_skip_serializing_if
+    );
+}
+
+/// Integer-valued fields must use the repository-standard signed integer type
+/// rather than `f64`; otherwise serde changes API integers such as `3` into
+/// `3.0` when the CLI renders a model as JSON. The analyzer derives this set
+/// from the vendored schema and request/response model mapping.
+#[test]
+fn integer_schema_fields_are_not_typed_as_float() {
+    let offenders = integer_model_fields_typed_as_float(
+        SPEC_JSON,
+        CLIENT_RS,
+        MODELS_RS,
+        &clickhouse_cloud_config(),
+    )
+    .unwrap();
+    assert!(
+        offenders.is_empty(),
+        "OpenAPI integer fields must use i64, not f64: {offenders:?}"
     );
 }
 
