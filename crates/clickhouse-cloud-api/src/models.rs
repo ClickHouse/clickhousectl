@@ -15754,21 +15754,21 @@ pub struct Service {
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
     #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
-    pub max_replicas: Option<f64>,
+    pub max_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
     #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
-    pub min_replicas: Option<f64>,
+    pub min_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<f64>,
+    pub num_replicas: Option<i64>,
     #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -15877,7 +15877,9 @@ pub struct ServiceEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<f64>,
+    // The schema currently says `number`, but Cloud endpoints are TCP ports and
+    // the API sends integral values. Keep JSON output integral for consumers.
+    pub port: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ServiceEndpointProtocol>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -15971,20 +15973,20 @@ pub struct ServicePostRequest {
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
     #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
-    pub max_replicas: Option<f64>,
+    pub max_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
     #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
-    pub min_replicas: Option<f64>,
+    pub min_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
     pub name: String,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<f64>,
+    pub num_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<Vec<String>>,
@@ -16040,13 +16042,13 @@ pub struct ServiceReplicaScalingPatchRequest {
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
     #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
-    pub max_replicas: Option<f64>,
+    pub max_replicas: Option<i64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
     #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
-    pub min_replicas: Option<f64>,
+    pub min_replicas: Option<i64>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<f64>,
+    pub num_replicas: Option<i64>,
 }
 
 /// `ServiceScalingPatchRequest` from the ClickHouse Cloud API.
@@ -16063,7 +16065,7 @@ pub struct ServiceScalingPatchRequest {
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<f64>,
+    pub num_replicas: Option<i64>,
 }
 
 /// `ServiceScalingPatchResponse` from the ClickHouse Cloud API.
@@ -16123,21 +16125,21 @@ pub struct ServiceScalingPatchResponse {
     #[serde(rename = "maxReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_replica_memory_gb: Option<f64>,
     #[serde(rename = "maxReplicas", skip_serializing_if = "Option::is_none")]
-    pub max_replicas: Option<f64>,
+    pub max_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "maxTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub max_total_memory_gb: Option<f64>,
     #[serde(rename = "minReplicaMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_replica_memory_gb: Option<f64>,
     #[serde(rename = "minReplicas", skip_serializing_if = "Option::is_none")]
-    pub min_replicas: Option<f64>,
+    pub min_replicas: Option<i64>,
     #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "minTotalMemoryGb", skip_serializing_if = "Option::is_none")]
     pub min_total_memory_gb: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "numReplicas", skip_serializing_if = "Option::is_none")]
-    pub num_replicas: Option<f64>,
+    pub num_replicas: Option<i64>,
     #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -17061,7 +17063,7 @@ pub struct UdfVersionListResponse {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<f64>,
+    pub status: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "requestId")]
     pub request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

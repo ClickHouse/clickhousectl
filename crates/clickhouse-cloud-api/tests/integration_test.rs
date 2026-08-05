@@ -25,8 +25,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let deprecated_base_total_memory_gb = 12.0_f64;
         #[cfg(feature = "deprecated-fields")]
         let deprecated_scaled_total_memory_gb = 24.0_f64;
-        let base_replicas = 1.0_f64;
-        let scaled_replicas = 3.0_f64;
+        let base_replicas = 1_i64;
+        let scaled_replicas = 3_i64;
         let primary_ip = "203.0.113.10/32";
         let secondary_ip = "203.0.113.11/32";
 
@@ -1935,7 +1935,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         // Sanity: the deprecated body's totals only equal per-replica when
         // num_replicas == 1. We rely on the previous step landing us there.
-        assert_eq!(pre_vertical.num_replicas, base_replicas);
+        assert_eq!(pre_vertical.num_replicas, Some(base_replicas));
         let pre_min_total = pre_vertical.min_total_memory_gb;
         let pre_max_total = pre_vertical.max_total_memory_gb;
 
@@ -2068,8 +2068,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 end_hour_utc: 2,
                 min_replica_memory_gb: Some(base_memory_gb),
                 max_replica_memory_gb: Some(base_memory_gb),
-                min_replicas: Some(base_replicas as i64),
-                max_replicas: Some(base_replicas as i64),
+                min_replicas: Some(base_replicas),
+                max_replicas: Some(base_replicas),
                 idle_scaling: Some(true),
                 idle_timeout_minutes: Some(5),
                 // Vertical entry expressed as equal min/max; the fixed-count
@@ -2594,7 +2594,7 @@ async fn scale_service_and_wait(
     service_id: &str,
     min_memory_gb: Option<f64>,
     max_memory_gb: Option<f64>,
-    replicas: Option<f64>,
+    replicas: Option<i64>,
     description: &str,
     timeout: std::time::Duration,
     interval: std::time::Duration,

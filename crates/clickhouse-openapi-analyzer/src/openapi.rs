@@ -21,6 +21,7 @@ pub(crate) struct OperationInfo {
 pub(crate) struct PropertyInfo {
     pub(crate) pointer: String,
     pub(crate) required_non_nullable: bool,
+    pub(crate) schema_type: Option<String>,
 }
 
 /// One hop in a property chain from a named schema down to an enum position.
@@ -193,6 +194,10 @@ impl OpenApiInventory {
                     PropertyInfo {
                         pointer: pointer.clone(),
                         required_non_nullable: required.contains(property_name),
+                        schema_type: property
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                     },
                 );
                 if property.get("deprecated").and_then(Value::as_bool) == Some(true) {

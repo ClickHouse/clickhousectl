@@ -1177,7 +1177,7 @@ mod tests {
     #[test]
     fn unwrap_response_extracts_result() {
         let response = clickhouse_cloud_api::models::ApiResponse {
-            status: Some(200.0),
+            status: Some(200),
             request_id: None,
             result: Some(vec!["hello".to_string()]),
             error: None,
@@ -1190,7 +1190,7 @@ mod tests {
     fn unwrap_response_errors_on_empty_result() {
         let response: clickhouse_cloud_api::models::ApiResponse<String> =
             clickhouse_cloud_api::models::ApiResponse {
-                status: Some(200.0),
+                status: Some(200),
                 request_id: None,
                 result: None,
                 error: None,

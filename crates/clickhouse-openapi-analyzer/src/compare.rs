@@ -108,7 +108,7 @@ fn compare_models_and_refs(
 /// by policy, so optionality findings are suppressed there and field presence
 /// (plus enum values) is the retained drift signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Direction {
+pub(crate) enum Direction {
     Request,
     Response,
 }
@@ -130,7 +130,7 @@ fn response_position_type(rust: &RustInventory, spec: &OpenApiInventory, base: &
 /// schema is used in. A bidirectional schema maps to two Rust types once the
 /// split `{Name}Response` variant exists; until then both directions collapse
 /// onto `{Name}` and only the request-direction target is kept.
-fn field_check_targets(
+pub(crate) fn field_check_targets(
     rust: &RustInventory,
     spec: &OpenApiInventory,
     schema_name: &str,
