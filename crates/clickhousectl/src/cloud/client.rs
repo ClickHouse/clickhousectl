@@ -407,14 +407,15 @@ impl CloudClient {
         match &err {
             clickhouse_cloud_api::Error::Api { status, message } => {
                 let mut msg = message.clone();
+                let trimmed_message = message.trim();
                 if *status == 404
                     && matches!(
-                        message.trim().to_ascii_uppercase().as_str(),
+                        trimmed_message.to_ascii_uppercase().as_str(),
                         "NOT_FOUND" | "NOT FOUND"
                     )
                     && let Some(org_id) = org_id
                 {
-                    msg = format!("{msg}: request scoped to organization {org_id}");
+                    msg = format!("{trimmed_message}: request scoped to organization {org_id}");
                 }
                 if *status == 403 && self.is_bearer_auth() {
                     msg.push_str(
@@ -1320,7 +1321,7 @@ mod tests {
         let err = test_client().convert_error_for_organization(
             clickhouse_cloud_api::Error::Api {
                 status: 404,
-                message: "NOT_FOUND".into(),
+                message: " NOT_FOUND\n".into(),
             },
             "00000000-0000-4000-8000-000000000001",
         );
