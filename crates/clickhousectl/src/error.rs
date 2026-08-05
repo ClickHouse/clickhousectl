@@ -94,12 +94,12 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// Process exit code following `gh` CLI conventions:
-    /// `0` success, `1` error, `2` cancelled, `4` auth required.
+    /// Process exit code: `0` success, `1` error, `3` cancelled,
+    /// `4` auth required. Clap reserves `2` for usage errors.
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::AuthRequired(_) => 4,
-            Error::Cancelled => 2,
+            Error::Cancelled => 3,
             _ => 1,
         }
     }
@@ -115,8 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_maps_to_2() {
-        assert_eq!(Error::Cancelled.exit_code(), 2);
+    fn cancelled_maps_to_3() {
+        assert_eq!(Error::Cancelled.exit_code(), 3);
     }
 
     #[test]

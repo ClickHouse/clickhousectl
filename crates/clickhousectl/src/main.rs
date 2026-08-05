@@ -99,9 +99,8 @@ async fn main() {
             #[cfg(not(feature = "telemetry"))]
             let invocation = ();
             // clap's own exit codes: 0 for help/version, 2 for usage errors.
-            // The 2 numerically collides with the documented "cancelled" exit
-            // code; the telemetry `outcome` field disambiguates, and the
-            // shell-visible clash is #319's to fix.
+            // Dispatched commands reserve 3 for cancellation, so 2 remains
+            // unambiguous to shell callers.
             (e.exit_code(), invocation)
         }
     };
