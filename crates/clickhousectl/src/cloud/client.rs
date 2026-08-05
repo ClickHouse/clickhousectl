@@ -387,9 +387,35 @@ impl CloudClient {
 
     /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
     pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
+        self.convert_error_with_organization(err, None)
+    }
+
+    /// Add safe request scope to otherwise context-free organization errors.
+    pub fn convert_error_for_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: &str,
+    ) -> CloudError {
+        self.convert_error_with_organization(err, Some(org_id))
+    }
+
+    fn convert_error_with_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: Option<&str>,
+    ) -> CloudError {
         match &err {
             clickhouse_cloud_api::Error::Api { status, message } => {
                 let mut msg = message.clone();
+                if *status == 404
+                    && matches!(
+                        message.trim().to_ascii_uppercase().as_str(),
+                        "NOT_FOUND" | "NOT FOUND"
+                    )
+                    && let Some(org_id) = org_id
+                {
+                    msg = format!("{msg}: request scoped to organization {org_id}");
+                }
                 if *status == 403 && self.is_bearer_auth() {
                     msg.push_str(
                         "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
@@ -429,7 +455,7 @@ impl CloudClient {
             .api()
             .organization_get(org_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -442,7 +468,7 @@ impl CloudClient {
             .api()
             .instance_get_list(org_id, &[])
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -456,7 +482,7 @@ impl CloudClient {
             .api()
             .instance_get_list(org_id, &filter_refs)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -469,7 +495,7 @@ impl CloudClient {
             .api()
             .instance_get(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -482,7 +508,7 @@ impl CloudClient {
             .api()
             .instance_create(org_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -491,7 +517,7 @@ impl CloudClient {
             .api()
             .instance_delete(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -512,7 +538,7 @@ impl CloudClient {
             .api()
             .instance_state_update(org_id, service_id, &request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -526,7 +552,7 @@ impl CloudClient {
             .api()
             .backup_get_list(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -540,7 +566,7 @@ impl CloudClient {
             .api()
             .backup_get(org_id, service_id, backup_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -555,7 +581,7 @@ impl CloudClient {
             .api()
             .instance_update(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -570,7 +596,7 @@ impl CloudClient {
             .api()
             .instance_replica_scaling_update(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -585,7 +611,7 @@ impl CloudClient {
             .api()
             .instance_password_update(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -599,7 +625,7 @@ impl CloudClient {
             .api()
             .instance_query_endpoint_get(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -613,7 +639,7 @@ impl CloudClient {
             .api()
             .instance_query_endpoint_upsert(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -626,7 +652,7 @@ impl CloudClient {
             .api()
             .instance_query_endpoint_delete(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -644,7 +670,7 @@ impl CloudClient {
             .api()
             .instance_private_endpoint_create(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -658,7 +684,7 @@ impl CloudClient {
             .api()
             .instance_private_endpoint_config_get(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -672,7 +698,7 @@ impl CloudClient {
         self.api()
             .instance_prometheus_get(org_id, service_id, filtered.as_deref())
             .await
-            .map_err(|e| self.convert_error(e))
+            .map_err(|e| self.convert_error_for_organization(e, org_id))
     }
 
     // Organization endpoints (delegated to library client)
@@ -685,7 +711,7 @@ impl CloudClient {
             .api()
             .organization_update(org_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -698,7 +724,7 @@ impl CloudClient {
         self.api()
             .organization_prometheus_get(org_id, fm_str)
             .await
-            .map_err(|e| self.convert_error(e))
+            .map_err(|e| self.convert_error_for_organization(e, org_id))
     }
 
     pub async fn get_org_usage(
@@ -713,7 +739,7 @@ impl CloudClient {
             .api()
             .usage_cost_get(org_id, from_date, to_date, &filter_refs)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -726,7 +752,7 @@ impl CloudClient {
             .api()
             .member_get_list(org_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -739,7 +765,7 @@ impl CloudClient {
             .api()
             .member_get(org_id, user_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -753,7 +779,7 @@ impl CloudClient {
             .api()
             .member_update(org_id, user_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -762,7 +788,7 @@ impl CloudClient {
             .api()
             .member_delete(org_id, user_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -778,7 +804,7 @@ impl CloudClient {
             .api()
             .invitation_get_list(org_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -791,7 +817,7 @@ impl CloudClient {
             .api()
             .invitation_create(org_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -804,7 +830,7 @@ impl CloudClient {
             .api()
             .invitation_get(org_id, invitation_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -817,7 +843,7 @@ impl CloudClient {
             .api()
             .invitation_delete(org_id, invitation_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -833,7 +859,7 @@ impl CloudClient {
             .api()
             .openapi_key_get_list(org_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -846,7 +872,7 @@ impl CloudClient {
             .api()
             .openapi_key_create(org_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -859,7 +885,7 @@ impl CloudClient {
             .api()
             .openapi_key_get(org_id, key_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -873,7 +899,7 @@ impl CloudClient {
             .api()
             .openapi_key_update(org_id, key_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -882,7 +908,7 @@ impl CloudClient {
             .api()
             .openapi_key_delete(org_id, key_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -900,7 +926,7 @@ impl CloudClient {
             .api()
             .activity_get_list(org_id, from_date, to_date)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -913,7 +939,7 @@ impl CloudClient {
             .api()
             .activity_get(org_id, activity_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -927,7 +953,7 @@ impl CloudClient {
             .api()
             .backup_configuration_get(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -941,7 +967,7 @@ impl CloudClient {
             .api()
             .backup_configuration_update(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -955,7 +981,7 @@ impl CloudClient {
             .api()
             .click_pipe_get_list(org_id, service_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -969,7 +995,7 @@ impl CloudClient {
             .api()
             .click_pipe_get(org_id, service_id, clickpipe_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -983,7 +1009,7 @@ impl CloudClient {
             .api()
             .click_pipe_create(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -997,7 +1023,7 @@ impl CloudClient {
             .api()
             .click_pipe_delete(org_id, service_id, clickpipe_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -1019,7 +1045,7 @@ impl CloudClient {
             .api()
             .click_pipe_state_update(org_id, service_id, clickpipe_id, &request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -1034,7 +1060,7 @@ impl CloudClient {
             .api()
             .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -1048,7 +1074,7 @@ impl CloudClient {
             .api()
             .click_pipe_settings_get(org_id, service_id, clickpipe_id)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -1063,7 +1089,7 @@ impl CloudClient {
             .api()
             .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -1077,7 +1103,7 @@ impl CloudClient {
             .api()
             .click_pipe_schema_discovery(org_id, service_id, request)
             .await
-            .map_err(|e| self.convert_error(e))?;
+            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -1287,6 +1313,34 @@ mod tests {
             message: "Internal Server Error".into(),
         });
         assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_adds_organization_scope_to_bare_not_found() {
+        let err = test_client().convert_error_for_organization(
+            clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "NOT_FOUND".into(),
+            },
+            "00000000-0000-4000-8000-000000000001",
+        );
+        assert_eq!(
+            err.message,
+            "NOT_FOUND: request scoped to organization 00000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_preserves_detailed_not_found() {
+        let err = test_client().convert_error_for_organization(
+            clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "Service svc-1 not found".into(),
+            },
+            "org-1",
+        );
+        assert_eq!(err.message, "Service svc-1 not found");
     }
 
     #[test]

@@ -56,6 +56,32 @@ fn derive_query_host(base_url: &str) -> Option<String> {
     Some(format!("{}://queries.{}{}", parsed.scheme(), rest, port))
 }
 
+fn query_api_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    let sql_error = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            let error = value.get("error")?;
+            let code = match error.get("code")? {
+                serde_json::Value::String(code) if !code.is_empty() => code.clone(),
+                serde_json::Value::Number(code) => code.to_string(),
+                _ => return None,
+            };
+            let details = error.get("details")?.as_str()?;
+            if details.is_empty() {
+                return None;
+            }
+            Some(format!("SQL error {code}: {details}"))
+        });
+
+    sql_error.unwrap_or_else(|| {
+        if body.is_empty() {
+            format!("Query API returned HTTP {status} with an empty response body")
+        } else {
+            format!("Query API returned HTTP {status}: {body}")
+        }
+    })
+}
+
 impl Client {
     /// Create a new client with the default base URL (`https://api.clickhouse.cloud`).
     pub fn new(key_id: impl Into<String>, key_secret: impl Into<String>) -> Self {
@@ -319,7 +345,12 @@ impl Client {
         // wake confirmation to wake it and run the query), `Service is
         // stopped` for one that must be started explicitly.
         if status.as_u16() == 206 {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = response.text().await.map_err(|error| Error::Api {
+                status: status.as_u16(),
+                message: format!(
+                    "Query API returned HTTP {status}, but its response body could not be read: {error}"
+                ),
+            })?;
             #[derive(serde::Deserialize)]
             struct StateBody {
                 data: Option<String>,
@@ -332,19 +363,20 @@ impl Client {
                 Some("Service is stopped") => Error::ServiceStopped,
                 _ => Error::Api {
                     status: 206,
-                    message: body_text,
+                    message: query_api_error_message(status, &body_text),
                 },
             });
         }
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = response.text().await.map_err(|error| Error::Api {
+                status: status.as_u16(),
+                message: format!(
+                    "Query API returned HTTP {status}, but its response body could not be read: {error}"
+                ),
+            })?;
             return Err(Error::Api {
                 status: status.as_u16(),
-                message: if body_text.is_empty() {
-                    format!("Query API returned {status}")
-                } else {
-                    body_text
-                },
+                message: query_api_error_message(status, &body_text),
             });
         }
 
@@ -3999,7 +4031,7 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::derive_query_host;
+    use super::{derive_query_host, query_api_error_message};
 
     #[test]
     fn derive_query_host_prod() {
@@ -4055,6 +4087,37 @@ mod tests {
         assert_eq!(
             derive_query_host("https://api.clickhouse.cloud:443").as_deref(),
             Some("https://queries.clickhouse.cloud")
+        );
+    }
+
+    #[test]
+    fn query_api_error_extracts_documented_sql_error() {
+        let body = r#"{"error":{"code":"62","details":"Syntax error","extra":"ignored"}}"#;
+        assert_eq!(
+            query_api_error_message(reqwest::StatusCode::BAD_REQUEST, body),
+            "SQL error 62: Syntax error"
+        );
+    }
+
+    #[test]
+    fn query_api_error_accepts_numeric_codes() {
+        let body = r#"{"error":{"code":241,"details":"Memory limit exceeded"}}"#;
+        assert_eq!(
+            query_api_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body),
+            "SQL error 241: Memory limit exceeded"
+        );
+    }
+
+    #[test]
+    fn query_api_error_preserves_status_and_unrecognized_body() {
+        let malformed = r#"{"error":{"code":"62","details":"truncated"#;
+        assert_eq!(
+            query_api_error_message(reqwest::StatusCode::BAD_REQUEST, malformed),
+            format!("Query API returned HTTP 400 Bad Request: {malformed}")
+        );
+        assert_eq!(
+            query_api_error_message(reqwest::StatusCode::BAD_GATEWAY, "upstream failed"),
+            "Query API returned HTTP 502 Bad Gateway: upstream failed"
         );
     }
 }
