@@ -984,10 +984,7 @@ where
     let servers = servers
         .iter()
         .map(|server| {
-            let name = match server.engine {
-                server::Engine::Clickhouse => server.name.clone(),
-                server::Engine::Postgres => postgres::user_name_from_key(&server.name).to_string(),
-            };
+            let name = server.name.clone();
             let engine = server.engine.as_str().to_string();
             if !json {
                 print!("Stopping '{}' ({})...", name, engine);
@@ -1105,6 +1102,7 @@ mod tests {
     fn stop_servers_attempts_and_reports_both_engines() {
         let servers = vec![
             server_info("default", server::Engine::Clickhouse),
+            server_info("default-pg17", server::Engine::Postgres),
             server_info("default-pg18", server::Engine::Postgres),
         ];
         let mut attempts = Vec::new();
@@ -1118,8 +1116,8 @@ mod tests {
             }
         });
 
-        assert_eq!(attempts, ["default", "default-pg18"]);
-        assert_eq!(output.servers.len(), 2);
+        assert_eq!(attempts, ["default", "default-pg17", "default-pg18"]);
+        assert_eq!(output.servers.len(), 3);
         assert_eq!(output.servers[0].name, "default");
         assert_eq!(output.servers[0].engine, "clickhouse");
         assert!(!output.servers[0].stopped);
@@ -1127,10 +1125,14 @@ mod tests {
             output.servers[0].error.as_deref(),
             Some("Failed to execute ClickHouse: process stop failed")
         );
-        assert_eq!(output.servers[1].name, "default");
+        assert_eq!(output.servers[1].name, "default-pg17");
         assert_eq!(output.servers[1].engine, "postgres");
         assert!(output.servers[1].stopped);
         assert_eq!(output.servers[1].error, None);
+        assert_eq!(output.servers[2].name, "default-pg18");
+        assert_eq!(output.servers[2].engine, "postgres");
+        assert!(output.servers[2].stopped);
+        assert_eq!(output.servers[2].error, None);
     }
 
     #[test]
