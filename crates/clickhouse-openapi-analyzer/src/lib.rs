@@ -275,6 +275,7 @@ mod tests {
                         "type": "object",
                         "properties": {
                             "count": {"type": "integer"},
+                            "nullableCount": {"type": ["integer", "null"]},
                             "ratio": {"type": "number"}
                         }
                     }
@@ -290,9 +291,16 @@ mod tests {
             }
         "#;
         let models = r#"
-            pub struct Widget { pub count: f64, pub ratio: f64 }
+            pub struct Widget {
+                pub count: f64,
+                #[serde(rename = "nullableCount")]
+                pub nullable_count: Option<f64>,
+                pub ratio: f64,
+            }
             pub struct WidgetResponse {
                 pub count: Option<f64>,
+                #[serde(rename = "nullableCount")]
+                pub nullable_count: Option<f64>,
                 pub ratio: Option<f64>,
             }
         "#;
@@ -302,7 +310,9 @@ mod tests {
                 .unwrap(),
             BTreeSet::from([
                 ("Widget".to_string(), "count".to_string()),
+                ("Widget".to_string(), "nullableCount".to_string()),
                 ("WidgetResponse".to_string(), "count".to_string()),
+                ("WidgetResponse".to_string(), "nullableCount".to_string()),
             ])
         );
     }

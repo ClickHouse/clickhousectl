@@ -194,10 +194,7 @@ impl OpenApiInventory {
                     PropertyInfo {
                         pointer: pointer.clone(),
                         required_non_nullable: required.contains(property_name),
-                        schema_type: property
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
+                        schema_type: schema_type(property).map(str::to_string),
                     },
                 );
                 if property.get("deprecated").and_then(Value::as_bool) == Some(true) {
@@ -411,6 +408,17 @@ fn is_nullable(property: &Value) -> bool {
                     .any(|value| value.get("type").and_then(Value::as_str) == Some("null"))
             })
     })
+}
+
+fn schema_type(property: &Value) -> Option<&str> {
+    match property.get("type")? {
+        Value::String(value) => Some(value),
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|value| *value != "null"),
+        _ => None,
+    }
 }
 
 fn collect_refs(value: &Value, path: &mut Vec<String>, refs: &mut BTreeMap<String, String>) {

@@ -464,6 +464,8 @@ fn api_integer_fields_tolerate_missing_and_null_values() {
         serde_json::to_value(missing).unwrap(),
         serde_json::json!({})
     );
+    let missing_endpoint: ServiceEndpoint = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing_endpoint.port, None);
 
     let nulled: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
         "status": null,
@@ -484,6 +486,39 @@ fn api_integer_fields_tolerate_missing_and_null_values() {
     assert_eq!(
         serde_json::to_value(nulled).unwrap(),
         serde_json::json!({"result": {"endpoints": [{}]}})
+    );
+}
+
+#[test]
+fn de_facto_integer_fields_accept_integral_float_syntax() {
+    let response: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": 200.0,
+        "result": {"endpoints": [{"port": 9440.0}]}
+    }))
+    .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .unwrap()
+            .endpoints
+            .as_ref()
+            .unwrap()[0]
+            .port,
+        Some(9440)
+    );
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"status": 200, "result": {"endpoints": [{"port": 9440}]}})
+    );
+
+    assert!(
+        serde_json::from_value::<ApiResponse<Service>>(serde_json::json!({"status": 200.5}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ServiceEndpoint>(serde_json::json!({"port": 9440.5})).is_err()
     );
 }
 

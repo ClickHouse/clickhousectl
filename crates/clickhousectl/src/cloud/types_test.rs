@@ -58,6 +58,20 @@ fn test_delete_response_tolerates_null_fields() {
     );
 }
 
+#[test]
+fn test_delete_response_accepts_integral_float_status() {
+    let response: DeleteResponse =
+        serde_json::from_value(serde_json::json!({"status": 200.0})).unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"status": 200})
+    );
+    assert!(
+        serde_json::from_value::<DeleteResponse>(serde_json::json!({"status": 200.5})).is_err()
+    );
+}
+
 // ── Activity tests (library types) ─────────────────────────────────
 
 /// The wire value of a response enum field, or an empty string when the API

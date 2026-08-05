@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "clickhouse_cloud_api::serde_helpers::deserialize_optional_integral_i64"
+    )]
     pub status: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,

@@ -15873,12 +15873,14 @@ pub struct ServiceClickhouseSettingsSchema {
 
 /// `ServiceEndpoint` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(from = "crate::serde_helpers::ServiceEndpointWire")]
 pub struct ServiceEndpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     // The schema currently says `number`, but Cloud endpoints are TCP ports and
-    // the API sends integral values. Keep JSON output integral for consumers.
+    // the API sends integral values. Accept integral float syntax from the API,
+    // but keep JSON output integral for consumers.
     pub port: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<ServiceEndpointProtocol>,
@@ -17061,6 +17063,7 @@ pub struct UdfVersionListResponse {
 
 /// Standard API response wrapper.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(from = "crate::serde_helpers::ApiResponseWire<T>")]
 pub struct ApiResponse<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<i64>,
