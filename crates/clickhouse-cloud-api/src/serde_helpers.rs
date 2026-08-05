@@ -10,6 +10,8 @@ pub fn deserialize_optional_integral_i64<'de, D>(deserializer: D) -> Result<Opti
 where
     D: serde::Deserializer<'de>,
 {
+    const MAX_SAFE_FLOAT_INTEGER_EXCLUSIVE: f64 = (1_u64 << f64::MANTISSA_DIGITS) as f64;
+
     Option::<serde_json::Number>::deserialize(deserializer)?
         .map(|number| {
             if let Some(value) = number.as_i64() {
@@ -20,8 +22,8 @@ where
             }
             if let Some(value) = number.as_f64()
                 && value.fract() == 0.0
-                && value >= i64::MIN as f64
-                && value < i64::MAX as f64
+                && value > -MAX_SAFE_FLOAT_INTEGER_EXCLUSIVE
+                && value < MAX_SAFE_FLOAT_INTEGER_EXCLUSIVE
             {
                 return Ok(value as i64);
             }

@@ -520,6 +520,9 @@ fn de_facto_integer_fields_accept_integral_float_syntax() {
     assert!(
         serde_json::from_value::<ServiceEndpoint>(serde_json::json!({"port": 9440.5})).is_err()
     );
+    assert!(
+        serde_json::from_str::<ApiResponse<Service>>(r#"{"status":9007199254740993.0}"#).is_err()
+    );
 }
 
 #[test]
