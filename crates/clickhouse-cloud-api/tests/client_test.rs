@@ -1,6 +1,8 @@
 use chrono::Utc;
 use clickhouse_cloud_api::{Client, models::*};
-use wiremock::matchers::{basic_auth, bearer_token, body_partial_json, method, path, query_param};
+use wiremock::matchers::{
+    basic_auth, bearer_token, body_json, body_partial_json, method, path, query_param,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -19,6 +21,14 @@ fn ok_empty() -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "status": 200,
         "requestId": "req-test"
+    }))
+}
+
+fn created_json(result: serde_json::Value) -> ResponseTemplate {
+    ResponseTemplate::new(201).set_body_json(serde_json::json!({
+        "status": 201,
+        "requestId": "req-test",
+        "result": result
     }))
 }
 
@@ -2347,144 +2357,309 @@ async fn list_webhooks() {
 }
 
 // ===========================================================================
-// ClickStack: Connections
+// UDFs
 // ===========================================================================
 
 #[tokio::test]
-async fn list_connections() {
+async fn delete_udf() {
     let (s, c) = setup().await;
-
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/connections",
-        ))
-        .respond_with(ok_json(serde_json::json!([])))
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(ok_empty())
         .mount(&s)
         .await;
 
-    let resp = c
-        .click_stack_list_connections("org-1", "svc-1")
-        .await
-        .unwrap();
-    let connections = resp.result.unwrap();
-    assert_eq!(connections.len(), 0);
+    assert_eq!(
+        c.udf_delete("org-1", "my_udf").await.unwrap().status,
+        Some(200.0)
+    );
 }
 
 #[tokio::test]
-async fn create_connection() {
+async fn detach_udf() {
     let (s, c) = setup().await;
-
-    Mock::given(method("POST"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/connections",
-        ))
-        .and(body_partial_json(serde_json::json!({
-            "name": "Production ClickHouse",
-            "host": "https://clickhouse.example.com:8443",
-            "username": "default",
-            "password": "my-secret-password"
-        })))
-        .respond_with(ok_json(serde_json::json!({
-            "id": "conn-1",
-            "name": "Production ClickHouse",
-            "host": "https://clickhouse.example.com:8443",
-            "username": "default"
-        })))
-        .mount(&s)
-        .await;
-
-    let body = ClickStackCreateConnectionRequest {
-        name: "Production ClickHouse".to_string(),
-        host: "https://clickhouse.example.com:8443".to_string(),
-        username: "default".to_string(),
-        password: Some("my-secret-password".to_string()),
-        ..Default::default()
-    };
-    let resp = c
-        .click_stack_create_connection("org-1", "svc-1", &body)
-        .await
-        .unwrap();
-    let conn = resp.result.unwrap();
-    assert_eq!(conn.id.as_deref(), Some("conn-1"));
-    assert_eq!(conn.name.as_deref(), Some("Production ClickHouse"));
-}
-
-#[tokio::test]
-async fn get_connection() {
-    let (s, c) = setup().await;
-
-    Mock::given(method("GET"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
-        ))
-        .respond_with(ok_json(serde_json::json!({
-            "id": "conn-1",
-            "name": "Production ClickHouse",
-            "host": "https://clickhouse.example.com:8443",
-            "username": "default"
-        })))
-        .mount(&s)
-        .await;
-
-    let resp = c
-        .click_stack_get_connection("org-1", "svc-1", "conn-1")
-        .await
-        .unwrap();
-    let conn = resp.result.unwrap();
-    assert_eq!(conn.id.as_deref(), Some("conn-1"));
-}
-
-#[tokio::test]
-async fn update_connection() {
-    let (s, c) = setup().await;
-
-    Mock::given(method("PUT"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
-        ))
-        .and(body_partial_json(serde_json::json!({
-            "name": "Updated Connection"
-        })))
-        .respond_with(ok_json(serde_json::json!({
-            "id": "conn-1",
-            "name": "Updated Connection",
-            "host": "https://clickhouse.example.com:8443",
-            "username": "default"
-        })))
-        .mount(&s)
-        .await;
-
-    let body = ClickStackUpdateConnectionRequest {
-        name: "Updated Connection".to_string(),
-        host: "https://clickhouse.example.com:8443".to_string(),
-        username: "default".to_string(),
-        ..Default::default()
-    };
-    let resp = c
-        .click_stack_update_connection("org-1", "svc-1", "conn-1", &body)
-        .await
-        .unwrap();
-    let conn = resp.result.unwrap();
-    assert_eq!(conn.name.as_deref(), Some("Updated Connection"));
-}
-
-#[tokio::test]
-async fn delete_connection() {
-    let (s, c) = setup().await;
-
     Mock::given(method("DELETE"))
         .and(path(
-            "/v1/organizations/org-1/services/svc-1/clickstack/connections/conn-1",
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
         ))
         .respond_with(ok_empty())
         .mount(&s)
         .await;
 
-    let resp = c
-        .click_stack_delete_connection("org-1", "svc-1", "conn-1")
-        .await
-        .unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(
+        c.udf_detach("org-1", "my_udf", "svc-1")
+            .await
+            .unwrap()
+            .status,
+        Some(200.0)
+    );
+}
+
+#[tokio::test]
+async fn delete_udf_version() {
+    let (s, c) = setup().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/versions/7"))
+        .respond_with(ok_empty())
+        .mount(&s)
+        .await;
+
+    assert_eq!(
+        c.udf_version_delete("org-1", "my_udf", 7)
+            .await
+            .unwrap()
+            .status,
+        Some(200.0)
+    );
+}
+
+#[tokio::test]
+async fn list_udfs_encodes_pagination() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .and(query_param("cursor", "next-page"))
+        .and(query_param("limit", "25"))
+        .respond_with(ok_json(serde_json::json!({"items": []})))
+        .mount(&s)
+        .await;
+
+    assert!(
+        c.udf_list("org-1", Some("next-page"), Some(25))
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .items
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn get_udf() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(ok_json(serde_json::json!({"functionName": "my_udf"})))
+        .mount(&s)
+        .await;
+
+    assert_eq!(
+        c.udf_get("org-1", "my_udf")
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .function_name
+            .as_deref(),
+        Some("my_udf")
+    );
+}
+
+#[tokio::test]
+async fn list_udf_attachments_encodes_pagination() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/attachments"))
+        .and(query_param("cursor", "next-page"))
+        .and(query_param("limit", "25"))
+        .respond_with(ok_json(serde_json::json!({"items": []})))
+        .mount(&s)
+        .await;
+
+    assert!(
+        c.udf_attachment_list("org-1", "my_udf", Some("next-page"), Some(25))
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .items
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn get_udf_attachment() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({"serviceId": "svc-1"})))
+        .mount(&s)
+        .await;
+
+    assert_eq!(
+        c.udf_attachment_get("org-1", "my_udf", "svc-1")
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .service_id
+            .as_deref(),
+        Some("svc-1")
+    );
+}
+
+#[tokio::test]
+async fn list_udf_versions_encodes_pagination() {
+    let (s, c) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
+        .and(query_param("cursor", "next-page"))
+        .and(query_param("limit", "25"))
+        .respond_with(ok_json(serde_json::json!({"items": []})))
+        .mount(&s)
+        .await;
+
+    assert!(
+        c.udf_version_list("org-1", "my_udf", Some("next-page"), Some(25))
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .items
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn create_udf_upload_session() {
+    let (s, c) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfUploads/url"))
+        .respond_with(created_json(serde_json::json!({"uploadId": "upload-1"})))
+        .mount(&s)
+        .await;
+
+    assert_eq!(
+        c.udf_upload_session_create("org-1")
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .upload_id
+            .as_deref(),
+        Some("upload-1")
+    );
+}
+
+#[tokio::test]
+async fn create_udf_encodes_request_body() {
+    let (s, c) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .and(body_partial_json(serde_json::json!({
+            "arguments": [],
+            "functionName": "my_udf",
+            "returnType": "String",
+            "runtime": "python3.11",
+            "type": "executable",
+            "uploadId": "upload-1"
+        })))
+        .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
+        .mount(&s)
+        .await;
+
+    let body = UdfCreateRequest::UdfCreateRequestV1(UdfCreateRequestV1 {
+        arguments: vec![],
+        function_name: "my_udf".to_string(),
+        return_type: "String".to_string(),
+        runtime: UdfRuntime::Python3_11,
+        r#type: UdfCreateRequestV1Type::Executable,
+        upload_id: "upload-1".to_string(),
+        ..Default::default()
+    });
+    assert_eq!(
+        c.udf_create("org-1", &body)
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .function_name
+            .as_deref(),
+        Some("my_udf")
+    );
+}
+
+#[tokio::test]
+async fn create_udf_version_encodes_request_body() {
+    let (s, c) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
+        .and(body_partial_json(serde_json::json!({
+            "arguments": [],
+            "returnType": "String",
+            "runtime": "python3.11",
+            "type": "executable",
+            "uploadId": "upload-1"
+        })))
+        .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
+        .mount(&s)
+        .await;
+
+    let body = UdfVersionCreateRequest::UdfVersionCreateRequestV1(UdfVersionCreateRequestV1 {
+        arguments: vec![],
+        return_type: "String".to_string(),
+        runtime: UdfRuntime::Python3_11,
+        r#type: UdfVersionCreateRequestV1Type::Executable,
+        upload_id: "upload-1".to_string(),
+        ..Default::default()
+    });
+    assert_eq!(
+        c.udf_version_create("org-1", "my_udf", &body)
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .function_name
+            .as_deref(),
+        Some("my_udf")
+    );
+}
+
+#[tokio::test]
+async fn attach_udf_encodes_optional_version() {
+    let (s, c) = setup().await;
+    let attachment_path = "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1";
+    let attachment = serde_json::json!({"functionName": "my_udf", "serviceId": "svc-1"});
+
+    Mock::given(method("PUT"))
+        .and(path(attachment_path))
+        .and(body_json(serde_json::json!({})))
+        .respond_with(ok_json(attachment.clone()))
+        .mount(&s)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(attachment_path))
+        .and(body_json(serde_json::json!({"version": 7})))
+        .respond_with(ok_json(attachment))
+        .mount(&s)
+        .await;
+
+    assert_eq!(
+        c.udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .service_id
+            .as_deref(),
+        Some("svc-1")
+    );
+    assert_eq!(
+        c.udf_attach("org-1", "my_udf", "svc-1", Some(7))
+            .await
+            .unwrap()
+            .result
+            .unwrap()
+            .function_name
+            .as_deref(),
+        Some("my_udf")
+    );
 }
 
 // ===========================================================================

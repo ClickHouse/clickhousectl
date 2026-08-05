@@ -497,6 +497,7 @@ fn clickpipe_state_all_variants() {
         "Pausing",
         "Modifying",
         "Resync",
+        "Degraded",
     ];
     for s in states {
         let parsed: ClickPipeState = serde_json::from_str(&format!(r#""{s}""#)).unwrap();
@@ -1213,6 +1214,128 @@ fn clickpipe_minimal_response() {
     assert_eq!(pipe.id, None);
     assert_eq!(pipe.name, None);
     assert_eq!(pipe.state, None);
+}
+
+#[test]
+fn schema_discovery_response_tolerates_dropped_and_null_meta() {
+    let dropped: ClickPipeSchemaDiscoveryResponse = serde_json::from_str("{}").unwrap();
+    let nulled: ClickPipeSchemaDiscoveryResponse =
+        serde_json::from_str(r#"{"fields":null,"meta":null}"#).unwrap();
+
+    assert_eq!(dropped, ClickPipeSchemaDiscoveryResponse::default());
+    assert_eq!(nulled, ClickPipeSchemaDiscoveryResponse::default());
+    assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn udf_responses_tolerate_dropped_and_null_fields() {
+    let dropped: Udf = serde_json::from_str("{}").unwrap();
+    let nulled: Udf = serde_json::from_str(
+        r#"{"functionName":null,"runtime":null,"arguments":null,"createdAt":null}"#,
+    )
+    .unwrap();
+
+    assert_eq!(dropped, Udf::default());
+    assert_eq!(nulled, Udf::default());
+    assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn udf_response_models_tolerate_absent_and_null_fields() {
+    // These models are reached only from Client response types. A dropped key
+    // and an explicit null must therefore both deserialize to None, and None
+    // must be omitted again when rendered as JSON.
+    macro_rules! assert_tolerant_response {
+        ($response:ty, $null_payload:literal) => {{
+            let dropped: $response = serde_json::from_str("{}").unwrap();
+            let nulled: $response = serde_json::from_str($null_payload).unwrap();
+            assert_eq!(dropped, <$response>::default());
+            assert_eq!(nulled, <$response>::default());
+            assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+        }};
+    }
+
+    assert_tolerant_response!(
+        Pagination,
+        r#"{"totalRecords":null,"currentCursor":null,"nextCursor":null,"limit":null}"#
+    );
+    assert_tolerant_response!(
+        UdfAttachment,
+        r#"{"functionName":null,"serviceId":null,"status":null,"version":null}"#
+    );
+    assert_tolerant_response!(
+        UdfAttachmentListResponse,
+        r#"{"items":null,"pagination":null}"#
+    );
+    assert_tolerant_response!(UdfListResponse, r#"{"items":null,"pagination":null}"#);
+    assert_tolerant_response!(
+        UdfUploadSession,
+        r#"{"uploadId":null,"uploadUrl":null,"expiresAt":null}"#
+    );
+    assert_tolerant_response!(
+        UdfVersionListResponse,
+        r#"{"items":null,"pagination":null}"#
+    );
+}
+
+#[test]
+fn scim_user_enterprise_extension_uses_the_exact_wire_name() {
+    let user = ScimUser {
+        enterprise_user: Some(ScimEnterpriseUser::default()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&user).unwrap();
+    let extension = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
+    assert!(json.get(extension).is_some());
+    assert_eq!(
+        serde_json::from_value::<ScimUser>(json)
+            .unwrap()
+            .enterprise_user,
+        user.enterprise_user
+    );
+}
+
+#[test]
+fn udf_create_request_variants_keep_required_fields_strict() {
+    // The discriminator is intentionally lossless at the union boundary. Once
+    // it selects a known request shape, serde rejects a body missing a required
+    // field rather than inventing a default value.
+    assert!(
+        serde_json::from_str::<UdfCreateRequestV1>(
+            r#"{"arguments":[],"functionName":"my_udf","returnType":"String","runtime":"native","type":"executable"}"#,
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_str::<UdfCreateRequestV2>(
+            r#"{"arguments":[],"functionName":"my_udf","returnType":"String","runtime":"native","type":"executable_pool"}"#,
+        )
+        .is_err()
+    );
+
+    let request = UdfCreateRequestV1 {
+        arguments: vec![UdfArgument {
+            name: "x".to_string(),
+            r#type: "UInt64".to_string(),
+        }],
+        function_name: "my_udf".to_string(),
+        return_type: "UInt64".to_string(),
+        runtime: UdfRuntime::Native,
+        r#type: UdfCreateRequestV1Type::Executable,
+        upload_id: "upload-1".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({
+            "arguments": [{"name": "x", "type": "UInt64"}],
+            "functionName": "my_udf",
+            "returnType": "UInt64",
+            "runtime": "native",
+            "type": "executable",
+            "uploadId": "upload-1",
+        })
+    );
 }
 
 #[test]

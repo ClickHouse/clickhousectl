@@ -105,7 +105,14 @@ async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
         version,
         set_as_default,
     };
-    output::print_output(&out, json);
+    // The version manager already emits outcome-aware human output: a real
+    // install is confirmed there, while a no-op says that the existing build
+    // is being reused. The generic display text always says "Installed", so
+    // reserve it for structured output to avoid a duplicate or misleading
+    // human confirmation.
+    if json {
+        output::print_output(&out, json);
+    }
 
     Ok(())
 }
@@ -267,6 +274,9 @@ fn run_client(
             .iter()
             .find(|e| e.name == server_name)
             .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+        if !entry.running {
+            return Err(Error::ServerNotRunning(server_name.to_string()));
+        }
         let info = entry
             .info
             .as_ref()
@@ -311,6 +321,7 @@ async fn start_server(
     http_port: Option<u16>,
     tcp_port: Option<u16>,
     foreground: bool,
+    no_wait: bool,
     config_file: Option<String>,
     args: Vec<String>,
     json: bool,
@@ -432,9 +443,15 @@ async fn start_server(
         .unwrap_or_default();
 
     if !foreground {
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        let child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
+        let log_path = server::server_log_path(&server_name);
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&log_path)?;
+        cmd.stdout(log.try_clone()?);
+        cmd.stderr(log);
+        let mut child = cmd.spawn().map_err(|e| Error::Exec(e.to_string()))?;
         let pid = child.id();
 
         let info = server::ServerInfo {
@@ -450,8 +467,19 @@ async fn start_server(
         };
         server::save_server_info(&info)?;
 
-        // Check that it actually started
-        server::check_spawn_health(pid, &server_name)?;
+        if no_wait {
+            server::check_spawn_health(&mut child, &server_name, &log_path).await?;
+        } else {
+            server::wait_for_server_ready(
+                &mut child,
+                &server_name,
+                http_port,
+                tcp_port,
+                &log_path,
+                server::STARTUP_TIMEOUT,
+            )
+            .await?;
+        }
 
         let out = output::ServerStartOutput {
             name: server_name,
@@ -485,7 +513,7 @@ async fn start_server(
         );
 
         let status = child.wait().map_err(|e| Error::Exec(e.to_string()))?;
-        server::remove_server_info(&server_name);
+        server::mark_server_stopped(&server_name, pid)?;
 
         if !status.success()
             && let Some(code) = status.code()
@@ -520,6 +548,9 @@ fn dotenv_server(
         .iter()
         .find(|e| e.name == server_name)
         .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+    if !entry.running {
+        return Err(Error::ServerNotRunning(server_name.to_string()));
+    }
     let info = entry
         .info
         .as_ref()
@@ -656,6 +687,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             http_port,
             tcp_port,
             foreground,
+            no_wait,
             config_file,
             args,
         } => {
@@ -665,6 +697,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
                 http_port,
                 tcp_port,
                 foreground,
+                no_wait,
                 config_file,
                 args,
                 json,
@@ -803,7 +836,23 @@ fn list_servers_local(json: bool) -> Result<()> {
                             } else {
                                 None
                             };
-                            let http_port = if is_ch { Some(info.http_port) } else { None };
+                            // ClickHouse resolves its version and ports on each
+                            // start, so stopped entries expose identity only.
+                            let version = if !is_ch || running {
+                                Some(info.version)
+                            } else {
+                                None
+                            };
+                            let http_port = if is_ch && running {
+                                Some(info.http_port)
+                            } else {
+                                None
+                            };
+                            let tcp_port = if !is_ch || running {
+                                Some(info.tcp_port)
+                            } else {
+                                None
+                            };
                             // For Postgres the disk key is `<name>-pg<major>`;
                             // show users the friendly name without the suffix.
                             let display = if is_ch {
@@ -814,9 +863,9 @@ fn list_servers_local(json: bool) -> Result<()> {
                             (
                                 display,
                                 pid,
-                                Some(info.version),
+                                version,
                                 http_port,
-                                Some(info.tcp_port),
+                                tcp_port,
                                 info.engine.as_str().to_string(),
                                 info.container_id,
                             )

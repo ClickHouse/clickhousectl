@@ -148,11 +148,11 @@ CONTEXT FOR AGENTS:
 
 #[derive(Args)]
 pub struct CloudArgs {
-    /// API key (or set CLICKHOUSE_CLOUD_API_KEY)
+    /// API key override (highest precedence; see `cloud --help` for all sources)
     #[arg(long, global = true)]
     pub api_key: Option<String>,
 
-    /// API secret (or set CLICKHOUSE_CLOUD_API_SECRET)
+    /// API secret override (highest precedence; see `cloud --help` for all sources)
     #[arg(long, global = true)]
     pub api_secret: Option<String>,
 
@@ -415,8 +415,13 @@ CONTEXT FOR AGENTS:
 
     /// Get organization Prometheus configuration
     Prometheus {
-        /// Organization ID
-        org_id: String,
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Organization ID (deprecated positional form; use --org-id)
+        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
+        legacy_org_id: Option<String>,
 
         /// Whether to request filtered metrics
         #[arg(long)]
@@ -425,8 +430,13 @@ CONTEXT FOR AGENTS:
 
     /// Get organization usage/billing information
     Usage {
-        /// Organization ID
-        org_id: String,
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Organization ID (deprecated positional form; use --org-id)
+        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
+        legacy_org_id: Option<String>,
 
         /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
         #[arg(long, value_parser = parse_date_only)]
@@ -2801,7 +2811,6 @@ mod tests {
             "cloud",
             "org",
             "usage",
-            "org-1",
             "--from-date",
             "2025-01-01",
             "--to-date",
@@ -2816,13 +2825,152 @@ mod tests {
             panic!("expected org command");
         };
         let OrgCommands::Usage {
-            from_date, to_date, ..
+            org_id,
+            legacy_org_id,
+            from_date,
+            to_date,
+            ..
         } = command
         else {
             panic!("expected org usage");
         };
+        assert_eq!(org_id, None);
+        assert_eq!(legacy_org_id, None);
         assert_eq!(from_date, "2025-01-01");
         assert_eq!(to_date, "2025-01-31");
+    }
+
+    #[test]
+    fn parses_org_prometheus_and_usage_org_id_flags() {
+        let prometheus = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "prometheus",
+            "--org-id",
+            "org-1",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = prometheus.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Prometheus { org_id, .. } = command else {
+            panic!("expected org prometheus");
+        };
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let usage = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "--org-id",
+            "org-1",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = usage.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Usage { org_id, .. } = command else {
+            panic!("expected org usage");
+        };
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_legacy_org_id_positionals() {
+        let prometheus =
+            Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "org-1"]).unwrap();
+        let Commands::Cloud(args) = prometheus.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Prometheus {
+            org_id,
+            legacy_org_id,
+            ..
+        } = command
+        else {
+            panic!("expected org prometheus");
+        };
+        assert_eq!(org_id, None);
+        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
+
+        let usage = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = usage.command else {
+            panic!("expected cloud command");
+        };
+        let CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Usage {
+            org_id,
+            legacy_org_id,
+            ..
+        } = command
+        else {
+            panic!("expected org usage");
+        };
+        assert_eq!(org_id, None);
+        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn rejects_org_id_flag_with_legacy_positional() {
+        let prometheus = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "prometheus",
+            "org-1",
+            "--org-id",
+            "org-2",
+        ]);
+        match prometheus {
+            Ok(_) => panic!("expected conflicting org IDs to be rejected"),
+            Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict),
+        }
+
+        let usage = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "org-1",
+            "--org-id",
+            "org-2",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ]);
+        match usage {
+            Ok(_) => panic!("expected conflicting org IDs to be rejected"),
+            Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict),
+        }
     }
 
     #[test]
@@ -2832,7 +2980,6 @@ mod tests {
             "cloud",
             "org",
             "usage",
-            "org-1",
             "--from-date",
             "2025-01-01T00:00:00Z",
             "--to-date",
@@ -2852,7 +2999,6 @@ mod tests {
             "cloud",
             "org",
             "usage",
-            "org-1",
             "--from-date",
             "2025-02-31",
             "--to-date",
@@ -2952,17 +3098,13 @@ mod tests {
         // Org reads
         assert_write(&["clickhousectl", "cloud", "org", "list"], false);
         assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
-        assert_write(
-            &["clickhousectl", "cloud", "org", "prometheus", "org-1"],
-            false,
-        );
+        assert_write(&["clickhousectl", "cloud", "org", "prometheus"], false);
         assert_write(
             &[
                 "clickhousectl",
                 "cloud",
                 "org",
                 "usage",
-                "org-1",
                 "--from-date",
                 "2025-01-01",
                 "--to-date",

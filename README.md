@@ -165,6 +165,7 @@ clickhousectl local server start                          # Named "default" (ins
 clickhousectl local server start --name dev               # Named "dev"
 clickhousectl local server start --version latest         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
+clickhousectl local server start --no-wait                # Return after spawning without waiting for readiness
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start --config analytics       # Apply a custom config (see "Custom config files" below)
 
@@ -176,14 +177,16 @@ clickhousectl local server list
 clickhousectl local server list --global                  # List servers across all projects
 
 # Stop servers
-clickhousectl local server stop default                   # Stop by name
+clickhousectl local server stop                           # Stop "default"
+clickhousectl local server stop dev                       # Stop by name
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
 clickhousectl local server stop-all                       # Stop all running servers
 clickhousectl local server stop-all --global              # Stop all servers system-wide
 
 # Remove a stopped server and its data
-clickhousectl local server remove test
+clickhousectl local server remove                         # Remove "default"
+clickhousectl local server remove test                    # Remove by name
 
 # Write connection env vars to .env file
 clickhousectl local server dotenv                        # From "default" server → .env
@@ -192,11 +195,15 @@ clickhousectl local server dotenv --local                # Write to .env.local i
 clickhousectl local server dotenv --user default --password secret --database mydb  # Include credentials
 ```
 
-**Idempotent stop:** `server stop <name>` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
+**Idempotent stop:** `server stop [name]` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. The name defaults to "default". An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
+
+Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
 
 **Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
+
+**Readiness:** Background starts wait up to 30 seconds for the HTTP health check and TCP port before reporting success, so a following `local client` command can connect immediately. Startup failures point to `.clickhouse/servers/<name>/server.log`. Use `--no-wait` for fire-and-forget startup.
 
 **Orphaned server recovery:** If server metadata files are lost while the ClickHouse process is still running, the CLI automatically recovers them via process discovery. Running `server list`, `server start`, or any server command will detect orphaned processes belonging to the current project and bring them back under management.
 
@@ -249,9 +256,11 @@ clickhousectl local postgres client --name dev --query "SELECT 1"
 clickhousectl local postgres dotenv --name dev
 
 # Stop / remove. Pass --version when more than one major shares a name.
+clickhousectl local postgres stop                         # Stop "default"
 clickhousectl local postgres stop dev
 clickhousectl local postgres stop dev --version 17        # disambiguate
 clickhousectl local postgres stop-all                     # Stop all Postgres instances in this project
+clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
 
@@ -268,8 +277,10 @@ All server data lives inside `.clickhouse/` in your project directory:
 ├── .gitignore              # auto-created, ignores everything
 ├── credentials.json        # cloud API credentials (if configured)
 └── servers/
+    ├── default.json         # ClickHouse identity and runtime state
     ├── default/
     │   └── data/           # ClickHouse data files for "default" server
+    ├── dev.json             # ClickHouse identity and runtime state
     └── dev/
         └── data/           # ClickHouse data files for "dev" server
 ```
@@ -331,12 +342,17 @@ clickhousectl cloud auth status    # Show current auth state (including read-onl
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 ```
 
-Credential resolution order: 
+Credential resolution order:
 1. CLI flags
 2. `.clickhouse/credentials.json`
 3. Environment variables exported in your session
 4. Environment variables from `.env`
 5. OAuth tokens.
+
+When environment credentials are configured but a credentials file or explicit
+CLI flags take precedence, clickhousectl prints a one-line note to stderr.
+`cloud auth status` also marks the environment credentials as configured but
+inactive and identifies the source that outranked them.
 
 ### Debugging which credential source was used
 
@@ -362,10 +378,11 @@ clickhousectl cloud org update <org-id> --name "Renamed Org"
 clickhousectl cloud org update <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
-clickhousectl cloud org prometheus <org-id> --filtered-metrics true
-clickhousectl cloud org usage <org-id> \
+clickhousectl cloud org prometheus --filtered-metrics true
+clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31
+# Add --org-id <org-id> to either command when your credentials access multiple organizations.
 ```
 
 ### Services

@@ -172,6 +172,7 @@ CONTEXT FOR AGENTS:
   Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
   Use --http-port and --tcp-port to set explicit ports.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
+  Background starts wait for HTTP health and TCP connections. Use --no-wait to return after spawning.
   If --name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
   Use --config <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
@@ -179,7 +180,7 @@ CONTEXT FOR AGENTS:
   ClickHouse's built-in defaults (via config.d), so it can contain just the settings you want
   to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
   file's contents (they are forced as command-line overrides).
-  Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop <name>` to stop one.")]
+  Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop [name]` to stop one.")]
     Start {
         /// Server name (default: \"default\", or random if default is already running)
         #[arg(long)]
@@ -200,6 +201,10 @@ CONTEXT FOR AGENTS:
         /// Run server in foreground (default: background)
         #[arg(long, alias = "fg", short = 'F')]
         foreground: bool,
+
+        /// Return after spawning without waiting for HTTP and TCP readiness
+        #[arg(long, conflicts_with = "foreground")]
+        no_wait: bool,
 
         /// Overlay a named config file from ~/.clickhouse/configs/ on top of the defaults (see `server configs`)
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
@@ -226,9 +231,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
-  Automatically cleans up stale entries for processes that are no longer running.
-  Shows name, status (running/stopped), PID, version, and ports.
-  Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop <name>` to stop one.")]
+  Processes that exited unexpectedly are retained and shown as stopped.
+  Running ClickHouse entries also show their PID, version, and ports.
+  Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop [name]` to stop one.")]
     List {
         /// System-wide maintenance only: list servers across all projects. You almost certainly want the default project-scoped list instead.
         #[arg(long)]
@@ -238,14 +243,17 @@ CONTEXT FOR AGENTS:
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a named ClickHouse server. Use the name from `clickhousectl local server list`.
+  Stops a ClickHouse server. The name defaults to \"default\"; use `clickhousectl local server list`
+  to find other server names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
-  The server's data directory is preserved — restart with `clickhousectl local server start --name <name>`.
+  The server's data and metadata are preserved so it remains visible in `server list`.
+  Restart with `clickhousectl local server start --name <name>`.
   Idempotent: a server that exists but is already stopped exits 0 (no error).
   An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
-        /// Name of the server to stop
+        /// Name of the server to stop (default: "default")
+        #[arg(default_value = "default")]
         name: String,
 
         /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
@@ -262,7 +270,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Stops all running ClickHouse server instances.
   Sends SIGTERM first, then SIGKILL if processes don't exit.
-  Data directories are preserved.
+  Data and metadata are preserved, and stopped servers remain visible in `server list`.
   Related: `clickhousectl local server list` to see servers.")]
     StopAll {
         /// System-wide maintenance only: stop all servers across all projects. You almost certainly want the default project-scoped stop-all instead.
@@ -275,9 +283,11 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  Related: `clickhousectl local server stop <name>` to stop first, `clickhousectl local server list` to see servers.")]
+  The name defaults to \"default\".
+  Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
-        /// Name of the server to remove
+        /// Name of the server to remove (default: "default")
+        #[arg(default_value = "default")]
         name: String,
     },
 
@@ -362,7 +372,8 @@ CONTEXT FOR AGENTS:
 
     /// Stop a running Postgres container by name
     Stop {
-        /// Name of the server to stop
+        /// Name of the server to stop (default: "default")
+        #[arg(default_value = "default")]
         name: String,
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
@@ -374,7 +385,8 @@ CONTEXT FOR AGENTS:
 
     /// Remove a stopped Postgres server and its data directory
     Remove {
-        /// Name of the server to remove
+        /// Name of the server to remove (default: "default")
+        #[arg(default_value = "default")]
         name: String,
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
@@ -506,15 +518,46 @@ mod tests {
     #[test]
     fn server_start_config_file_defaults_to_none() {
         let LocalCommands::Server {
-            command: ServerCommands::Start {
-                config_file, args, ..
-            },
+            command:
+                ServerCommands::Start {
+                    config_file,
+                    no_wait,
+                    args,
+                    ..
+                },
         } = local_command(&["server", "start"])
         else {
             panic!("expected server start");
         };
         assert_eq!(config_file, None);
+        assert!(!no_wait);
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parses_server_start_no_wait() {
+        let LocalCommands::Server {
+            command: ServerCommands::Start { no_wait, .. },
+        } = local_command(&["server", "start", "--no-wait"])
+        else {
+            panic!("expected server start");
+        };
+        assert!(no_wait);
+    }
+
+    #[test]
+    fn server_start_no_wait_conflicts_with_foreground() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "--no-wait",
+            "--foreground",
+        ])
+        .err()
+        .expect("flags should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -525,5 +568,84 @@ mod tests {
         else {
             panic!("expected server configs");
         };
+    }
+
+    #[test]
+    fn server_stop_name_defaults_to_default() {
+        let LocalCommands::Server {
+            command: ServerCommands::Stop { name, .. },
+        } = local_command(&["server", "stop"])
+        else {
+            panic!("expected server stop");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn server_remove_name_defaults_to_default() {
+        let LocalCommands::Server {
+            command: ServerCommands::Remove { name },
+        } = local_command(&["server", "remove"])
+        else {
+            panic!("expected server remove");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn postgres_stop_name_defaults_to_default() {
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Stop { name, .. },
+        } = local_command(&["postgres", "stop"])
+        else {
+            panic!("expected postgres stop");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn postgres_remove_name_defaults_to_default() {
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Remove { name, .. },
+        } = local_command(&["postgres", "remove"])
+        else {
+            panic!("expected postgres remove");
+        };
+        assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn teardown_commands_preserve_explicit_names() {
+        let LocalCommands::Server {
+            command: ServerCommands::Stop { name, .. },
+        } = local_command(&["server", "stop", "analytics"])
+        else {
+            panic!("expected server stop");
+        };
+        assert_eq!(name, "analytics");
+
+        let LocalCommands::Server {
+            command: ServerCommands::Remove { name },
+        } = local_command(&["server", "remove", "analytics"])
+        else {
+            panic!("expected server remove");
+        };
+        assert_eq!(name, "analytics");
+
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Stop { name, .. },
+        } = local_command(&["postgres", "stop", "warehouse"])
+        else {
+            panic!("expected postgres stop");
+        };
+        assert_eq!(name, "warehouse");
+
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Remove { name, .. },
+        } = local_command(&["postgres", "remove", "warehouse"])
+        else {
+            panic!("expected postgres remove");
+        };
+        assert_eq!(name, "warehouse");
     }
 }

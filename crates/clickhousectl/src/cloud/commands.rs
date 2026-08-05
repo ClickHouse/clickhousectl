@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError};
 use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use clickhouse_cloud_api::models::{
@@ -974,6 +974,25 @@ fn classify_stop_poll_state(
     Ok(false)
 }
 
+/// Replace the API's running-service conflict with the CLI remedy.
+///
+/// Keep other conflicts intact: the API can reject deletion for reasons that
+/// `--force` cannot fix, and a forced deletion must not suggest the flag the
+/// user already passed.
+fn service_delete_error(error: CloudError, force: bool, service_id: &str) -> CloudError {
+    if !force
+        && error.message.starts_with("CONFLICT:")
+        && error.message.contains("Current state: 'running'")
+    {
+        CloudError::new(format!(
+            "service is running and cannot be deleted. Use --force to stop it first, or \
+             `clickhousectl cloud service stop {service_id}`."
+        ))
+    } else {
+        error
+    }
+}
+
 pub async fn service_delete(
     client: &CloudClient,
     service_id: &str,
@@ -1006,7 +1025,10 @@ pub async fn service_delete(
         }
     }
 
-    let response = client.delete_service(&org_id, service_id).await?;
+    let response = client
+        .delete_service(&org_id, service_id)
+        .await
+        .map_err(|error| service_delete_error(error, force, service_id))?;
     let _ = credentials::remove_service_query_key(service_id);
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -2641,11 +2663,12 @@ pub async fn org_update(
 
 pub async fn org_prometheus(
     client: &CloudClient,
-    org_id: &str,
+    org_id: Option<&str>,
     filtered_metrics: Option<bool>,
     _json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let prom = client.get_org_prometheus(org_id, filtered_metrics).await?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let prom = client.get_org_prometheus(&org_id, filtered_metrics).await?;
     println!("{}", prom);
     Ok(())
 }
@@ -2666,14 +2689,15 @@ pub async fn service_prometheus(
 
 pub async fn org_usage(
     client: &CloudClient,
-    org_id: &str,
+    org_id: Option<&str>,
     from_date: &str,
     to_date: &str,
     filters: &[String],
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let org_id = resolve_org_id(client, org_id).await?;
     let usage = client
-        .get_org_usage(org_id, from_date, to_date, filters)
+        .get_org_usage(&org_id, from_date, to_date, filters)
         .await?;
 
     if json {
@@ -3382,6 +3406,37 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "service entered unexpected state 'deleted' while waiting for stop"
+        );
+    }
+
+    #[test]
+    fn service_delete_error_suggests_force_for_a_running_service() {
+        let error = CloudError::new(
+            "CONFLICT: Only instance in one of the following states can be terminated. \
+             Current state: 'running'",
+        );
+
+        let error = service_delete_error(error, false, "svc-1");
+
+        assert_eq!(
+            error.message,
+            "service is running and cannot be deleted. Use --force to stop it first, or \
+             `clickhousectl cloud service stop svc-1`."
+        );
+    }
+
+    #[test]
+    fn service_delete_error_preserves_unrelated_and_forced_failures() {
+        let unrelated = CloudError::new("CONFLICT: service has dependent resources");
+        assert_eq!(
+            service_delete_error(unrelated, false, "svc-1").message,
+            "CONFLICT: service has dependent resources"
+        );
+
+        let forced = CloudError::new("CONFLICT: Current state: 'running'");
+        assert_eq!(
+            service_delete_error(forced, true, "svc-1").message,
+            "CONFLICT: Current state: 'running'"
         );
     }
 

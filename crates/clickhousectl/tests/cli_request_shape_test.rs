@@ -14,7 +14,7 @@
 //! Tests run as cargo integration tests:
 //!     cargo test -p clickhousectl --test cli_request_shape_test
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde_json::Value;
@@ -116,6 +116,283 @@ async fn invoke_cli_capture_body(mock: &MockServer, cli_args: &[&str]) -> Value 
         .find(|r| r.method == wiremock::http::Method::POST)
         .expect("no POST request recorded by mock");
     serde_json::from_slice(&post.body).expect("POST body wasn't valid JSON")
+}
+
+// ── Organization auto-detection (issue #337) ───────────────────────────────
+
+const AUTO_DETECTED_ORG_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+async fn start_mock_org_auto_detection_api() -> MockServer {
+    let mock = MockServer::start().await;
+    let orgs = serde_json::json!({
+        "result": [{ "id": AUTO_DETECTED_ORG_ID, "name": "Only org" }],
+        "status": 200,
+        "requestId": "stub-org-list",
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(orgs))
+        .mount(&mock)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_string("metric 1\n"))
+        .mount(&mock)
+        .await;
+
+    let usage = serde_json::json!({
+        "result": { "grandTotalCHC": 0.0, "costs": [] },
+        "status": 200,
+        "requestId": "stub-org-usage",
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(usage))
+        .mount(&mock)
+        .await;
+
+    mock
+}
+
+fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url, "--json"];
+    args.extend(cli_args);
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
+    let credentials_dir = root.join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": key,
+            "api_secret": secret,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+// ── Credential precedence visibility (issue #336) ─────────────────────────
+
+#[tokio::test]
+async fn credentials_file_reports_that_environment_credentials_are_ignored() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [],
+            "status": 200,
+            "requestId": "stub-org-list",
+        })))
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    let url = mock.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
+        .current_dir(dir.path())
+        .args(["cloud", "--url", &url, "--json", "org", "list"])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "note: CLICKHOUSE_CLOUD_API_KEY and CLICKHOUSE_CLOUD_API_SECRET are set but ignored; \
+         using credentials file — see --debug\n"
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    let authorization = requests[0]
+        .headers
+        .get("Authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "file-key:file-secret",
+        )
+    );
+    assert_eq!(authorization, expected);
+}
+
+#[test]
+fn auth_status_marks_outranked_environment_credentials_inactive() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
+        .current_dir(dir.path())
+        .args(["cloud", "--json", "auth", "status"])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_success(&output);
+    assert!(output.stderr.is_empty());
+    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let env = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["type"] == "Env vars")
+        .unwrap();
+    assert_eq!(
+        env["status"],
+        "Configured (inactive, outranked by credentials file)"
+    );
+    assert_eq!(env["active"], "-");
+}
+
+// ── Service deletion errors (issue #335) ──────────────────────────────────
+
+#[tokio::test]
+async fn service_delete_running_conflict_suggests_force() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "status": 409,
+            "error": "CONFLICT: Only instance in one of the following states: \
+                      'provisioning','starting','awaking','idle','stopped','degraded','failed' \
+                      can be terminated. Current state: 'running'"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["service", "delete", "svc-1", "--org-id", "org-1"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: service is running and cannot be deleted. Use --force to stop it first, or \
+         `clickhousectl cloud service stop svc-1`.\n"
+    );
+}
+
+#[tokio::test]
+async fn org_prometheus_auto_detects_the_only_organization() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "prometheus", "--filtered-metrics", "true"],
+    );
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "metric 1\n\n");
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url.path(), "/v1/organizations");
+    assert_eq!(
+        requests[1].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus")
+    );
+    assert_eq!(requests[1].url.query(), Some("filtered_metrics=true"));
+}
+
+#[tokio::test]
+async fn org_usage_auto_detects_the_only_organization() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "usage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+    );
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url.path(), "/v1/organizations");
+    assert_eq!(
+        requests[1].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost")
+    );
+    let query = requests[1]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    assert!(query.contains(&("from_date".into(), "2025-01-01".into())));
+    assert!(query.contains(&("to_date".into(), "2025-01-31".into())));
+}
+
+#[tokio::test]
+async fn org_prometheus_accepts_legacy_positional_org_id() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &["org", "prometheus", AUTO_DETECTED_ORG_ID]);
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus")
+    );
+}
+
+#[tokio::test]
+async fn org_usage_accepts_legacy_positional_org_id() {
+    let mock = start_mock_org_auto_detection_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "usage",
+            AUTO_DETECTED_ORG_ID,
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+    );
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.path(),
+        format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost")
+    );
 }
 
 // ── Bug 1: Postgres CDC must NOT send publicationName / replicationSlotName ─

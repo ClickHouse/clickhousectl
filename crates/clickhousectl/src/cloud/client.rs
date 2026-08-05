@@ -252,6 +252,7 @@ fn dotenv_env_provenance_with_sources(
 /// computed through the same `env_or_dotenv` merge the resolver uses so the
 /// `cloud auth status` table can never disagree with which source actually
 /// wins precedence. Empty values count as absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnvCredPresence {
     pub key: bool,
     pub secret: bool,
