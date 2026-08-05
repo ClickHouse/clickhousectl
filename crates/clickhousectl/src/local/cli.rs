@@ -136,7 +136,7 @@ CONTEXT FOR AGENTS:
   here manage ClickHouse.
   Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
+  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start test`.
   Related: `clickhousectl local client` to connect to a running server.")]
     Server {
         #[command(subcommand)]
@@ -165,9 +165,10 @@ pub enum ServerCommands {
 CONTEXT FOR AGENTS:
   Starts a named clickhouse-server instance with its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Without --name, the first server is called \"default\"; if \"default\" is already running,
+  Without a name, the first server is called \"default\"; if \"default\" is already running,
   a random name is generated (e.g., \"bold-crane\").
-  Use --name to give a server a stable identity (e.g., --name dev, --name test).
+  Pass the name positionally to give a server a stable identity (e.g., `server start dev`).
+  The older `--name dev` form remains accepted, but cannot be combined with a positional name.
   Use --version (-v) to run a specific ClickHouse version without changing the default.
   Accepts same specs as install/use: \"latest\" (recommended), stable, lts, 25.12, etc. Installs if needed.
   With no --version and no default set, a bare start bootstraps by installing \"latest\" (without
@@ -176,18 +177,23 @@ CONTEXT FOR AGENTS:
   Use --http-port and --tcp-port to set explicit ports.
   Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
   Background starts wait for HTTP health and TCP connections. Use --no-wait to return after spawning.
-  If --name is given and that server is already running, the command will error.
+  If a name is given and that server is already running, the command will error.
   Shows count of already-running servers before starting.
   Use --config <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
   (see `clickhousectl local server configs`). The file is merged as an overlay on top of
   ClickHouse's built-in defaults (via config.d), so it can contain just the settings you want
   to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
   file's contents (they are forced as command-line overrides).
+  Additional clickhouse-server arguments must follow `--`.
   Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop [name]` to stop one.")]
     Start {
         /// Server name (default: \"default\", or random if default is already running)
-        #[arg(long)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
+
+        /// Compatibility form for the server name; prefer positional NAME
+        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        name_flag: Option<String>,
 
         /// ClickHouse version to use (e.g. "latest" (recommended), stable, lts, 25.12). Installs if needed. Does not change the default version.
         #[arg(long, short = 'v')]
@@ -213,8 +219,8 @@ CONTEXT FOR AGENTS:
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
         config_file: Option<String>,
 
-        /// Arguments to pass to clickhouse-server
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Arguments to pass to clickhouse-server after `--`
+        #[arg(last = true, allow_hyphen_values = true, value_name = "CLICKHOUSE_ARG")]
         args: Vec<String>,
     },
 
@@ -250,7 +256,7 @@ CONTEXT FOR AGENTS:
   to find other server names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data and metadata are preserved so it remains visible in `server list`.
-  Restart with `clickhousectl local server start --name <name>`.
+  Restart with `clickhousectl local server start <name>`.
   Idempotent: a server that exists but is already stopped exits 0 (no error).
   An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
@@ -537,6 +543,100 @@ mod tests {
         assert_eq!(config_file, None);
         assert!(!no_wait);
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parses_server_start_positional_name_before_clickhousectl_options() {
+        let LocalCommands::Server {
+            command:
+                ServerCommands::Start {
+                    name,
+                    name_flag,
+                    version,
+                    args,
+                    ..
+                },
+        } = local_command(&["server", "start", "existing", "--version", "25.12.9.61"])
+        else {
+            panic!("expected server start");
+        };
+        assert_eq!(name.as_deref(), Some("existing"));
+        assert_eq!(name_flag, None);
+        assert_eq!(version.as_deref(), Some("25.12.9.61"));
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parses_server_start_name_flag_for_compatibility() {
+        let LocalCommands::Server {
+            command: ServerCommands::Start {
+                name, name_flag, ..
+            },
+        } = local_command(&["server", "start", "--name", "existing"])
+        else {
+            panic!("expected server start");
+        };
+        assert_eq!(name, None);
+        assert_eq!(name_flag.as_deref(), Some("existing"));
+    }
+
+    #[test]
+    fn server_start_name_forms_conflict() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "existing",
+            "--name",
+            "other",
+        ])
+        .err()
+        .expect("name forms should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn server_start_passthrough_requires_boundary() {
+        let LocalCommands::Server {
+            command:
+                ServerCommands::Start {
+                    name,
+                    version,
+                    args,
+                    ..
+                },
+        } = local_command(&[
+            "server",
+            "start",
+            "existing",
+            "--version",
+            "25.12.9.61",
+            "--",
+            "--logger.level=trace",
+            "--max_server_memory_usage=1000000",
+        ])
+        else {
+            panic!("expected server start");
+        };
+        assert_eq!(name.as_deref(), Some("existing"));
+        assert_eq!(version.as_deref(), Some("25.12.9.61"));
+        assert_eq!(
+            args,
+            ["--logger.level=trace", "--max_server_memory_usage=1000000"]
+        );
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "existing",
+            "--logger.level=trace",
+        ])
+        .err()
+        .expect("passthrough without -- should fail");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
