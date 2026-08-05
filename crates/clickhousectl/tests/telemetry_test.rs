@@ -285,7 +285,9 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
         .path()
         .join(".clickhouse/versions/25.12.9.61/clickhouse");
     std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
-    std::fs::write(&binary, "#!/bin/sh\nexit 42\n").unwrap();
+    // 3 is clickhousectl's own cancellation code, so this also verifies that
+    // a child status cannot be mistaken for a CLI cancellation.
+    std::fs::write(&binary, "#!/bin/sh\nexit 3\n").unwrap();
     let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&binary, permissions).unwrap();
@@ -316,7 +318,7 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(42));
+    assert_eq!(output.status.code(), Some(3));
     assert!(
         !stderr_of(&output).contains("Error: child process exited"),
         "child stderr should not gain a wrapper error: {}",
@@ -329,7 +331,7 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
     );
     let payloads = sandbox.wait_for_requests(1).await;
     assert_eq!(payloads[0]["command"], "local server start");
-    assert_eq!(payloads[0]["exit_code"], 42);
+    assert_eq!(payloads[0]["exit_code"], 3);
     assert_eq!(payloads[0]["outcome"], "error");
 }
 

@@ -185,12 +185,13 @@ struct Payload {
     exit_code: i32,
     /// How the invocation ended, from a closed vocabulary. Dispatched
     /// invocations carry `"ok"`, `"error"` (including non-zero child exits),
-    /// `"cancelled"`, or `"auth_required"` — derived from the dispatched exit
-    /// code by [`dispatched_outcome`] — or `"exec"` (parsed, dispatched, and the
-    /// process image was replaced by `exec()` — the handed-over program's
-    /// exit status is unknowable, so `exit_code` is a fixed 0 and not
-    /// meaningful). Failed parses carry a direct mapping of clap's
-    /// `ErrorKind` (`"help"`, `"version"`, `"invalid_subcommand"`, …).
+    /// `"cancelled"`, or `"auth_required"`. Child exits are explicitly marked
+    /// as `"error"`; the remaining dispatched outcomes are derived from the
+    /// exit code by [`dispatched_outcome`]. `"exec"` means the process image was
+    /// replaced by `exec()` — the handed-over program's exit status is
+    /// unknowable, so `exit_code` is a fixed 0 and not meaningful. Failed
+    /// parses carry a direct mapping of clap's `ErrorKind` (`"help"`,
+    /// `"version"`, `"invalid_subcommand"`, …).
     /// Literal strings only — this field can never carry user data.
     outcome: &'static str,
     /// Clap's "did you mean" for failed parses, anchored locally: recorded
@@ -268,6 +269,14 @@ pub struct Invocation {
     /// [`capture_lossy`] it is a clone of a definition-owned string, never
     /// of clap's error context.
     suggestion: Option<String>,
+}
+
+impl Invocation {
+    /// Keep a child's raw status while preventing reserved CLI exit codes from
+    /// changing its telemetry classification.
+    pub fn mark_child_exit(&mut self) {
+        self.outcome = "error";
+    }
 }
 
 /// Map clap's parse-error kind to the closed outcome vocabulary. Every value
@@ -904,6 +913,12 @@ mod tests {
         assert_eq!(dispatched_outcome("ok", 4), "auth_required");
         // Any exit code outside the documented vocabulary is still a failure.
         assert_eq!(dispatched_outcome("ok", 5), "error");
+        // The child-exit marker replaces the parse-time placeholder before
+        // this mapping, so colliding child statuses remain errors.
+        let mut child = invocation();
+        child.mark_child_exit();
+        assert_eq!(dispatched_outcome(child.outcome, 3), "error");
+        assert_eq!(dispatched_outcome(child.outcome, 4), "error");
         // Non-"ok" outcomes are never rewritten, whatever the exit code.
         assert_eq!(
             dispatched_outcome("unknown_argument", 2),
