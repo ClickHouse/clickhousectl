@@ -500,6 +500,18 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn get_service_if_exists(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Option<clickhouse_cloud_api::models::Service>> {
+        match self.api().instance_get(org_id, service_id).await {
+            Ok(response) => Self::unwrap_response(response).map(Some),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
+    }
+
     pub async fn create_service(
         &self,
         org_id: &str,
@@ -513,16 +525,24 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .instance_delete(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
+    pub async fn delete_service_if_exists(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> Result<Option<DeleteResponse>> {
+        match self.api().instance_delete(org_id, service_id).await {
+            Ok(response) => Ok(Some(DeleteResponse {
+                status: response.status,
+                request_id: response.request_id,
+            })),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+                // The service and its organization share the same 404 shape.
+                // Confirm the request scope before declaring the service absent.
+                self.get_organization(org_id).await?;
+                Ok(None)
+            }
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
     }
 
     pub async fn change_service_state(
@@ -914,6 +934,21 @@ impl CloudClient {
             status: response.status,
             request_id: response.request_id,
         })
+    }
+
+    pub async fn delete_api_key_if_exists(
+        &self,
+        org_id: &str,
+        key_id: &str,
+    ) -> Result<Option<DeleteResponse>> {
+        match self.api().openapi_key_delete(org_id, key_id).await {
+            Ok(response) => Ok(Some(DeleteResponse {
+                status: response.status,
+                request_id: response.request_id,
+            })),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
     }
 
     // Phase 6 - Activity endpoints

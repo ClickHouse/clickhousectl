@@ -16,6 +16,15 @@ pub struct Credentials {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceQueryKey {
+    /// Organization in which the management API key was provisioned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    /// Management API resource ID used to delete this exact key.
+    ///
+    /// Records written before the cleanup metadata was introduced remain
+    /// usable for queries, but cannot be safely cleaned up by service deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_id: Option<String>,
     pub key_id: String,
     pub key_secret: String,
     /// The query endpoint the key is bound to, when the upsert echoed it.
@@ -67,6 +76,22 @@ pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
     creds.service_query_keys.get(service_id).cloned()
 }
 
+pub fn try_get_service_query_key(
+    service_id: &str,
+) -> Result<Option<ServiceQueryKey>, Box<dyn std::error::Error>> {
+    let path = credentials_path();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!("failed to read {}: {error}", path.display()).into());
+        }
+    };
+    let creds: Credentials = serde_json::from_str(&data)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+    Ok(creds.service_query_keys.get(service_id).cloned())
+}
+
 pub fn set_service_query_key(
     service_id: &str,
     key: ServiceQueryKey,
@@ -110,6 +135,8 @@ mod tests {
         creds.service_query_keys.insert(
             "svc-1".into(),
             ServiceQueryKey {
+                organization_id: Some("org-1".into()),
+                api_key_id: Some("api-key-uuid".into()),
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: Some("ep".into()),
@@ -121,8 +148,12 @@ mod tests {
         );
 
         let s = serde_json::to_string(&creds).unwrap();
+        assert!(s.contains("\"organization_id\":\"org-1\""));
+        assert!(s.contains("\"api_key_id\":\"api-key-uuid\""));
         let back: Credentials = serde_json::from_str(&s).unwrap();
         let key = back.service_query_keys.get("svc-1").unwrap();
+        assert_eq!(key.organization_id.as_deref(), Some("org-1"));
+        assert_eq!(key.api_key_id.as_deref(), Some("api-key-uuid"));
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
@@ -135,6 +166,8 @@ mod tests {
         creds.service_query_keys.insert(
             "svc-1".into(),
             ServiceQueryKey {
+                organization_id: Some("org-1".into()),
+                api_key_id: Some("api-key-uuid".into()),
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: None,
@@ -155,14 +188,20 @@ mod tests {
     }
 
     #[test]
-    fn existing_credentials_files_with_an_endpoint_id_still_deserialize() {
-        // Files written before `endpoint_id` became optional carry it as a
-        // bare string and must keep loading.
+    fn existing_query_keys_without_cleanup_metadata_still_deserialize() {
+        // Existing files contain query credentials and an endpoint ID, but
+        // not the ownership metadata added for exact cloud-side cleanup.
         let raw = r#"{"service_query_keys":{"svc-1":{"key_id":"kid","key_secret":"sec",
             "endpoint_id":"ep","service_name":"demo","created_at":"2026-05-11T12:00:00Z"}}}"#;
         let creds: Credentials = serde_json::from_str(raw).unwrap();
         let key = creds.service_query_keys.get("svc-1").unwrap();
+        assert_eq!(key.organization_id, None);
+        assert_eq!(key.api_key_id, None);
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
         assert_eq!(key.key_id, "kid");
+
+        let written = serde_json::to_string(&creds).unwrap();
+        assert!(!written.contains("organization_id"));
+        assert!(!written.contains("api_key_id"));
     }
 }
