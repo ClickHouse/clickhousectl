@@ -191,6 +191,55 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     .unwrap();
 }
 
+// ── Organization-scoped error context (issue #334) ─────────────────────────
+
+#[tokio::test]
+async fn service_list_bare_not_found_includes_the_requested_organization() {
+    const WRONG_ORG_ID: &str = "00000000-0000-4000-8000-000000000001";
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/organizations/{WRONG_ORG_ID}/services")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "NOT_FOUND",
+            "requestId": "stub-wrong-org",
+        })))
+        .mount(&mock)
+        .await;
+
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", WRONG_ORG_ID]);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("Error: NOT_FOUND: request scoped to organization {WRONG_ORG_ID}\n")
+    );
+}
+
+#[tokio::test]
+async fn service_get_preserves_a_detailed_not_found_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/missing-service"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "Service missing-service was not found",
+            "requestId": "stub-missing-service",
+        })))
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["service", "get", "missing-service", "--org-id", "org-1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Service missing-service was not found\n"
+    );
+}
+
 // ── Credential precedence visibility (issue #336) ─────────────────────────
 
 #[tokio::test]
@@ -2141,6 +2190,80 @@ fn write_oauth_tokens(ch_dir: &std::path::Path, control_uri: &str) {
         serde_json::to_vec(&tokens).unwrap(),
     )
     .unwrap();
+}
+
+async fn invoke_oauth_service_query_error(body: &str) -> std::process::Output {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(400).set_body_string(body))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &control.uri());
+
+    let url = control.uri();
+    Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT broken FROM",
+        ])
+        .current_dir(dir.path())
+        .env("HOME", &home_dir)
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn service_query_renders_documented_sql_error() {
+    let output = invoke_oauth_service_query_error(
+        r#"{"error":{"code":"62","details":"Syntax error near FROM"}}"#,
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: SQL error 62: Syntax error near FROM\n"
+    );
+}
+
+#[tokio::test]
+async fn service_query_preserves_malformed_json_error_and_status() {
+    let body = r#"{"error":{"code":"62","details":"truncated"#;
+    let output = invoke_oauth_service_query_error(body).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("Error: Query API returned HTTP 400 Bad Request: {body}\n")
+    );
+}
+
+#[tokio::test]
+async fn service_query_preserves_non_json_error_and_status() {
+    let output = invoke_oauth_service_query_error("upstream proxy failed").await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Query API returned HTTP 400 Bad Request: upstream proxy failed\n"
+    );
 }
 
 #[tokio::test]

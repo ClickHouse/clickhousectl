@@ -536,7 +536,7 @@ pub async fn postgres_list(
         .api()
         .postgres_service_get_list(&org_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let items = unwrap_api(resp)?;
     let filtered: Vec<PostgresServiceListItem> = items
         .into_iter()
@@ -606,7 +606,7 @@ pub async fn postgres_get(
         .api()
         .postgres_service_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -705,7 +705,7 @@ pub async fn postgres_create(
         .api()
         .postgres_service_create(&org_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -755,7 +755,7 @@ pub async fn postgres_update(
             .api()
             .postgres_service_get(&org_id, postgres_id)
             .await
-            .map_err(|e| client.convert_error(e))?;
+            .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
@@ -774,7 +774,7 @@ pub async fn postgres_update(
         .api()
         .postgres_service_patch(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -798,7 +798,7 @@ pub async fn postgres_delete(
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -820,7 +820,7 @@ pub async fn postgres_certs_get(
         .api()
         .postgres_service_certs_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
     if let Some(path) = output {
         write_pem_file(path, &pem)?;
@@ -862,7 +862,7 @@ pub async fn postgres_config_get(
         .api()
         .postgres_instance_config_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let cfg = unwrap_api(resp)?;
     // Config is a flat 20+ field object — always emit as JSON (pretty).
     println!("{}", serde_json::to_string_pretty(&cfg)?);
@@ -882,7 +882,7 @@ pub async fn postgres_config_replace(
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
 
     if json {
@@ -926,7 +926,7 @@ pub async fn postgres_config_patch(
         .api()
         .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
 
     if json {
@@ -967,7 +967,7 @@ pub async fn postgres_reset_password(
         .api()
         .postgres_service_set_password(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
     // Emit what the user now needs to use: the API echoes the password back, but
     // fall back to the one we sent if the response omits it.
@@ -1019,7 +1019,7 @@ pub async fn postgres_read_replica_create(
         .api()
         .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -1064,7 +1064,7 @@ pub async fn postgres_restore(
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -1090,7 +1090,7 @@ pub async fn postgres_state_change(
         .api()
         .postgres_service_patch_state(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {

@@ -170,7 +170,7 @@ async fn bind_query_endpoint(
         // Only a 404 means there is no endpoint yet, so this binding is the
         // first one and starts from an empty list.
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error(e).into()),
+        Err(e) => return Err(client.convert_error_for_organization(e, org_id).into()),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
         open_api_keys.push(api_key_uuid.to_string());
