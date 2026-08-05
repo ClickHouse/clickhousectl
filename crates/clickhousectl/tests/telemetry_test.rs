@@ -19,6 +19,9 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use serde_json::Value;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -268,6 +271,66 @@ async fn failure_reported_and_positional_value_never_leaks() {
         !raw.contains("no-such-version-xyz"),
         "positional argument leaked into the payload: {raw}"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+
+    let binary = sandbox
+        .home
+        .path()
+        .join(".clickhouse/versions/25.12.9.61/clickhouse");
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, "#!/bin/sh\nexit 42\n").unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    let cache = sandbox.home.path().join(".clickhouse/last_update_check");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(cache, format!("{now}\n999.0.0")).unwrap();
+
+    let output = sandbox
+        .command(&[
+            "local",
+            "server",
+            "start",
+            "--version",
+            "25.12.9.61",
+            "--foreground",
+        ])
+        .env_clear()
+        .env("HOME", sandbox.home.path())
+        .env(
+            "CHCTL_TELEMETRY_URL",
+            format!("{}/v1/telemetry", sandbox.mock.uri()),
+        )
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(42));
+    assert!(
+        !stderr_of(&output).contains("Error: child process exited"),
+        "child stderr should not gain a wrapper error: {}",
+        stderr_of(&output)
+    );
+    assert!(
+        stderr_of(&output).contains("There is a new version of clickhousectl"),
+        "child failure should still reach the update-notice tail: {}",
+        stderr_of(&output)
+    );
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "local server start");
+    assert_eq!(payloads[0]["exit_code"], 42);
+    assert_eq!(payloads[0]["outcome"], "error");
 }
 
 #[tokio::test]

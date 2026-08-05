@@ -386,7 +386,7 @@ pub async fn exec_psql_one_shot(
         && let Some(code) = info.exit_code
         && code != 0
     {
-        std::process::exit(code as i32);
+        return Err(Error::ChildExit(code as i32));
     }
     Ok(())
 }
@@ -519,7 +519,7 @@ pub async fn exec_psql_in_container(
         && let Some(code) = info.exit_code
         && code != 0
     {
-        std::process::exit(code as i32);
+        return Err(Error::ChildExit(code as i32));
     }
     Ok(())
 }

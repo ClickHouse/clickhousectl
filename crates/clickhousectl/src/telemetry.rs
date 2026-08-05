@@ -179,13 +179,14 @@ struct Payload {
     command: String,
     flags: Vec<String>,
     /// Exit code: `Error::exit_code()` for dispatched commands — 0 success,
-    /// 1 error, 3 cancelled, 4 auth required — and clap's own code for parse
-    /// outcomes (0 help/version, 2 usage error).
+    /// 1 error, 3 cancelled, 4 auth required, or a child process's passthrough
+    /// code — and clap's own code for parse outcomes (0 help/version, 2 usage
+    /// error).
     exit_code: i32,
     /// How the invocation ended, from a closed vocabulary. Dispatched
-    /// invocations carry `"ok"`, `"error"`, `"cancelled"`, or
-    /// `"auth_required"` — derived from the dispatched exit code by
-    /// [`dispatched_outcome`] — or `"exec"` (parsed, dispatched, and the
+    /// invocations carry `"ok"`, `"error"` (including non-zero child exits),
+    /// `"cancelled"`, or `"auth_required"` — derived from the dispatched exit
+    /// code by [`dispatched_outcome`] — or `"exec"` (parsed, dispatched, and the
     /// process image was replaced by `exec()` — the handed-over program's
     /// exit status is unknowable, so `exit_code` is a fixed 0 and not
     /// meaningful). Failed parses carry a direct mapping of clap's
@@ -215,7 +216,8 @@ struct Payload {
 /// time the exit code says how dispatch actually ended, so only that
 /// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
 /// `"exec"` from [`finalize_before_exec`] pass through untouched. The mapping
-/// mirrors `Error::exit_code()`.
+/// mirrors `Error::exit_code()`, with arbitrary child exit codes classified as
+/// errors.
 fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
     if outcome != "ok" {
         return outcome;

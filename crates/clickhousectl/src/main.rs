@@ -54,9 +54,9 @@ async fn main() {
     // The sole intended exemption is the hidden `telemetry send` child inside
     // `run_parsed`; the `exec()` handoffs (`local client`, host psql) record
     // their event via `telemetry::finalize_before_exec` just before the
-    // process image is replaced; three pre-existing child-exit-code
-    // passthroughs in the local handlers still bypass the tail (#321). Do not
-    // add exit paths.
+    // process image is replaced. Child-process exit codes are returned as
+    // `Error::ChildExit` so they also flow through this tail. Do not add exit
+    // paths.
     let (exit_code, telemetry_invocation) = match cmd.try_get_matches_from_mut(argv.iter()) {
         Ok(matches) => {
             #[cfg(feature = "telemetry")]
@@ -158,10 +158,12 @@ async fn run_parsed(cli: Cli) -> i32 {
     let exit_code = match result {
         Ok(()) => 0,
         Err(e) => {
-            use std::io::Write;
-            // Not `eprintln!`, which panics on a closed stderr — see
-            // `telemetry::print_first_run_notice`.
-            let _ = writeln!(std::io::stderr(), "Error: {}", e);
+            if !matches!(e, Error::ChildExit(_)) {
+                use std::io::Write;
+                // Not `eprintln!`, which panics on a closed stderr — see
+                // `telemetry::print_first_run_notice`.
+                let _ = writeln!(std::io::stderr(), "Error: {}", e);
+            }
             e.exit_code()
         }
     };

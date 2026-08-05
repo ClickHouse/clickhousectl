@@ -518,7 +518,7 @@ async fn start_server(
         if !status.success()
             && let Some(code) = status.code()
         {
-            std::process::exit(code);
+            return Err(Error::ChildExit(code));
         }
         Ok(())
     }
