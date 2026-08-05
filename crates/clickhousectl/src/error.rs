@@ -42,6 +42,18 @@ pub enum Error {
     #[error("No matching version found for: {0}")]
     NoMatchingVersion(String),
 
+    #[error(
+        "build {version} is no longer available for download.\nNearest available in the {series} series: {available} (try `clickhousectl local install {series}`)"
+    )]
+    ExactVersionUnavailable {
+        version: String,
+        series: String,
+        available: String,
+    },
+
+    #[error("build {0} exists, but its release channel could not be determined")]
+    UnknownVersionChannel(String),
+
     #[error("{0}")]
     InvalidVersion(String),
 
@@ -141,6 +153,23 @@ mod tests {
             .exit_code(),
             1
         );
+    }
+
+    #[test]
+    fn exact_version_unavailable_error_has_an_actionable_retry() {
+        let error = Error::ExactVersionUnavailable {
+            version: "26.2.8.7".into(),
+            series: "26.2".into(),
+            available: "26.2.20.4".into(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "build 26.2.8.7 is no longer available for download.\n\
+             Nearest available in the 26.2 series: 26.2.20.4 \
+             (try `clickhousectl local install 26.2`)"
+        );
+        assert_eq!(error.exit_code(), 1);
     }
 
     #[test]
