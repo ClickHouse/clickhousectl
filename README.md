@@ -162,12 +162,13 @@ A bare `clickhousectl local server start` bootstraps from zero: if no version is
 ```bash
 # Start a server (runs in background by default)
 clickhousectl local server start                          # Named "default" (installs latest if nothing is set up yet)
-clickhousectl local server start --name dev               # Named "dev"
+clickhousectl local server start dev                      # Named "dev"
 clickhousectl local server start --version latest         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --no-wait                # Return after spawning without waiting for readiness
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start --config analytics       # Apply a custom config (see "Custom config files" below)
+clickhousectl local server start dev -- --logger.level=trace  # Pass clickhouse-server arguments after --
 
 # List custom config files available to --config
 clickhousectl local server configs
@@ -199,7 +200,9 @@ clickhousectl local server dotenv --user default --password secret --database my
 
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
 
-**Server naming:** Without `--name`, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Use `--name` for stable identities you can start/stop repeatedly.
+**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly. The existing `--name <name>` form remains accepted for compatibility, but cannot be combined with a positional name.
+
+**ClickHouse arguments:** Additional `clickhouse-server` arguments must follow `--`. This boundary keeps clickhousectl options such as `--version` unambiguous after the optional server name.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 

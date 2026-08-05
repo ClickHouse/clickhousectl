@@ -682,6 +682,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
     match command {
         ServerCommands::Start {
             name,
+            name_flag,
             version,
             http_port,
             tcp_port,
@@ -691,7 +692,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             args,
         } => {
             start_server(
-                name,
+                name.or(name_flag),
                 version,
                 http_port,
                 tcp_port,
