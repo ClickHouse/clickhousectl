@@ -36,7 +36,12 @@ fn accept_connection(listener: &UnixListener, operation: &str) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .expect("make Docker connection blocking");
+                return stream;
+            }
             Err(error) if error.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(10));
             }
