@@ -51,6 +51,9 @@ pub enum Error {
         available: String,
     },
 
+    #[error("build {0} exists, but its release channel could not be determined")]
+    UnknownVersionChannel(String),
+
     #[error("{0}")]
     InvalidVersion(String),
 
