@@ -961,46 +961,9 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
 }
 
 fn stop_all_servers_local(json: bool) -> Result<()> {
-    // `local server stop-all` historically only managed ClickHouse processes.
-    // Postgres has its own `local postgres stop-all`; don't silently sweep it
-    // up here.
-    let servers: Vec<_> = server::list_running_servers()
-        .into_iter()
-        .filter(|s| s.engine == server::Engine::Clickhouse)
-        .collect();
-    let mut stop_entries = Vec::new();
-    for s in &servers {
-        if !json {
-            print!("Stopping '{}'...", s.name);
-            let _ = std::io::stdout().flush();
-        }
-        match server::kill_server(&s.name) {
-            Ok(()) => {
-                if !json {
-                    println!(" stopped");
-                }
-                stop_entries.push(output::ServerStopEntry {
-                    name: s.name.clone(),
-                    stopped: true,
-                    error: None,
-                });
-            }
-            Err(e) => {
-                if !json {
-                    println!(" error: {}", e);
-                }
-                stop_entries.push(output::ServerStopEntry {
-                    name: s.name.clone(),
-                    stopped: false,
-                    error: Some(e.to_string()),
-                });
-            }
-        }
-    }
+    let servers = server::list_running_servers();
+    let out = stop_servers(&servers, json, server::kill_server);
     if json {
-        let out = output::ServerStopAllOutput {
-            servers: stop_entries,
-        };
         output::print_output(&out, json);
     } else if servers.is_empty() {
         println!("No running servers");
@@ -1010,12 +973,56 @@ fn stop_all_servers_local(json: bool) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn stop_servers<F>(
+    servers: &[server::ServerInfo],
+    json: bool,
+    mut stop: F,
+) -> output::ServerStopAllOutput
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let servers = servers
+        .iter()
+        .map(|server| {
+            let name = match server.engine {
+                server::Engine::Clickhouse => server.name.clone(),
+                server::Engine::Postgres => postgres::user_name_from_key(&server.name).to_string(),
+            };
+            let engine = server.engine.as_str().to_string();
+            if !json {
+                print!("Stopping '{}' ({})...", name, engine);
+                let _ = std::io::stdout().flush();
+            }
+            let result = stop(&server.name);
+            if !json {
+                match &result {
+                    Ok(()) => println!(" stopped"),
+                    Err(error) => println!(" error: {error}"),
+                }
+            }
+            output::ServerStopEntry {
+                name,
+                engine,
+                stopped: result.is_ok(),
+                error: result.err().map(|error| error.to_string()),
+            }
+        })
+        .collect();
+
+    output::ServerStopAllOutput { servers }
+}
+
 fn stop_all_servers_global(json: bool) -> Result<()> {
     let servers = server::list_all_servers_global();
     let mut stop_entries = Vec::new();
     for s in &servers {
         if !json {
-            print!("Stopping '{}' ({})...", s.name, s.project);
+            print!(
+                "Stopping '{}' ({}, {})...",
+                s.name,
+                s.engine.as_str(),
+                s.project
+            );
             let _ = std::io::stdout().flush();
         }
         match server::kill_server_by_pid(s.pid) {
@@ -1025,6 +1032,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
                 }
                 stop_entries.push(output::ServerStopEntry {
                     name: s.name.clone(),
+                    engine: s.engine.as_str().to_string(),
                     stopped: true,
                     error: None,
                 });
@@ -1035,6 +1043,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
                 }
                 stop_entries.push(output::ServerStopEntry {
                     name: s.name.clone(),
+                    engine: s.engine.as_str().to_string(),
                     stopped: false,
                     error: Some(e.to_string()),
                 });
@@ -1058,6 +1067,23 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn server_info(name: &str, engine: server::Engine) -> server::ServerInfo {
+        server::ServerInfo {
+            name: name.to_string(),
+            pid: 1,
+            version: match engine {
+                server::Engine::Clickhouse => "25.12.9.61".to_string(),
+                server::Engine::Postgres => "postgres:18".to_string(),
+            },
+            http_port: 0,
+            tcp_port: 0,
+            started_at: "test".to_string(),
+            cwd: "/tmp/project".to_string(),
+            engine,
+            container_id: None,
+        }
+    }
+
     #[test]
     fn classify_stop_running_server_is_stopped() {
         // Running takes precedence regardless of on-disk state.
@@ -1073,6 +1099,38 @@ mod tests {
     #[test]
     fn classify_stop_unknown_name_is_not_found() {
         assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
+
+    #[test]
+    fn stop_servers_attempts_and_reports_both_engines() {
+        let servers = vec![
+            server_info("default", server::Engine::Clickhouse),
+            server_info("default-pg18", server::Engine::Postgres),
+        ];
+        let mut attempts = Vec::new();
+
+        let output = stop_servers(&servers, true, |name| {
+            attempts.push(name.to_string());
+            if name == "default" {
+                Err(Error::Exec("process stop failed".to_string()))
+            } else {
+                Ok(())
+            }
+        });
+
+        assert_eq!(attempts, ["default", "default-pg18"]);
+        assert_eq!(output.servers.len(), 2);
+        assert_eq!(output.servers[0].name, "default");
+        assert_eq!(output.servers[0].engine, "clickhouse");
+        assert!(!output.servers[0].stopped);
+        assert_eq!(
+            output.servers[0].error.as_deref(),
+            Some("Failed to execute ClickHouse: process stop failed")
+        );
+        assert_eq!(output.servers[1].name, "default");
+        assert_eq!(output.servers[1].engine, "postgres");
+        assert!(output.servers[1].stopped);
+        assert_eq!(output.servers[1].error, None);
     }
 
     #[test]
