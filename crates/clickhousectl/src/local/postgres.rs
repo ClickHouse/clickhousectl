@@ -180,8 +180,7 @@ async fn start(
 
     // Fresh create.
     if !docker::image_exists(&docker, tag).await? {
-        eprintln!("Pulling postgres:{tag}...");
-        docker::pull_image(&docker, tag).await?;
+        docker::pull_image(&docker, tag, json).await?;
     }
 
     let host_port = resolve_port(port)?;
