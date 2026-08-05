@@ -72,8 +72,7 @@ async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!("Pulling postgres:{tag}...");
-    docker::pull_image(&docker, tag).await?;
+    docker::pull_image(&docker, tag, json).await?;
 
     let out = output::InstallOutput {
         version: format!("postgres@{tag}"),
