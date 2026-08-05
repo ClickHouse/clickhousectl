@@ -1000,7 +1000,7 @@ fn service_query_key_cleanup(
     org_id: &str,
     service_id: &str,
 ) -> Result<(Option<String>, bool), Box<dyn std::error::Error>> {
-    let Some(key) = credentials::get_service_query_key(service_id) else {
+    let Some(key) = credentials::try_get_service_query_key(service_id)? else {
         return Ok((None, false));
     };
     let Some(api_key_id) = key.api_key_id else {

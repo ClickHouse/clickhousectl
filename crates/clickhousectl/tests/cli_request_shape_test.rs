@@ -777,6 +777,24 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
 }
 
 #[tokio::test]
+async fn service_delete_aborts_when_query_key_credentials_are_malformed() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(credentials_dir.join("credentials.json"), "{").unwrap();
+
+    let output = invoke_service_delete(&mock, dir.path(), false);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error: failed to parse ")
+            && stderr.contains(".clickhouse/credentials.json")
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn org_prometheus_auto_detects_the_only_organization() {
     let mock = start_mock_org_auto_detection_api().await;
     let output = invoke_cli_with_cloud_credentials(

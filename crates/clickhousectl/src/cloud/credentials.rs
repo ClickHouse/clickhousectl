@@ -76,6 +76,22 @@ pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
     creds.service_query_keys.get(service_id).cloned()
 }
 
+pub fn try_get_service_query_key(
+    service_id: &str,
+) -> Result<Option<ServiceQueryKey>, Box<dyn std::error::Error>> {
+    let path = credentials_path();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!("failed to read {}: {error}", path.display()).into());
+        }
+    };
+    let creds: Credentials = serde_json::from_str(&data)
+        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+    Ok(creds.service_query_keys.get(service_id).cloned())
+}
+
 pub fn set_service_query_key(
     service_id: &str,
     key: ServiceQueryKey,
