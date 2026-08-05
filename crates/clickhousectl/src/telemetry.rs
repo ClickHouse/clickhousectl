@@ -179,17 +179,19 @@ struct Payload {
     command: String,
     flags: Vec<String>,
     /// Exit code: `Error::exit_code()` for dispatched commands — 0 success,
-    /// 1 error, 3 cancelled, 4 auth required — and clap's own code for parse
-    /// outcomes (0 help/version, 2 usage error).
+    /// 1 error, 3 cancelled, 4 auth required, or a child process's passthrough
+    /// code — and clap's own code for parse outcomes (0 help/version, 2 usage
+    /// error).
     exit_code: i32,
     /// How the invocation ended, from a closed vocabulary. Dispatched
-    /// invocations carry `"ok"`, `"error"`, `"cancelled"`, or
-    /// `"auth_required"` — derived from the dispatched exit code by
-    /// [`dispatched_outcome`] — or `"exec"` (parsed, dispatched, and the
-    /// process image was replaced by `exec()` — the handed-over program's
-    /// exit status is unknowable, so `exit_code` is a fixed 0 and not
-    /// meaningful). Failed parses carry a direct mapping of clap's
-    /// `ErrorKind` (`"help"`, `"version"`, `"invalid_subcommand"`, …).
+    /// invocations carry `"ok"`, `"error"` (including non-zero child exits),
+    /// `"cancelled"`, or `"auth_required"`. Child exits are explicitly marked
+    /// as `"error"`; the remaining dispatched outcomes are derived from the
+    /// exit code by [`dispatched_outcome`]. `"exec"` means the process image was
+    /// replaced by `exec()` — the handed-over program's exit status is
+    /// unknowable, so `exit_code` is a fixed 0 and not meaningful. Failed
+    /// parses carry a direct mapping of clap's `ErrorKind` (`"help"`,
+    /// `"version"`, `"invalid_subcommand"`, …).
     /// Literal strings only — this field can never carry user data.
     outcome: &'static str,
     /// Clap's "did you mean" for failed parses, anchored locally: recorded
@@ -215,7 +217,8 @@ struct Payload {
 /// time the exit code says how dispatch actually ended, so only that
 /// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
 /// `"exec"` from [`finalize_before_exec`] pass through untouched. The mapping
-/// mirrors `Error::exit_code()`.
+/// mirrors `Error::exit_code()`, with arbitrary child exit codes classified as
+/// errors.
 fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
     if outcome != "ok" {
         return outcome;
@@ -266,6 +269,14 @@ pub struct Invocation {
     /// [`capture_lossy`] it is a clone of a definition-owned string, never
     /// of clap's error context.
     suggestion: Option<String>,
+}
+
+impl Invocation {
+    /// Keep a child's raw status while preventing reserved CLI exit codes from
+    /// changing its telemetry classification.
+    pub fn mark_child_exit(&mut self) {
+        self.outcome = "error";
+    }
 }
 
 /// Map clap's parse-error kind to the closed outcome vocabulary. Every value
@@ -902,6 +913,12 @@ mod tests {
         assert_eq!(dispatched_outcome("ok", 4), "auth_required");
         // Any exit code outside the documented vocabulary is still a failure.
         assert_eq!(dispatched_outcome("ok", 5), "error");
+        // The child-exit marker replaces the parse-time placeholder before
+        // this mapping, so colliding child statuses remain errors.
+        let mut child = invocation();
+        child.mark_child_exit();
+        assert_eq!(dispatched_outcome(child.outcome, 3), "error");
+        assert_eq!(dispatched_outcome(child.outcome, 4), "error");
         // Non-"ok" outcomes are never rewritten, whatever the exit code.
         assert_eq!(
             dispatched_outcome("unknown_argument", 2),

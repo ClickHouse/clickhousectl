@@ -48,6 +48,11 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
+    /// A child process whose status must be returned unchanged. This is
+    /// intentionally not printed as a clickhousectl error by `run_parsed`.
+    #[error("child process exited with code {0}")]
+    ChildExit(i32),
+
     #[error("Extraction failed: {0}")]
     Extract(String),
 
@@ -100,6 +105,7 @@ impl Error {
         match self {
             Error::AuthRequired(_) => 4,
             Error::Cancelled => 3,
+            Error::ChildExit(code) => *code,
             _ => 1,
         }
     }
@@ -132,5 +138,14 @@ mod tests {
             .exit_code(),
             1
         );
+    }
+
+    #[test]
+    fn child_exit_codes_pass_through_without_changing_normal_mappings() {
+        assert_eq!(Error::ChildExit(42).exit_code(), 42);
+        assert_eq!(Error::ChildExit(255).exit_code(), 255);
+        assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
+        assert_eq!(Error::Cancelled.exit_code(), 3);
+        assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
     }
 }
