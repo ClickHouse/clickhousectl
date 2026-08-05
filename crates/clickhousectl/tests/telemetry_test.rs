@@ -429,6 +429,33 @@ async fn invalid_subcommand_reports_kind_but_never_the_token() {
 }
 
 #[tokio::test]
+async fn failed_parse_after_positional_captures_later_flags_without_values() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&[
+        "cloud",
+        "org",
+        "usage",
+        "SECRET-ORG-ID",
+        "--from-date",
+        "SECRET-FROM-DATE",
+        "--to-date",
+        "SECRET-TO-DATE",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "cloud org usage");
+    assert_eq!(event["flags"], serde_json::json!(["from-date", "to-date"]));
+    assert_eq!(event["exit_code"], 2);
+    assert_eq!(event["outcome"], "invalid_value");
+    let raw = serde_json::to_string(event).unwrap();
+    assert!(!raw.contains("SECRET"), "argument value leaked: {raw}");
+}
+
+#[tokio::test]
 async fn typo_carries_definition_derived_suggestion() {
     let sandbox = Sandbox::new().await;
     sandbox.write_state(false);

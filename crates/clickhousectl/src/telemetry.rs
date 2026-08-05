@@ -347,6 +347,96 @@ fn find_defined_name<'a>(cmd: &'a clap::Command, name: &str) -> Option<&'a str> 
         })
 }
 
+#[derive(Default)]
+struct PositionalCursor {
+    index: usize,
+    values: usize,
+    active: bool,
+}
+
+impl PositionalCursor {
+    fn new() -> Self {
+        Self {
+            index: 1,
+            ..Self::default()
+        }
+    }
+
+    fn current<'a>(&self, cmd: &'a clap::Command) -> Option<&'a clap::Arg> {
+        cmd.get_positionals()
+            .find(|arg| arg.get_index() == Some(self.index) && !arg.is_last_set())
+    }
+
+    fn active_accepts(&self, cmd: &clap::Command, hyphenated: bool) -> bool {
+        self.active
+            && self.current(cmd).is_some_and(|arg| {
+                !hyphenated || arg.is_allow_hyphen_values_set() || arg.is_trailing_var_arg_set()
+            })
+    }
+
+    fn inactive_accepts_hyphen(&self, cmd: &clap::Command) -> bool {
+        !self.active
+            && self
+                .current(cmd)
+                .is_some_and(clap::Arg::is_allow_hyphen_values_set)
+    }
+
+    /// Consume a definition-backed positional slot without retaining its value.
+    fn consume(&mut self, cmd: &clap::Command, token: &str) -> bool {
+        let Some(arg) = self.current(cmd) else {
+            return false;
+        };
+        if arg
+            .get_value_terminator()
+            .is_some_and(|terminator| terminator.as_str() == token)
+        {
+            self.index += 1;
+            self.values = 0;
+            self.active = false;
+            return true;
+        }
+
+        self.values += 1;
+        self.active = true;
+        let max_values = arg.get_num_args().map_or(1, |range| range.max_values());
+        if self.values >= max_values {
+            self.index += 1;
+            self.values = 0;
+            self.active = false;
+        }
+        true
+    }
+
+    fn interrupt(&mut self) {
+        self.active = false;
+    }
+}
+
+fn find_short_arg<'a>(stack: &[&'a clap::Command], ch: char) -> Option<&'a clap::Arg> {
+    stack.iter().rev().find_map(|cmd| {
+        cmd.get_arguments().find(|arg| {
+            arg.get_short() == Some(ch)
+                || arg
+                    .get_all_short_aliases()
+                    .is_some_and(|aliases| aliases.contains(&ch))
+        })
+    })
+}
+
+/// Whether clap can resolve a short cluster without treating it as a
+/// hyphenated positional value. A value-taking short owns the token's suffix.
+fn short_cluster_is_defined(stack: &[&clap::Command], cluster: &str) -> bool {
+    for ch in cluster.chars() {
+        let Some(arg) = find_short_arg(stack, ch) else {
+            return false;
+        };
+        if arg.get_action().takes_values() {
+            return true;
+        }
+    }
+    true
+}
+
 /// Derive the command path and passed-flag names from the parsed matches.
 ///
 /// Only ids and `Arg` metadata are consulted — never `get_one`/`get_raw`/
@@ -419,9 +509,11 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
 /// strings owned by the definitions, matched by equality — argv slices never
 /// enter the result, the same "structurally impossible to leak a value"
 /// guarantee as [`capture`]. The walk stops at the first token that matches
-/// nothing, so `command` is the longest *valid* prefix; the unmatched token
-/// itself is never recorded (a typo is indistinguishable from a secret
-/// pasted into the wrong window — see #320).
+/// nothing. Defined positional slots are consumed without retaining their
+/// values, allowing later flags to be captured; an unmatched token for which
+/// no slot exists still stops the walk. The token itself is never recorded (a
+/// typo is indistinguishable from a secret pasted into the wrong window — see
+/// #320).
 pub fn capture_lossy(
     root: &mut clap::Command,
     argv: &[std::ffi::OsString],
@@ -438,12 +530,22 @@ pub fn capture_lossy(
     let mut path: Vec<&str> = Vec::new();
     let mut flags = std::collections::BTreeSet::new();
     let mut tokens = argv.iter().skip(1);
+    let mut positional = PositionalCursor::new();
     'walk: while let Some(token) = tokens.next() {
         // A non-UTF-8 token cannot match any definition.
         let Some(token) = token.to_str() else { break };
         // Everything after `--` is positional by definition.
         if token == "--" {
             break;
+        }
+        let hyphenated = token.starts_with('-') && token != "-";
+        let current = stack.last().expect("stack starts non-empty and only grows");
+        // A multi-value positional that is currently being filled owns plain
+        // values (including subcommand-like strings). With hyphen values or a
+        // trailing var arg it also owns flag-like strings.
+        if positional.active_accepts(current, hyphenated) {
+            positional.consume(current, token);
+            continue;
         }
         if let Some(rest) = token.strip_prefix("--") {
             let (name, has_inline_value) = match rest.split_once('=') {
@@ -457,16 +559,24 @@ pub fn capture_lossy(
                             .is_some_and(|aliases| aliases.contains(&name))
                 })
             }) else {
+                if positional.inactive_accepts_hyphen(current) {
+                    positional.consume(current, token);
+                    continue;
+                }
                 break;
             };
+            positional.interrupt();
             // Recorded name is the canonical long, even when the token
             // matched a hidden alias (e.g. `--fg` records `foreground`).
             flags.extend(arg.get_long().map(str::to_string));
             // The definition says this flag consumes the next token as its
             // value: skip it, so a value that happens to equal a sibling
             // subcommand name is never misrecorded as command path.
-            if !has_inline_value && arg.get_action().takes_values() {
-                tokens.next();
+            if !has_inline_value
+                && arg.get_action().takes_values()
+                && tokens.next().is_some_and(|value| value == "--")
+            {
+                break;
             }
         } else if let Some(cluster) = token.strip_prefix('-').filter(|rest| !rest.is_empty()) {
             // A short cluster (`-F`, `-Fv`, `-p9000`): resolve each char the
@@ -475,13 +585,15 @@ pub fn capture_lossy(
             // materialized as real definitions. A bare `-` never gets here
             // (empty cluster) and falls through to the subcommand branch,
             // where it breaks the walk like any unknown token.
+            if positional.inactive_accepts_hyphen(current)
+                && !short_cluster_is_defined(&stack, cluster)
+            {
+                positional.consume(current, token);
+                continue;
+            }
+            positional.interrupt();
             for (i, ch) in cluster.char_indices() {
-                let Some(arg) = stack.iter().rev().find_map(|cmd| {
-                    cmd.get_arguments().find(|a| {
-                        a.get_short() == Some(ch)
-                            || a.get_all_short_aliases().is_some_and(|s| s.contains(&ch))
-                    })
-                }) else {
+                let Some(arg) = find_short_arg(&stack, ch) else {
                     // An unresolvable char stops the whole walk; flags already
                     // recorded stay — they are definition strings.
                     break 'walk;
@@ -494,8 +606,10 @@ pub fn capture_lossy(
                     // flag's attached value: discard it. When the cluster
                     // ends with no attached value, the next argv token is
                     // the value: skip it, as in the long path.
-                    if cluster[i + ch.len_utf8()..].is_empty() {
-                        tokens.next();
+                    if cluster[i + ch.len_utf8()..].is_empty()
+                        && tokens.next().is_some_and(|value| value == "--")
+                    {
+                        break 'walk;
                     }
                     break;
                 }
@@ -509,6 +623,9 @@ pub fn capture_lossy(
             // matched an alias.
             path.push(sub.get_name());
             stack.push(sub);
+            positional = PositionalCursor::new();
+        } else if positional.consume(current, token) {
+            continue;
         } else {
             break;
         }
@@ -1132,7 +1249,10 @@ mod tests {
     // -- capture_lossy: failed parses, longest valid prefix only -------------
 
     fn capture_lossy_from(args: &[&str]) -> Invocation {
-        let mut cmd = crate::cli::Cli::command();
+        capture_lossy_with(crate::cli::Cli::command(), args)
+    }
+
+    fn capture_lossy_with(mut cmd: clap::Command, args: &[&str]) -> Invocation {
         let argv: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
         let error = cmd
             .try_get_matches_from_mut(&argv)
@@ -1258,6 +1378,165 @@ mod tests {
         assert_eq!(inv.outcome, "unknown_argument");
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
         assert!(!json.contains("frobnicate"), "unknown flag leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_required_positional_allows_later_flags() {
+        use clap::{Arg, Command, value_parser};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("target").required(true))
+                .arg(
+                    Arg::new("count")
+                        .long("count")
+                        .value_parser(value_parser!(u16)),
+                ),
+        );
+        let inv = capture_lossy_with(
+            cmd,
+            &["root", "run", "SECRET-TARGET", "--count", "SECRET-COUNT"],
+        );
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.flags, ["count"]);
+        assert_eq!(inv.outcome, "invalid_value");
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(
+            !json.contains("SECRET"),
+            "positional or flag value leaked: {json}"
+        );
+    }
+
+    #[test]
+    fn lossy_optional_positional_allows_later_flags() {
+        use clap::{Arg, Command, value_parser};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run").arg(Arg::new("target")).arg(
+                Arg::new("count")
+                    .long("count")
+                    .value_parser(value_parser!(u16)),
+            ),
+        );
+        let inv = capture_lossy_with(
+            cmd,
+            &["root", "run", "SECRET-TARGET", "--count", "SECRET-COUNT"],
+        );
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.flags, ["count"]);
+        assert_eq!(inv.outcome, "invalid_value");
+    }
+
+    #[test]
+    fn lossy_variadic_positional_allows_later_flags() {
+        use clap::{Arg, Command, value_parser};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("targets").num_args(1..))
+                .arg(
+                    Arg::new("count")
+                        .long("count")
+                        .value_parser(value_parser!(u16)),
+                ),
+        );
+        let inv = capture_lossy_with(
+            cmd,
+            &[
+                "root",
+                "run",
+                "SECRET-ONE",
+                "SECRET-TWO",
+                "--count",
+                "SECRET-COUNT",
+            ],
+        );
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.flags, ["count"]);
+        assert_eq!(inv.outcome, "invalid_value");
+    }
+
+    #[test]
+    fn lossy_positional_values_can_resemble_flags_and_subcommands() {
+        use clap::{Arg, ArgAction, Command};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("values").num_args(1..=3).allow_hyphen_values(true))
+                .arg(
+                    Arg::new("verbose")
+                        .long("verbose")
+                        .action(ArgAction::SetTrue),
+                )
+                .subcommand(Command::new("child")),
+        );
+        let inv = capture_lossy_with(
+            cmd,
+            &[
+                "root",
+                "run",
+                "SECRET-FIRST",
+                "--verbose",
+                "child",
+                "SECRET-UNMATCHED",
+            ],
+        );
+        assert_eq!(inv.command, "run");
+        assert!(inv.flags.is_empty());
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "positional value leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_flag_like_value_is_not_recorded_as_a_flag() {
+        use clap::{Arg, ArgAction, Command, value_parser};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("label").long("label").allow_hyphen_values(true))
+                .arg(
+                    Arg::new("verbose")
+                        .long("verbose")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("count")
+                        .long("count")
+                        .value_parser(value_parser!(u16)),
+                ),
+        );
+        let inv = capture_lossy_with(
+            cmd,
+            &[
+                "root",
+                "run",
+                "--label",
+                "--verbose",
+                "--count",
+                "SECRET-COUNT",
+            ],
+        );
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.flags, ["count", "label"]);
+    }
+
+    #[test]
+    fn lossy_unknown_token_after_positional_still_stops_capture() {
+        use clap::{Arg, ArgAction, Command};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("target").required(true))
+                .arg(Arg::new("known").long("known").action(ArgAction::SetTrue)),
+        );
+        let inv = capture_lossy_with(
+            cmd,
+            &[
+                "root",
+                "run",
+                "SECRET-TARGET",
+                "SECRET-UNMATCHED",
+                "--known",
+            ],
+        );
+        assert_eq!(inv.command, "run");
+        assert!(inv.flags.is_empty());
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "unmatched token leaked: {json}");
     }
 
     #[test]
@@ -1415,6 +1694,19 @@ mod tests {
         assert!(inv.flags.is_empty());
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
         assert!(!json.contains("SECRET"), "post-`--` token leaked: {json}");
+    }
+
+    #[test]
+    fn lossy_double_dash_after_positional_stops_the_walk() {
+        use clap::{Arg, ArgAction, Command};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("target").required(true))
+                .arg(Arg::new("known").long("known").action(ArgAction::SetTrue)),
+        );
+        let inv = capture_lossy_with(cmd, &["root", "run", "SECRET-TARGET", "--", "--known"]);
+        assert_eq!(inv.command, "run");
+        assert!(inv.flags.is_empty());
     }
 
     #[test]
