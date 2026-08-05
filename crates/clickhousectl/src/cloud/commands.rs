@@ -2643,37 +2643,19 @@ fn query_output_completion(
         // still making successful no-output statements visible to the user.
         return QueryOutputCompletion::Acknowledge;
     }
-    if query_format_is_binary(format) || last_byte == Some(b'\n') {
-        QueryOutputCompletion::None
-    } else {
+    if query_format_uses_text_lines(format) && last_byte != Some(b'\n') {
         QueryOutputCompletion::Newline
+    } else {
+        QueryOutputCompletion::None
     }
 }
 
-fn query_format_is_binary(format: &str) -> bool {
+fn query_format_uses_text_lines(format: &str) -> bool {
+    // Preserve unknown and customizable formats byte-for-byte rather than
+    // guessing that anything not known to be binary is safe to normalize.
     matches!(
         format.to_ascii_lowercase().as_str(),
-        "arrow"
-            | "arrowstream"
-            | "avro"
-            | "avroconfluent"
-            | "bson"
-            | "capnproto"
-            | "messagepack"
-            | "msgpack"
-            | "native"
-            | "npy"
-            | "orc"
-            | "parquet"
-            | "parquetmetadata"
-            | "protobuf"
-            | "protobuflist"
-            | "protobufsingle"
-            | "rawblob"
-            | "rowbinary"
-            | "rowbinarywithdefaults"
-            | "rowbinarywithnames"
-            | "rowbinarywithnamesandtypes"
+        "jsoneachrow" | "prettycompact" | "tabseparated"
     )
 }
 
@@ -3616,10 +3598,12 @@ mod tests {
 
     #[test]
     fn query_output_completion_adds_only_a_missing_text_newline() {
-        assert_eq!(
-            query_output_completion("TabSeparated", 2, Some(b'K')),
-            QueryOutputCompletion::Newline
-        );
+        for format in ["TabSeparated", "PrettyCompact", "JSONEachRow"] {
+            assert_eq!(
+                query_output_completion(format, 2, Some(b'K')),
+                QueryOutputCompletion::Newline
+            );
+        }
         assert_eq!(
             query_output_completion("JSONEachRow", 2, Some(b'\n')),
             QueryOutputCompletion::None
@@ -3627,8 +3611,17 @@ mod tests {
     }
 
     #[test]
-    fn query_output_completion_never_changes_binary_bodies() {
-        for format in ["RowBinary", "Native", "Parquet", "ArrowStream", "MsgPack"] {
+    fn query_output_completion_preserves_exact_and_binary_bodies() {
+        for format in [
+            "Template",
+            "Buffers",
+            "BSONEachRow",
+            "RowBinary",
+            "Native",
+            "Parquet",
+            "ArrowStream",
+            "MsgPack",
+        ] {
             assert_eq!(
                 query_output_completion(format, 3, Some(0)),
                 QueryOutputCompletion::None,
