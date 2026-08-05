@@ -203,6 +203,7 @@ EOF
     jq -e '.servers | any(.name == "p-pg18" and .engine == "postgres" and .stopped == true)' <<<"$out" >/dev/null \
         || { die "server stop-all did not report Postgres: $out"; return 1; }
     ! kill -0 "$ch_pid" 2>/dev/null || { die "server stop-all left ClickHouse process running"; return 1; }
+    trap - EXIT
     wait "$ch_pid" 2>/dev/null || true
 
     list=$("$CTL" local --json server list 2>&1) || { die "list after server stop-all: $list"; return 1; }
