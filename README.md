@@ -181,8 +181,8 @@ clickhousectl local server stop                           # Stop "default"
 clickhousectl local server stop dev                       # Stop by name
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
-clickhousectl local server stop-all                       # Stop all running servers
-clickhousectl local server stop-all --global              # Stop all servers system-wide
+clickhousectl local server stop-all                       # Stop all ClickHouse and Postgres servers in this project
+clickhousectl local server stop-all --global              # Stop all ClickHouse servers system-wide
 
 # Remove a stopped server and its data
 clickhousectl local server remove                         # Remove "default"
@@ -264,7 +264,7 @@ clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
 
-`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, you'll be asked to pick. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory.
+`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, you'll be asked to pick. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
 
 Containers are tagged with `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`, `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and `created_by=clickhousectl_<version>` labels. `server list` recovers orphaned containers belonging to the current project via these labels, so deleting `.clickhouse/servers/<name>-pg<major>.json` is non-destructive — the next list/start rediscovers it.
 

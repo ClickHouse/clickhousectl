@@ -128,10 +128,13 @@ CONTEXT FOR AGENTS:
         args: Vec<String>,
     },
 
-    /// Manage local ClickHouse server instances
+    /// Manage local server instances
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage named ClickHouse server instances. Each server has its own data directory.
+  Manage named local server instances. Project-scoped `server list` and `server stop-all`
+  include both ClickHouse processes and Docker-backed Postgres containers; other commands
+  here manage ClickHouse.
+  Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start --name test`.
   Related: `clickhousectl local client` to connect to a running server.")]
@@ -268,12 +271,14 @@ CONTEXT FOR AGENTS:
     /// Stop all running server instances
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops all running ClickHouse server instances.
-  Sends SIGTERM first, then SIGKILL if processes don't exit.
+  Stops all running ClickHouse and Postgres server instances in this project.
+  ClickHouse processes receive SIGTERM first, then SIGKILL if they don't exit.
+  Postgres containers are stopped but retained for a subsequent start.
+  With --global, stops ClickHouse servers only; global Postgres discovery is not supported.
   Data and metadata are preserved, and stopped servers remain visible in `server list`.
   Related: `clickhousectl local server list` to see servers.")]
     StopAll {
-        /// System-wide maintenance only: stop all servers across all projects. You almost certainly want the default project-scoped stop-all instead.
+        /// System-wide maintenance only: stop all ClickHouse servers across all projects. You almost certainly want the default project-scoped stop-all instead.
         #[arg(long)]
         global: bool,
     },
@@ -590,6 +595,17 @@ mod tests {
             panic!("expected server remove");
         };
         assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn server_stop_all_help_describes_engine_scope() {
+        let help = Cli::try_parse_from(["clickhousectl", "local", "server", "stop-all", "--help"])
+            .err()
+            .expect("help should exit through clap")
+            .to_string();
+
+        assert!(help.contains("Stops all running ClickHouse and Postgres server instances"));
+        assert!(help.contains("global Postgres discovery is not supported"));
     }
 
     #[test]

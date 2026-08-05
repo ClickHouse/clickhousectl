@@ -418,41 +418,14 @@ async fn stop_all(json: bool) -> Result<()> {
         .into_iter()
         .filter(|s| s.engine == Engine::Postgres)
         .collect();
-    let mut stop_entries = Vec::new();
-    for s in &servers {
-        if !json {
-            print!("Stopping '{}'...", s.name);
-        }
-        match server::kill_server(&s.name) {
-            Ok(()) => {
-                if !json {
-                    println!(" stopped");
-                }
-                stop_entries.push(output::ServerStopEntry {
-                    name: s.name.clone(),
-                    stopped: true,
-                    error: None,
-                });
-            }
-            Err(e) => {
-                if !json {
-                    println!(" error: {}", e);
-                }
-                stop_entries.push(output::ServerStopEntry {
-                    name: s.name.clone(),
-                    stopped: false,
-                    error: Some(e.to_string()),
-                });
-            }
-        }
-    }
-    if json {
-        let out = output::ServerStopAllOutput {
-            servers: stop_entries,
-        };
-        output::print_output(&out, json);
-    } else if servers.is_empty() {
+    if !json && servers.is_empty() {
         println!("No running Postgres servers");
+        return Ok(());
+    }
+
+    let out = super::stop_servers(&servers, json, server::kill_server);
+    if json {
+        output::print_output(&out, json);
     } else {
         println!("Done");
     }
