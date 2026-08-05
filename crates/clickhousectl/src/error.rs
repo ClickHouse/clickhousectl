@@ -65,6 +65,9 @@ pub enum Error {
     #[error("Server '{0}' is already running")]
     ServerAlreadyRunning(String),
 
+    #[error("Server '{0}' is running; stop it first with `clickhousectl local server stop {0}`")]
+    ServerRunningCannotRemove(String),
+
     #[error("{0}")]
     Cloud(String),
 

@@ -780,7 +780,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             server::recover_current_project_servers();
 
             if server::is_server_running(&name) {
-                return Err(Error::ServerAlreadyRunning(name));
+                return Err(Error::ServerRunningCannotRemove(name));
             }
             let data_dir = server::server_data_dir(&name);
             if !data_dir.exists() {

@@ -154,6 +154,69 @@ fn stopping_clickhouse_retains_metadata_and_lists_it_as_stopped() {
 }
 
 #[test]
+fn running_server_remove_has_stop_first_error_and_start_keeps_collision_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path());
+
+    let start = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--name",
+            "test2",
+            "--version",
+            "25.12.9.61",
+            "--no-wait",
+        ],
+    );
+    assert!(
+        start.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let start_body: Value = serde_json::from_slice(&start.stdout).expect("parse start JSON");
+    let pid = start_body["pid"].as_u64().expect("start PID") as u32;
+    let mut process = ProcessGuard::new(pid);
+
+    let remove = run(
+        project.path(),
+        home.path(),
+        &["local", "server", "remove", "test2"],
+    );
+    assert_eq!(remove.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&remove.stderr);
+    assert!(stderr.contains(
+        "Server 'test2' is running; stop it first with `clickhousectl local server stop test2`"
+    ));
+    assert!(!stderr.contains("already running"));
+
+    let restart = run(
+        project.path(),
+        home.path(),
+        &["local", "server", "start", "--name", "test2"],
+    );
+    assert_eq!(restart.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&restart.stderr).contains("Server 'test2' is already running"));
+
+    let stop = run(
+        project.path(),
+        home.path(),
+        &["local", "server", "stop", "test2"],
+    );
+    assert!(
+        stop.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    process.disarm();
+}
+
+#[test]
 fn stale_clickhouse_metadata_is_retained_as_stopped() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
