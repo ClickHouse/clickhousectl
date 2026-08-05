@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 const DEFAULT_VERSION: &str = "25.11.1.1";
 const REQUESTED_VERSION: &str = "25.12.9.61";
@@ -50,6 +51,20 @@ fn run_start(project: &Path, home: &Path, args_file: &Path) -> Output {
         .expect("run clickhousectl")
 }
 
+fn read_file_eventually(path: &Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(contents) if !contents.is_empty() => return contents,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("read fake ClickHouse arguments: {error}"),
+        }
+        assert!(Instant::now() < deadline, "fake ClickHouse did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 struct ProcessGuard(u32);
 
 impl Drop for ProcessGuard {
@@ -94,7 +109,7 @@ fn positional_name_keeps_following_version_and_passthrough_separate() {
             .exists()
     );
 
-    let child_args = std::fs::read_to_string(args_file).expect("read fake ClickHouse arguments");
+    let child_args = read_file_eventually(&args_file);
     assert_eq!(child_args.lines().last(), Some("--logger.level=trace"));
     assert!(!child_args.lines().any(|arg| arg == "--version"));
 }
