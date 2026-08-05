@@ -178,17 +178,13 @@ fn env_truthy(value: Option<String>) -> bool {
 struct Payload {
     command: String,
     flags: Vec<String>,
-    /// Exit code: gh-style (`Error::exit_code`) for dispatched commands —
-    /// 0 success, 1 error, 2 cancelled, 4 auth required — and clap's own
-    /// code for parse outcomes (0 help/version, 2 usage error). The numeric
-    /// clash between "cancelled" and "usage error" is fully disambiguated by
-    /// `outcome` in the payload: a dispatched 2 becomes `"cancelled"`, a
-    /// parse-failure 2 keeps its parse kind (see #319 for the shell-visible
-    /// fix).
+    /// Exit code: `Error::exit_code()` for dispatched commands — 0 success,
+    /// 1 error, 3 cancelled, 4 auth required — and clap's own code for parse
+    /// outcomes (0 help/version, 2 usage error).
     exit_code: i32,
     /// How the invocation ended, from a closed vocabulary. Dispatched
     /// invocations carry `"ok"`, `"error"`, `"cancelled"`, or
-    /// `"auth_required"` — derived from the gh-style exit code by
+    /// `"auth_required"` — derived from the dispatched exit code by
     /// [`dispatched_outcome`] — or `"exec"` (parsed, dispatched, and the
     /// process image was replaced by `exec()` — the handed-over program's
     /// exit status is unknowable, so `exit_code` is a fixed 0 and not
@@ -214,21 +210,19 @@ struct Payload {
     arch: &'static str,
 }
 
-/// Derive the dispatched outcome from the gh-style exit code. [`capture`]
+/// Derive the dispatched outcome from the process exit code. [`capture`]
 /// marks a successful parse `"ok"` before the command has run; by finalize
 /// time the exit code says how dispatch actually ended, so only that
 /// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
 /// `"exec"` from [`finalize_before_exec`] pass through untouched. The mapping
-/// mirrors `Error::exit_code()`; issue #319 will move "cancelled" off exit
-/// code 2 (to stop the shell-level clash with clap's usage-error 2), and this
-/// mapping must follow when it lands.
+/// mirrors `Error::exit_code()`.
 fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
     if outcome != "ok" {
         return outcome;
     }
     match exit_code {
         0 => "ok",
-        2 => "cancelled",
+        3 => "cancelled",
         4 => "auth_required",
         _ => "error",
     }
@@ -597,7 +591,7 @@ fn exec_invocation(stashed: &Invocation) -> Invocation {
 
 /// The telemetry hook, called once at the very end of `main` (after the
 /// command has run, so `telemetry disable` silences its own event), with the
-/// gh-style exit code the process is about to exit with. Never errors, never
+/// exit code the process is about to exit with. Never errors, never
 /// blocks beyond spawning a detached child.
 pub fn finalize(invocation: Invocation, exit_code: i32) {
     if !claim(&FINALIZED) {
@@ -900,13 +894,14 @@ mod tests {
     }
 
     #[test]
-    fn dispatched_outcome_derives_from_the_gh_style_exit_code() {
+    fn dispatched_outcome_derives_from_the_exit_code() {
         assert_eq!(dispatched_outcome("ok", 0), "ok");
         assert_eq!(dispatched_outcome("ok", 1), "error");
-        assert_eq!(dispatched_outcome("ok", 2), "cancelled");
+        assert_eq!(dispatched_outcome("ok", 2), "error");
+        assert_eq!(dispatched_outcome("ok", 3), "cancelled");
         assert_eq!(dispatched_outcome("ok", 4), "auth_required");
-        // Any exit code outside the gh-style vocabulary is still a failure.
-        assert_eq!(dispatched_outcome("ok", 3), "error");
+        // Any exit code outside the documented vocabulary is still a failure.
+        assert_eq!(dispatched_outcome("ok", 5), "error");
         // Non-"ok" outcomes are never rewritten, whatever the exit code.
         assert_eq!(
             dispatched_outcome("unknown_argument", 2),
@@ -932,7 +927,7 @@ mod tests {
     fn dispatched_payload_outcomes_track_the_exit_code() {
         assert_eq!(decided_outcome(&invocation(), 0), "ok");
         assert_eq!(decided_outcome(&invocation(), 1), "error");
-        assert_eq!(decided_outcome(&invocation(), 2), "cancelled");
+        assert_eq!(decided_outcome(&invocation(), 3), "cancelled");
     }
 
     #[test]

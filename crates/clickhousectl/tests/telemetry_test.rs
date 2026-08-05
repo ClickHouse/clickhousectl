@@ -258,7 +258,7 @@ async fn failure_reported_and_positional_value_never_leaks() {
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
     assert_eq!(event["command"], "local remove");
-    // The event carries the gh-style exit code the process exited with, and
+    // The event carries the exit code the process exited with, and
     // the outcome derived from it — a failed handler is "error", not "ok".
     assert_eq!(event["exit_code"], 1);
     assert_eq!(event["exit_code"], output.status.code().unwrap());

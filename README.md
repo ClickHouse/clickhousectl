@@ -823,13 +823,17 @@ Cloud commands never invent values for data the API did not return. A field the 
 
 ### Exit codes
 
-Follow `gh` conventions:
+Usage errors and cancelled actions use distinct exit codes.
+
+**Breaking change in v0.4.1:** cancelled actions now exit with `3`; `2` is
+reserved for command-line usage errors.
 
 | Code | Meaning                                                  |
 | ---- | -------------------------------------------------------- |
 | `0`  | Success                                                  |
 | `1`  | Error (anything not classified below)                    |
-| `2`  | Cancelled (user aborted)                                 |
+| `2`  | Usage error (invalid command line)                       |
+| `3`  | Cancelled (user aborted)                                 |
 | `4`  | Auth required (no credentials, 401/403, OAuth-only writes) |
 
 ## Skills
