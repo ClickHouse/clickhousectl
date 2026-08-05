@@ -42,6 +42,7 @@ fn require_credential_pair(
 }
 
 fn build_service_query_key(
+    organization_id: &str,
     api_key_id: String,
     key_id: String,
     key_secret: String,
@@ -50,6 +51,7 @@ fn build_service_query_key(
     created_at: DateTime<Utc>,
 ) -> ServiceQueryKey {
     ServiceQueryKey {
+        organization_id: Some(organization_id.to_string()),
         api_key_id: Some(api_key_id),
         key_id,
         key_secret,
@@ -137,6 +139,7 @@ pub async fn ensure_service_query_setup(
     // without it rather than deleting a working credential and leaving a
     // dangling UUID in the endpoint's `openApiKeys`.
     let stored = build_service_query_key(
+        org_id,
         api_key_uuid,
         key_id,
         key_secret,
@@ -245,11 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn stored_query_key_keeps_the_management_resource_id() {
+    fn stored_query_key_keeps_the_management_resource_ownership() {
         let created_at = DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let key = build_service_query_key(
+            "org-1",
             "api-key-uuid".into(),
             "query-key-id".into(),
             "query-key-secret".into(),
@@ -258,6 +262,7 @@ mod tests {
             created_at,
         );
 
+        assert_eq!(key.organization_id.as_deref(), Some("org-1"));
         assert_eq!(key.api_key_id.as_deref(), Some("api-key-uuid"));
         assert_eq!(key.key_id, "query-key-id");
         assert_eq!(key.key_secret, "query-key-secret");

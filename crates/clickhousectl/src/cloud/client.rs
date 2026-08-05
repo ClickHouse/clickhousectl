@@ -535,7 +535,12 @@ impl CloudClient {
                 status: response.status,
                 request_id: response.request_id,
             })),
-            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+                // The service and its organization share the same 404 shape.
+                // Confirm the request scope before declaring the service absent.
+                self.get_organization(org_id).await?;
+                Ok(None)
+            }
             Err(error) => Err(self.convert_error_for_organization(error, org_id)),
         }
     }
