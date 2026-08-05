@@ -73,6 +73,22 @@ fn assert_success(output: &std::process::Output) {
     );
 }
 
+fn clear_agent_env(command: &mut Command) {
+    for name in [
+        "AGENT",
+        "AI_AGENT",
+        "OPENCODE",
+        "OPENCODE_PID",
+        "OPENCODE_BIN_PATH",
+        "OPENCODE_SERVER",
+        "OPENCODE_APP_INFO",
+        "OPENCODE_MODES",
+        "OPENCODE_CLIENT",
+    ] {
+        command.env_remove(name);
+    }
+}
+
 /// Run the clickhousectl binary against the mock, returning the JSON body
 /// the binary POSTed. Panics with the captured stderr if the binary exits
 /// non-zero — a failure here is almost always a clap-parsing error, which
@@ -575,6 +591,72 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
 }
 
 #[tokio::test]
+async fn forced_service_delete_reports_only_poll_state_transitions_when_redirected() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let mock = MockServer::start().await;
+    let states = ["running", "stopping", "stopping", "stopped"];
+    let request_index = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(move |_: &wiremock::Request| {
+            let index = request_index.fetch_add(1, Ordering::SeqCst);
+            let state = states[index.min(states.len() - 1)];
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": DELETE_TEST_SERVICE_ID,
+                    "name": "demo",
+                    "state": state,
+                },
+                "status": 200,
+                "requestId": format!("stub-service-get-{index}"),
+            }))
+        })
+        .expect(4)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}/state"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": DELETE_TEST_SERVICE_ID,
+                "name": "demo",
+                "state": "stopping",
+            },
+            "status": 200,
+            "requestId": "stub-service-stop",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_service_delete(&mock, dir.path(), true);
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Stopping service {DELETE_TEST_SERVICE_ID} before deletion...\n  state: stopping\n  state: stopped\n"
+        )
+    );
+}
+
+#[tokio::test]
 async fn service_delete_cleanup_failure_preserves_credentials_for_retry() {
     let mock = MockServer::start().await;
     Mock::given(method("DELETE"))
@@ -884,6 +966,89 @@ async fn org_usage_accepts_legacy_positional_org_id() {
         requests[0].url.path(),
         format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/usageCost")
     );
+}
+
+async fn start_mock_usage_entities_api() -> MockServer {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/usageCost"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "grandTotalCHC": 3.0,
+                "costs": [
+                    {
+                        "entityId": "11111111-2222-3333-4444-555555555555",
+                        "entityName": "production",
+                        "date": "2025-01-01",
+                        "totalCHC": 1.0,
+                    },
+                    {
+                        "entityId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                        "date": "2025-01-01",
+                        "totalCHC": 2.0,
+                    },
+                ],
+            },
+            "status": 200,
+            "requestId": "stub-org-usage",
+        })))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url];
+    if json {
+        args.push("--json");
+    }
+    args.extend([
+        "org",
+        "usage",
+        "--org-id",
+        "org-1",
+        "--from-date",
+        "2025-01-01",
+        "--to-date",
+        "2025-01-31",
+    ]);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn org_usage_marks_uuid_only_entities_as_unknown_in_human_output() {
+    let mock = start_mock_usage_entities_api().await;
+    let output = invoke_org_usage(&mock, false);
+    assert_success(&output);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("production"));
+    assert!(stdout.contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee (unknown)"));
+}
+
+#[tokio::test]
+async fn org_usage_json_keeps_uuid_only_entities_faithful_to_the_api() {
+    let mock = start_mock_usage_entities_api().await;
+    let output = invoke_org_usage(&mock, true);
+    assert_success(&output);
+
+    let usage: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unknown = &usage["costs"][1];
+    assert_eq!(unknown["entityId"], "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    assert!(unknown.get("entityName").is_none());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("(unknown)"));
 }
 
 // ── Bug 1: Postgres CDC must NOT send publicationName / replicationSlotName ─
@@ -2070,6 +2235,147 @@ async fn start_mock_query_host() -> MockServer {
         .mount(&mock)
         .await;
     mock
+}
+
+async fn invoke_oauth_service_query_response(
+    body: Vec<u8>,
+    extra_args: &[&str],
+    agent: bool,
+) -> (std::process::Output, MockServer) {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &control.uri());
+
+    let url = control.uri();
+    let mut args = vec![
+        "cloud".to_string(),
+        "--url".to_string(),
+        url,
+        "service".to_string(),
+        "query".to_string(),
+        "--id".to_string(),
+        QUERY_TEST_SERVICE_ID.to_string(),
+        "--org-id".to_string(),
+        "org-1".to_string(),
+        "--query".to_string(),
+        "SELECT 1".to_string(),
+    ];
+    args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    if agent {
+        command.env("AGENT", "opencode");
+    }
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .args(args)
+        .current_dir(dir.path())
+        .env("HOME", &home_dir)
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    (output, query_host)
+}
+
+#[tokio::test]
+async fn service_query_completes_a_text_response_line_without_duplication() {
+    let (output, _) = invoke_oauth_service_query_response(b"OK".to_vec(), &[], false).await;
+    assert_success(&output);
+    assert_eq!(output.stdout, b"OK\n");
+
+    let (output, _) = invoke_oauth_service_query_response(b"1\n".to_vec(), &[], false).await;
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+}
+
+#[tokio::test]
+async fn service_query_acknowledges_an_empty_success_without_changing_stdout() {
+    let (output, _) = invoke_oauth_service_query_response(Vec::new(), &[], false).await;
+    assert_success(&output);
+    assert!(output.stdout.is_empty());
+    assert_eq!(output.stderr, b"OK\n");
+}
+
+#[tokio::test]
+async fn service_query_does_not_append_to_binary_output() {
+    let body = vec![0, 1, 2, 3];
+    let (output, _) =
+        invoke_oauth_service_query_response(body.clone(), &["--format", "RowBinary"], false).await;
+    assert_success(&output);
+    assert_eq!(output.stdout, body);
+}
+
+#[tokio::test]
+async fn service_query_json_selects_json_each_row_on_the_wire() {
+    let (output, query_host) = invoke_oauth_service_query_response(
+        br#"{"value":1}
+"#
+        .to_vec(),
+        &["--json"],
+        false,
+    )
+    .await;
+    assert_success(&output);
+
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests[0].url.query(), Some("format=JSONEachRow"));
+}
+
+#[tokio::test]
+async fn service_query_agent_json_uses_json_each_row_unless_format_is_explicit() {
+    let (output, query_host) =
+        invoke_oauth_service_query_response(b"1\n".to_vec(), &[], true).await;
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests[0].url.query(), Some("format=JSONEachRow"));
+
+    let (output, query_host) =
+        invoke_oauth_service_query_response(b"1\n".to_vec(), &["--format", "CSV"], true).await;
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests[0].url.query(), Some("format=CSV"));
+}
+
+#[test]
+fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--query",
+            "SELECT 1",
+            "--json",
+            "--format",
+            "CSV",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--json"));
+    assert!(stderr.contains("--format"));
 }
 
 #[tokio::test]

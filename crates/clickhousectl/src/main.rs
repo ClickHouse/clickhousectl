@@ -876,6 +876,7 @@ async fn run_cloud(args: CloudArgs) -> Result<()> {
                     queries_file,
                     database,
                     format,
+                    json,
                     org_id,
                     no_auto_enable,
                 };

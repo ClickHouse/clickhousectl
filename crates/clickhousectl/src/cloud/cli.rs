@@ -844,7 +844,9 @@ CONTEXT FOR AGENTS:
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
-  on a TTY, TabSeparated when piped.")]
+  on a TTY, TabSeparated when piped. --json selects JSONEachRow and cannot be
+  combined with --format; an explicit --format takes precedence over agent
+  auto-JSON.")]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
         #[arg(long, conflicts_with = "id")]
@@ -867,7 +869,7 @@ CONTEXT FOR AGENTS:
         database: Option<String>,
 
         /// Response format (e.g. JSONEachRow, CSV, TabSeparated, PrettyCompact)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         format: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
@@ -2055,6 +2057,87 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    #[test]
+    fn parses_service_query_json_mode() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--query",
+            "SELECT 1",
+            "--json",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        assert!(args.json);
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Query { format, .. } = command else {
+            panic!("expected service query");
+        };
+        assert!(format.is_none());
+    }
+
+    #[test]
+    fn rejects_service_query_json_with_explicit_format() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--query",
+            "SELECT 1",
+            "--json",
+            "--format",
+            "CSV",
+        ])
+        .err()
+        .expect("--json and --format should conflict");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let rendered = error.to_string();
+        assert!(rendered.contains("--json"));
+        assert!(rendered.contains("--format"));
+    }
+
+    #[test]
+    fn parses_service_query_explicit_format_without_json() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--query",
+            "SELECT 1",
+            "--format",
+            "CSV",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        assert!(!args.json);
+        let CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let ServiceCommands::Query { format, .. } = command else {
+            panic!("expected service query");
+        };
+        assert_eq!(format.as_deref(), Some("CSV"));
+    }
 
     #[test]
     fn parses_service_update_ga_patch_flags() {
