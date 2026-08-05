@@ -974,6 +974,19 @@ fn classify_stop_poll_state(
     Ok(false)
 }
 
+#[derive(Default)]
+struct StopPollProgress {
+    previous_state: Option<String>,
+}
+
+impl StopPollProgress {
+    fn render(&mut self, state: &str, verbose: bool) -> Option<String> {
+        let changed = self.previous_state.as_deref() != Some(state);
+        self.previous_state = Some(state.to_string());
+        (verbose || changed).then(|| format!("  state: {state}"))
+    }
+}
+
 /// Replace the API's running-service conflict with the CLI remedy.
 ///
 /// Keep other conflicts intact: the API can reject deletion for reasons that
@@ -1077,10 +1090,16 @@ pub async fn service_delete(
                 .await?;
 
             // Poll until the service is stopped
+            let verbose_polling =
+                std::io::stderr().is_terminal() && !json && std::env::var_os("CI").is_none();
+            let mut progress = StopPollProgress::default();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 let svc = client.get_service(&org_id, service_id).await?;
-                eprintln!("  state: {}", or_absent(svc.state.as_ref()));
+                let state = or_absent(svc.state.as_ref());
+                if let Some(line) = progress.render(&state, verbose_polling) {
+                    eprintln!("{line}");
+                }
                 if classify_stop_poll_state(svc.state.as_ref())? {
                     break;
                 }
@@ -2473,6 +2492,7 @@ pub struct ServiceQueryOptions {
     pub queries_file: Option<String>,
     pub database: Option<String>,
     pub format: Option<String>,
+    pub json: bool,
     pub org_id: Option<String>,
     pub no_auto_enable: bool,
 }
@@ -2498,7 +2518,15 @@ pub async fn service_query(
     };
     let service_name = or_absent(service.name.as_deref());
 
-    let format = opts.format.unwrap_or_else(default_query_format);
+    // An explicit format always wins over agent-triggered JSON mode. Clap
+    // rejects an explicit --json together with --format.
+    let format = opts.format.unwrap_or_else(|| {
+        if opts.json {
+            "JSONEachRow".to_string()
+        } else {
+            default_query_format()
+        }
+    });
 
     let response = if client.is_bearer_auth() {
         // OAuth: the Query API authenticates the user's bearer token
@@ -2577,14 +2605,58 @@ pub async fn service_query(
     let mut stream = response.bytes_stream();
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
+    let mut byte_count = 0;
+    let mut last_byte = None;
     while let Some(chunk) = stream.next().await {
         let bytes = chunk.map_err(|e| -> Box<dyn std::error::Error> {
             format!("Failed to read query response: {e}").into()
         })?;
         handle.write_all(&bytes)?;
+        byte_count += bytes.len();
+        if let Some(last) = bytes.last() {
+            last_byte = Some(*last);
+        }
+    }
+    match query_output_completion(&format, byte_count, last_byte) {
+        QueryOutputCompletion::None => {}
+        QueryOutputCompletion::Newline => handle.write_all(b"\n")?,
+        QueryOutputCompletion::Acknowledge => eprintln!("OK"),
     }
     handle.flush()?;
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QueryOutputCompletion {
+    None,
+    Newline,
+    Acknowledge,
+}
+
+fn query_output_completion(
+    format: &str,
+    byte_count: usize,
+    last_byte: Option<u8>,
+) -> QueryOutputCompletion {
+    if byte_count == 0 {
+        // Keep an empty SELECT or DDL response out of the row stream while
+        // still making successful no-output statements visible to the user.
+        return QueryOutputCompletion::Acknowledge;
+    }
+    if query_format_uses_text_lines(format) && last_byte != Some(b'\n') {
+        QueryOutputCompletion::Newline
+    } else {
+        QueryOutputCompletion::None
+    }
+}
+
+fn query_format_uses_text_lines(format: &str) -> bool {
+    // Preserve unknown and customizable formats byte-for-byte rather than
+    // guessing that anything not known to be binary is safe to normalize.
+    matches!(
+        format.to_ascii_lowercase().as_str(),
+        "jsoneachrow" | "prettycompact" | "tabseparated"
+    )
 }
 
 /// Stderr notice shown when the query host reports the service is idled and
@@ -2795,7 +2867,7 @@ pub async fn org_usage(
         let rows: Vec<Row> = costs
             .iter()
             .map(|cost| Row {
-                entity: or_absent(cost.entity_name.as_deref()),
+                entity: usage_entity_label(cost.entity_name.as_deref(), cost.entity_id),
                 date: or_absent(cost.date.as_deref()),
                 total: or_absent(cost.total_chc.map(|total| format!("{total:.2}"))),
             })
@@ -2803,6 +2875,14 @@ pub async fn org_usage(
         println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
+}
+
+fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
+    match (name.filter(|name| !name.is_empty()), id) {
+        (Some(name), _) => name.to_string(),
+        (None, Some(id)) => format!("{id} (unknown)"),
+        (None, None) => ABSENT.to_string(),
+    }
 }
 
 // =============================================================================
@@ -3477,6 +3557,95 @@ mod tests {
             err.to_string(),
             "service entered unexpected state 'deleted' while waiting for stop"
         );
+    }
+
+    #[test]
+    fn stop_poll_progress_collapses_repeats_but_keeps_transitions() {
+        let mut progress = StopPollProgress::default();
+        assert_eq!(
+            progress.render("stopping", false).as_deref(),
+            Some("  state: stopping")
+        );
+        assert_eq!(progress.render("stopping", false), None);
+        assert_eq!(
+            progress.render("running", false).as_deref(),
+            Some("  state: running")
+        );
+        assert_eq!(
+            progress.render("stopped", false).as_deref(),
+            Some("  state: stopped")
+        );
+    }
+
+    #[test]
+    fn stop_poll_progress_keeps_repeats_in_verbose_mode() {
+        let mut progress = StopPollProgress::default();
+        assert!(progress.render("stopping", true).is_some());
+        assert!(progress.render("stopping", true).is_some());
+    }
+
+    #[test]
+    fn query_output_completion_acknowledges_empty_responses() {
+        assert_eq!(
+            query_output_completion("TabSeparated", 0, None),
+            QueryOutputCompletion::Acknowledge
+        );
+        assert_eq!(
+            query_output_completion("RowBinary", 0, None),
+            QueryOutputCompletion::Acknowledge
+        );
+    }
+
+    #[test]
+    fn query_output_completion_adds_only_a_missing_text_newline() {
+        for format in ["TabSeparated", "PrettyCompact", "JSONEachRow"] {
+            assert_eq!(
+                query_output_completion(format, 2, Some(b'K')),
+                QueryOutputCompletion::Newline
+            );
+        }
+        assert_eq!(
+            query_output_completion("JSONEachRow", 2, Some(b'\n')),
+            QueryOutputCompletion::None
+        );
+    }
+
+    #[test]
+    fn query_output_completion_preserves_exact_and_binary_bodies() {
+        for format in [
+            "Template",
+            "Buffers",
+            "BSONEachRow",
+            "RowBinary",
+            "Native",
+            "Parquet",
+            "ArrowStream",
+            "MsgPack",
+        ] {
+            assert_eq!(
+                query_output_completion(format, 3, Some(0)),
+                QueryOutputCompletion::None,
+                "{format} output must stay byte-for-byte intact"
+            );
+        }
+    }
+
+    #[test]
+    fn usage_entity_label_distinguishes_named_unknown_and_absent_entities() {
+        let id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        assert_eq!(
+            usage_entity_label(Some("production"), Some(id)),
+            "production"
+        );
+        assert_eq!(
+            usage_entity_label(None, Some(id)),
+            "11111111-2222-3333-4444-555555555555 (unknown)"
+        );
+        assert_eq!(
+            usage_entity_label(Some(""), Some(id)),
+            format!("{id} (unknown)")
+        );
+        assert_eq!(usage_entity_label(None, None), ABSENT);
     }
 
     #[test]
