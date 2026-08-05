@@ -697,6 +697,47 @@ async fn service_delete_rejects_query_key_from_another_organization() {
 }
 
 #[tokio::test]
+async fn service_delete_retains_a_key_id_without_organization_metadata() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_service_query_key(dir.path(), None, Some(DELETE_TEST_API_KEY_ID));
+    let output = invoke_service_delete(&mock, dir.path(), false);
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Warning: the stored query key for service {DELETE_TEST_SERVICE_ID} has a management \
+             API key ID but no provisioning organization; cloud key cleanup was skipped and the \
+             local record was retained.\n"
+        )
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.path(),
+        format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+    );
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["api_key_id"],
+        DELETE_TEST_API_KEY_ID
+    );
+}
+
+#[tokio::test]
 async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_service() {
     let mock = MockServer::start().await;
     let not_found = ResponseTemplate::new(404).set_body_json(serde_json::json!({

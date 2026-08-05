@@ -994,21 +994,29 @@ fn service_delete_error(error: CloudError, force: bool, service_id: &str) -> Clo
 }
 
 /// Return a query API key only when its exact resource and organization IDs
-/// were saved during provisioning. A legacy record is not enough evidence to
-/// select a cloud key, so it is deliberately left alone.
-fn service_query_key_id_for_cleanup(
+/// were saved during provisioning. The boolean indicates that partial cleanup
+/// metadata must remain on disk because discarding it would lose the key ID.
+fn service_query_key_cleanup(
     org_id: &str,
     service_id: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
+) -> Result<(Option<String>, bool), Box<dyn std::error::Error>> {
     let Some(key) = credentials::get_service_query_key(service_id) else {
-        return Ok(None);
+        return Ok((None, false));
     };
-    let (Some(key_org_id), Some(api_key_id)) = (key.organization_id, key.api_key_id) else {
+    let Some(api_key_id) = key.api_key_id else {
         eprintln!(
-            "Warning: the stored query key for service {service_id} predates exact API key \
-             ownership metadata; service deletion will continue without unsafe cloud key cleanup."
+            "Warning: the stored query key for service {service_id} predates exact management \
+             API key IDs; service deletion will continue without unsafe cloud key cleanup."
         );
-        return Ok(None);
+        return Ok((None, false));
+    };
+    let Some(key_org_id) = key.organization_id else {
+        eprintln!(
+            "Warning: the stored query key for service {service_id} has a management API key ID \
+             but no provisioning organization; cloud key cleanup was skipped and the local \
+             record was retained."
+        );
+        return Ok((None, true));
     };
     if key_org_id != org_id {
         return Err(format!(
@@ -1017,7 +1025,7 @@ fn service_query_key_id_for_cleanup(
         )
         .into());
     }
-    Ok(Some(api_key_id))
+    Ok((Some(api_key_id), false))
 }
 
 async fn cleanup_service_query_key(
@@ -1052,7 +1060,7 @@ pub async fn service_delete(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let query_key_id = service_query_key_id_for_cleanup(&org_id, service_id)?;
+    let (query_key_id, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
 
     if force {
         let svc = client.get_service_if_exists(&org_id, service_id).await?;
@@ -1087,7 +1095,9 @@ pub async fn service_delete(
     // Delete the key only after the service is gone. If cleanup fails, retain
     // its exact IDs locally so repeating service delete can retry safely.
     cleanup_service_query_key(client, &org_id, service_id, query_key_id.as_deref()).await?;
-    credentials::remove_service_query_key(service_id)?;
+    if !retain_query_key {
+        credentials::remove_service_query_key(service_id)?;
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else if response.is_none() {
