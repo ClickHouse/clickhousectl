@@ -17,6 +17,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DO_NOT_TRACK: "1"
+
 concurrency:
   group: cloud-integration-${{ github.ref }}
   cancel-in-progress: false
