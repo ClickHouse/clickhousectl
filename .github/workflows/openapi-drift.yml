@@ -10,6 +10,9 @@ permissions:
   contents: read
   issues: write
 
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   check-drift:
     name: Check for OpenAPI spec drift
