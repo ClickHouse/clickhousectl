@@ -2199,8 +2199,8 @@ async fn dotenv_creds_produce_basic_auth_request() {
 // ── Service query auth modes (issue #247) ──────────────────────────────────
 //
 // `cloud service query` has two auth paths:
-//   - API key auth: a per-service Query API key (stored locally, else
-//     auto-provisioned) is sent as Basic auth to the query host.
+//   - API key auth: a stored per-service key is preferred; otherwise the
+//     active API key is tried directly before a new key is auto-provisioned.
 //   - OAuth: the user's own bearer token is sent directly to the query host
 //     — no key lookup and, crucially, NO provisioning calls (key creation
 //     and endpoint upsert need write access an OAuth token doesn't have).
@@ -2232,6 +2232,31 @@ async fn start_mock_query_host() -> MockServer {
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+async fn start_mock_query_host_for_provisioning() -> MockServer {
+    let mock = MockServer::start().await;
+    let primary_auth = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fake-key-for-tests:fake-secret-for-tests",
+        )
+    );
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", primary_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .with_priority(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .with_priority(5)
         .mount(&mock)
         .await;
     mock
@@ -2465,6 +2490,67 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
 }
 
 #[tokio::test]
+async fn service_query_uses_an_already_authorized_api_key_without_provisioning() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(dir.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "assigned-key-id")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "assigned-key-secret")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), 1);
+    let auth = query_requests[0]
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    let expected = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "assigned-key-id:assigned-key-secret",
+        )
+    );
+    assert_eq!(auth, expected);
+
+    let control_requests = control.received_requests().await.unwrap();
+    assert!(
+        control_requests
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "an authorized API key must not trigger provisioning: {:?}",
+        control_requests
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect::<Vec<_>>(),
+    );
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
 async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
     let control = start_mock_control_plane_with_service().await;
     let query_host = start_mock_query_host().await;
@@ -2581,7 +2667,8 @@ async fn mount_key_create_and_delete(control: &MockServer, result: Value) {
 
 /// Run `cloud service query` in an empty project dir (no stored key, so the
 /// provisioning path runs) against `control`, with API key env creds.
-fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir, String) {
+async fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir, String) {
+    let query_host = start_mock_query_host_for_provisioning().await;
     let dir = tempfile::tempdir().unwrap();
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
@@ -2602,9 +2689,7 @@ fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir
         .current_dir(dir.path())
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        // Provisioning must fail before the query runs; pin the query host to
-        // a closed port so a regression cannot reach the production host.
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", "http://127.0.0.1:1")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -2641,7 +2726,7 @@ async fn service_query_deletes_the_key_when_the_create_response_omits_the_secret
     )
     .await;
 
-    let (dir, stderr) = invoke_service_query_provisioning(&control);
+    let (dir, stderr) = invoke_service_query_provisioning(&control).await;
     assert!(
         stderr.contains("keySecret"),
         "stderr should name the missing field:\n{stderr}",
@@ -2671,7 +2756,7 @@ async fn service_query_deletes_the_key_when_the_create_response_omits_the_secret
 #[tokio::test]
 async fn service_query_keeps_the_key_when_the_endpoint_response_omits_the_id() {
     let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
     mount_key_create_and_delete(
         &control,
         serde_json::json!({
@@ -2788,7 +2873,7 @@ async fn service_query_deletes_the_key_when_the_endpoint_get_omits_open_api_keys
         .mount(&control)
         .await;
 
-    let (dir, stderr) = invoke_service_query_provisioning(&control);
+    let (dir, stderr) = invoke_service_query_provisioning(&control).await;
 
     let upserts = control
         .received_requests()
@@ -2819,7 +2904,7 @@ async fn service_query_deletes_the_key_when_the_endpoint_get_omits_open_api_keys
 /// the `openApiKeys` the upsert was sent, plus the project dir.
 async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile::TempDir, Value) {
     let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
     mount_key_create_and_delete(
         &control,
         serde_json::json!({
