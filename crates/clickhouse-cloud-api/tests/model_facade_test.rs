@@ -1,0 +1,37 @@
+use clickhouse_cloud_api as api;
+
+fn assert_same_type<T>(_: T, _: T) {}
+
+#[test]
+fn extracted_models_keep_root_and_models_paths() {
+    assert_same_type(api::Activity::default(), api::models::Activity::default());
+    assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
+    assert_same_type(
+        api::ByocConfig::default(),
+        api::models::ByocConfig::default(),
+    );
+    assert_same_type(
+        api::Invitation::default(),
+        api::models::Invitation::default(),
+    );
+    assert_same_type(api::Member::default(), api::models::Member::default());
+    assert_same_type(
+        api::OrganizationPrivateEndpoint::default(),
+        api::models::OrganizationPrivateEndpoint::default(),
+    );
+    assert_same_type(
+        api::Organization::default(),
+        api::models::Organization::default(),
+    );
+    assert_same_type(
+        api::OrganizationQuota::default(),
+        api::models::OrganizationQuota::default(),
+    );
+    assert_same_type(api::RBACRole::default(), api::models::RBACRole::default());
+    assert_same_type(api::ScimUser::default(), api::models::ScimUser::default());
+    assert_same_type(
+        api::ApiResponse::<()>::default(),
+        api::models::ApiResponse::<()>::default(),
+    );
+    assert_same_type(api::Udf::default(), api::models::Udf::default());
+}
