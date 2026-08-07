@@ -1,19 +1,19 @@
 use crate::cloud::client::{CloudClient, CloudError};
 use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
     AutoscalingMode, BackupConfigurationPatchRequest, InstancePrivateEndpointsPatch,
     InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
     IpAccessListPatch, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ResourceTagsV1,
-    ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
-    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
-    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
-    ServiceStatePatchRequestCommand,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ServicPrivateEndpointePostRequest,
+    Service, ServiceEndpoint, ServiceEndpointChange, ServiceEndpointChangeProtocol,
+    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
+    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
+    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
+    ServiceReplicaScalingPatchRequest, ServiceState, ServiceStatePatchRequestCommand,
 };
 use std::io::{IsTerminal, Write};
 use tabled::{Table, Tabled, settings::Style};
@@ -46,17 +46,6 @@ fn first_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> String {
         .unwrap_or_else(|| ABSENT.to_string())
 }
 
-/// Resolve org ID from explicit arg or auto-detect
-pub(super) async fn resolve_org_id(
-    client: &CloudClient,
-    org_id: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    match org_id {
-        Some(id) => Ok(id.to_string()),
-        None => Ok(client.get_default_org_id().await?),
-    }
-}
-
 /// Resolve a service by name or ID within the given org.
 /// Exactly one of `name` or `id` must be provided.
 async fn resolve_service(
@@ -85,69 +74,6 @@ async fn resolve_service(
         (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
         (Some(_), Some(_)) => Err("specify either --name or --id, not both".into()),
         (None, None) => Err("specify --name or --id to identify the service".into()),
-    }
-}
-
-/// Parse a string into a library enum via serde deserialization, with client-side
-/// validation against a known-values list. Library enums have an `Unknown(String)`
-/// catch-all that prevents serde from ever failing, so we validate first.
-pub(super) fn parse_serde_enum<T: serde::de::DeserializeOwned>(
-    value: &str,
-    field: &str,
-    known_values: &[&str],
-) -> Result<T, Box<dyn std::error::Error>> {
-    if !known_values.contains(&value) {
-        return Err(format!(
-            "invalid {}: unknown value '{}', expected one of: {}",
-            field,
-            value,
-            known_values.join(", ")
-        )
-        .into());
-    }
-    serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| format!("invalid {}: {}", field, e).into())
-}
-
-pub(super) fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
-    match value.split_once('=') {
-        Some((key, tag_value)) => {
-            let key = key.trim();
-            if key.is_empty() {
-                Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
-            } else {
-                Ok(ResourceTagsV1 {
-                    key: key.to_string(),
-                    value: Some(tag_value.to_string()),
-                })
-            }
-        }
-        None => {
-            let key = value.trim();
-            if key.is_empty() {
-                Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
-            } else {
-                Ok(ResourceTagsV1 {
-                    key: key.to_string(),
-                    value: None,
-                })
-            }
-        }
-    }
-}
-
-pub(super) fn parse_tags(
-    values: &[String],
-) -> Result<Option<Vec<ResourceTagsV1>>, Box<dyn std::error::Error>> {
-    if values.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(
-            values
-                .iter()
-                .map(|value| parse_tag(value))
-                .collect::<Result<Vec<_>, _>>()?,
-        ))
     }
 }
 
@@ -3866,21 +3792,6 @@ mod tests {
         assert!(
             err.contains("may already have been rotated") && err.contains("run the reset again"),
             "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn parse_tag_rejects_empty_keys() {
-        let err = parse_tag("=value").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "invalid tag '=value': tag key cannot be empty"
-        );
-
-        let err = parse_tag("   ").unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "invalid tag '   ': tag key cannot be empty"
         );
     }
 
