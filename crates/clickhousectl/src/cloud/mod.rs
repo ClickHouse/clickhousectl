@@ -5,7 +5,6 @@ pub mod backups;
 pub mod cli;
 pub mod clickpipes;
 pub mod client;
-pub mod commands;
 pub mod credentials;
 pub mod organizations;
 pub mod output;
@@ -24,9 +23,7 @@ pub use client::{
 };
 
 use crate::error::{Error, Result};
-use cli::{
-    ClickPipeCommands, ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands,
-};
+use cli::{CloudArgs, CloudCommands};
 
 /// Explain when a configured environment credential cannot participate in
 /// authentication because a higher-precedence source won. Keep this notice on
@@ -138,183 +135,7 @@ async fn dispatch(
         CloudCommands::Activity { command } => activity::run(client, command, json).await,
         CloudCommands::Backup { command } => backups::run(client, command, json).await,
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,
-        CloudCommands::ClickPipe { command } => match *command {
-            ClickPipeCommands::List { service_id, org_id } => {
-                commands::clickpipe_list(client, &service_id, org_id.as_deref(), json).await
-            }
-            ClickPipeCommands::Get {
-                service_id,
-                clickpipe_id,
-                org_id,
-            } => {
-                commands::clickpipe_get(client, &service_id, &clickpipe_id, org_id.as_deref(), json)
-                    .await
-            }
-            ClickPipeCommands::Delete {
-                service_id,
-                clickpipe_id,
-                org_id,
-            } => {
-                commands::clickpipe_delete(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ClickPipeCommands::Start {
-                service_id,
-                clickpipe_id,
-                org_id,
-            } => {
-                commands::clickpipe_state(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
-                    "start",
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ClickPipeCommands::Stop {
-                service_id,
-                clickpipe_id,
-                org_id,
-            } => {
-                commands::clickpipe_state(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
-                    "stop",
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ClickPipeCommands::Resync {
-                service_id,
-                clickpipe_id,
-                org_id,
-            } => {
-                commands::clickpipe_state(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
-                    "resync",
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ClickPipeCommands::Scale {
-                service_id,
-                clickpipe_id,
-                replicas,
-                cpu_millicores,
-                memory_gb,
-                org_id,
-            } => {
-                commands::clickpipe_scale(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
-                    replicas,
-                    cpu_millicores,
-                    memory_gb,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ClickPipeCommands::Settings { command } => match command {
-                ClickPipeSettingsCommands::Get {
-                    service_id,
-                    clickpipe_id,
-                    org_id,
-                } => {
-                    commands::clickpipe_settings_get(
-                        client,
-                        &service_id,
-                        &clickpipe_id,
-                        org_id.as_deref(),
-                        json,
-                    )
-                    .await
-                }
-                ClickPipeSettingsCommands::Update {
-                    service_id,
-                    clickpipe_id,
-                    streaming_max_insert_wait_ms,
-                    object_storage_concurrency,
-                    object_storage_polling_interval_ms,
-                    object_storage_max_insert_bytes,
-                    object_storage_max_file_count,
-                    clickhouse_max_threads,
-                    clickhouse_max_insert_threads,
-                    object_storage_use_cluster_function,
-                    clickhouse_parallel_view_processing,
-                    org_id,
-                } => {
-                    commands::clickpipe_settings_update(
-                        client,
-                        &service_id,
-                        &clickpipe_id,
-                        streaming_max_insert_wait_ms,
-                        object_storage_concurrency,
-                        object_storage_polling_interval_ms,
-                        object_storage_max_insert_bytes,
-                        object_storage_max_file_count,
-                        clickhouse_max_threads,
-                        clickhouse_max_insert_threads,
-                        object_storage_use_cluster_function,
-                        clickhouse_parallel_view_processing,
-                        org_id.as_deref(),
-                        json,
-                    )
-                    .await
-                }
-            },
-            ClickPipeCommands::SchemaDiscover {
-                service_id,
-                command,
-                org_id,
-            } => {
-                commands::clickpipe_schema_discover(
-                    client,
-                    &service_id,
-                    &command,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ClickPipeCommands::Create { command } => match command {
-                ClickPipeCreateCommands::ObjectStorage(args) => {
-                    commands::clickpipe_create_s3(client, &args, json).await
-                }
-                ClickPipeCreateCommands::Kafka(args) => {
-                    commands::clickpipe_create_kafka(client, &args, json).await
-                }
-                ClickPipeCreateCommands::Kinesis(args) => {
-                    commands::clickpipe_create_kinesis(client, &args, json).await
-                }
-                ClickPipeCreateCommands::Postgres(args) => {
-                    commands::clickpipe_create_postgres(client, &args, json).await
-                }
-                ClickPipeCreateCommands::MySQL(args) => {
-                    commands::clickpipe_create_mysql(client, &args, json).await
-                }
-                ClickPipeCreateCommands::MongoDB(args) => {
-                    commands::clickpipe_create_mongodb(client, &args, json).await
-                }
-                ClickPipeCreateCommands::BigQuery(args) => {
-                    commands::clickpipe_create_bigquery(client, &args, json).await
-                }
-            },
-        },
+        CloudCommands::ClickPipe { command } => clickpipes::run(client, *command, json).await,
     }
 }
 

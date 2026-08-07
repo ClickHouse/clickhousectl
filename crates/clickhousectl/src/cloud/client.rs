@@ -1,4 +1,3 @@
-use crate::cloud::types::DeleteResponse;
 use crate::dotenv::DotenvVars;
 use std::env;
 
@@ -387,7 +386,7 @@ impl CloudClient {
         &self.base_url
     }
 
-    /// Access the library client for migrated commands.
+    /// Access the library client from domain-specific wrapper methods.
     pub fn api(&self) -> &clickhouse_cloud_api::Client {
         &self.lib_client
     }
@@ -448,142 +447,6 @@ impl CloudClient {
             }
             other => CloudError::new(other.to_string()),
         }
-    }
-
-    // ClickPipe endpoints (delegated to library client)
-    pub async fn list_clickpipes(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::ClickPipe>> {
-        let response = self
-            .api()
-            .click_pipe_get_list(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_create(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .click_pipe_delete(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    pub async fn change_clickpipe_state(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        command: clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        use clickhouse_cloud_api::models::ClickPipeStatePatchRequest;
-        let request = ClickPipeStatePatchRequest {
-            command: Some(command),
-        };
-        let response = self
-            .api()
-            .click_pipe_state_update(org_id, service_id, clickpipe_id, &request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_clickpipe_scaling(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeScalingPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_clickpipe_settings(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
-        let response = self
-            .api()
-            .click_pipe_settings_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_clickpipe_settings(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
-        let response = self
-            .api()
-            .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn click_pipe_schema_discovery(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse> {
-        let response = self
-            .api()
-            .click_pipe_schema_discovery(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
     }
 }
 

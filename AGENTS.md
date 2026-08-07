@@ -10,7 +10,7 @@ This is a Cargo workspace with two crates:
 
 The user-facing CLI surface. Contains all logic for local commands, wraps `clickhouse-cloud-api` for cloud.
 
-- Cloud handlers go through the `CloudClient` wrapper (`src/cloud/client.rs`), not `clickhouse_cloud_api::Client` directly. The wrapper handles credential precedence, error conversion, and response unwrapping.
+- Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence, error conversion, and response unwrapping.
 - Cloud handlers always support `--json` output unless there is good reason not to. JSON is emitted automatically when `--json` is passed or a coding agent is detected (`is_ai_agent::detect()` via the `json_output()` helper in `main.rs`).
 - `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `cloud::run`. Dispatched commands exit with `0` on success or use `Error::exit_code()` for failures: `1` error, `3` cancelled, `4` auth required. Clap uses `2` for usage errors.
 
@@ -22,7 +22,7 @@ The CLI does not need to have 100% coverage of endpoints exposed by the API libr
 
 #### Adding a command
 
-For both local and cloud commands, define the clap variant in the appropriate `cli.rs`, then wire dispatch in the owning runtime module.
+Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handlers, builders, wrapper methods, dispatch, and tests are co-located in the owning domain module under `src/cloud/`; `src/cloud/cli.rs` contains only the top-level cloud arguments and command enum.
 
 **Local subcommand:**
 
@@ -32,13 +32,13 @@ For both local and cloud commands, define the clap variant in the appropriate `c
 
 **Cloud subcommand:**
 
-1. Make sure `clickhouse-cloud-api` has already been updated to support necessary endpoints & models.
-2. Add the variant to the relevant sub-enum in `src/cloud/cli.rs` (or `src/cloud/postgres.rs` for Postgres). Create a new sub-enum if the surface warrants its own grouping.
-3. Classify the new variant in `CloudCommands::is_write_command()` in `src/cloud/cli.rs` (Postgres variants go in the equivalent `is_write()` on the Postgres enum). OAuth (Bearer) auth is read-only; write commands require API key auth and we fail fast on OAuth + write. The match has no wildcards, so the compiler will reject a missing arm — but you still need to make the read/write call deliberately, and add a case to both the `is_write_command_read_only_commands` and `is_write_command_destructive_commands` tests.
-4. Add non-Postgres match arms to `cloud::dispatch()` in `src/cloud/mod.rs`. Postgres dispatch belongs in `src/cloud/postgres.rs::run`; if another domain later gains its own runtime dispatcher, have `cloud::dispatch()` delegate to it rather than keeping that domain's match arms centrally.
-5. Add a thin wrapper method on `CloudClient` in `src/cloud/client.rs`. It should delegate to `self.api().<lib_method>()`, map errors via `self.convert_error(e)`, and unwrap with `Self::unwrap_response`. Use the library's request/response types here.
-6. If the command sends a request body, extract a `build_<name>_request(...)` helper in `src/cloud/commands.rs` that returns the library's request struct. Cover the helper with minimal + maximal unit tests in the `mod tests` block at the bottom of `commands.rs`, asserting directly on library struct fields.
-7. Implement the handler in `src/cloud/commands.rs`. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern. For detail/get views (rendering a single resource), drive human output through `print_human` so it shares serde's behaviour — including deprecated-field hiding — instead of hand-writing `println!` lines:
+1. Make sure `clickhouse-cloud-api` has already been updated to support necessary endpoints and models.
+2. Add the clap variant and argument structs to the owning `src/cloud/<domain>.rs` module. Create a new domain module and privately re-export its command enum from `src/cloud/cli.rs` if the surface warrants its own grouping.
+3. Classify the variant in the domain command enum's exhaustive `is_write()` match. OAuth (Bearer) auth is read-only; write commands require API key auth and fail fast on OAuth + write. `CloudCommands::is_write_command()` in `src/cloud/cli.rs` exhaustively delegates to each domain. Add read/write classification tests next to the domain clap definitions.
+4. Add the exhaustive command match to the domain's `run()` dispatcher. `cloud::dispatch()` in `src/cloud/mod.rs` delegates only at the top-level `CloudCommands` boundary; add one delegation arm there only when introducing a new domain.
+5. Add a thin wrapper method in the domain module's `impl CloudClient` block. It should delegate to `self.api().<lib_method>()`, map errors via `self.convert_error(e)` or `self.convert_error_for_organization(e, org_id)`, and unwrap with `Self::unwrap_response`. Use the library's request/response types here.
+6. If the command sends a request body, extract a `build_<name>_request(...)` helper in the same domain module that returns the library's request struct. Cover the helper with minimal + maximal unit tests in that module's `mod tests`, asserting directly on library struct fields.
+7. Implement the handler in the same domain module. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern. For detail/get views (rendering a single resource), drive human output through `print_human` so it shares serde's behaviour — including deprecated-field hiding — instead of hand-writing `println!` lines:
    ```rust
    if json {
        println!("{}", serde_json::to_string_pretty(&data)?);
@@ -49,7 +49,7 @@ For both local and cloud commands, define the clap variant in the appropriate `c
    List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`.
 
    Every field of a library response type is `Option` (see Request and response models), so never `unwrap()`/`expect()` one. Render absence with `crate::cloud::output::or_absent` (`-`) or `ABSENT` in `tabled` cells and plain output, and have `--filter`-style predicates treat an absent field as non-matching. `print_human` and `--json` serialize the model and need no per-field work.
-8. Add `Cli::try_parse_from` coverage in `src/cloud/cli.rs` for the new command's body-related flags, asserting parsed values.
+8. Add `Cli::try_parse_from` coverage next to the domain command definition for the new command's body-related flags, asserting parsed values.
 
 ### API library (`crates/clickhouse-cloud-api/`)
 
@@ -186,8 +186,8 @@ Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason t
 
 ### clickhousectl CLI
 
-- **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, `src/cloud/cli.rs`, `src/cloud/postgres.rs`, `src/local/cli.rs`). Assert flag names, types, defaults, and repeatability.
-- **Request builders** — unit tests for `build_*_request` helpers in `src/cloud/commands.rs`, asserting on library request-struct fields with minimal + maximal inputs.
+- **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, the owning `src/cloud/<domain>.rs`, and `src/local/cli.rs`). Assert flag names, types, defaults, and repeatability.
+- **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on library request-struct fields with minimal + maximal inputs.
 - **Subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock server and assert on the recorded request JSON. Used when the handler has runtime behavior beyond struct construction (file reads, base64 encoding, etc.) — currently ClickPipes.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output formatting, platform detection, and other module-local helpers.
 
