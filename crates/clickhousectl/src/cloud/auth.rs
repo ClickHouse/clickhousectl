@@ -1,3 +1,9 @@
+use crate::cloud::credentials;
+use crate::cloud::{
+    AuthSource, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
+};
+use crate::error::Error;
+use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -5,6 +11,310 @@ const AUDIENCE: &str = "clickhousectl";
 const SCOPE: &str = "openid profile email offline_access";
 
 const DEFAULT_API_URL: &str = "https://api.clickhouse.cloud/v1";
+
+#[derive(Subcommand)]
+pub enum AuthCommands {
+    /// Log in to ClickHouse Cloud
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY.
+  For write operations, use API keys via: --api-key/--api-secret flags, or
+  CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET env vars (exported or in .env).
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
+  Related: use `clickhousectl cloud auth status` to verify.")]
+    Login {
+        /// Log in by entering API key/secret interactively
+        #[arg(long)]
+        interactive: bool,
+
+        /// API key for non-interactive login (requires --api-secret)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// API secret for non-interactive login (requires --api-key)
+        #[arg(long)]
+        api_secret: Option<String>,
+    },
+    /// Log out and clear saved credentials
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  With no flags, clears everything. Use --oauth to keep API keys, or --api-keys to keep OAuth tokens.")]
+    Logout {
+        /// Clear only OAuth tokens (keep API keys)
+        #[arg(long, conflicts_with = "api_keys")]
+        oauth: bool,
+
+        /// Clear only API keys (keep OAuth tokens)
+        #[arg(long, conflicts_with = "oauth")]
+        api_keys: bool,
+    },
+    /// Show current authentication status
+    Status,
+    /// Open the ClickHouse Cloud sign-up page in your browser
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Opens the ClickHouse Cloud sign-up page in the user's browser. This is an interactive flow —
+  it requires a human to complete sign-up in the browser. Do not use in fully autonomous or CI environments.")]
+    Signup,
+}
+
+impl AuthCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            AuthCommands::Login { .. } => false,
+            AuthCommands::Logout { .. } => false,
+            AuthCommands::Status => false,
+            AuthCommands::Signup => false,
+        }
+    }
+}
+
+pub async fn run(
+    command: AuthCommands,
+    api_url: Option<&str>,
+    debug: bool,
+    json: bool,
+) -> crate::error::Result<()> {
+    match command {
+        AuthCommands::Login {
+            interactive,
+            api_key,
+            api_secret,
+        } => {
+            if interactive {
+                auth_interactive().map_err(|error| Error::Cloud(error.to_string()))
+            } else if api_key.is_some() || api_secret.is_some() {
+                let key = api_key.ok_or_else(|| {
+                    Error::AuthRequired(
+                        "--api-key is required when --api-secret is provided".into(),
+                    )
+                })?;
+                let secret = api_secret.ok_or_else(|| {
+                    Error::AuthRequired(
+                        "--api-secret is required when --api-key is provided".into(),
+                    )
+                })?;
+                let mut creds = credentials::load_credentials().unwrap_or_default();
+                creds.api_key = Some(key);
+                creds.api_secret = Some(secret);
+                credentials::save_credentials(&creds)
+                    .map_err(|error| Error::Cloud(error.to_string()))?;
+                println!(
+                    "Credentials saved to {}",
+                    credentials::credentials_path().display()
+                );
+                Ok(())
+            } else {
+                let url = api_url.unwrap_or("https://api.clickhouse.cloud");
+                let tokens = device_auth_login(url)
+                    .await
+                    .map_err(|error| Error::Cloud(error.to_string()))?;
+                save_tokens(&tokens).map_err(|error| Error::Cloud(error.to_string()))?;
+                println!("Logged in successfully.");
+                let tokens_path = tokens_path().map_err(|error| Error::Cloud(error.to_string()))?;
+                println!("Tokens saved to {}", tokens_path.display());
+                Ok(())
+            }
+        }
+        AuthCommands::Signup => {
+            let api_url = api_url.unwrap_or("https://api.clickhouse.cloud");
+            let parsed = url::Url::parse(api_url)
+                .map_err(|error| Error::Cloud(format!("Invalid URL: {}", error)))?;
+            let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
+            let base_host = host.strip_prefix("api.").unwrap_or(host);
+            let url = format!(
+                "https://console.{}/signUp?utm_source=clickhousectl",
+                base_host
+            );
+            println!("Opening ClickHouse Cloud sign-up page...");
+            if open::that(&url).is_err() {
+                println!("Could not open browser. Please visit: {}", url);
+            }
+            Ok(())
+        }
+        AuthCommands::Logout { oauth, api_keys } => {
+            match (oauth, api_keys) {
+                (true, false) => {
+                    clear_tokens();
+                    println!("OAuth tokens cleared. API keys unchanged.");
+                }
+                (false, true) => {
+                    credentials::clear_credentials();
+                    println!("API keys cleared. OAuth tokens unchanged.");
+                }
+                _ => {
+                    clear_tokens();
+                    credentials::clear_credentials();
+                    println!("Logged out. All saved credentials cleared.");
+                }
+            }
+            Ok(())
+        }
+        AuthCommands::Status => {
+            use tabled::{Table, Tabled, settings::Style};
+
+            #[derive(Serialize, Tabled)]
+            struct AuthRow {
+                #[tabled(rename = "Type")]
+                #[serde(rename = "type")]
+                auth_type: String,
+                #[tabled(rename = "Status")]
+                status: String,
+                #[tabled(rename = "Scope")]
+                scope: String,
+                #[tabled(rename = "Active")]
+                active: String,
+            }
+
+            let active = resolve_active_auth_source();
+            let mark = |source: AuthSource| -> String {
+                if active == Some(source) {
+                    "yes".into()
+                } else {
+                    "-".into()
+                }
+            };
+
+            let mut rows = Vec::new();
+
+            match load_tokens() {
+                Some(tokens) if is_token_valid(&tokens) => {
+                    rows.push(AuthRow {
+                        auth_type: "OAuth".into(),
+                        status: "Active".into(),
+                        scope: "read-only".into(),
+                        active: mark(AuthSource::OAuthTokens),
+                    });
+                }
+                Some(_) => {
+                    rows.push(AuthRow {
+                        auth_type: "OAuth".into(),
+                        status: "Expired".into(),
+                        scope: "read-only".into(),
+                        active: "-".into(),
+                    });
+                }
+                None => {
+                    rows.push(AuthRow {
+                        auth_type: "OAuth".into(),
+                        status: "Not configured".into(),
+                        scope: "-".into(),
+                        active: "-".into(),
+                    });
+                }
+            }
+
+            if credentials::load_credentials().is_some() {
+                rows.push(AuthRow {
+                    auth_type: "API key".into(),
+                    status: "Active".into(),
+                    scope: "read/write".into(),
+                    active: mark(AuthSource::CredentialsFile),
+                });
+            } else {
+                rows.push(AuthRow {
+                    auth_type: "API key".into(),
+                    status: "Not configured".into(),
+                    scope: "-".into(),
+                    active: "-".into(),
+                });
+            }
+
+            let env_creds = env_cred_presence();
+            match (env_creds.key, env_creds.secret) {
+                (true, true) => {
+                    let provenance = dotenv_env_provenance()
+                        .map(|path| format!(" (from {})", path.display()))
+                        .unwrap_or_default();
+                    let status = match active {
+                        Some(AuthSource::EnvVars) => format!("Active{provenance}"),
+                        Some(AuthSource::CredentialsFile) => format!(
+                            "Configured{provenance} (inactive, outranked by credentials file)"
+                        ),
+                        _ => format!("Configured{provenance} (inactive)"),
+                    };
+                    rows.push(AuthRow {
+                        auth_type: "Env vars".into(),
+                        status,
+                        scope: "read/write".into(),
+                        active: mark(AuthSource::EnvVars),
+                    });
+                }
+                (true, false) => {
+                    rows.push(AuthRow {
+                        auth_type: "Env vars".into(),
+                        status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
+                        scope: "-".into(),
+                        active: "-".into(),
+                    });
+                }
+                (false, true) => {
+                    rows.push(AuthRow {
+                        auth_type: "Env vars".into(),
+                        status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
+                        scope: "-".into(),
+                        active: "-".into(),
+                    });
+                }
+                (false, false) => {
+                    rows.push(AuthRow {
+                        auth_type: "Env vars".into(),
+                        status: "Not configured".into(),
+                        scope: "-".into(),
+                        active: "-".into(),
+                    });
+                }
+            }
+
+            if debug {
+                match active {
+                    Some(source) => eprintln!("[debug] auth source: {}", source.describe()),
+                    None => eprintln!("[debug] auth source: none (no credentials configured)"),
+                }
+            }
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                println!("{}", Table::new(rows).with(Style::markdown()));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn auth_interactive() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    print!("API Key: ");
+    std::io::stdout().flush()?;
+    let mut api_key = String::new();
+    std::io::stdin().read_line(&mut api_key)?;
+    let api_key = api_key.trim().to_string();
+
+    if api_key.is_empty() {
+        return Err("API key cannot be empty".into());
+    }
+
+    print!("API Secret: ");
+    std::io::stdout().flush()?;
+    let api_secret = rpassword::read_password()?;
+
+    if api_secret.is_empty() {
+        return Err("API secret cannot be empty".into());
+    }
+
+    let mut creds = credentials::load_credentials().unwrap_or_default();
+    creds.api_key = Some(api_key);
+    creds.api_secret = Some(api_secret);
+    credentials::save_credentials(&creds)?;
+
+    println!(
+        "Credentials saved to {}",
+        credentials::credentials_path().display()
+    );
+    Ok(())
+}
 
 struct AuthConfig {
     auth_url: &'static str,
@@ -389,6 +699,67 @@ pub async fn ensure_fresh_tokens() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct AuthCli {
+        #[command(subcommand)]
+        command: AuthCommands,
+    }
+
+    #[test]
+    fn parses_auth_login_and_classifies_every_command_as_runtime_read_only() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "auth",
+            "login",
+            "--api-key",
+            "key",
+            "--api-secret",
+            "secret",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        assert_eq!(args.api_key.as_deref(), Some("key"));
+        assert_eq!(args.api_secret.as_deref(), Some("secret"));
+        assert!(!args.json);
+        assert!(!args.debug);
+        assert!(args.url.is_none());
+        let crate::cloud::cli::CloudCommands::Auth { command } = args.command else {
+            panic!("expected auth command");
+        };
+        let crate::cloud::cli::AuthCommands::Login {
+            interactive,
+            api_key,
+            api_secret,
+        } = command
+        else {
+            panic!("expected login");
+        };
+        assert!(!interactive);
+        assert_eq!(api_key.as_deref(), Some("key"));
+        assert_eq!(api_secret.as_deref(), Some("secret"));
+
+        let commands = [
+            AuthCli::try_parse_from(["clickhousectl", "login"])
+                .unwrap()
+                .command,
+            AuthCli::try_parse_from(["clickhousectl", "logout"])
+                .unwrap()
+                .command,
+            AuthCli::try_parse_from(["clickhousectl", "status"])
+                .unwrap()
+                .command,
+            AuthCli::try_parse_from(["clickhousectl", "signup"])
+                .unwrap()
+                .command,
+        ];
+        assert!(commands.iter().all(|command| !command.is_write()));
+    }
 
     #[test]
     fn test_token_serialization() {
