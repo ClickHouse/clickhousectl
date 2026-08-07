@@ -7,6 +7,10 @@ fn extracted_models_keep_root_and_models_paths() {
     assert_same_type(api::Activity::default(), api::models::Activity::default());
     assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
     assert_same_type(
+        api::BackupBucket::default(),
+        api::models::BackupBucket::default(),
+    );
+    assert_same_type(
         api::ByocConfig::default(),
         api::models::ByocConfig::default(),
     );
@@ -27,11 +31,16 @@ fn extracted_models_keep_root_and_models_paths() {
         api::OrganizationQuota::default(),
         api::models::OrganizationQuota::default(),
     );
+    assert_same_type(
+        api::PostgresInstanceConfig::default(),
+        api::models::PostgresInstanceConfig::default(),
+    );
     assert_same_type(api::RBACRole::default(), api::models::RBACRole::default());
     assert_same_type(api::ScimUser::default(), api::models::ScimUser::default());
     assert_same_type(
         api::ApiResponse::<()>::default(),
         api::models::ApiResponse::<()>::default(),
     );
+    assert_same_type(api::Service::default(), api::models::Service::default());
     assert_same_type(api::Udf::default(), api::models::Udf::default());
 }
