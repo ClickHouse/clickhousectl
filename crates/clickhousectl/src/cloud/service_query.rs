@@ -6,6 +6,7 @@
 //! `cloud service query` invocations can authenticate without contacting the
 //! control plane.
 
+use crate::cloud::api_keys::discard_api_key;
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::{DateTime, Utc};
@@ -59,14 +60,6 @@ fn build_service_query_key(
         service_name: service_name.to_string(),
         created_at,
     }
-}
-
-/// Discard the API key created for a provisioning attempt that then failed,
-/// so a later retry doesn't leave an orphaned key behind per attempt. Best
-/// effort: the caller is already returning an error, and a key we couldn't
-/// delete is no worse than the one we'd otherwise leave behind.
-async fn discard_api_key(client: &CloudClient, org_id: &str, api_key_uuid: &str) {
-    let _ = client.delete_api_key(org_id, api_key_uuid).await;
 }
 
 /// Ensure a query endpoint is provisioned for `service_id` and return the
