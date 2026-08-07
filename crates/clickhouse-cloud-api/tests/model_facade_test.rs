@@ -14,6 +14,10 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ByocConfig::default(),
         api::models::ByocConfig::default(),
     );
+    assert_same_type(
+        api::ClickStackChartColor::default(),
+        api::models::ClickStackChartColor::default(),
+    );
     assert_same_type(api::ClickPipe::default(), api::models::ClickPipe::default());
     assert_same_type(
         api::ReversePrivateEndpoint::default(),
