@@ -18,6 +18,10 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ClickStackChartColor::default(),
         api::models::ClickStackChartColor::default(),
     );
+    assert_same_type(
+        api::ClickStackDashboardResponse::default(),
+        api::models::ClickStackDashboardResponse::default(),
+    );
     assert_same_type(api::ClickPipe::default(), api::models::ClickPipe::default());
     assert_same_type(
         api::ReversePrivateEndpoint::default(),
