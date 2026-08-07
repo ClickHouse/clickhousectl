@@ -2239,13 +2239,14 @@ async fn start_mock_query_host() -> MockServer {
 
 async fn start_mock_query_host_for_provisioning() -> MockServer {
     let mock = MockServer::start().await;
-    let primary_auth = format!(
-        "Basic {}",
-        base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            "fake-key-for-tests:fake-secret-for-tests",
+    let basic_auth = |credentials: &str| {
+        format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
         )
-    );
+    };
+    let primary_auth = basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    let provisioned_auth = basic_auth("provisioned-key-id:provisioned-key-secret");
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .and(header("authorization", primary_auth.as_str()))
@@ -2255,6 +2256,7 @@ async fn start_mock_query_host_for_provisioning() -> MockServer {
         .await;
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", provisioned_auth.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
         .with_priority(5)
         .mount(&mock)
