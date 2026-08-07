@@ -27,9 +27,9 @@ where
 /// declare `["webhook", "email"]`), so a variant defaulting its discriminator to
 /// another variant's value would silently retype the value on the next
 /// deserialize. The covered list is enforced structurally, not by convention:
-/// it must equal the set of hand-written `impl Default for` blocks in
-/// `models.rs` (via the analyzer's `model_types_with_manual_default_impl`), so
-/// a new union gaining a `Default` without a list entry fails this test.
+/// it must equal the set of hand-written `impl Default for` blocks in the model
+/// module tree (via the analyzer's `model_types_with_manual_default_impl`), so a
+/// new union gaining a `Default` without a list entry fails this test.
 #[test]
 fn discriminated_union_defaults_round_trip_to_the_same_variant() {
     let mut covered: Vec<&str> = Vec::new();
@@ -73,7 +73,7 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
 
     covered.sort_unstable();
     let manual_default_impls = clickhouse_openapi_analyzer::model_types_with_manual_default_impl(
-        include_str!("../src/models.rs"),
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
     )
     .unwrap();
     assert_eq!(
@@ -82,7 +82,7 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        "the covered list must equal the manual `impl Default for` blocks in models.rs"
+        "the covered list must equal the manual `impl Default for` blocks in the model tree"
     );
 }
 

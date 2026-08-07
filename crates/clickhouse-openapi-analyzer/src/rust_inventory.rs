@@ -1,11 +1,392 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use quote::ToTokens;
 use syn::ext::IdentExt;
+use syn::parse::Parser;
 use syn::{
-    Attribute, Expr, Fields, FnArg, GenericArgument, ImplItem, Item, Lit, Pat, PathArguments, Type,
-    Visibility,
+    Attribute, Expr, Fields, FnArg, GenericArgument, ImplItem, Item, Lit, Meta, Pat, PathArguments,
+    Type, Visibility,
 };
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RustSourceError {
+    #[error("failed to read Rust source {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse Rust source {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: syn::Error,
+    },
+    #[error(
+        "could not resolve module `{module}` declared in {declared_in}; tried {first} and {second}"
+    )]
+    ModuleNotFound {
+        module: String,
+        declared_in: PathBuf,
+        first: PathBuf,
+        second: PathBuf,
+    },
+    #[error("invalid Rust source: {0}")]
+    Inventory(#[from] syn::Error),
+}
+
+#[derive(Default)]
+struct ModuleTree {
+    items: Vec<Item>,
+}
+
+impl ModuleTree {
+    fn load(source_root: &Path, root_name: &str) -> Result<Self, RustSourceError> {
+        let file_root = source_root.join(format!("{root_name}.rs"));
+        let directory_root = source_root.join(root_name).join("mod.rs");
+        let root = if file_root.is_file() {
+            file_root
+        } else if directory_root.is_file() {
+            directory_root
+        } else {
+            return Err(RustSourceError::ModuleNotFound {
+                module: root_name.to_string(),
+                declared_in: source_root.join("lib.rs"),
+                first: file_root,
+                second: directory_root,
+            });
+        };
+
+        let mut tree = Self::default();
+        let mut loaded = BTreeSet::new();
+        tree.load_file(&root, &mut loaded)?;
+        Ok(tree)
+    }
+
+    #[cfg(test)]
+    fn parse(source: &str, name: &str) -> Result<Self, RustSourceError> {
+        let file = syn::parse_file(source).map_err(|source| RustSourceError::Parse {
+            path: PathBuf::from(name),
+            source,
+        })?;
+        Ok(Self { items: file.items })
+    }
+
+    fn load_file(
+        &mut self,
+        path: &Path,
+        loaded: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), RustSourceError> {
+        if !loaded.insert(path.to_path_buf()) {
+            return Ok(());
+        }
+        let source = fs::read_to_string(path).map_err(|source| RustSourceError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let file = syn::parse_file(&source).map_err(|source| RustSourceError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let module_dir = child_module_dir(path);
+        self.collect_items(path, &module_dir, false, file.items, loaded)
+    }
+
+    fn collect_items(
+        &mut self,
+        source_file: &Path,
+        module_dir: &Path,
+        inside_inline_module: bool,
+        items: Vec<Item>,
+        loaded: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), RustSourceError> {
+        for item in items {
+            let Item::Mod(item_mod) = item else {
+                self.items.push(item);
+                continue;
+            };
+
+            let module_name = item_mod.ident.unraw().to_string();
+            let options = module_options(&item_mod.attrs)?;
+            if !options.active {
+                continue;
+            }
+
+            if let Some((_, items)) = item_mod.content {
+                let child_dir = options.path.map_or_else(
+                    || module_dir.join(&module_name),
+                    |path| {
+                        module_path_base(source_file, module_dir, inside_inline_module).join(path)
+                    },
+                );
+                self.collect_items(source_file, &child_dir, true, items, loaded)?;
+                continue;
+            }
+
+            if let Some(path) = options.path {
+                let path =
+                    module_path_base(source_file, module_dir, inside_inline_module).join(path);
+                self.load_file(&path, loaded)?;
+                continue;
+            }
+
+            let file_path = module_dir.join(format!("{module_name}.rs"));
+            let directory_path = module_dir.join(&module_name).join("mod.rs");
+            if file_path.is_file() {
+                self.load_file(&file_path, loaded)?;
+            } else if directory_path.is_file() {
+                self.load_file(&directory_path, loaded)?;
+            } else {
+                return Err(RustSourceError::ModuleNotFound {
+                    module: module_name,
+                    declared_in: source_file.to_path_buf(),
+                    first: file_path,
+                    second: directory_path,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+fn module_path_base<'a>(
+    source_file: &'a Path,
+    module_dir: &'a Path,
+    inside_inline_module: bool,
+) -> &'a Path {
+    if inside_inline_module {
+        module_dir
+    } else {
+        source_file.parent().unwrap_or(Path::new(""))
+    }
+}
+
+fn child_module_dir(path: &Path) -> PathBuf {
+    if path.file_name().is_some_and(|name| name == "mod.rs") {
+        path.parent().unwrap_or(Path::new("")).to_path_buf()
+    } else {
+        path.with_extension("")
+    }
+}
+
+struct ModuleOptions {
+    active: bool,
+    path: Option<PathBuf>,
+}
+
+fn module_options(attributes: &[Attribute]) -> syn::Result<ModuleOptions> {
+    let mut options = ModuleOptions {
+        active: true,
+        path: None,
+    };
+    for attribute in attributes {
+        apply_module_attribute(&attribute.meta, &mut options)?;
+    }
+    Ok(options)
+}
+
+fn apply_module_attribute(meta: &Meta, options: &mut ModuleOptions) -> syn::Result<()> {
+    if meta.path().is_ident("cfg") {
+        let Meta::List(list) = meta else {
+            return Err(syn::Error::new_spanned(meta, "expected #[cfg(...)]"));
+        };
+        let predicate = syn::parse2::<Meta>(list.tokens.clone())?;
+        if evaluate_cfg(&predicate)? == CfgValue::False {
+            options.active = false;
+        }
+    } else if meta.path().is_ident("cfg_attr") {
+        let Meta::List(list) = meta else {
+            return Err(syn::Error::new_spanned(meta, "expected #[cfg_attr(...)]"));
+        };
+        let nested = syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated
+            .parse2(list.tokens.clone())?;
+        let mut nested = nested.iter();
+        let Some(predicate) = nested.next() else {
+            return Err(syn::Error::new_spanned(
+                meta,
+                "cfg_attr requires a predicate",
+            ));
+        };
+        // Unknown target predicates stay conservative: do not apply an
+        // attribute that could hide portable API surface or select one
+        // platform-specific path over another.
+        if evaluate_cfg(predicate)? == CfgValue::True {
+            for attribute in nested {
+                apply_module_attribute(attribute, options)?;
+            }
+        }
+    } else if meta.path().is_ident("path") {
+        let Meta::NameValue(name_value) = meta else {
+            return Err(syn::Error::new_spanned(meta, "expected #[path = \"...\"]"));
+        };
+        let Expr::Lit(literal) = &name_value.value else {
+            return Err(syn::Error::new_spanned(
+                meta,
+                "expected a string module path",
+            ));
+        };
+        let Lit::Str(value) = &literal.lit else {
+            return Err(syn::Error::new_spanned(
+                meta,
+                "expected a string module path",
+            ));
+        };
+        options.path = Some(PathBuf::from(value.value()));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CfgValue {
+    True,
+    False,
+    Unknown,
+}
+
+fn evaluate_cfg(predicate: &Meta) -> syn::Result<CfgValue> {
+    match predicate {
+        Meta::Path(path) if path.is_ident("test") || path.is_ident("false") => Ok(CfgValue::False),
+        Meta::Path(path) if path.is_ident("true") => Ok(CfgValue::True),
+        Meta::Path(path) if path.is_ident("unix") => Ok(CfgValue::from(cfg!(unix))),
+        Meta::Path(path) if path.is_ident("windows") => Ok(CfgValue::from(cfg!(windows))),
+        Meta::Path(path) if path.is_ident("debug_assertions") => {
+            Ok(CfgValue::from(cfg!(debug_assertions)))
+        }
+        Meta::Path(path) if path.is_ident("proc_macro") => Ok(CfgValue::from(cfg!(proc_macro))),
+        // Unknown custom cfgs are retained so API inventory cannot silently
+        // disappear just because the analyzer was not passed a crate-specific
+        // `--cfg` flag.
+        Meta::Path(_) => Ok(CfgValue::Unknown),
+        Meta::NameValue(value) => evaluate_name_value_cfg(value),
+        Meta::List(list) if list.path.is_ident("not") => {
+            let nested = syn::parse2::<Meta>(list.tokens.clone())?;
+            Ok(match evaluate_cfg(&nested)? {
+                CfgValue::True => CfgValue::False,
+                CfgValue::False => CfgValue::True,
+                CfgValue::Unknown => CfgValue::Unknown,
+            })
+        }
+        Meta::List(list) if list.path.is_ident("all") || list.path.is_ident("any") => {
+            let nested = syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated
+                .parse2(list.tokens.clone())?;
+            let values = nested
+                .iter()
+                .map(evaluate_cfg)
+                .collect::<syn::Result<Vec<_>>>()?;
+            if list.path.is_ident("all") {
+                if values.contains(&CfgValue::False) {
+                    Ok(CfgValue::False)
+                } else if values.iter().all(|value| *value == CfgValue::True) {
+                    Ok(CfgValue::True)
+                } else {
+                    Ok(CfgValue::Unknown)
+                }
+            } else if values.contains(&CfgValue::True) {
+                Ok(CfgValue::True)
+            } else if values.iter().all(|value| *value == CfgValue::False) {
+                Ok(CfgValue::False)
+            } else {
+                Ok(CfgValue::Unknown)
+            }
+        }
+        Meta::List(_) => Ok(CfgValue::Unknown),
+    }
+}
+
+impl From<bool> for CfgValue {
+    fn from(value: bool) -> Self {
+        if value { Self::True } else { Self::False }
+    }
+}
+
+fn evaluate_name_value_cfg(value: &syn::MetaNameValue) -> syn::Result<CfgValue> {
+    let Expr::Lit(literal) = &value.value else {
+        return Ok(CfgValue::Unknown);
+    };
+    let Lit::Str(configured) = &literal.lit else {
+        return Ok(CfgValue::Unknown);
+    };
+    let configured = configured.value();
+
+    // Analyzer inventory is intentionally all-features: feature-gated public
+    // API (including deprecated fields) must remain visible to drift checks.
+    if value.path.is_ident("feature") {
+        return Ok(CfgValue::True);
+    }
+    let actual = if value.path.is_ident("target_arch") {
+        Some(std::env::consts::ARCH)
+    } else if value.path.is_ident("target_os") {
+        Some(std::env::consts::OS)
+    } else if value.path.is_ident("target_family") {
+        Some(std::env::consts::FAMILY)
+    } else if value.path.is_ident("target_env") {
+        current_target_env()
+    } else if value.path.is_ident("target_vendor") {
+        current_target_vendor()
+    } else if value.path.is_ident("target_endian") {
+        Some(if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        })
+    } else if value.path.is_ident("target_pointer_width") {
+        Some(if usize::BITS == 64 {
+            "64"
+        } else if usize::BITS == 32 {
+            "32"
+        } else {
+            "16"
+        })
+    } else if value.path.is_ident("panic") {
+        Some(if cfg!(panic = "unwind") {
+            "unwind"
+        } else {
+            "abort"
+        })
+    } else {
+        None
+    };
+
+    Ok(actual
+        .map(|actual| CfgValue::from(actual == configured))
+        .unwrap_or(CfgValue::Unknown))
+}
+
+fn current_target_env() -> Option<&'static str> {
+    if cfg!(target_env = "") {
+        Some("")
+    } else if cfg!(target_env = "gnu") {
+        Some("gnu")
+    } else if cfg!(target_env = "msvc") {
+        Some("msvc")
+    } else if cfg!(target_env = "musl") {
+        Some("musl")
+    } else if cfg!(target_env = "sgx") {
+        Some("sgx")
+    } else if cfg!(target_env = "sim") {
+        Some("sim")
+    } else if cfg!(target_env = "macabi") {
+        Some("macabi")
+    } else {
+        None
+    }
+}
+
+fn current_target_vendor() -> Option<&'static str> {
+    if cfg!(target_vendor = "apple") {
+        Some("apple")
+    } else if cfg!(target_vendor = "pc") {
+        Some("pc")
+    } else if cfg!(target_vendor = "fortanix") {
+        Some("fortanix")
+    } else if cfg!(target_vendor = "unknown") {
+        Some("unknown")
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypeNode {
@@ -84,7 +465,7 @@ impl TypeNode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FieldInfo {
     pub(crate) rust_name: String,
     pub(crate) rust_type: TypeNode,
@@ -105,12 +486,12 @@ pub(crate) struct FieldInfo {
     pub(crate) skip_serializing_if: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructInfo {
     pub(crate) fields: BTreeMap<String, FieldInfo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnumInfo {
     pub(crate) values: BTreeSet<String>,
     pub(crate) is_value_enum: bool,
@@ -120,7 +501,7 @@ pub(crate) struct EnumInfo {
     pub(crate) variant_type_names: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodInfo {
     pub(crate) arguments: BTreeMap<String, TypeNode>,
     /// Every named type mentioned anywhere in the method's return type
@@ -128,13 +509,13 @@ pub(crate) struct MethodInfo {
     pub(crate) return_type_names: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MetadataInventory {
     pub(crate) beta_operations: BTreeSet<String>,
     pub(crate) deprecated_fields: BTreeSet<(String, String)>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RustInventory {
     pub(crate) client_methods: BTreeMap<String, MethodInfo>,
     pub(crate) model_types: BTreeSet<String>,
@@ -144,24 +525,40 @@ pub(crate) struct RustInventory {
     /// Named types mentioned anywhere in each alias's target type, for
     /// response-tree reachability (parallel to `aliases`).
     pub(crate) alias_type_names: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) manual_default_impls: BTreeSet<String>,
     pub(crate) metadata: MetadataInventory,
 }
 
 impl RustInventory {
-    pub(crate) fn parse(client: &str, models: &str, meta: &str) -> syn::Result<Self> {
-        let client_file = syn::parse_file(client)?;
-        let models_file = syn::parse_file(models)?;
-        let meta_file = syn::parse_file(meta)?;
+    pub(crate) fn load(source_root: &Path) -> Result<Self, RustSourceError> {
+        let client = ModuleTree::load(source_root, "client")?;
+        let models = ModuleTree::load(source_root, "models")?;
+        let meta = ModuleTree::load(source_root, "meta")?;
+        Self::from_trees(&client, &models, &meta)
+    }
 
+    #[cfg(test)]
+    pub(crate) fn parse(client: &str, models: &str, meta: &str) -> Result<Self, RustSourceError> {
+        let client = ModuleTree::parse(client, "client.rs")?;
+        let models = ModuleTree::parse(models, "models.rs")?;
+        let meta = ModuleTree::parse(meta, "meta.rs")?;
+        Self::from_trees(&client, &models, &meta)
+    }
+
+    fn from_trees(
+        client: &ModuleTree,
+        models: &ModuleTree,
+        meta: &ModuleTree,
+    ) -> Result<Self, RustSourceError> {
         let mut inventory = Self::default();
-        inventory.collect_client(&client_file)?;
-        inventory.collect_models(&models_file)?;
-        inventory.collect_metadata(&meta_file);
+        inventory.collect_client(&client.items)?;
+        inventory.collect_models(&models.items)?;
+        inventory.collect_metadata(&meta.items);
         Ok(inventory)
     }
 
-    fn collect_client(&mut self, file: &syn::File) -> syn::Result<()> {
-        for item in &file.items {
+    fn collect_client(&mut self, items: &[Item]) -> syn::Result<()> {
+        for item in items {
             let Item::Impl(item_impl) = item else {
                 continue;
             };
@@ -216,8 +613,8 @@ impl RustInventory {
         Ok(())
     }
 
-    fn collect_models(&mut self, file: &syn::File) -> syn::Result<()> {
-        for item in &file.items {
+    fn collect_models(&mut self, items: &[Item]) -> syn::Result<()> {
+        for item in items {
             match item {
                 Item::Struct(item_struct) if matches!(item_struct.vis, Visibility::Public(_)) => {
                     let name = item_struct.ident.unraw().to_string();
@@ -301,13 +698,10 @@ impl RustInventory {
             }
         }
         // Second pass: impl blocks may lexically precede their enum declaration.
-        for item in &file.items {
+        for item in items {
             let Item::Impl(item_impl) = item else {
                 continue;
             };
-            if item_impl.trait_.is_some() {
-                continue;
-            }
             let Type::Path(self_type) = item_impl.self_ty.as_ref() else {
                 continue;
             };
@@ -319,6 +713,18 @@ impl RustInventory {
             let Some(name) = target else {
                 continue;
             };
+            if item_impl
+                .trait_
+                .as_ref()
+                .and_then(|(_, path, _)| path.segments.last())
+                .is_some_and(|segment| segment.ident == "Default")
+            {
+                self.manual_default_impls.insert(name);
+                continue;
+            }
+            if item_impl.trait_.is_some() {
+                continue;
+            }
             let Some(enum_info) = self.enums.get_mut(&name) else {
                 continue;
             };
@@ -334,8 +740,8 @@ impl RustInventory {
         Ok(())
     }
 
-    fn collect_metadata(&mut self, file: &syn::File) {
-        for item in &file.items {
+    fn collect_metadata(&mut self, items: &[Item]) {
+        for item in items {
             let Item::Const(item_const) = item else {
                 continue;
             };
@@ -429,52 +835,25 @@ impl RustInventory {
     }
 }
 
-/// Lists every public model struct field that carries a field-level
-/// `#[serde(default)]` (bare or `default = "path"`), as
-/// `StructName.rust_field_name`, sorted by struct name then wire field name.
-///
-/// `cfg`-gated deprecated-marker fields are included, and a container-level
-/// `#[serde(default)]` reports every field of its struct — the ban cannot be
-/// dodged by moving the attribute up to the container.
-pub(crate) fn model_fields_with_serde_default(models: &str) -> syn::Result<Vec<String>> {
-    let inventory = RustInventory::parse("", models, "")?;
-    Ok(inventory
-        .structs
-        .iter()
-        .flat_map(|(struct_name, info)| {
-            info.fields
-                .values()
-                .filter(|field| field.serde_default)
-                .map(move |field| format!("{struct_name}.{}", field.rust_name))
-        })
-        .collect())
-}
-
-/// Lists every model type with a hand-written `impl Default for` block,
-/// sorted by name. Derived `Default`s are deliberately excluded: only the
-/// manual impls are the ones `discriminated_union!` enums use, and only those
-/// carry the pick-a-variant decision the round-trip invariant guards.
-pub(crate) fn model_types_with_manual_default_impl(models: &str) -> syn::Result<Vec<String>> {
-    let file: syn::File = syn::parse_str(models)?;
-    let mut names: Vec<String> = file
-        .items
-        .iter()
-        .filter_map(|item| {
-            let Item::Impl(item_impl) = item else {
-                return None;
-            };
-            let (_, trait_path, _) = item_impl.trait_.as_ref()?;
-            if trait_path.segments.last()?.ident != "Default" {
-                return None;
-            }
-            let Type::Path(type_path) = item_impl.self_ty.as_ref() else {
-                return None;
-            };
-            Some(type_path.path.segments.last()?.ident.unraw().to_string())
-        })
-        .collect();
-    names.sort();
-    Ok(names)
+impl RustInventory {
+    /// Lists every public model struct field that carries a field-level
+    /// `#[serde(default)]` (bare or `default = "path"`), as
+    /// `StructName.rust_field_name`, sorted by struct name then wire field name.
+    ///
+    /// `cfg`-gated deprecated-marker fields are included, and a container-level
+    /// `#[serde(default)]` reports every field of its struct — the ban cannot be
+    /// dodged by moving the attribute up to the container.
+    pub(crate) fn model_fields_with_serde_default(&self) -> Vec<String> {
+        self.structs
+            .iter()
+            .flat_map(|(struct_name, info)| {
+                info.fields
+                    .values()
+                    .filter(|field| field.serde_default)
+                    .map(move |field| format!("{struct_name}.{}", field.rust_name))
+            })
+            .collect()
+    }
 }
 
 /// Collects every named type appearing anywhere in `ty`, including inside
@@ -647,6 +1026,124 @@ fn string_pair_array(expression: &Expr) -> BTreeSet<(String, String)> {
 mod tests {
     use super::*;
 
+    fn module_tree_fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("module_tree")
+            .join(name)
+    }
+
+    #[test]
+    fn private_nested_module_tree_matches_flat_inventory() {
+        let flat = RustInventory::load(&module_tree_fixture("flat")).unwrap();
+        let nested = RustInventory::load(&module_tree_fixture("nested")).unwrap();
+
+        assert_eq!(nested, flat);
+        assert!(nested.client_methods.contains_key("list_widgets"));
+        assert_eq!(
+            nested.model_types,
+            BTreeSet::from([
+                "Widget".to_string(),
+                "WidgetAlias".to_string(),
+                "WidgetLeaf".to_string(),
+                "WidgetState".to_string(),
+            ])
+        );
+        assert_eq!(
+            nested.enums["WidgetState"].values_const,
+            Some(BTreeSet::from(["ready".to_string()]))
+        );
+        assert_eq!(
+            nested.manual_default_impls,
+            BTreeSet::from(["WidgetState".to_string()])
+        );
+        assert_eq!(
+            nested.model_fields_with_serde_default(),
+            vec!["Widget.item_count".to_string()]
+        );
+        assert_eq!(
+            nested.terminal_type(&nested.structs["Widget"].fields["itemCount"].rust_type),
+            Some("f64".to_string())
+        );
+    }
+
+    #[test]
+    fn path_attributes_follow_rust_inline_module_context() {
+        let inventory = RustInventory::load(&module_tree_fixture("path_context")).unwrap();
+
+        assert_eq!(
+            inventory.model_types,
+            BTreeSet::from([
+                "DirectPathModel".to_string(),
+                "InlinePathModel".to_string(),
+                "RelocatedInlinePathModel".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn inactive_cfg_modules_are_not_loaded_or_inventoried() {
+        let inventory = RustInventory::load(&module_tree_fixture("cfg_modules")).unwrap();
+
+        assert_eq!(
+            inventory.model_types,
+            BTreeSet::from([
+                "CustomCfgModel".to_string(),
+                "DeprecatedModel".to_string(),
+                "FeatureModel".to_string(),
+                "PlatformModel".to_string(),
+                "ProductionModel".to_string(),
+            ])
+        );
+        assert_eq!(
+            inventory.client_methods.keys().collect::<Vec<_>>(),
+            vec!["production_operation"]
+        );
+        assert_eq!(
+            inventory.metadata.beta_operations,
+            BTreeSet::from(["production_operation".to_string()])
+        );
+    }
+
+    #[test]
+    fn cfg_evaluation_matches_the_analyzer_target() {
+        fn value(source: &str) -> CfgValue {
+            evaluate_cfg(&syn::parse_str(source).unwrap()).unwrap()
+        }
+
+        fn assert_target_value(name: &str, actual: &str) {
+            assert_eq!(value(&format!(r#"{name} = "{actual}""#)), CfgValue::True);
+            assert_eq!(
+                value(&format!(r#"{name} = "definitely-not-{actual}""#)),
+                CfgValue::False
+            );
+        }
+
+        assert_eq!(value("unix"), CfgValue::from(cfg!(unix)));
+        assert_eq!(value("windows"), CfgValue::from(cfg!(windows)));
+        assert_target_value("target_arch", std::env::consts::ARCH);
+        assert_target_value("target_os", std::env::consts::OS);
+        assert_target_value("target_family", std::env::consts::FAMILY);
+        if let Some(target_env) = current_target_env() {
+            assert_target_value("target_env", target_env);
+        }
+        if let Some(target_vendor) = current_target_vendor() {
+            assert_target_value("target_vendor", target_vendor);
+        }
+        assert_target_value(
+            "target_endian",
+            if cfg!(target_endian = "little") {
+                "little"
+            } else {
+                "big"
+            },
+        );
+        assert_target_value("target_pointer_width", &usize::BITS.to_string());
+        assert_eq!(value(r#"feature = "any-feature""#), CfgValue::True);
+        assert_eq!(value("clickhouse_custom"), CfgValue::Unknown);
+    }
+
     #[test]
     fn inventories_structural_rust_and_serde_details() {
         let client = r#"
@@ -804,7 +1301,9 @@ mod tests {
         "#;
 
         assert_eq!(
-            model_fields_with_serde_default(models).unwrap(),
+            RustInventory::parse("", models, "")
+                .unwrap()
+                .model_fields_with_serde_default(),
             vec![
                 "Widget.created_at".to_string(),
                 "Widget.legacy_name".to_string(),
@@ -832,8 +1331,10 @@ mod tests {
         "#;
 
         assert_eq!(
-            model_types_with_manual_default_impl(models).unwrap(),
-            vec!["Union".to_string(), "Widget".to_string()]
+            RustInventory::parse("", models, "")
+                .unwrap()
+                .manual_default_impls,
+            BTreeSet::from(["Union".to_string(), "Widget".to_string()])
         );
     }
 
@@ -848,7 +1349,9 @@ mod tests {
         "#;
 
         assert_eq!(
-            model_fields_with_serde_default(models).unwrap(),
+            RustInventory::parse("", models, "")
+                .unwrap()
+                .model_fields_with_serde_default(),
             vec!["Widget.description".to_string(), "Widget.name".to_string()]
         );
     }
