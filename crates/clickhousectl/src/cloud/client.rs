@@ -450,30 +450,6 @@ impl CloudClient {
         }
     }
 
-    // Organization endpoints (delegated to library client)
-    pub async fn list_organizations(
-        &self,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Organization>> {
-        let response = self
-            .api()
-            .organization_get_list()
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_organization(
-        &self,
-        org_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_get(org_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
     // Service endpoints (delegated to library client)
     pub async fn list_services(
         &self,
@@ -708,155 +684,6 @@ impl CloudClient {
             .map_err(|e| self.convert_error_for_organization(e, org_id))
     }
 
-    // Organization endpoints (delegated to library client)
-    pub async fn update_organization(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::OrganizationPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_update(org_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_org_prometheus(
-        &self,
-        org_id: &str,
-        filtered_metrics: Option<bool>,
-    ) -> Result<String> {
-        let fm_str = filtered_metrics.map(|b| if b { "true" } else { "false" });
-        self.api()
-            .organization_prometheus_get(org_id, fm_str)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))
-    }
-
-    pub async fn get_org_usage(
-        &self,
-        org_id: &str,
-        from_date: &str,
-        to_date: &str,
-        filters: &[String],
-    ) -> Result<clickhouse_cloud_api::models::UsageCost> {
-        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
-        let response = self
-            .api()
-            .usage_cost_get(org_id, from_date, to_date, &filter_refs)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    // Phase 4 - Member endpoints (delegated to library client)
-    pub async fn list_members(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Member>> {
-        let response = self
-            .api()
-            .member_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Member> {
-        let response = self
-            .api()
-            .member_get(org_id, user_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-        request: &clickhouse_cloud_api::models::MemberPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Member> {
-        let response = self
-            .api()
-            .member_update(org_id, user_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .member_delete(org_id, user_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    // Phase 4 - Invitation endpoints (delegated to library client)
-    pub async fn list_invitations(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Invitation>> {
-        let response = self
-            .api()
-            .invitation_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_invitation(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::InvitationPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::Invitation> {
-        let response = self
-            .api()
-            .invitation_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Invitation> {
-        let response = self
-            .api()
-            .invitation_get(org_id, invitation_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .invitation_delete(org_id, invitation_id)
-            .await
-            .map_err(|e| self.convert_error_for_organization(e, org_id))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
     // ClickPipe endpoints (delegated to library client)
     pub async fn list_clickpipes(
         &self,
@@ -991,22 +818,6 @@ impl CloudClient {
             .await
             .map_err(|e| self.convert_error_for_organization(e, org_id))?;
         Self::unwrap_response(response)
-    }
-
-    // Helper to get the default organization
-    pub async fn get_default_org_id(&self) -> Result<String> {
-        let orgs = self.list_organizations().await?;
-        match orgs.len() {
-            0 => Err(CloudError::new("No organization found for this API key")),
-            1 => orgs[0]
-                .id
-                .map(|id| id.to_string())
-                .ok_or_else(|| CloudError::new("Organization response is missing its id")),
-            _ => Err(CloudError::new(
-                "Multiple organizations found. Specify --org-id to choose one. \
-                 Use `clickhousectl cloud org list` to see your organizations.",
-            )),
-        }
     }
 }
 

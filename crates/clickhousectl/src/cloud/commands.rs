@@ -5,9 +5,7 @@ use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
-    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, OrganizationPatchPrivateEndpoint,
-    OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, ServicPrivateEndpointePostRequest,
+    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, ServicPrivateEndpointePostRequest,
     Service, ServiceEndpoint, ServiceEndpointChange, ServiceEndpointChangeProtocol,
     ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
     ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
@@ -16,18 +14,6 @@ use clickhouse_cloud_api::models::{
 };
 use std::io::IsTerminal;
 use tabled::{Table, Tabled, settings::Style};
-
-/// Comma-joins the rendered items of a response list.
-///
-/// An absent list renders as [`ABSENT`]; an absent field of an individual item
-/// renders as [`ABSENT`] inside the join, so a partially-returned list stays
-/// readable.
-fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String {
-    match items {
-        Some(items) => items.iter().map(render).collect::<Vec<_>>().join(", "),
-        None => ABSENT.to_string(),
-    }
-}
 
 /// `host:port` of a service's first endpoint, for list tables.
 ///
@@ -154,124 +140,6 @@ fn parse_instance_tags_patch(
     };
 
     Ok((!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch))
-}
-
-fn parse_org_private_endpoint_remove(
-    value: &str,
-) -> Result<OrganizationPatchPrivateEndpoint, Box<dyn std::error::Error>> {
-    let mut endpoint = OrganizationPatchPrivateEndpoint {
-        id: String::new(),
-        description: None,
-        cloud_provider: OrganizationPatchPrivateEndpointCloudprovider::default(),
-        region: OrganizationPatchPrivateEndpointRegion::default(),
-    };
-
-    for (index, part) in value.split(',').enumerate() {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-
-        if index == 0 && !part.contains('=') {
-            endpoint.id = part.to_string();
-            continue;
-        }
-
-        let (key, raw_value) = part
-            .split_once('=')
-            .ok_or_else(|| format!("invalid remove-private-endpoint segment '{}'", part))?;
-
-        match key {
-            "id" => endpoint.id = raw_value.to_string(),
-            "description" => endpoint.description = Some(raw_value.to_string()),
-            "cloud-provider" => {
-                endpoint.cloud_provider =
-                    serde_json::from_value::<OrganizationPatchPrivateEndpointCloudprovider>(
-                        serde_json::Value::String(raw_value.to_string()),
-                    )
-                    .expect("enum with Unknown variant should always deserialize");
-            }
-            "region" => {
-                endpoint.region =
-                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
-                        serde_json::Value::String(raw_value.to_string()),
-                    )
-                    .expect("enum with Unknown variant should always deserialize");
-            }
-            _ => {
-                return Err(format!(
-                    "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
-                    key
-                )
-                .into())
-            }
-        }
-    }
-
-    Ok(endpoint)
-}
-
-fn parse_org_private_endpoints_patch(
-    remove: &[String],
-) -> Result<Option<OrganizationPrivateEndpointsPatch>, Box<dyn std::error::Error>> {
-    if remove.is_empty() {
-        return Ok(None);
-    }
-
-    let endpoints = remove
-        .iter()
-        .map(|value| parse_org_private_endpoint_remove(value))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(Some(OrganizationPrivateEndpointsPatch {
-        #[cfg(feature = "deprecated-fields")]
-        add: None,
-        remove: endpoints,
-    }))
-}
-
-pub async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let orgs = client.list_organizations().await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&orgs)?);
-    } else {
-        if orgs.is_empty() {
-            println!("No organizations found");
-            return Ok(());
-        }
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Name")]
-            name: String,
-            #[tabled(rename = "ID")]
-            id: String,
-        }
-        let rows: Vec<Row> = orgs
-            .into_iter()
-            .map(|o| Row {
-                name: or_absent(o.name.as_deref()),
-                id: or_absent(o.id),
-            })
-            .collect();
-        println!("{}", Table::new(rows).with(Style::markdown()));
-    }
-    Ok(())
-}
-
-pub async fn org_get(
-    client: &CloudClient,
-    org_id: &str,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org = client.get_organization(org_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&org)?);
-    } else {
-        print_human(&org)?;
-    }
-    Ok(())
 }
 
 pub async fn service_list(
@@ -406,13 +274,6 @@ pub struct QueryEndpointCreateOptions {
     pub open_api_keys: Vec<String>,
     pub allowed_origins: Option<String>,
     pub org_id: Option<String>,
-}
-
-#[derive(Default)]
-pub struct OrgUpdateOptions {
-    pub name: Option<String>,
-    pub remove_private_endpoints: Vec<String>,
-    pub enable_core_dumps: Option<bool>,
 }
 
 /// Resolved horizontal-autoscaling fields for a service create/scale request.
@@ -601,16 +462,6 @@ fn build_query_endpoint_create_request(
         open_api_keys: opts.open_api_keys.clone(),
         allowed_origins: opts.allowed_origins.clone().unwrap_or_default(),
     }
-}
-
-fn build_org_update_request(
-    opts: &OrgUpdateOptions,
-) -> Result<OrganizationPatchRequest, Box<dyn std::error::Error>> {
-    Ok(OrganizationPatchRequest {
-        name: opts.name.clone(),
-        private_endpoints: parse_org_private_endpoints_patch(&opts.remove_private_endpoints)?,
-        enable_core_dumps: opts.enable_core_dumps,
-    })
 }
 
 /// The post-create hint showing how to query the new service.
@@ -2422,44 +2273,6 @@ pub async fn private_endpoint_get_config(
     Ok(())
 }
 
-// =============================================================================
-// Phase 3 — Org command handlers
-// =============================================================================
-
-pub async fn org_update(
-    client: &CloudClient,
-    org_id: &str,
-    opts: OrgUpdateOptions,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let request = build_org_update_request(&opts)?;
-
-    let org = client.update_organization(org_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&org)?);
-    } else {
-        println!(
-            "Organization updated: {} ({})",
-            or_absent(org.name.as_deref()),
-            or_absent(org.id)
-        );
-    }
-    Ok(())
-}
-
-pub async fn org_prometheus(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    filtered_metrics: Option<bool>,
-    _json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-    let prom = client.get_org_prometheus(&org_id, filtered_metrics).await?;
-    println!("{}", prom);
-    Ok(())
-}
-
 pub async fn service_prometheus(
     client: &CloudClient,
     service_id: &str,
@@ -2471,285 +2284,6 @@ pub async fn service_prometheus(
         .get_service_prometheus(&org_id, service_id, filtered_metrics)
         .await?;
     println!("{}", prom);
-    Ok(())
-}
-
-pub async fn org_usage(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    from_date: &str,
-    to_date: &str,
-    filters: &[String],
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-    let usage = client
-        .get_org_usage(&org_id, from_date, to_date, filters)
-        .await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&usage)?);
-    } else {
-        println!(
-            "Grand Total: {} CHC",
-            or_absent(usage.grand_total_chc.map(|total| format!("{total:.2}")))
-        );
-        let costs = usage.costs.unwrap_or_default();
-        if costs.is_empty() {
-            println!("No usage cost records found");
-            return Ok(());
-        }
-
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Entity")]
-            entity: String,
-            #[tabled(rename = "Date")]
-            date: String,
-            #[tabled(rename = "Total (CHC)")]
-            total: String,
-        }
-        let rows: Vec<Row> = costs
-            .iter()
-            .map(|cost| Row {
-                entity: usage_entity_label(cost.entity_name.as_deref(), cost.entity_id),
-                date: or_absent(cost.date.as_deref()),
-                total: or_absent(cost.total_chc.map(|total| format!("{total:.2}"))),
-            })
-            .collect();
-        println!("{}", Table::new(rows).with(Style::markdown()));
-    }
-    Ok(())
-}
-
-fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
-    match (name.filter(|name| !name.is_empty()), id) {
-        (Some(name), _) => name.to_string(),
-        (None, Some(id)) => format!("{id} (unknown)"),
-        (None, None) => ABSENT.to_string(),
-    }
-}
-
-// =============================================================================
-// Phase 4 — Member command handlers
-// =============================================================================
-
-pub async fn member_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let members = client.list_members(&org_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&members)?);
-    } else {
-        if members.is_empty() {
-            println!("No members found");
-            return Ok(());
-        }
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Email")]
-            email: String,
-            #[tabled(rename = "User ID")]
-            user_id: String,
-            #[tabled(rename = "Roles")]
-            roles: String,
-            #[tabled(rename = "Name")]
-            name: String,
-        }
-        let rows: Vec<Row> = members
-            .into_iter()
-            .map(|m| Row {
-                email: or_absent(m.email.as_deref()),
-                user_id: or_absent(m.user_id.as_deref()),
-                roles: join_absent(m.assigned_roles.as_deref(), |r| {
-                    or_absent(r.role_name.as_deref())
-                }),
-                name: or_absent(m.name.as_deref()),
-            })
-            .collect();
-        println!("{}", Table::new(rows).with(Style::markdown()));
-    }
-    Ok(())
-}
-
-pub async fn member_get(
-    client: &CloudClient,
-    user_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let member = client.get_member(&org_id, user_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&member)?);
-    } else {
-        print_human(&member)?;
-    }
-    Ok(())
-}
-
-pub async fn member_update(
-    client: &CloudClient,
-    user_id: &str,
-    role_ids: &[String],
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = clickhouse_cloud_api::models::MemberPatchRequest {
-        assigned_role_ids: if role_ids.is_empty() {
-            None
-        } else {
-            Some(role_ids.to_vec())
-        },
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
-    };
-
-    let member = client.update_member(&org_id, user_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&member)?);
-    } else {
-        println!("Member {} updated", or_absent(member.email.as_deref()));
-    }
-    Ok(())
-}
-
-pub async fn member_remove(
-    client: &CloudClient,
-    user_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let response = client.delete_member(&org_id, user_id).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
-    } else {
-        println!("Member {} removed", user_id);
-    }
-    Ok(())
-}
-
-// =============================================================================
-// Phase 4 — Invitation command handlers
-// =============================================================================
-
-pub async fn invitation_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let invitations = client.list_invitations(&org_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&invitations)?);
-    } else {
-        if invitations.is_empty() {
-            println!("No invitations found");
-            return Ok(());
-        }
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Email")]
-            email: String,
-            #[tabled(rename = "ID")]
-            id: String,
-            #[tabled(rename = "Roles")]
-            roles: String,
-            #[tabled(rename = "Expires")]
-            expires: String,
-        }
-        let rows: Vec<Row> = invitations
-            .into_iter()
-            .map(|inv| Row {
-                email: or_absent(inv.email.as_deref()),
-                id: or_absent(inv.id),
-                roles: join_absent(inv.assigned_roles.as_deref(), |r| {
-                    or_absent(r.role_name.as_deref())
-                }),
-                expires: or_absent(inv.expire_at.map(|at| at.to_rfc3339())),
-            })
-            .collect();
-        println!("{}", Table::new(rows).with(Style::markdown()));
-    }
-    Ok(())
-}
-
-pub async fn invitation_create(
-    client: &CloudClient,
-    email: &str,
-    role_ids: &[String],
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let request = clickhouse_cloud_api::models::InvitationPostRequest {
-        email: email.to_string(),
-        assigned_role_ids: role_ids.iter().map(|s| s.to_string()).collect(),
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
-    };
-
-    let inv = client.create_invitation(&org_id, &request).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&inv)?);
-    } else {
-        println!(
-            "Invitation sent to {} ({})",
-            or_absent(inv.email.as_deref()),
-            or_absent(inv.id)
-        );
-    }
-    Ok(())
-}
-
-pub async fn invitation_get(
-    client: &CloudClient,
-    invitation_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let inv = client.get_invitation(&org_id, invitation_id).await?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&inv)?);
-    } else {
-        print_human(&inv)?;
-    }
-    Ok(())
-}
-
-pub async fn invitation_delete(
-    client: &CloudClient,
-    invitation_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
-    let response = client.delete_invitation(&org_id, invitation_id).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
-    } else {
-        println!("Invitation {} deleted", invitation_id);
-    }
     Ok(())
 }
 
@@ -2968,24 +2502,6 @@ mod tests {
                 "{format} output must stay byte-for-byte intact"
             );
         }
-    }
-
-    #[test]
-    fn usage_entity_label_distinguishes_named_unknown_and_absent_entities() {
-        let id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
-        assert_eq!(
-            usage_entity_label(Some("production"), Some(id)),
-            "production"
-        );
-        assert_eq!(
-            usage_entity_label(None, Some(id)),
-            "11111111-2222-3333-4444-555555555555 (unknown)"
-        );
-        assert_eq!(
-            usage_entity_label(Some(""), Some(id)),
-            format!("{id} (unknown)")
-        );
-        assert_eq!(usage_entity_label(None, None), ABSENT);
     }
 
     #[test]
@@ -3255,25 +2771,6 @@ mod tests {
             err.to_string(),
             "invalid tag ' =prod': tag key cannot be empty"
         );
-    }
-
-    #[test]
-    fn build_org_update_request_matches_tested_shape() {
-        let org_opts = OrgUpdateOptions {
-            name: Some("Updated Org".to_string()),
-            remove_private_endpoints: vec![
-                "pe-1,description=old,cloud-provider=aws,region=us-east-1".to_string(),
-            ],
-            enable_core_dumps: Some(false),
-        };
-        let org_request = build_org_update_request(&org_opts).unwrap();
-        let org_json = serde_json::to_value(&org_request).unwrap();
-        assert_eq!(org_json["privateEndpoints"]["remove"][0]["id"], "pe-1");
-        assert_eq!(
-            org_json["privateEndpoints"]["remove"][0]["cloudProvider"],
-            "aws"
-        );
-        assert_eq!(org_json["enableCoreDumps"], false);
     }
 
     // Regression tests: invalid enum values must be rejected by build_* functions

@@ -2,7 +2,7 @@ pub use crate::cloud::activity::ActivityCommands;
 pub use crate::cloud::api_keys::KeyCommands;
 pub use crate::cloud::auth::AuthCommands;
 pub use crate::cloud::backups::{BackupCommands, BackupConfigCommands};
-use crate::cloud::shared::parse_date_only;
+pub use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 use clap::builder::PossibleValuesParser;
 use clap::{Args, Subcommand};
 
@@ -219,13 +219,7 @@ impl CloudCommands {
     pub fn is_write_command(&self) -> bool {
         match self {
             CloudCommands::Auth { command } => command.is_write(),
-            CloudCommands::Org { command } => match command {
-                OrgCommands::List => false,
-                OrgCommands::Get { .. } => false,
-                OrgCommands::Prometheus { .. } => false,
-                OrgCommands::Usage { .. } => false,
-                OrgCommands::Update { .. } => true,
-            },
+            CloudCommands::Org { command } => command.is_write(),
             CloudCommands::Service { command } => match command {
                 ServiceCommands::List { .. } => false,
                 ServiceCommands::Get { .. } => false,
@@ -250,18 +244,8 @@ impl CloudCommands {
                 ServiceCommands::BackupConfig { command } => command.is_write(),
             },
             CloudCommands::Backup { command } => command.is_write(),
-            CloudCommands::Member { command } => match command {
-                MemberCommands::List { .. } => false,
-                MemberCommands::Get { .. } => false,
-                MemberCommands::Update { .. } => true,
-                MemberCommands::Remove { .. } => true,
-            },
-            CloudCommands::Invitation { command } => match command {
-                InvitationCommands::List { .. } => false,
-                InvitationCommands::Get { .. } => false,
-                InvitationCommands::Create { .. } => true,
-                InvitationCommands::Delete { .. } => true,
-            },
+            CloudCommands::Member { command } => command.is_write(),
+            CloudCommands::Invitation { command } => command.is_write(),
             CloudCommands::Key { command } => command.is_write(),
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
@@ -286,87 +270,6 @@ impl CloudCommands {
             },
         }
     }
-}
-
-#[derive(Subcommand)]
-pub enum OrgCommands {
-    /// List organizations
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns all organizations accessible with the current API credentials.
-  Use this to find org IDs needed by service and backup commands.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service list` next.")]
-    List,
-
-    /// Get organization details
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns details for a single organization by ID.
-  Get org IDs from `clickhousectl cloud org list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud org list` to find org IDs.")]
-    Get {
-        /// Organization ID
-        org_id: String,
-    },
-
-    /// Update organization settings
-    Update {
-        /// Organization ID
-        org_id: String,
-
-        /// New organization name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Remove a private endpoint from the organization allow list.
-        /// Format: id[,description=TEXT][,cloud-provider=aws|gcp|azure][,region=REGION]
-        #[arg(long = "remove-private-endpoint")]
-        remove_private_endpoint: Vec<String>,
-
-        /// Enable or disable core dump collection at the organization level
-        #[arg(long)]
-        enable_core_dumps: Option<bool>,
-    },
-
-    /// Get organization Prometheus configuration
-    Prometheus {
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Organization ID (deprecated positional form; use --org-id)
-        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
-        legacy_org_id: Option<String>,
-
-        /// Whether to request filtered metrics
-        #[arg(long)]
-        filtered_metrics: Option<bool>,
-    },
-
-    /// Get organization usage/billing information
-    Usage {
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Organization ID (deprecated positional form; use --org-id)
-        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
-        legacy_org_id: Option<String>,
-
-        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
-        #[arg(long, value_parser = parse_date_only)]
-        from_date: String,
-
-        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-01-31)
-        #[arg(long, value_parser = parse_date_only)]
-        to_date: String,
-
-        /// Filter by entity attributes
-        #[arg(long)]
-        filter: Vec<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1681,95 +1584,6 @@ pub struct BigQueryCreateArgs {
     pub org_id: Option<String>,
 }
 
-#[derive(Subcommand)]
-pub enum MemberCommands {
-    /// List organization members
-    List {
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Get member details
-    Get {
-        /// User ID
-        user_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Update member roles
-    Update {
-        /// User ID
-        user_id: String,
-
-        /// Role IDs to assign (can be specified multiple times)
-        #[arg(long)]
-        role_id: Vec<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Remove a member from the organization
-    Remove {
-        /// User ID
-        user_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum InvitationCommands {
-    /// List pending invitations
-    List {
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Create an invitation
-    Create {
-        /// Email address to invite
-        #[arg(long)]
-        email: String,
-
-        /// Role IDs to assign (can be specified multiple times)
-        #[arg(long)]
-        role_id: Vec<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Get invitation details
-    Get {
-        /// Invitation ID
-        invitation_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Delete an invitation
-    Delete {
-        /// Invitation ID
-        invitation_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2431,213 +2245,6 @@ mod tests {
         assert_eq!(service_id, "svc-1");
     }
 
-    #[test]
-    fn parses_org_usage_date_only_flags() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Usage {
-            org_id,
-            legacy_org_id,
-            from_date,
-            to_date,
-            ..
-        } = command
-        else {
-            panic!("expected org usage");
-        };
-        assert_eq!(org_id, None);
-        assert_eq!(legacy_org_id, None);
-        assert_eq!(from_date, "2025-01-01");
-        assert_eq!(to_date, "2025-01-31");
-    }
-
-    #[test]
-    fn parses_org_prometheus_and_usage_org_id_flags() {
-        let prometheus = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "prometheus",
-            "--org-id",
-            "org-1",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = prometheus.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Prometheus { org_id, .. } = command else {
-            panic!("expected org prometheus");
-        };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-
-        let usage = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--org-id",
-            "org-1",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = usage.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Usage { org_id, .. } = command else {
-            panic!("expected org usage");
-        };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-    }
-
-    #[test]
-    fn parses_legacy_org_id_positionals() {
-        let prometheus =
-            Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "org-1"]).unwrap();
-        let Commands::Cloud(args) = prometheus.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Prometheus {
-            org_id,
-            legacy_org_id,
-            ..
-        } = command
-        else {
-            panic!("expected org prometheus");
-        };
-        assert_eq!(org_id, None);
-        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
-
-        let usage = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "org-1",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = usage.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Usage {
-            org_id,
-            legacy_org_id,
-            ..
-        } = command
-        else {
-            panic!("expected org usage");
-        };
-        assert_eq!(org_id, None);
-        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
-    }
-
-    #[test]
-    fn rejects_org_id_flag_with_legacy_positional() {
-        let prometheus = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "prometheus",
-            "org-1",
-            "--org-id",
-            "org-2",
-        ]);
-        match prometheus {
-            Ok(_) => panic!("expected conflicting org IDs to be rejected"),
-            Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict),
-        }
-
-        let usage = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "org-1",
-            "--org-id",
-            "org-2",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ]);
-        match usage {
-            Ok(_) => panic!("expected conflicting org IDs to be rejected"),
-            Err(err) => assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict),
-        }
-    }
-
-    #[test]
-    fn rejects_org_usage_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-01-01T00:00:00Z",
-            "--to-date",
-            "2025-01-31",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected timestamp input to be rejected"),
-            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_org_usage_calendar_dates() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "--from-date",
-            "2025-02-31",
-            "--to-date",
-            "2025-03-01",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected invalid calendar date to be rejected"),
-            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
-        }
-    }
-
     /// Helper to assert a command parsed from CLI args is classified correctly.
     fn assert_write(args: &[&str], expected: bool) {
         let cli = Cli::try_parse_from(args).unwrap();
@@ -2654,24 +2261,6 @@ mod tests {
 
     #[test]
     fn is_write_command_read_only_commands() {
-        // Org reads
-        assert_write(&["clickhousectl", "cloud", "org", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "prometheus"], false);
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "org",
-                "usage",
-                "--from-date",
-                "2025-01-01",
-                "--to-date",
-                "2025-01-31",
-            ],
-            false,
-        );
-
         // Service reads
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
         assert_write(
@@ -2703,17 +2292,6 @@ mod tests {
                 "get",
                 "svc-1",
             ],
-            false,
-        );
-
-        // Member reads
-        assert_write(&["clickhousectl", "cloud", "member", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "member", "get", "usr-1"], false);
-
-        // Invitation reads
-        assert_write(&["clickhousectl", "cloud", "invitation", "list"], false);
-        assert_write(
-            &["clickhousectl", "cloud", "invitation", "get", "inv-1"],
             false,
         );
 
@@ -2799,20 +2377,6 @@ mod tests {
             true,
         );
 
-        // Org write
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "org",
-                "update",
-                "org-1",
-                "--name",
-                "new",
-            ],
-            true,
-        );
-
         // Service writes
         assert_write(
             &[
@@ -2888,43 +2452,6 @@ mod tests {
                 "--backup-period-hours",
                 "12",
             ],
-            true,
-        );
-
-        // Member writes
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "member",
-                "update",
-                "usr-1",
-                "--role-id",
-                "r1",
-            ],
-            true,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "member", "remove", "usr-1"],
-            true,
-        );
-
-        // Invitation writes
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "invitation",
-                "create",
-                "--email",
-                "a@b.com",
-                "--role-id",
-                "r1",
-            ],
-            true,
-        );
-        assert_write(
-            &["clickhousectl", "cloud", "invitation", "delete", "inv-1"],
             true,
         );
 
