@@ -2497,6 +2497,41 @@ pub struct ServiceQueryOptions {
     pub no_auto_enable: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_basic_service_query(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    service_name: &str,
+) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+    let run = |wake: bool| {
+        client
+            .api()
+            .run_query(service_id, key_id, key_secret, sql, database, format, wake)
+    };
+    match run(false).await {
+        Err(clickhouse_cloud_api::Error::ServiceIdle) => {
+            eprint_waking_service(service_name);
+            run(true).await
+        }
+        other => other,
+    }
+}
+
+fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
+    matches!(
+        error,
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403 | 404,
+            ..
+        }
+    )
+}
+
 pub async fn service_query(
     client: &CloudClient,
     opts: ServiceQueryOptions,
@@ -2553,49 +2588,66 @@ pub async fn service_query(
         };
         result.map_err(|e| convert_query_error(client, e, &service_name))?
     } else {
-        let key = match credentials::get_service_query_key(&service_id) {
-            Some(k) => k,
-            None if opts.no_auto_enable => {
-                return Err(format!(
-                    "no stored Query API key for service {service_id}; rerun without --no-auto-enable to auto-provision"
-                )
-                .into());
-            }
-            None => {
-                eprintln!(
-                    "Provisioning Query API endpoint + key for service '{}'...",
-                    service_name
-                );
-                crate::cloud::service_query::ensure_service_query_setup(
-                    client,
-                    &org_id,
-                    &service_id,
-                    &service_name,
-                )
-                .await?
-            }
-        };
-
-        // The query host normally wakes an idled service on its own for
-        // Query API key auth, but handle the wake confirmation here too so
-        // both auth paths behave the same if it ever asks.
-        let run = |wake: bool| {
-            client.api().run_query(
+        let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
+            run_basic_service_query(
+                client,
                 &service_id,
                 &key.key_id,
                 &key.key_secret,
                 &sql,
                 opts.database.as_deref(),
                 &format,
-                wake,
+                &service_name,
             )
-        };
-        let result = match run(false).await {
-            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service_name);
-                run(true).await
+            .await
+        } else {
+            let (key_id, key_secret) = client
+                .basic_auth_credentials()
+                .ok_or("API key credentials are unavailable")?;
+            match run_basic_service_query(
+                client,
+                &service_id,
+                key_id,
+                key_secret,
+                &sql,
+                opts.database.as_deref(),
+                &format,
+                &service_name,
+            )
+            .await
+            {
+                Err(error) if query_requires_provisioning(&error) => {
+                    if opts.no_auto_enable {
+                        return Err(format!(
+                            "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
+                        )
+                        .into());
+                    }
+                    eprintln!(
+                        "Provisioning Query API endpoint + key for service '{}'...",
+                        service_name
+                    );
+                    let key = crate::cloud::service_query::ensure_service_query_setup(
+                        client,
+                        &org_id,
+                        &service_id,
+                        &service_name,
+                    )
+                    .await?;
+                    run_basic_service_query(
+                        client,
+                        &service_id,
+                        &key.key_id,
+                        &key.key_secret,
+                        &sql,
+                        opts.database.as_deref(),
+                        &format,
+                        &service_name,
+                    )
+                    .await
+                }
+                other => other,
             }
-            other => other,
         };
         result.map_err(|e| convert_query_error(client, e, &service_name))?
     };
@@ -3594,6 +3646,29 @@ mod tests {
             query_output_completion("RowBinary", 0, None),
             QueryOutputCompletion::Acknowledge
         );
+    }
+
+    #[test]
+    fn query_provisions_only_for_endpoint_or_auth_rejections() {
+        for status in [401, 403, 404] {
+            assert!(query_requires_provisioning(
+                &clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "rejected".into(),
+                }
+            ));
+        }
+        for status in [400, 408, 429, 500] {
+            assert!(!query_requires_provisioning(
+                &clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "query failed".into(),
+                }
+            ));
+        }
+        assert!(!query_requires_provisioning(
+            &clickhouse_cloud_api::Error::ServiceStopped
+        ));
     }
 
     #[test]

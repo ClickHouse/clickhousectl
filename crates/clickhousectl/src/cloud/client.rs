@@ -44,7 +44,7 @@ impl std::error::Error for CloudError {}
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
-    Basic,
+    Basic { key: String, secret: String },
     Bearer,
 }
 
@@ -338,10 +338,15 @@ impl CloudClient {
 
         let resolved = resolve_auth(api_key, api_secret, url_override)?;
         let lib_url = lib_base_url(&resolved.base_url);
-        let (lib_client, auth_mode) = match &resolved.creds {
+        let (lib_client, auth_mode) = match resolved.creds {
             ResolvedCreds::Basic { key, secret } => (
-                clickhouse_cloud_api::Client::with_http_client(http, lib_url, key, secret),
-                AuthMode::Basic,
+                clickhouse_cloud_api::Client::with_http_client(
+                    http,
+                    lib_url,
+                    key.clone(),
+                    secret.clone(),
+                ),
+                AuthMode::Basic { key, secret },
             ),
             ResolvedCreds::Bearer { token } => (
                 clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token),
@@ -360,7 +365,16 @@ impl CloudClient {
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
-        matches!(self.auth_mode, AuthMode::Bearer)
+        matches!(&self.auth_mode, AuthMode::Bearer)
+    }
+
+    /// The active API key pair, for authenticating directly to a Query API
+    /// endpoint that already authorizes this key.
+    pub(crate) fn basic_auth_credentials(&self) -> Option<(&str, &str)> {
+        match &self.auth_mode {
+            AuthMode::Basic { key, secret } => Some((key, secret)),
+            AuthMode::Bearer => None,
+        }
     }
 
     /// The credential source that won precedence when constructing this client.
@@ -1176,7 +1190,10 @@ mod tests {
         );
         CloudClient {
             lib_client,
-            auth_mode: AuthMode::Basic,
+            auth_mode: AuthMode::Basic {
+                key: "test_key".into(),
+                secret: "test_secret".into(),
+            },
             auth_source: AuthSource::CliFlags,
             base_url: DEFAULT_BASE_URL.to_string(),
         }
@@ -1203,6 +1220,15 @@ mod tests {
     fn is_bearer_auth_returns_false_for_basic() {
         let client = test_client();
         assert!(!client.is_bearer_auth());
+    }
+
+    #[test]
+    fn basic_auth_credentials_returns_the_active_pair() {
+        let client = test_client();
+        assert_eq!(
+            client.basic_auth_credentials(),
+            Some(("test_key", "test_secret"))
+        );
     }
 
     #[test]
