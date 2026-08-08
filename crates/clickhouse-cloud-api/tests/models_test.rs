@@ -2124,6 +2124,19 @@ fn deserialize_clickpipe_post_pubsub_source_required_fields() {
 }
 
 #[test]
+fn serialize_clickpipe_patch_pubsub_source_omits_absent_credentials() {
+    let empty = serde_json::to_value(ClickPipePatchPubSubSource::default()).unwrap();
+    assert_eq!(empty, serde_json::json!({}));
+
+    let ack_deadline_only = serde_json::to_value(ClickPipePatchPubSubSource {
+        ack_deadline: Some(30),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(ack_deadline_only, serde_json::json!({"ackDeadline": 30}));
+}
+
+#[test]
 fn deserialize_clickpipe_source_with_pubsub() {
     let json = r#"{
         "pubsub": {
