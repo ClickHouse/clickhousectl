@@ -322,9 +322,9 @@ fn evaluate_name_value_cfg(value: &syn::MetaNameValue) -> syn::Result<CfgValue> 
     } else if value.path.is_ident("target_family") {
         Some(std::env::consts::FAMILY)
     } else if value.path.is_ident("target_env") {
-        current_target_env()
+        Some(env!("ANALYZER_TARGET_ENV"))
     } else if value.path.is_ident("target_vendor") {
-        current_target_vendor()
+        Some(env!("ANALYZER_TARGET_VENDOR"))
     } else if value.path.is_ident("target_endian") {
         Some(if cfg!(target_endian = "little") {
             "little"
@@ -352,40 +352,6 @@ fn evaluate_name_value_cfg(value: &syn::MetaNameValue) -> syn::Result<CfgValue> 
     Ok(actual
         .map(|actual| CfgValue::from(actual == configured))
         .unwrap_or(CfgValue::Unknown))
-}
-
-fn current_target_env() -> Option<&'static str> {
-    if cfg!(target_env = "") {
-        Some("")
-    } else if cfg!(target_env = "gnu") {
-        Some("gnu")
-    } else if cfg!(target_env = "msvc") {
-        Some("msvc")
-    } else if cfg!(target_env = "musl") {
-        Some("musl")
-    } else if cfg!(target_env = "sgx") {
-        Some("sgx")
-    } else if cfg!(target_env = "sim") {
-        Some("sim")
-    } else if cfg!(target_env = "macabi") {
-        Some("macabi")
-    } else {
-        None
-    }
-}
-
-fn current_target_vendor() -> Option<&'static str> {
-    if cfg!(target_vendor = "apple") {
-        Some("apple")
-    } else if cfg!(target_vendor = "pc") {
-        Some("pc")
-    } else if cfg!(target_vendor = "fortanix") {
-        Some("fortanix")
-    } else if cfg!(target_vendor = "unknown") {
-        Some("unknown")
-    } else {
-        None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1125,12 +1091,8 @@ mod tests {
         assert_target_value("target_arch", std::env::consts::ARCH);
         assert_target_value("target_os", std::env::consts::OS);
         assert_target_value("target_family", std::env::consts::FAMILY);
-        if let Some(target_env) = current_target_env() {
-            assert_target_value("target_env", target_env);
-        }
-        if let Some(target_vendor) = current_target_vendor() {
-            assert_target_value("target_vendor", target_vendor);
-        }
+        assert_target_value("target_env", env!("ANALYZER_TARGET_ENV"));
+        assert_target_value("target_vendor", env!("ANALYZER_TARGET_VENDOR"));
         assert_target_value(
             "target_endian",
             if cfg!(target_endian = "little") {
