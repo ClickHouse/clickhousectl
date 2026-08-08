@@ -1,15 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-pub use crate::cloud::cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, ClickPipeCommands,
-    ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands,
-    InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
-    QueryEndpointCommands, ServiceCommands,
-};
-pub use crate::cloud::postgres::{
-    CertsCommands as PostgresCertsCommands, ConfigCommands as PostgresConfigCommands,
-    PostgresCommands, ReadReplicaCommands as PostgresReadReplicaCommands,
-};
+use crate::cloud::cli::CloudArgs;
 pub use crate::local::cli::LocalArgs;
 
 #[derive(Parser)]

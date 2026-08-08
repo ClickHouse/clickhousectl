@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
+use crate::cloud::shared::{parse_date_only, parse_datetime, parse_time_only};
 use clap::builder::PossibleValuesParser;
 use clap::{Args, Subcommand};
 
@@ -74,32 +74,6 @@ const MONGODB_READ_PREFERENCES: &[&str] = &[
     "nearest",
 ];
 
-fn parse_date_only(value: &str) -> Result<String, String> {
-    if NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
-        return Err(format!("invalid date '{}': expected YYYY-MM-DD", value));
-    }
-
-    Ok(value.to_string())
-}
-
-pub(super) fn parse_datetime(value: &str) -> Result<String, String> {
-    if DateTime::<FixedOffset>::parse_from_rfc3339(value).is_err() {
-        return Err(format!(
-            "invalid datetime '{}': expected ISO 8601 / RFC 3339",
-            value
-        ));
-    }
-
-    Ok(value.to_string())
-}
-
-fn parse_time_only(value: &str) -> Result<String, String> {
-    if NaiveTime::parse_from_str(value, "%H:%M").is_err() {
-        return Err(format!("invalid time '{}': expected HH:MM", value));
-    }
-
-    Ok(value.to_string())
-}
 #[derive(Subcommand)]
 pub enum AuthCommands {
     /// Log in to ClickHouse Cloud
