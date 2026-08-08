@@ -2822,8 +2822,9 @@ pub struct ClickPipePatchPostgresSource {
 pub struct ClickPipePatchPubSubSource {
     #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
     pub ack_deadline: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<ClickPipePatchPubSubSourceAuthentication>,
-    #[serde(rename = "serviceAccountKey")]
+    #[serde(rename = "serviceAccountKey", skip_serializing_if = "Option::is_none")]
     pub service_account_key: Option<ServiceAccount>,
 }
 
