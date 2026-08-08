@@ -1,4 +1,7 @@
+pub mod activity;
+pub mod api_keys;
 pub mod auth;
+pub mod backups;
 pub mod cli;
 pub mod client;
 pub mod commands;
@@ -19,9 +22,8 @@ pub use client::{
 
 use crate::error::{Error, Result};
 use cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, ClickPipeCommands,
-    ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands,
-    InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
+    ClickPipeCommands, ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs,
+    CloudCommands, InvitationCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
     QueryEndpointCommands, ServiceCommands,
 };
 
@@ -52,235 +54,7 @@ fn ignored_env_credentials_notice(
 pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // Auth subcommands don't need a client.
     if let CloudCommands::Auth { command } = args.command {
-        return match command {
-            AuthCommands::Login {
-                interactive,
-                api_key,
-                api_secret,
-            } => {
-                if interactive {
-                    commands::auth_interactive().map_err(|e| Error::Cloud(e.to_string()))
-                } else if api_key.is_some() || api_secret.is_some() {
-                    let key = api_key.ok_or_else(|| {
-                        Error::AuthRequired(
-                            "--api-key is required when --api-secret is provided".into(),
-                        )
-                    })?;
-                    let secret = api_secret.ok_or_else(|| {
-                        Error::AuthRequired(
-                            "--api-secret is required when --api-key is provided".into(),
-                        )
-                    })?;
-                    let mut creds = credentials::load_credentials().unwrap_or_default();
-                    creds.api_key = Some(key);
-                    creds.api_secret = Some(secret);
-                    credentials::save_credentials(&creds)
-                        .map_err(|e| Error::Cloud(e.to_string()))?;
-                    println!(
-                        "Credentials saved to {}",
-                        credentials::credentials_path().display()
-                    );
-                    Ok(())
-                } else {
-                    let url = args
-                        .url
-                        .as_deref()
-                        .unwrap_or("https://api.clickhouse.cloud");
-                    let tokens = auth::device_auth_login(url)
-                        .await
-                        .map_err(|e| Error::Cloud(e.to_string()))?;
-                    auth::save_tokens(&tokens).map_err(|e| Error::Cloud(e.to_string()))?;
-                    println!("Logged in successfully.");
-                    let tokens_path =
-                        auth::tokens_path().map_err(|e| Error::Cloud(e.to_string()))?;
-                    println!("Tokens saved to {}", tokens_path.display());
-                    Ok(())
-                }
-            }
-            AuthCommands::Signup => {
-                let api_url = args
-                    .url
-                    .as_deref()
-                    .unwrap_or("https://api.clickhouse.cloud");
-                let parsed = url::Url::parse(api_url)
-                    .map_err(|e| Error::Cloud(format!("Invalid URL: {}", e)))?;
-                let host = parsed.host_str().unwrap_or("api.clickhouse.cloud");
-                let base_host = host.strip_prefix("api.").unwrap_or(host);
-                let url = format!(
-                    "https://console.{}/signUp?utm_source=clickhousectl",
-                    base_host
-                );
-                println!("Opening ClickHouse Cloud sign-up page...");
-                if open::that(&url).is_err() {
-                    println!("Could not open browser. Please visit: {}", url);
-                }
-                Ok(())
-            }
-            AuthCommands::Logout { oauth, api_keys } => {
-                match (oauth, api_keys) {
-                    (true, false) => {
-                        auth::clear_tokens();
-                        println!("OAuth tokens cleared. API keys unchanged.");
-                    }
-                    (false, true) => {
-                        credentials::clear_credentials();
-                        println!("API keys cleared. OAuth tokens unchanged.");
-                    }
-                    _ => {
-                        auth::clear_tokens();
-                        credentials::clear_credentials();
-                        println!("Logged out. All saved credentials cleared.");
-                    }
-                }
-                Ok(())
-            }
-            AuthCommands::Status => {
-                use serde::Serialize;
-                use tabled::{Table, Tabled, settings::Style};
-
-                #[derive(Serialize, Tabled)]
-                struct AuthRow {
-                    #[tabled(rename = "Type")]
-                    #[serde(rename = "type")]
-                    auth_type: String,
-                    #[tabled(rename = "Status")]
-                    status: String,
-                    #[tabled(rename = "Scope")]
-                    scope: String,
-                    #[tabled(rename = "Active")]
-                    active: String,
-                }
-
-                // Determine which source would actually win precedence right now.
-                // CLI --api-key/--api-secret aren't relevant to `auth status` itself.
-                let active = resolve_active_auth_source();
-                let mark = |src: AuthSource| -> String {
-                    if active == Some(src) {
-                        "yes".into()
-                    } else {
-                        "-".into()
-                    }
-                };
-
-                let mut rows = Vec::new();
-
-                match auth::load_tokens() {
-                    Some(tokens) if auth::is_token_valid(&tokens) => {
-                        rows.push(AuthRow {
-                            auth_type: "OAuth".into(),
-                            status: "Active".into(),
-                            scope: "read-only".into(),
-                            active: mark(AuthSource::OAuthTokens),
-                        });
-                    }
-                    Some(_) => {
-                        rows.push(AuthRow {
-                            auth_type: "OAuth".into(),
-                            status: "Expired".into(),
-                            scope: "read-only".into(),
-                            active: "-".into(),
-                        });
-                    }
-                    None => {
-                        rows.push(AuthRow {
-                            auth_type: "OAuth".into(),
-                            status: "Not configured".into(),
-                            scope: "-".into(),
-                            active: "-".into(),
-                        });
-                    }
-                }
-
-                if credentials::load_credentials().is_some() {
-                    rows.push(AuthRow {
-                        auth_type: "API key".into(),
-                        status: "Active".into(),
-                        scope: "read/write".into(),
-                        active: mark(AuthSource::CredentialsFile),
-                    });
-                } else {
-                    rows.push(AuthRow {
-                        auth_type: "API key".into(),
-                        status: "Not configured".into(),
-                        scope: "-".into(),
-                        active: "-".into(),
-                    });
-                }
-
-                // Presence is computed through the same `env_or_dotenv` merge
-                // the resolver uses (shell env with `.env` fallback, empties
-                // treated as absent) so this table can't disagree with which
-                // source actually wins.
-                let env_creds = env_cred_presence();
-                let has_key = env_creds.key;
-                let has_secret = env_creds.secret;
-
-                match (has_key, has_secret) {
-                    (true, true) => {
-                        // Only label the `.env` path when BOTH credentials
-                        // come exclusively from it — otherwise the status
-                        // would imply the file was the source even though
-                        // one value is actually exported in the shell. Use
-                        // the same rule as `dotenv_env_provenance()` so the
-                        // table and `--debug describe()` stay consistent.
-                        let provenance = dotenv_env_provenance()
-                            .map(|path| format!(" (from {})", path.display()))
-                            .unwrap_or_default();
-                        let status = match active {
-                            Some(AuthSource::EnvVars) => format!("Active{provenance}"),
-                            Some(AuthSource::CredentialsFile) => format!(
-                                "Configured{provenance} (inactive, outranked by credentials file)"
-                            ),
-                            _ => format!("Configured{provenance} (inactive)"),
-                        };
-                        rows.push(AuthRow {
-                            auth_type: "Env vars".into(),
-                            status,
-                            scope: "read/write".into(),
-                            active: mark(AuthSource::EnvVars),
-                        });
-                    }
-                    (true, false) => {
-                        rows.push(AuthRow {
-                            auth_type: "Env vars".into(),
-                            status: "Incomplete (missing CLICKHOUSE_CLOUD_API_SECRET)".into(),
-                            scope: "-".into(),
-                            active: "-".into(),
-                        });
-                    }
-                    (false, true) => {
-                        rows.push(AuthRow {
-                            auth_type: "Env vars".into(),
-                            status: "Incomplete (missing CLICKHOUSE_CLOUD_API_KEY)".into(),
-                            scope: "-".into(),
-                            active: "-".into(),
-                        });
-                    }
-                    (false, false) => {
-                        rows.push(AuthRow {
-                            auth_type: "Env vars".into(),
-                            status: "Not configured".into(),
-                            scope: "-".into(),
-                            active: "-".into(),
-                        });
-                    }
-                }
-
-                if args.debug {
-                    match active {
-                        Some(src) => eprintln!("[debug] auth source: {}", src.describe()),
-                        None => eprintln!("[debug] auth source: none (no credentials configured)"),
-                    }
-                }
-
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&rows)?);
-                } else {
-                    println!("{}", Table::new(rows).with(Style::markdown()));
-                }
-                Ok(())
-            }
-        };
+        return auth::run(command, args.url.as_deref(), args.debug, json).await;
     }
 
     // Refresh OAuth tokens if needed. Errors here are filesystem failures
@@ -595,26 +369,9 @@ async fn dispatch(
                     .await
                 }
             },
-            ServiceCommands::BackupConfig { command } => match command {
-                BackupConfigCommands::Get { service_id, org_id } => {
-                    commands::backup_config_get(client, &service_id, org_id.as_deref(), json).await
-                }
-                BackupConfigCommands::Update {
-                    service_id,
-                    backup_period_hours,
-                    backup_retention_period_hours,
-                    backup_start_time,
-                    org_id,
-                } => {
-                    let opts = commands::BackupConfigUpdateOptions {
-                        backup_period_hours,
-                        backup_retention_period_hours,
-                        backup_start_time,
-                        org_id,
-                    };
-                    commands::backup_config_update(client, &service_id, opts, json).await
-                }
-            },
+            ServiceCommands::BackupConfig { command } => {
+                backups::run_config(client, command, json).await
+            }
             ServiceCommands::Prometheus {
                 service_id,
                 org_id,
@@ -688,92 +445,9 @@ async fn dispatch(
                 org_id,
             } => commands::invitation_delete(client, &invitation_id, org_id.as_deref(), json).await,
         },
-        CloudCommands::Key { command } => match command {
-            KeyCommands::List { org_id } => {
-                commands::key_list(client, org_id.as_deref(), json).await
-            }
-            KeyCommands::Create {
-                name,
-                role_id,
-                expires_at,
-                state,
-                ip_allow,
-                hash_key_id,
-                hash_key_id_suffix,
-                hash_key_secret,
-                org_id,
-            } => {
-                let opts = commands::KeyCreateOptions {
-                    name,
-                    role_ids: role_id,
-                    expires_at,
-                    state,
-                    ip_allow,
-                    hash_key_id,
-                    hash_key_id_suffix,
-                    hash_key_secret,
-                    org_id,
-                };
-                commands::key_create(client, opts, json).await
-            }
-            KeyCommands::Get { key_id, org_id } => {
-                commands::key_get(client, &key_id, org_id.as_deref(), json).await
-            }
-            KeyCommands::Update {
-                key_id,
-                name,
-                role_id,
-                expires_at,
-                state,
-                ip_allow,
-                org_id,
-            } => {
-                let opts = commands::KeyUpdateOptions {
-                    name,
-                    role_ids: role_id,
-                    expires_at,
-                    state,
-                    ip_allow,
-                    org_id,
-                };
-                commands::key_update(client, &key_id, opts, json).await
-            }
-            KeyCommands::Delete { key_id, org_id } => {
-                commands::key_delete(client, &key_id, org_id.as_deref(), json).await
-            }
-        },
-        CloudCommands::Activity { command } => match command {
-            ActivityCommands::List {
-                org_id,
-                from_date,
-                to_date,
-            } => {
-                commands::activity_list(
-                    client,
-                    org_id.as_deref(),
-                    from_date.as_deref(),
-                    to_date.as_deref(),
-                    json,
-                )
-                .await
-            }
-            ActivityCommands::Get {
-                activity_id,
-                org_id,
-            } => commands::activity_get(client, &activity_id, org_id.as_deref(), json).await,
-        },
-        CloudCommands::Backup { command } => match command {
-            BackupCommands::List { service_id, org_id } => {
-                commands::backup_list(client, &service_id, org_id.as_deref(), json).await
-            }
-            BackupCommands::Get {
-                service_id,
-                backup_id,
-                org_id,
-            } => {
-                commands::backup_get(client, &service_id, &backup_id, org_id.as_deref(), json).await
-            }
-        },
+        CloudCommands::Key { command } => api_keys::run(client, command, json).await,
+        CloudCommands::Activity { command } => activity::run(client, command, json).await,
+        CloudCommands::Backup { command } => backups::run(client, command, json).await,
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,
         CloudCommands::ClickPipe { command } => match *command {
             ClickPipeCommands::List { service_id, org_id } => {

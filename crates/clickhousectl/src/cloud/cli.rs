@@ -1,4 +1,8 @@
-use crate::cloud::shared::{parse_date_only, parse_datetime, parse_time_only};
+pub use crate::cloud::activity::ActivityCommands;
+pub use crate::cloud::api_keys::KeyCommands;
+pub use crate::cloud::auth::AuthCommands;
+pub use crate::cloud::backups::{BackupCommands, BackupConfigCommands};
+use crate::cloud::shared::parse_date_only;
 use clap::builder::PossibleValuesParser;
 use clap::{Args, Subcommand};
 
@@ -73,52 +77,6 @@ const MONGODB_READ_PREFERENCES: &[&str] = &[
     "secondaryPreferred",
     "nearest",
 ];
-
-#[derive(Subcommand)]
-pub enum AuthCommands {
-    /// Log in to ClickHouse Cloud
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY.
-  For write operations, use API keys via: --api-key/--api-secret flags, or
-  CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET env vars (exported or in .env).
-  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
-  Related: use `clickhousectl cloud auth status` to verify.")]
-    Login {
-        /// Log in by entering API key/secret interactively
-        #[arg(long)]
-        interactive: bool,
-
-        /// API key for non-interactive login (requires --api-secret)
-        #[arg(long)]
-        api_key: Option<String>,
-
-        /// API secret for non-interactive login (requires --api-key)
-        #[arg(long)]
-        api_secret: Option<String>,
-    },
-    /// Log out and clear saved credentials
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  With no flags, clears everything. Use --oauth to keep API keys, or --api-keys to keep OAuth tokens.")]
-    Logout {
-        /// Clear only OAuth tokens (keep API keys)
-        #[arg(long, conflicts_with = "api_keys")]
-        oauth: bool,
-
-        /// Clear only API keys (keep OAuth tokens)
-        #[arg(long, conflicts_with = "oauth")]
-        api_keys: bool,
-    },
-    /// Show current authentication status
-    Status,
-    /// Open the ClickHouse Cloud sign-up page in your browser
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Opens the ClickHouse Cloud sign-up page in the user's browser. This is an interactive flow —
-  it requires a human to complete sign-up in the browser. Do not use in fully autonomous or CI environments.")]
-    Signup,
-}
 
 #[derive(Args)]
 pub struct CloudArgs {
@@ -260,7 +218,7 @@ impl CloudCommands {
     /// classify it as read or write.
     pub fn is_write_command(&self) -> bool {
         match self {
-            CloudCommands::Auth { .. } => false,
+            CloudCommands::Auth { command } => command.is_write(),
             CloudCommands::Org { command } => match command {
                 OrgCommands::List => false,
                 OrgCommands::Get { .. } => false,
@@ -289,15 +247,9 @@ impl CloudCommands {
                     PrivateEndpointCommands::Create { .. } => true,
                     PrivateEndpointCommands::GetConfig { .. } => false,
                 },
-                ServiceCommands::BackupConfig { command } => match command {
-                    BackupConfigCommands::Get { .. } => false,
-                    BackupConfigCommands::Update { .. } => true,
-                },
+                ServiceCommands::BackupConfig { command } => command.is_write(),
             },
-            CloudCommands::Backup { command } => match command {
-                BackupCommands::List { .. } => false,
-                BackupCommands::Get { .. } => false,
-            },
+            CloudCommands::Backup { command } => command.is_write(),
             CloudCommands::Member { command } => match command {
                 MemberCommands::List { .. } => false,
                 MemberCommands::Get { .. } => false,
@@ -310,17 +262,8 @@ impl CloudCommands {
                 InvitationCommands::Create { .. } => true,
                 InvitationCommands::Delete { .. } => true,
             },
-            CloudCommands::Key { command } => match command {
-                KeyCommands::List { .. } => false,
-                KeyCommands::Get { .. } => false,
-                KeyCommands::Create { .. } => true,
-                KeyCommands::Update { .. } => true,
-                KeyCommands::Delete { .. } => true,
-            },
-            CloudCommands::Activity { command } => match command {
-                ActivityCommands::List { .. } => false,
-                ActivityCommands::Get { .. } => false,
-            },
+            CloudCommands::Key { command } => command.is_write(),
+            CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => match command.as_ref() {
                 ClickPipeCommands::List { .. } => false,
@@ -934,43 +877,6 @@ pub enum PrivateEndpointCommands {
     },
 }
 
-#[derive(Subcommand)]
-pub enum BackupCommands {
-    /// List backups for a service
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Lists all backups for a given service. Requires a service ID from `clickhousectl cloud service list`.
-  Returns backup IDs that can be used with `clickhousectl cloud service create --backup-id` to restore.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud backup get` for details on a specific backup.")]
-    List {
-        /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Get backup details
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns details for a specific backup. Requires service ID and backup ID.
-  Get service IDs from `clickhousectl cloud service list`, backup IDs from `clickhousectl cloud backup list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service create --backup-id <id>` to restore from this backup.")]
-    Get {
-        /// Service ID
-        service_id: String,
-
-        /// Backup ID
-        backup_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum ClickPipeCommands {
@@ -1864,168 +1770,6 @@ pub enum InvitationCommands {
     },
 }
 
-#[derive(Subcommand)]
-pub enum KeyCommands {
-    /// List API keys
-    List {
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Create an API key
-    Create {
-        /// Key name
-        #[arg(long)]
-        name: String,
-
-        /// Role IDs to assign (can be specified multiple times)
-        #[arg(long)]
-        role_id: Vec<String>,
-
-        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
-        #[arg(long, value_parser = parse_datetime)]
-        expires_at: Option<String>,
-
-        /// Key state (enabled or disabled)
-        #[arg(long)]
-        state: Option<String>,
-
-        /// IP/CIDR entries allowed to use the key
-        #[arg(long = "ip-allow")]
-        ip_allow: Vec<String>,
-
-        /// Pre-hashed key ID digest
-        #[arg(long)]
-        hash_key_id: Option<String>,
-
-        /// Suffix of the pre-hashed key ID
-        #[arg(long)]
-        hash_key_id_suffix: Option<String>,
-
-        /// Pre-hashed key secret digest
-        #[arg(long)]
-        hash_key_secret: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Get API key details
-    Get {
-        /// API key ID
-        key_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Update an API key
-    Update {
-        /// API key ID
-        key_id: String,
-
-        /// New key name
-        #[arg(long)]
-        name: Option<String>,
-
-        /// Role IDs to assign (can be specified multiple times)
-        #[arg(long)]
-        role_id: Vec<String>,
-
-        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
-        #[arg(long, value_parser = parse_datetime)]
-        expires_at: Option<String>,
-
-        /// Key state (e.g., enabled, disabled)
-        #[arg(long)]
-        state: Option<String>,
-
-        /// IP/CIDR entries allowed to use the key
-        #[arg(long = "ip-allow")]
-        ip_allow: Vec<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Delete an API key
-    Delete {
-        /// API key ID
-        key_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ActivityCommands {
-    /// List activity log entries
-    List {
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
-        #[arg(long, value_parser = parse_date_only)]
-        from_date: Option<String>,
-
-        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-12-31)
-        #[arg(long, value_parser = parse_date_only)]
-        to_date: Option<String>,
-    },
-
-    /// Get activity log entry details
-    Get {
-        /// Activity ID
-        activity_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum BackupConfigCommands {
-    /// Get backup configuration for a service
-    Get {
-        /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-
-    /// Update backup configuration for a service
-    Update {
-        /// Service ID
-        service_id: String,
-
-        /// The interval in hours between each backup
-        #[arg(long)]
-        backup_period_hours: Option<u32>,
-
-        /// Retention period in hours
-        #[arg(long)]
-        backup_retention_period_hours: Option<u32>,
-
-        /// Backup start time in UTC (HH:MM)
-        #[arg(long, value_parser = parse_time_only)]
-        backup_start_time: Option<String>,
-
-        /// Organization ID (auto-detected if not specified)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2688,180 +2432,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_key_create_and_backup_config_update_flags() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "key",
-            "create",
-            "--name",
-            "ci-key",
-            "--ip-allow",
-            "10.0.0.0/8",
-            "--hash-key-id",
-            "id-hash",
-            "--hash-key-id-suffix",
-            "abcd",
-            "--hash-key-secret",
-            "secret-hash",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Key { command } = args.command else {
-            panic!("expected key command");
-        };
-        let KeyCommands::Create {
-            ip_allow,
-            hash_key_id,
-            hash_key_id_suffix,
-            hash_key_secret,
-            ..
-        } = command
-        else {
-            panic!("expected key create");
-        };
-        assert_eq!(ip_allow, vec!["10.0.0.0/8"]);
-        assert_eq!(hash_key_id.as_deref(), Some("id-hash"));
-        assert_eq!(hash_key_id_suffix.as_deref(), Some("abcd"));
-        assert_eq!(hash_key_secret.as_deref(), Some("secret-hash"));
-
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--backup-period-hours",
-            "12",
-            "--backup-retention-period-hours",
-            "336",
-            "--backup-start-time",
-            "03:00",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Service { command } = args.command else {
-            panic!("expected service command");
-        };
-        let ServiceCommands::BackupConfig { command } = command else {
-            panic!("expected backup-config");
-        };
-        let BackupConfigCommands::Update {
-            backup_period_hours,
-            backup_retention_period_hours,
-            backup_start_time,
-            ..
-        } = command
-        else {
-            panic!("expected backup-config update");
-        };
-        assert_eq!(backup_period_hours, Some(12));
-        assert_eq!(backup_retention_period_hours, Some(336));
-        assert_eq!(backup_start_time.as_deref(), Some("03:00"));
-    }
-
-    #[test]
-    fn parses_key_expires_at_rfc3339_timestamps() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "key",
-            "create",
-            "--name",
-            "ci-key",
-            "--expires-at",
-            "2025-12-31T23:59:59Z",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Key { command } = args.command else {
-            panic!("expected key command");
-        };
-        let KeyCommands::Create { expires_at, .. } = command else {
-            panic!("expected key create");
-        };
-        assert_eq!(expires_at.as_deref(), Some("2025-12-31T23:59:59Z"));
-    }
-
-    #[test]
-    fn rejects_invalid_key_expires_at_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "key",
-            "update",
-            "key-1",
-            "--expires-at",
-            "2025-12-31",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected invalid expires-at input to be rejected"),
-            Err(err) => assert!(err.to_string().contains("expected ISO 8601 / RFC 3339")),
-        }
-    }
-
-    #[test]
-    fn parses_backup_start_time_hhmm() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--backup-start-time",
-            "03:00",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Service { command } = args.command else {
-            panic!("expected service command");
-        };
-        let ServiceCommands::BackupConfig { command } = command else {
-            panic!("expected backup-config");
-        };
-        let BackupConfigCommands::Update {
-            backup_start_time, ..
-        } = command
-        else {
-            panic!("expected backup-config update");
-        };
-        assert_eq!(backup_start_time.as_deref(), Some("03:00"));
-    }
-
-    #[test]
-    fn rejects_invalid_backup_start_time() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "backup-config",
-            "update",
-            "svc-1",
-            "--backup-start-time",
-            "25:00",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected invalid backup start time to be rejected"),
-            Err(err) => assert!(err.to_string().contains("expected HH:MM")),
-        }
-    }
-
-    #[test]
     fn parses_org_usage_date_only_flags() {
         let cli = Cli::try_parse_from([
             "clickhousectl",
@@ -3056,74 +2626,6 @@ mod tests {
             "cloud",
             "org",
             "usage",
-            "--from-date",
-            "2025-02-31",
-            "--to-date",
-            "2025-03-01",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected invalid calendar date to be rejected"),
-            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
-        }
-    }
-
-    #[test]
-    fn parses_activity_list_date_only_flags() {
-        let cli = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "activity",
-            "list",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let CloudCommands::Activity { command } = args.command else {
-            panic!("expected activity command");
-        };
-        let ActivityCommands::List {
-            from_date, to_date, ..
-        } = command
-        else {
-            panic!("expected activity list");
-        };
-        assert_eq!(from_date.as_deref(), Some("2025-01-01"));
-        assert_eq!(to_date.as_deref(), Some("2025-01-31"));
-    }
-
-    #[test]
-    fn rejects_activity_list_timestamps() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "activity",
-            "list",
-            "--from-date",
-            "2025-01-01T00:00:00Z",
-            "--to-date",
-            "2025-01-31",
-        ]);
-
-        match result {
-            Ok(_) => panic!("expected timestamp input to be rejected"),
-            Err(err) => assert!(err.to_string().contains("expected YYYY-MM-DD")),
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_activity_list_calendar_dates() {
-        let result = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "activity",
-            "list",
             "--from-date",
             "2025-02-31",
             "--to-date",
