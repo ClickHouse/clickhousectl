@@ -13,11 +13,7 @@ struct Args {
     #[arg(long)]
     snapshot: PathBuf,
     #[arg(long)]
-    client: PathBuf,
-    #[arg(long)]
-    models: PathBuf,
-    #[arg(long)]
-    meta: PathBuf,
+    source_root: PathBuf,
 }
 
 fn main() {
@@ -31,16 +27,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let spec = fs::read_to_string(&args.spec)?;
     let snapshot = fs::read_to_string(&args.snapshot)?;
-    let client = fs::read_to_string(&args.client)?;
-    let models = fs::read_to_string(&args.models)?;
-    let meta = fs::read_to_string(&args.meta)?;
     let report = analyze(
         AnalysisInput {
             spec_json: &spec,
             snapshot_json: &snapshot,
-            client_rs: &client,
-            models_rs: &models,
-            meta_rs: &meta,
+            rust_source_root: &args.source_root,
         },
         &clickhouse_cloud_config(),
     )?;

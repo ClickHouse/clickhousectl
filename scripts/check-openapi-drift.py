@@ -19,9 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 API_ROOT = REPO_ROOT / "crates" / "clickhouse-cloud-api"
-CLIENT_RS = API_ROOT / "src" / "client.rs"
-MODELS_RS = API_ROOT / "src" / "models.rs"
-META_RS = API_ROOT / "src" / "meta.rs"
+RUST_SOURCE_ROOT = API_ROOT / "src"
 SNAPSHOT_JSON = API_ROOT / "clickhouse_cloud_openapi.json"
 LIVE_SPEC_URL = os.environ.get(
     "CLICKHOUSE_OPENAPI_SPEC_URL", "https://api.clickhouse.cloud/v1"
@@ -77,12 +75,8 @@ def run_analyzer(spec: dict) -> dict:
             str(spec_path),
             "--snapshot",
             str(SNAPSHOT_JSON),
-            "--client",
-            str(CLIENT_RS),
-            "--models",
-            str(MODELS_RS),
-            "--meta",
-            str(META_RS),
+            "--source-root",
+            str(RUST_SOURCE_ROOT),
         ]
         result = subprocess.run(
             command,
