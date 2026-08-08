@@ -361,6 +361,14 @@ fn parse_org_private_endpoint_remove(
         }
     }
 
+    if endpoint.id.trim().is_empty() {
+        return Err(format!(
+            "remove-private-endpoint '{}' requires a non-empty id",
+            value
+        )
+        .into());
+    }
+
     Ok(endpoint)
 }
 
@@ -1265,5 +1273,16 @@ mod tests {
             "aws"
         );
         assert_eq!(json["enableCoreDumps"], false);
+    }
+
+    #[test]
+    fn parse_org_private_endpoint_remove_requires_non_empty_id() {
+        for value in ["", "description=old", "id="] {
+            let error = parse_org_private_endpoint_remove(value).unwrap_err();
+            assert!(
+                error.to_string().contains("requires a non-empty id"),
+                "unexpected error for {value:?}: {error}"
+            );
+        }
     }
 }
