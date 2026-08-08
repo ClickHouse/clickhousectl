@@ -8,8 +8,9 @@ Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/
 
 | Path | Purpose |
 |------|---------|
-| `src/client.rs` | `Client` struct with an async method per API endpoint |
-| `src/models.rs` | Request/response types matching the OpenAPI spec |
+| `src/client.rs`, `src/client/*.rs` | `Client`, shared HTTP machinery, and per-domain endpoint methods |
+| `src/models.rs`, `src/models/*.rs` | Public facade/macro and private per-domain request/response models |
+| `src/convert.rs`, `src/convert/*.rs` | Conversion error and per-domain response-to-request conversions |
 | `src/error.rs` | Error types (`Http`, `Json`, `Api`) |
 | `clickhouse_cloud_openapi.json` | Checked-in copy of the spec (used by tests) |
 | `tests/spec_coverage_test.rs` | Thin snapshot/live-spec consumer of the shared drift analyzer |
@@ -28,7 +29,7 @@ Additional rules:
 - **PATCH request schemas** (name contains `Patch` and ends with `Request`) are always all-optional.
 - **Nullable fields** (`type: ["string", "null"]` or `oneOf` with null) are always `Option<T>`, even if required.
 
-In `models.rs`, required non-nullable fields use bare types (`T`) and optional/nullable fields use `Option<T>`. All fields keep `#[serde(default)]` so deserialization is tolerant of partial data.
+In `src/models/<domain>.rs`, request fields follow those rules: required non-nullable fields use `T`, while optional or nullable fields use `Option<T>`. Every response field uses `Option<T>` plus `skip_serializing_if`, so missing keys and explicit `null` deserialize natively to `None` and absent fields are omitted when serialized. `#[serde(default)]` is banned because it can fabricate required request values and is redundant for `Option` response fields.
 
 ### Deprecated fields
 
@@ -50,7 +51,7 @@ python3 scripts/regenerate-beta-lists.py
 python3 scripts/check-openapi-drift.py --dry-run
 ```
 
-Field optionality is maintained by hand — edit `models.rs` directly when the drift check flags a mismatch.
+Field optionality is maintained by hand. Edit the owning model domain file when the drift check flags a mismatch, and add new domain types to the private module and facade re-exports in `models.rs`.
 
 ### Testing
 
@@ -86,11 +87,12 @@ cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # creat
 All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
 
 `spec_coverage_test` sends the checked-in sources and snapshot through the
-private `clickhouse-openapi-analyzer` crate. That same analyzer powers the
-scheduled live-spec issue, so operation, model, field, optionality, beta,
-deprecation, enum, snapshot, and stale-exemption findings share one
-implementation. The single ignored test runs the same report against the live
-spec.
+private `clickhouse-openapi-analyzer` crate. The analyzer recursively traverses
+the module trees rooted at `client.rs`, `models.rs`, and `meta.rs`, including
+private per-domain files. That same analyzer powers the scheduled live-spec
+issue, so operation, model, field, optionality, beta, deprecation, enum,
+snapshot, and stale-exemption findings share one implementation. The single
+ignored test runs the same report against the live spec.
 
 ### Optionality exemptions
 
