@@ -6,6 +6,7 @@ pub mod cli;
 pub mod client;
 pub mod commands;
 pub mod credentials;
+pub mod organizations;
 pub mod output;
 pub mod postgres;
 pub mod service_query;
@@ -23,8 +24,7 @@ pub use client::{
 use crate::error::{Error, Result};
 use cli::{
     ClickPipeCommands, ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs,
-    CloudCommands, InvitationCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
-    QueryEndpointCommands, ServiceCommands,
+    CloudCommands, PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands,
 };
 
 /// Explain when a configured environment credential cannot participate in
@@ -127,41 +127,7 @@ async fn dispatch(
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     match command {
         CloudCommands::Auth { .. } => unreachable!("handled above"),
-        CloudCommands::Org { command } => match command {
-            OrgCommands::List => commands::org_list(client, json).await,
-            OrgCommands::Get { org_id } => commands::org_get(client, &org_id, json).await,
-            OrgCommands::Update {
-                org_id,
-                name,
-                remove_private_endpoint,
-                enable_core_dumps,
-            } => {
-                let opts = commands::OrgUpdateOptions {
-                    name,
-                    remove_private_endpoints: remove_private_endpoint,
-                    enable_core_dumps,
-                };
-                commands::org_update(client, &org_id, opts, json).await
-            }
-            OrgCommands::Prometheus {
-                org_id,
-                legacy_org_id,
-                filtered_metrics,
-            } => {
-                let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
-                commands::org_prometheus(client, org_id, filtered_metrics, json).await
-            }
-            OrgCommands::Usage {
-                org_id,
-                legacy_org_id,
-                from_date,
-                to_date,
-                filter,
-            } => {
-                let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
-                commands::org_usage(client, org_id, &from_date, &to_date, &filter, json).await
-            }
-        },
+        CloudCommands::Org { command } => organizations::run_org(client, command, json).await,
         CloudCommands::Service { command } => match command {
             ServiceCommands::List { org_id, filter } => {
                 commands::service_list(client, org_id.as_deref(), &filter, json).await
@@ -409,42 +375,10 @@ async fn dispatch(
                 commands::service_query(client, opts).await
             }
         },
-        CloudCommands::Member { command } => match command {
-            MemberCommands::List { org_id } => {
-                commands::member_list(client, org_id.as_deref(), json).await
-            }
-            MemberCommands::Get { user_id, org_id } => {
-                commands::member_get(client, &user_id, org_id.as_deref(), json).await
-            }
-            MemberCommands::Update {
-                user_id,
-                role_id,
-                org_id,
-            } => commands::member_update(client, &user_id, &role_id, org_id.as_deref(), json).await,
-            MemberCommands::Remove { user_id, org_id } => {
-                commands::member_remove(client, &user_id, org_id.as_deref(), json).await
-            }
-        },
-        CloudCommands::Invitation { command } => match command {
-            InvitationCommands::List { org_id } => {
-                commands::invitation_list(client, org_id.as_deref(), json).await
-            }
-            InvitationCommands::Create {
-                email,
-                role_id,
-                org_id,
-            } => {
-                commands::invitation_create(client, &email, &role_id, org_id.as_deref(), json).await
-            }
-            InvitationCommands::Get {
-                invitation_id,
-                org_id,
-            } => commands::invitation_get(client, &invitation_id, org_id.as_deref(), json).await,
-            InvitationCommands::Delete {
-                invitation_id,
-                org_id,
-            } => commands::invitation_delete(client, &invitation_id, org_id.as_deref(), json).await,
-        },
+        CloudCommands::Member { command } => organizations::run_member(client, command, json).await,
+        CloudCommands::Invitation { command } => {
+            organizations::run_invitation(client, command, json).await
+        }
         CloudCommands::Key { command } => api_keys::run(client, command, json).await,
         CloudCommands::Activity { command } => activity::run(client, command, json).await,
         CloudCommands::Backup { command } => backups::run(client, command, json).await,
