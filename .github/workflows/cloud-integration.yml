@@ -9,9 +9,7 @@ on:
       - "crates/clickhouse-cloud-api/src/**"
       - "crates/clickhouse-cloud-api/tests/**"
       - "crates/clickhouse-cloud-api/Cargo.toml"
-      - "crates/clickhousectl/src/cloud/cli.rs"
-      - "crates/clickhousectl/src/cloud/commands.rs"
-      - "crates/clickhousectl/src/cloud/client.rs"
+      - "crates/clickhousectl/src/cloud/**"
       - "Cargo.lock"
 
 permissions:
