@@ -55,6 +55,7 @@ pub(crate) enum EnumContext {
 #[derive(Debug, Clone)]
 pub(crate) enum EnumValues {
     Strings(BTreeSet<String>),
+    Integers(BTreeSet<i64>),
     Numeric,
     Mixed,
 }
@@ -739,6 +740,8 @@ fn walk_schema(
                     .map(str::to_string)
                     .collect(),
             )
+        } else if values.iter().all(|value| value.as_i64().is_some()) {
+            EnumValues::Integers(values.iter().filter_map(Value::as_i64).collect())
         } else if values.iter().all(Value::is_number) {
             EnumValues::Numeric
         } else {
@@ -972,6 +975,34 @@ mod tests {
             inventory.enum_constraints[1].context,
             EnumContext::Parameter { .. }
         ));
+    }
+
+    #[test]
+    fn distinguishes_integer_and_non_integer_numeric_enums() {
+        let spec = serde_json::json!({
+            "paths": {},
+            "components": {"schemas": {
+                "Widget": {"properties": {
+                    "integer": {"enum": [-6, 0, 12]},
+                    "numeric": {"enum": [0.5, 1.5]}
+                }}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+
+        assert!(inventory.enum_constraints.iter().any(|constraint| {
+            matches!(
+                &constraint.values,
+                EnumValues::Integers(values)
+                    if values == &BTreeSet::from([-6, 0, 12])
+            )
+        }));
+        assert!(
+            inventory
+                .enum_constraints
+                .iter()
+                .any(|constraint| matches!(constraint.values, EnumValues::Numeric))
+        );
     }
 
     #[test]

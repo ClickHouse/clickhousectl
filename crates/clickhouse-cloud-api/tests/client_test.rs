@@ -335,9 +335,11 @@ async fn create_byoc_infrastructure() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/byocInfrastructure"))
-        .and(body_partial_json(
-            serde_json::json!({"accountId": "123456789012", "displayName": "My BYOC"}),
-        ))
+        .and(body_partial_json(serde_json::json!({
+            "accountId": "123456789012",
+            "availabilityZoneSuffixes": ["a", "b"],
+            "displayName": "My BYOC"
+        })))
         .respond_with(ok_json(serde_json::json!({
             "id": "byoc-1",
             "cloudProvider": "aws",
@@ -348,6 +350,10 @@ async fn create_byoc_infrastructure() {
 
     let body = ByocInfrastructurePostRequest {
         account_id: "123456789012".to_string(),
+        availability_zone_suffixes: vec![
+            ByocAvailabilityZoneSuffix::A,
+            ByocAvailabilityZoneSuffix::B,
+        ],
         display_name: "My BYOC".to_string(),
         ..Default::default()
     };
@@ -1106,7 +1112,7 @@ async fn get_query_endpoint() {
         .respond_with(ok_json(serde_json::json!({
             "id": "qe-1",
             "allowedOrigins": "*",
-            "roles": ["admin"]
+            "roles": ["sql_console_admin"]
         })))
         .mount(&s)
         .await;
@@ -1118,6 +1124,7 @@ async fn get_query_endpoint() {
     let qe = resp.result.unwrap();
     assert_eq!(qe.id.as_deref(), Some("qe-1"));
     assert_eq!(qe.allowed_origins.as_deref(), Some("*"));
+    assert_eq!(qe.roles, Some(vec![QueryEndpointRole::SqlConsoleAdmin]));
 }
 
 #[tokio::test]
@@ -1128,20 +1135,21 @@ async fn upsert_query_endpoint() {
         .and(path(
             "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
         ))
-        .and(body_partial_json(
-            serde_json::json!({"allowedOrigins": "https://example.com", "roles": ["reader"]}),
-        ))
+        .and(body_partial_json(serde_json::json!({
+            "allowedOrigins": "https://example.com",
+            "roles": ["sql_console_read_only"]
+        })))
         .respond_with(ok_json(serde_json::json!({
             "id": "qe-1",
             "allowedOrigins": "https://example.com",
-            "roles": ["reader"]
+            "roles": ["sql_console_read_only"]
         })))
         .mount(&s)
         .await;
 
     let body = InstanceServiceQueryApiEndpointsPostRequest {
         allowed_origins: "https://example.com".to_string(),
-        roles: vec!["reader".to_string()],
+        roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
         ..Default::default()
     };
     let resp = c
@@ -3217,6 +3225,50 @@ async fn list_postgres_logs_with_filters() {
 }
 
 #[tokio::test]
+async fn list_slow_query_patterns_with_typed_sorting() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
+        ))
+        .and(query_param("from_date", "2026-08-01T00:00:00Z"))
+        .and(query_param("to_date", "2026-08-02T00:00:00Z"))
+        .and(query_param("db_name", "analytics"))
+        .and(query_param("db_user", "reporter"))
+        .and(query_param("db_operation", "SELECT"))
+        .and(query_param("app", "dashboard"))
+        .and(query_param("sort_by", "p95_duration"))
+        .and(query_param("sort_order", "asc"))
+        .and(query_param("limit", "100"))
+        .and(query_param("offset", "20"))
+        .respond_with(ok_json(serde_json::json!([])))
+        .mount(&s)
+        .await;
+
+    let patterns = c
+        .slow_query_patterns_get_list(
+            "org-1",
+            "pg-1",
+            "2026-08-01T00:00:00Z",
+            "2026-08-02T00:00:00Z",
+            Some("analytics"),
+            Some("reporter"),
+            Some("SELECT"),
+            Some("dashboard"),
+            Some(&SlowQueryPatternsGetListSortby::P95_duration),
+            Some(&SlowQueryPatternsGetListSortorder::Asc),
+            Some(100),
+            Some(20),
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert!(patterns.is_empty());
+}
+
+#[tokio::test]
 async fn create_postgres_service() {
     let (s, c) = setup().await;
 
@@ -4148,7 +4200,7 @@ async fn upgrade_window_get_returns_window() {
         .respond_with(ok_json(serde_json::json!({
             "weekday": 2,
             "startHourUtc": 6,
-            "duration": 21600
+            "duration": 6
         })))
         .mount(&s)
         .await;
@@ -4156,8 +4208,11 @@ async fn upgrade_window_get_returns_window() {
     let resp = c.upgrade_window_get("org-1", "svc-1").await.unwrap();
     let window = resp.result.unwrap();
     assert_eq!(window.weekday, Some(2));
-    assert_eq!(window.start_hour_utc, Some(6));
-    assert_eq!(window.duration, Some(21600));
+    assert_eq!(
+        window.start_hour_utc,
+        Some(UpgradeWindowStartHourUtc::Hour6)
+    );
+    assert_eq!(window.duration, Some(UpgradeWindowDuration::SixHours));
 }
 
 #[tokio::test]
@@ -4173,14 +4228,14 @@ async fn upgrade_window_update_sends_body() {
         .respond_with(ok_json(serde_json::json!({
             "weekday": 2,
             "startHourUtc": 6,
-            "duration": 21600
+            "duration": 6
         })))
         .mount(&s)
         .await;
 
     let body = UpgradeWindowPutRequest {
         weekday: 2,
-        start_hour_utc: 6,
+        start_hour_utc: UpgradeWindowStartHourUtc::Hour6,
     };
     let resp = c
         .upgrade_window_update("org-1", "svc-1", &body)
@@ -4188,7 +4243,10 @@ async fn upgrade_window_update_sends_body() {
         .unwrap();
     let window = resp.result.unwrap();
     assert_eq!(window.weekday, Some(2));
-    assert_eq!(window.start_hour_utc, Some(6));
+    assert_eq!(
+        window.start_hour_utc,
+        Some(UpgradeWindowStartHourUtc::Hour6)
+    );
 }
 
 #[tokio::test]

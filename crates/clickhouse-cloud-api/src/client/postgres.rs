@@ -453,8 +453,8 @@ impl Client {
         db_user: Option<&str>,
         db_operation: Option<&str>,
         app: Option<&str>,
-        sort_by: Option<&str>,
-        sort_order: Option<&str>,
+        sort_by: Option<&SlowQueryPatternsGetListSortby>,
+        sort_order: Option<&SlowQueryPatternsGetListSortorder>,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<PostgresSlowQueryPattern>>, Error> {

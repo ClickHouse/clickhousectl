@@ -229,6 +229,41 @@ impl std::fmt::Display for ByocInfrastructurePostRequestRegionid {
     }
 }
 
+/// Allowed availability-zone suffixes for BYOC infrastructure.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ByocAvailabilityZoneSuffix {
+    #[serde(rename = "a")]
+    #[default]
+    A,
+    #[serde(rename = "b")]
+    B,
+    #[serde(rename = "c")]
+    C,
+    #[serde(rename = "d")]
+    D,
+    #[serde(rename = "e")]
+    E,
+    #[serde(rename = "f")]
+    F,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ByocAvailabilityZoneSuffix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::A => write!(f, "a"),
+            Self::B => write!(f, "b"),
+            Self::C => write!(f, "c"),
+            Self::D => write!(f, "d"),
+            Self::E => write!(f, "e"),
+            Self::F => write!(f, "f"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `ByocConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocConfig {
@@ -259,7 +294,7 @@ pub struct ByocInfrastructurePostRequest {
     #[serde(rename = "accountId")]
     pub account_id: String,
     #[serde(rename = "availabilityZoneSuffixes")]
-    pub availability_zone_suffixes: Vec<String>,
+    pub availability_zone_suffixes: Vec<ByocAvailabilityZoneSuffix>,
     #[serde(rename = "displayName")]
     pub display_name: String,
     #[serde(rename = "regionId")]

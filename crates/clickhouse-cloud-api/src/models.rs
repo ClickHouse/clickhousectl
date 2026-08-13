@@ -164,8 +164,8 @@ pub use backups::{
     GcpBackupBucketPropertiesBucketprovider,
 };
 pub use byoc::{
-    ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid, ByocConfigState,
-    ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
+    ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,
+    ByocConfigState, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
     ByocInfrastructurePostRequestRegionid,
 };
 pub use clickpipes::*;
@@ -197,7 +197,8 @@ pub use postgres::{
     PostgresServicePasswordResource, PostgresServicePatchRequest, PostgresServicePostRequest,
     PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
     PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
-    PostgresSlowQueryPatternDetail,
+    PostgresSlowQueryPatternDetail, SlowQueryPatternsGetListSortby,
+    SlowQueryPatternsGetListSortorder,
 };
 pub use quotas::{OrganizationQuota, OrganizationQuotaQuotacode, OrganizationQuotaScope};
 pub use rbac::{
@@ -221,25 +222,26 @@ pub use services::{
     AutoscalingMode, CurrentScaling, CurrentScalingEffectiveautoscalingmode,
     InstancePrivateEndpoint, InstancePrivateEndpointCloudprovider, InstancePrivateEndpointRegion,
     InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch,
-    PrivateEndpointConfig, ScalingSchedule, ScalingScheduleBaseConfig, ScalingScheduleEntry,
-    ScalingScheduleEntryRequest, ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest,
-    Service, ServiceClickhouseSetting, ServiceClickhouseSettingSchemaEntry,
-    ServiceClickhouseSettingWarning, ServiceClickhouseSettingsList,
-    ServiceClickhouseSettingsPatchRequest, ServiceClickhouseSettingsPatchResponse,
-    ServiceClickhouseSettingsSchema, ServiceCompliancetype, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
-    ServicePasswordPatchResponse, ServicePatchRequest, ServicePatchRequestReleasechannel,
-    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
-    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
-    ServicePostRequestTier, ServicePostResponse, ServiceProfile, ServiceProvider,
-    ServiceQueryAPIEndpoint, ServiceRegion, ServiceReleasechannel,
+    PrivateEndpointConfig, QueryEndpointRole, ScalingSchedule, ScalingScheduleBaseConfig,
+    ScalingScheduleEntry, ScalingScheduleEntryRequest, ScalingSchedulePostRequest,
+    ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
+    ServiceClickhouseSettingSchemaEntry, ServiceClickhouseSettingWarning,
+    ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
+    ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema, ServiceCompliancetype,
+    ServiceEndpoint, ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
+    ServicePasswordPatchRequest, ServicePasswordPatchResponse, ServicePatchRequest,
+    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
+    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
+    ServicePostRequestReleasechannel, ServicePostRequestTier, ServicePostResponse, ServiceProfile,
+    ServiceProvider, ServiceQueryAPIEndpoint, ServiceRegion, ServiceReleasechannel,
     ServiceReplicaScalingPatchRequest, ServiceScalingPatchRequest, ServiceScalingPatchResponse,
     ServiceScalingPatchResponseCompliancetype, ServiceScalingPatchResponseProfile,
     ServiceScalingPatchResponseProvider, ServiceScalingPatchResponseRegion,
     ServiceScalingPatchResponseReleasechannel, ServiceScalingPatchResponseState,
     ServiceScalingPatchResponseTier, ServiceState, ServiceStatePatchRequest,
-    ServiceStatePatchRequestCommand, ServiceTier, UpgradeWindow, UpgradeWindowPutRequest,
-    UsageCost, UsageCostMetrics, UsageCostRecord, UsageCostRecordEntitytype,
+    ServiceStatePatchRequestCommand, ServiceTier, UpgradeWindow, UpgradeWindowDuration,
+    UpgradeWindowPutRequest, UpgradeWindowStartHourUtc, UsageCost, UsageCostMetrics,
+    UsageCostRecord, UsageCostRecordEntitytype,
 };
 pub use shared::{
     ApiResponse, AssignedRole, AssignedRoleRoletype, IpAccessListEntry, IpAccessListEntryResponse,

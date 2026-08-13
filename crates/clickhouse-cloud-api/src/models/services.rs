@@ -36,6 +36,115 @@ impl AutoscalingMode {
     pub const VALUES: &'static [&'static str] = &["vertical", "horizontal"];
 }
 
+/// Role granted to a query API endpoint.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum QueryEndpointRole {
+    #[serde(rename = "sql_console_read_only")]
+    #[default]
+    SqlConsoleReadOnly,
+    #[serde(rename = "sql_console_admin")]
+    SqlConsoleAdmin,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for QueryEndpointRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SqlConsoleReadOnly => write!(f, "sql_console_read_only"),
+            Self::SqlConsoleAdmin => write!(f, "sql_console_admin"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl QueryEndpointRole {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["sql_console_read_only", "sql_console_admin"];
+}
+
+/// Allowed UTC start hours for a ClickHouse upgrade window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "i64", into = "i64")]
+#[repr(i64)]
+pub enum UpgradeWindowStartHourUtc {
+    #[default]
+    Hour0 = 0,
+    Hour6 = 6,
+    Hour12 = 12,
+    Hour18 = 18,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(i64),
+}
+
+impl From<i64> for UpgradeWindowStartHourUtc {
+    fn from(value: i64) -> Self {
+        match value {
+            0 => Self::Hour0,
+            6 => Self::Hour6,
+            12 => Self::Hour12,
+            18 => Self::Hour18,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<UpgradeWindowStartHourUtc> for i64 {
+    fn from(value: UpgradeWindowStartHourUtc) -> Self {
+        match value {
+            UpgradeWindowStartHourUtc::Hour0 => 0,
+            UpgradeWindowStartHourUtc::Hour6 => 6,
+            UpgradeWindowStartHourUtc::Hour12 => 12,
+            UpgradeWindowStartHourUtc::Hour18 => 18,
+            UpgradeWindowStartHourUtc::Unknown(value) => value,
+        }
+    }
+}
+
+impl std::fmt::Display for UpgradeWindowStartHourUtc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", i64::from(*self))
+    }
+}
+
+/// Duration of a ClickHouse upgrade window, in hours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(from = "i64", into = "i64")]
+#[repr(i64)]
+pub enum UpgradeWindowDuration {
+    #[default]
+    SixHours = 6,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(i64),
+}
+
+impl From<i64> for UpgradeWindowDuration {
+    fn from(value: i64) -> Self {
+        match value {
+            6 => Self::SixHours,
+            value => Self::Unknown(value),
+        }
+    }
+}
+
+impl From<UpgradeWindowDuration> for i64 {
+    fn from(value: UpgradeWindowDuration) -> Self {
+        match value {
+            UpgradeWindowDuration::SixHours => 6,
+            UpgradeWindowDuration::Unknown(value) => value,
+        }
+    }
+}
+
+impl std::fmt::Display for UpgradeWindowDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", i64::from(*self))
+    }
+}
+
 /// Inline enum for `CurrentScaling.effectiveAutoscalingMode`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CurrentScalingEffectiveautoscalingmode {
@@ -1330,7 +1439,7 @@ pub struct InstanceServiceQueryApiEndpointsPostRequest {
     pub allowed_origins: String,
     #[serde(rename = "openApiKeys")]
     pub open_api_keys: Vec<String>,
-    pub roles: Vec<String>,
+    pub roles: Vec<QueryEndpointRole>,
 }
 
 /// `InstanceTagsPatch` from the ClickHouse Cloud API.
@@ -1775,7 +1884,7 @@ pub struct ServiceQueryAPIEndpoint {
     #[serde(rename = "openApiKeys", skip_serializing_if = "Option::is_none")]
     pub open_api_keys: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub roles: Option<Vec<String>>,
+    pub roles: Option<Vec<QueryEndpointRole>>,
 }
 
 /// `ServiceReplicaScalingPatchRequest` from the ClickHouse Cloud API.
@@ -1927,9 +2036,9 @@ pub struct ServiceStatePatchRequest {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpgradeWindow {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration: Option<i64>,
+    pub duration: Option<UpgradeWindowDuration>,
     #[serde(rename = "startHourUtc", skip_serializing_if = "Option::is_none")]
-    pub start_hour_utc: Option<i64>,
+    pub start_hour_utc: Option<UpgradeWindowStartHourUtc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weekday: Option<i64>,
 }
@@ -1938,7 +2047,7 @@ pub struct UpgradeWindow {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpgradeWindowPutRequest {
     #[serde(rename = "startHourUtc")]
-    pub start_hour_utc: i64,
+    pub start_hour_utc: UpgradeWindowStartHourUtc,
     pub weekday: i64,
 }
 

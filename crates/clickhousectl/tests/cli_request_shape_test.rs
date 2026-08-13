@@ -210,6 +210,55 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
 // ── Organization-scoped error context (issue #334) ─────────────────────────
 
 #[tokio::test]
+async fn query_endpoint_create_sends_typed_roles() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "endpoint-1",
+                "roles": ["sql_console_read_only", "sql_console_admin"]
+            },
+            "status": 200,
+            "requestId": "stub-query-endpoint-create"
+        })))
+        .mount(&mock)
+        .await;
+
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "service",
+            "query-endpoint",
+            "create",
+            "svc-1",
+            "--role",
+            "sql_console_read_only",
+            "--role",
+            "sql_console_admin",
+            "--open-api-key",
+            "key-1",
+            "--allowed-origins",
+            "https://app.example.com",
+            "--org-id",
+            "org-1",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "roles": ["sql_console_read_only", "sql_console_admin"],
+            "openApiKeys": ["key-1"],
+            "allowedOrigins": "https://app.example.com"
+        })
+    );
+}
+
+#[tokio::test]
 async fn service_list_bare_not_found_includes_the_requested_organization() {
     const WRONG_ORG_ID: &str = "00000000-0000-4000-8000-000000000001";
     let mock = MockServer::start().await;
@@ -2974,6 +3023,7 @@ async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile
         .find(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
         .expect("the endpoint upsert must be sent");
     let body: Value = serde_json::from_slice(&upsert.body).unwrap();
+    assert_eq!(body["roles"], serde_json::json!(["sql_console_admin"]));
     (dir, body["openApiKeys"].clone())
 }
 

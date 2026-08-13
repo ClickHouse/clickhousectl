@@ -19,6 +19,10 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::ByocConfig::default(),
     );
     assert_same_type(
+        api::ByocAvailabilityZoneSuffix::default(),
+        api::models::ByocAvailabilityZoneSuffix::default(),
+    );
+    assert_same_type(
         api::ClickStackChartColor::default(),
         api::models::ClickStackChartColor::default(),
     );
@@ -62,6 +66,14 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::PostgresLogsGetListSortorder::default(),
     );
     assert_same_type(
+        api::SlowQueryPatternsGetListSortby::default(),
+        api::models::SlowQueryPatternsGetListSortby::default(),
+    );
+    assert_same_type(
+        api::SlowQueryPatternsGetListSortorder::default(),
+        api::models::SlowQueryPatternsGetListSortorder::default(),
+    );
+    assert_same_type(
         api::PrometheusDiscoveryTargetGroup::default(),
         api::models::PrometheusDiscoveryTargetGroup::default(),
     );
@@ -72,5 +84,17 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::ApiResponse::<()>::default(),
     );
     assert_same_type(api::Service::default(), api::models::Service::default());
+    assert_same_type(
+        api::QueryEndpointRole::default(),
+        api::models::QueryEndpointRole::default(),
+    );
+    assert_same_type(
+        api::UpgradeWindowDuration::default(),
+        api::models::UpgradeWindowDuration::default(),
+    );
+    assert_same_type(
+        api::UpgradeWindowStartHourUtc::default(),
+        api::models::UpgradeWindowStartHourUtc::default(),
+    );
     assert_same_type(api::Udf::default(), api::models::Udf::default());
 }

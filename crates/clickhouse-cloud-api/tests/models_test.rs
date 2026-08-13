@@ -905,12 +905,34 @@ fn serialize_postgres_read_replica_request() {
 fn serialize_byoc_infrastructure_post_request() {
     let req = ByocInfrastructurePostRequest {
         account_id: "123456789012".to_string(),
+        availability_zone_suffixes: vec![
+            ByocAvailabilityZoneSuffix::A,
+            ByocAvailabilityZoneSuffix::B,
+            ByocAvailabilityZoneSuffix::C,
+            ByocAvailabilityZoneSuffix::D,
+            ByocAvailabilityZoneSuffix::E,
+            ByocAvailabilityZoneSuffix::F,
+        ],
         display_name: "My BYOC".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["accountId"], "123456789012");
+    assert_eq!(
+        json["availabilityZoneSuffixes"],
+        serde_json::json!(["a", "b", "c", "d", "e", "f"])
+    );
     assert_eq!(json["displayName"], "My BYOC");
+}
+
+#[test]
+fn byoc_availability_zone_suffix_preserves_unknown_values() {
+    let suffix: ByocAvailabilityZoneSuffix = serde_json::from_str(r#""future""#).unwrap();
+    assert_eq!(
+        suffix,
+        ByocAvailabilityZoneSuffix::Unknown("future".to_string())
+    );
+    assert_eq!(serde_json::to_string(&suffix).unwrap(), r#""future""#);
 }
 
 #[test]
@@ -1006,12 +1028,39 @@ fn serialize_create_reverse_private_endpoint() {
 fn serialize_instance_query_endpoint_post_request() {
     let req = InstanceServiceQueryApiEndpointsPostRequest {
         allowed_origins: "https://example.com".to_string(),
-        roles: vec!["reader".to_string()],
+        roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["allowedOrigins"], "https://example.com");
-    assert_eq!(json["roles"], serde_json::json!(["reader"]));
+    assert_eq!(json["roles"], serde_json::json!(["sql_console_read_only"]));
+}
+
+#[test]
+fn deserialize_query_endpoint_roles_tolerates_unknown_values() {
+    let endpoint: ServiceQueryAPIEndpoint = serde_json::from_value(serde_json::json!({
+        "roles": ["sql_console_admin", "future_role"]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        endpoint.roles,
+        Some(vec![
+            QueryEndpointRole::SqlConsoleAdmin,
+            QueryEndpointRole::Unknown("future_role".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn slow_query_sort_enums_preserve_unknown_values() {
+    let sort_by: SlowQueryPatternsGetListSortby =
+        serde_json::from_str(r#""future_metric""#).unwrap();
+    let sort_order: SlowQueryPatternsGetListSortorder =
+        serde_json::from_str(r#""future_order""#).unwrap();
+
+    assert_eq!(sort_by.to_string(), "future_metric");
+    assert_eq!(sort_order.to_string(), "future_order");
 }
 
 #[test]
@@ -1752,12 +1801,12 @@ fn scaling_schedule_entry_response_converts_back_into_a_request_entry() {
 fn upgrade_window_response_converts_back_into_a_put_body() {
     let request = UpgradeWindowPutRequest::try_from(UpgradeWindow {
         // `duration` is response-only and does not cross over.
-        duration: Some(21600),
-        start_hour_utc: Some(6),
+        duration: Some(UpgradeWindowDuration::SixHours),
+        start_hour_utc: Some(UpgradeWindowStartHourUtc::Hour6),
         weekday: Some(2),
     })
     .unwrap();
-    assert_eq!(request.start_hour_utc, 6);
+    assert_eq!(request.start_hour_utc, UpgradeWindowStartHourUtc::Hour6);
     assert_eq!(request.weekday, 2);
 
     let missing = UpgradeWindowPutRequest::try_from(UpgradeWindow::default()).unwrap_err();
@@ -2050,24 +2099,68 @@ fn deserialize_upgrade_window() {
     let json = r#"{
         "weekday": 2,
         "startHourUtc": 6,
-        "duration": 21600
+        "duration": 6
     }"#;
     let w: UpgradeWindow = serde_json::from_str(json).unwrap();
     assert_eq!(w.weekday, Some(2));
-    assert_eq!(w.start_hour_utc, Some(6));
-    assert_eq!(w.duration, Some(21600));
+    assert_eq!(w.start_hour_utc, Some(UpgradeWindowStartHourUtc::Hour6));
+    assert_eq!(w.duration, Some(UpgradeWindowDuration::SixHours));
 
     let round_tripped = serde_json::to_value(&w).unwrap();
     assert_eq!(round_tripped["startHourUtc"], 6);
     assert_eq!(round_tripped["weekday"], 2);
-    assert_eq!(round_tripped["duration"], 21600);
+    assert_eq!(round_tripped["duration"], 6);
+}
+
+#[test]
+fn upgrade_window_numeric_enums_round_trip_every_known_value() {
+    for (wire, value) in [
+        (0, UpgradeWindowStartHourUtc::Hour0),
+        (6, UpgradeWindowStartHourUtc::Hour6),
+        (12, UpgradeWindowStartHourUtc::Hour12),
+        (18, UpgradeWindowStartHourUtc::Hour18),
+    ] {
+        assert_eq!(serde_json::to_value(value).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<UpgradeWindowStartHourUtc>(wire.into()).unwrap(),
+            value
+        );
+    }
+
+    assert_eq!(
+        serde_json::to_value(UpgradeWindowDuration::SixHours).unwrap(),
+        6
+    );
+    assert_eq!(
+        serde_json::from_value::<UpgradeWindowDuration>(serde_json::json!(6)).unwrap(),
+        UpgradeWindowDuration::SixHours
+    );
+}
+
+#[test]
+fn deserialize_upgrade_window_tolerates_unknown_numeric_values() {
+    let window: UpgradeWindow = serde_json::from_value(serde_json::json!({
+        "startHourUtc": 3,
+        "duration": 21600
+    }))
+    .unwrap();
+
+    assert_eq!(
+        window.start_hour_utc,
+        Some(UpgradeWindowStartHourUtc::Unknown(3))
+    );
+    assert_eq!(window.duration, Some(UpgradeWindowDuration::Unknown(21600)));
+    assert_eq!(
+        serde_json::to_value(window).unwrap(),
+        serde_json::json!({"startHourUtc": 3, "duration": 21600})
+    );
 }
 
 #[test]
 fn serialize_upgrade_window_put_request() {
     let req = UpgradeWindowPutRequest {
         weekday: 5,
-        start_hour_utc: 18,
+        start_hour_utc: UpgradeWindowStartHourUtc::Hour18,
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["weekday"], 5);

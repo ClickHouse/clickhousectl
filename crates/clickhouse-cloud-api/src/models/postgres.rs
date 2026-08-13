@@ -80,6 +80,85 @@ impl std::fmt::Display for PostgresLogsGetListSortorder {
     }
 }
 
+/// Inline enum for `slowQueryPatternsGetList.sort_by`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum SlowQueryPatternsGetListSortby {
+    #[serde(rename = "total_duration")]
+    #[default]
+    Total_duration,
+    #[serde(rename = "avg_duration")]
+    Avg_duration,
+    #[serde(rename = "call_count")]
+    Call_count,
+    #[serde(rename = "total_blks_read")]
+    Total_blks_read,
+    #[serde(rename = "total_cpu_time")]
+    Total_cpu_time,
+    #[serde(rename = "error_count")]
+    Error_count,
+    #[serde(rename = "max_duration")]
+    Max_duration,
+    #[serde(rename = "p50_duration")]
+    P50_duration,
+    #[serde(rename = "p95_duration")]
+    P95_duration,
+    #[serde(rename = "p99_duration")]
+    P99_duration,
+    #[serde(rename = "total_rows")]
+    Total_rows,
+    #[serde(rename = "total_shared_blks_hit")]
+    Total_shared_blks_hit,
+    #[serde(rename = "total_wal_bytes")]
+    Total_wal_bytes,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for SlowQueryPatternsGetListSortby {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Total_duration => write!(f, "total_duration"),
+            Self::Avg_duration => write!(f, "avg_duration"),
+            Self::Call_count => write!(f, "call_count"),
+            Self::Total_blks_read => write!(f, "total_blks_read"),
+            Self::Total_cpu_time => write!(f, "total_cpu_time"),
+            Self::Error_count => write!(f, "error_count"),
+            Self::Max_duration => write!(f, "max_duration"),
+            Self::P50_duration => write!(f, "p50_duration"),
+            Self::P95_duration => write!(f, "p95_duration"),
+            Self::P99_duration => write!(f, "p99_duration"),
+            Self::Total_rows => write!(f, "total_rows"),
+            Self::Total_shared_blks_hit => write!(f, "total_shared_blks_hit"),
+            Self::Total_wal_bytes => write!(f, "total_wal_bytes"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Inline enum for `slowQueryPatternsGetList.sort_order`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum SlowQueryPatternsGetListSortorder {
+    #[serde(rename = "asc")]
+    Asc,
+    #[serde(rename = "desc")]
+    #[default]
+    Desc,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for SlowQueryPatternsGetListSortorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asc => write!(f, "asc"),
+            Self::Desc => write!(f, "desc"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `pgSize` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgSize {

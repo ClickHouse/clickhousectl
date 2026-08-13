@@ -472,10 +472,10 @@ clickhousectl cloud service reset-password <service-id> \
   --new-password-hash <base64-sha256-hash> \
   --new-double-sha1-hash <mysql-double-sha1-hash>
 
-# Query endpoint management (manual — for custom roles or sharing keys with other tools)
+# Query endpoint management (manual, for sharing keys with other tools)
 clickhousectl cloud service query-endpoint get <service-id>
 clickhousectl cloud service query-endpoint create <service-id> \
-  --role admin \
+  --role sql_console_admin \
   --open-api-key key-1 \
   --allowed-origins https://app.example.com
 clickhousectl cloud service query-endpoint delete <service-id>

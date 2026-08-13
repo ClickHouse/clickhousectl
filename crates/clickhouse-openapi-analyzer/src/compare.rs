@@ -407,30 +407,21 @@ fn compare_enums(
 
     for constraint in &spec.enum_constraints {
         let mapping = map_enum(rust, constraint);
-        let EnumValues::Strings(spec_values) = &constraint.values else {
-            let reason = match constraint.values {
-                EnumValues::Numeric => {
-                    "numeric enum constraints cannot be represented by Rust unit variants"
+        match (&constraint.values, mapping) {
+            (EnumValues::Strings(spec_values), EnumMapping::ValueEnum { name, rust_item }) => {
+                let enum_info = &rust.enums[&name];
+                if !enum_info.integer_values.is_empty() {
+                    record_unsupported(
+                        constraint,
+                        Some(rust_item),
+                        &format!("Rust enum {name} uses integer discriminants for a string enum"),
+                        config,
+                        &mut unsupported_hits,
+                        report,
+                    );
+                    continue;
                 }
-                EnumValues::Mixed => {
-                    "mixed enum constraints cannot be represented by one Rust value enum"
-                }
-                EnumValues::Strings(_) => unreachable!(),
-            };
-            record_unsupported(
-                constraint,
-                mapping_rust_item(&mapping),
-                reason,
-                config,
-                &mut unsupported_hits,
-                report,
-            );
-            continue;
-        };
-
-        match mapping {
-            EnumMapping::ValueEnum { name, rust_item } => {
-                let rust_values = &rust.enums[&name].values;
+                let rust_values = &enum_info.values;
                 for value in spec_values.difference(rust_values) {
                     report.findings.push(
                         Finding::new(
@@ -463,7 +454,83 @@ fn compare_enums(
                     }
                 }
             }
-            EnumMapping::Unsupported { rust_item, reason } => record_unsupported(
+            (EnumValues::Integers(spec_values), EnumMapping::ValueEnum { name, rust_item }) => {
+                let enum_info = &rust.enums[&name];
+                if !enum_info.uses_i64_serde_conversion {
+                    record_unsupported(
+                        constraint,
+                        Some(rust_item),
+                        &format!(
+                            "Rust enum {name} does not declare Serde conversion to and from i64"
+                        ),
+                        config,
+                        &mut unsupported_hits,
+                        report,
+                    );
+                    continue;
+                }
+                if !enum_info.values.is_empty() {
+                    record_unsupported(
+                        constraint,
+                        Some(rust_item),
+                        &format!("Rust enum {name} uses string values for an integer enum"),
+                        config,
+                        &mut unsupported_hits,
+                        report,
+                    );
+                    continue;
+                }
+                let rust_values = &enum_info.integer_values;
+                for value in spec_values.difference(rust_values) {
+                    report.findings.push(
+                        Finding::new(
+                            FindingKind::MissingEnumValue,
+                            format!("{name} has no variant for wire value {value}"),
+                        )
+                        .at_spec(&constraint.pointer)
+                        .at_rust(&rust_item)
+                        .detail("enum", &name)
+                        .detail("value", value.to_string()),
+                    );
+                }
+                for value in rust_values.difference(spec_values) {
+                    let wire_value = value.to_string();
+                    let key = (name.clone(), wire_value.clone());
+                    if config.extra_enum_value_exemptions.contains(&key) {
+                        extra_enum_hits.insert(key);
+                    } else {
+                        report.findings.push(
+                            Finding::new(
+                                FindingKind::ExtraEnumValue,
+                                format!(
+                                    "{name} serializes wire value {value}, absent from the spec"
+                                ),
+                            )
+                            .at_spec(&constraint.pointer)
+                            .at_rust(&rust_item)
+                            .detail("enum", &name)
+                            .detail("value", wire_value),
+                        );
+                    }
+                }
+            }
+            (EnumValues::Numeric, mapping) => record_unsupported(
+                constraint,
+                mapping_rust_item(&mapping),
+                "numeric enum constraints that are non-integer or outside i64 cannot be represented by Rust unit variants",
+                config,
+                &mut unsupported_hits,
+                report,
+            ),
+            (EnumValues::Mixed, mapping) => record_unsupported(
+                constraint,
+                mapping_rust_item(&mapping),
+                "mixed enum constraints cannot be represented by one Rust value enum",
+                config,
+                &mut unsupported_hits,
+                report,
+            ),
+            (_, EnumMapping::Unsupported { rust_item, reason }) => record_unsupported(
                 constraint,
                 rust_item,
                 &reason,
@@ -471,7 +538,7 @@ fn compare_enums(
                 &mut unsupported_hits,
                 report,
             ),
-            EnumMapping::Unmapped => {}
+            (_, EnumMapping::Unmapped) => {}
         }
     }
 
@@ -1208,7 +1275,7 @@ mod tests {
             pub struct Widget {
                 pub states: Vec<State>,
                 pub mode: Mode,
-                pub count: i64,
+                pub count: Count,
             }
             pub enum State { #[serde(rename = "ready")] Ready }
             pub enum Mode { #[serde(rename = "fast")] Fast }
@@ -1216,11 +1283,15 @@ mod tests {
                 #[serde(rename = "asc")] Asc,
                 #[serde(rename = "desc")] Desc,
             }
+            #[repr(i64)]
+            #[serde(from = "i64", into = "i64")]
+            pub enum Count {
+                One = 1,
+                Two = 2,
+                #[serde(untagged)] Unknown(i64),
+            }
         "#;
-        let mut config = AnalyzerConfig::default();
-        config
-            .acknowledged_unsupported_enum_pointers
-            .insert("/components/schemas/Widget/properties/count".to_string());
+        let config = AnalyzerConfig::default();
         let rust = RustInventory::parse(
             client,
             models,
@@ -1230,8 +1301,111 @@ mod tests {
         let openapi = OpenApiInventory::build(&spec, &config).unwrap();
         let report = compare(&rust, &openapi, &openapi, &config);
         assert!(!report.has_drift(), "{}", report.render_text());
+        assert!(report.unsupported_enum_constraints.is_empty());
+    }
+
+    #[test]
+    fn checks_integer_enum_values_bidirectionally() {
+        let report = analyze_fixture(
+            r#"
+                pub struct Widget { pub count: Count }
+                #[repr(i64)]
+                #[serde(from = "i64", into = "i64")]
+                pub enum Count {
+                    Zero = 0,
+                    Twelve = 12,
+                    #[serde(untagged)] Unknown(i64),
+                }
+            "#,
+            serde_json::json!({
+                "required": ["count"],
+                "properties": {"count": {"type": "integer", "enum": [0, 6]}}
+            }),
+            AnalyzerConfig::default(),
+        );
+
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::MissingEnumValue
+                && finding.details.get("value").map(String::as_str) == Some("6")
+        }));
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::ExtraEnumValue
+                && finding.details.get("value").map(String::as_str) == Some("12")
+        }));
+        assert!(report.unsupported_enum_constraints.is_empty());
+    }
+
+    #[test]
+    fn integer_enum_requires_explicit_i64_serde_conversion() {
+        let report = analyze_fixture(
+            r#"
+                pub struct Widget { pub count: Count }
+                #[repr(i64)]
+                pub enum Count { Zero = 0, Six = 6 }
+            "#,
+            serde_json::json!({
+                "required": ["count"],
+                "properties": {"count": {"type": "integer", "enum": [0, 6]}}
+            }),
+            AnalyzerConfig::default(),
+        );
+
         assert_eq!(report.unsupported_enum_constraints.len(), 1);
-        assert!(report.unsupported_enum_constraints[0].acknowledged);
+        assert!(
+            report.unsupported_enum_constraints[0]
+                .reason
+                .contains("Serde conversion")
+        );
+    }
+
+    #[test]
+    fn acknowledgement_becomes_stale_when_an_integer_enum_is_checkable() {
+        let pointer = "/components/schemas/Widget/properties/count";
+        let mut config = AnalyzerConfig::default();
+        config
+            .acknowledged_unsupported_enum_pointers
+            .insert(pointer.to_string());
+        let report = analyze_fixture(
+            r#"
+                pub struct Widget { pub count: Count }
+                #[repr(i64)]
+                #[serde(from = "i64", into = "i64")]
+                pub enum Count { Zero = 0, Six = 6 }
+            "#,
+            serde_json::json!({
+                "required": ["count"],
+                "properties": {"count": {"type": "integer", "enum": [0, 6]}}
+            }),
+            config,
+        );
+
+        assert!(report.unsupported_enum_constraints.is_empty());
+        assert!(report.findings.iter().any(|finding| {
+            finding.kind == FindingKind::StaleExemption
+                && finding.spec_pointer.as_deref() == Some(pointer)
+        }));
+    }
+
+    #[test]
+    fn non_integer_numeric_enum_remains_unsupported() {
+        let report = analyze_fixture(
+            r#"
+                pub struct Widget { pub ratio: Ratio }
+                pub enum Ratio { Half }
+            "#,
+            serde_json::json!({
+                "required": ["ratio"],
+                "properties": {"ratio": {"type": "number", "enum": [0.5]}}
+            }),
+            AnalyzerConfig::default(),
+        );
+
+        assert_eq!(report.unsupported_enum_constraints.len(), 1);
+        assert!(
+            report.unsupported_enum_constraints[0]
+                .reason
+                .contains("non-integer or outside i64")
+        );
     }
 
     #[test]

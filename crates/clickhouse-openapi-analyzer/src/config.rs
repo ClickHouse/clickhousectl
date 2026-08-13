@@ -143,23 +143,15 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("PgConfig", "work_mem"),
 ];
 
-// Follow-up remediation is tracked in #296. The inline UDF-attach 424 error
-// response has no public client/model type, so its enum constraints remain
-// deliberately acknowledged until typed error responses are supported. Remove
-// entries as their Rust API types become checkable; stale acknowledgements are
-// actionable findings.
+// The deprecated API-key `roles` fields are feature-gated, frozen legacy API
+// replaced by assigned role IDs. They deliberately remain strings to avoid a
+// source-breaking change for deprecated-fields consumers. The inline
+// UDF-attach 424 error response has no public client/model type, so its enum
+// constraints remain acknowledged until typed error responses are supported.
 const ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS: &[&str] = &[
     "/components/schemas/ApiKey/properties/roles/items",
     "/components/schemas/ApiKeyPatchRequest/properties/roles/items",
     "/components/schemas/ApiKeyPostRequest/properties/roles/items",
-    "/components/schemas/ByocInfrastructurePostRequest/properties/availabilityZoneSuffixes/items",
-    "/components/schemas/InstanceServiceQueryApiEndpointsPostRequest/properties/roles/items",
-    "/components/schemas/ServiceQueryAPIEndpoint/properties/roles/items",
-    "/components/schemas/UpgradeWindow/properties/duration",
-    "/components/schemas/UpgradeWindow/properties/startHourUtc",
-    "/components/schemas/UpgradeWindowPutRequest/properties/startHourUtc",
-    "/paths/~1v1~1organizations~1{organizationId}~1postgres~1{postgresId}~1slowQueryPatterns/get/parameters/8/schema",
-    "/paths/~1v1~1organizations~1{organizationId}~1postgres~1{postgresId}~1slowQueryPatterns/get/parameters/9/schema",
     "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/code",
     "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/serviceState",
 ];
