@@ -115,35 +115,13 @@ impl ModuleTree {
             }
 
             if let Some((_, items)) = item_mod.content {
-                let child_dirs = if let Some(path) = options.path {
-                    BTreeSet::from([module_path_base(
-                        source_file,
-                        module_dir,
-                        inside_inline_module,
-                    )
-                    .join(path)])
-                } else if options.conditional_paths.is_empty() {
-                    BTreeSet::from([module_dir.join(&module_name)])
-                } else {
-                    let base = module_path_base(source_file, module_dir, inside_inline_module);
-                    let conventional = module_dir.join(&module_name);
-                    let mut paths = options
-                        .conditional_paths
-                        .into_iter()
-                        .map(|path| base.join(path))
-                        .filter(|path| path.exists())
-                        .collect::<BTreeSet<_>>();
-                    if conventional.exists() {
-                        paths.insert(conventional.clone());
-                    }
-                    if paths.is_empty() {
-                        paths.insert(conventional);
-                    }
-                    paths
-                };
-                for child_dir in child_dirs {
-                    self.collect_items(source_file, &child_dir, true, items.clone(), loaded)?;
-                }
+                let child_dir = options.path.map_or_else(
+                    || module_dir.join(&module_name),
+                    |path| {
+                        module_path_base(source_file, module_dir, inside_inline_module).join(path)
+                    },
+                );
+                self.collect_items(source_file, &child_dir, true, items, loaded)?;
                 continue;
             }
 
@@ -154,23 +132,13 @@ impl ModuleTree {
                 continue;
             }
 
-            let base = module_path_base(source_file, module_dir, inside_inline_module);
-            let mut module_loaded = false;
-            for path in options.conditional_paths {
-                let path = base.join(path);
-                if path.is_file() {
-                    self.load_file(&path, loaded)?;
-                    module_loaded = true;
-                }
-            }
-
             let file_path = module_dir.join(format!("{module_name}.rs"));
             let directory_path = module_dir.join(&module_name).join("mod.rs");
             if file_path.is_file() {
                 self.load_file(&file_path, loaded)?;
             } else if directory_path.is_file() {
                 self.load_file(&directory_path, loaded)?;
-            } else if !module_loaded {
+            } else {
                 return Err(RustSourceError::ModuleNotFound {
                     module: module_name,
                     declared_in: source_file.to_path_buf(),
@@ -206,14 +174,12 @@ fn child_module_dir(path: &Path) -> PathBuf {
 struct ModuleOptions {
     active: bool,
     path: Option<PathBuf>,
-    conditional_paths: BTreeSet<PathBuf>,
 }
 
 fn module_options(attributes: &[Attribute]) -> syn::Result<ModuleOptions> {
     let mut options = ModuleOptions {
         active: true,
         path: None,
-        conditional_paths: BTreeSet::new(),
     };
     for attribute in attributes {
         apply_module_attribute(&attribute.meta, &mut options)?;
@@ -243,69 +209,33 @@ fn apply_module_attribute(meta: &Meta, options: &mut ModuleOptions) -> syn::Resu
                 "cfg_attr requires a predicate",
             ));
         };
-        match evaluate_cfg(predicate)? {
-            CfgValue::True => {
-                for attribute in nested {
-                    apply_module_attribute(attribute, options)?;
-                }
+        // Unknown target predicates stay conservative: do not apply an
+        // attribute that could hide portable API surface or select one
+        // platform-specific path over another.
+        if evaluate_cfg(predicate)? == CfgValue::True {
+            for attribute in nested {
+                apply_module_attribute(attribute, options)?;
             }
-            CfgValue::Unknown => {
-                // Unknown cfgs must not hide API through nested cfg attributes,
-                // but every path they could select remains inventory-relevant.
-                for attribute in nested {
-                    collect_conditional_module_paths(attribute, options)?;
-                }
-            }
-            CfgValue::False => {}
         }
     } else if meta.path().is_ident("path") {
-        options.path = Some(parse_module_path(meta)?);
-    }
-    Ok(())
-}
-
-fn collect_conditional_module_paths(meta: &Meta, options: &mut ModuleOptions) -> syn::Result<()> {
-    if meta.path().is_ident("path") {
-        options.conditional_paths.insert(parse_module_path(meta)?);
-    } else if meta.path().is_ident("cfg_attr") {
-        let Meta::List(list) = meta else {
-            return Err(syn::Error::new_spanned(meta, "expected #[cfg_attr(...)]"));
+        let Meta::NameValue(name_value) = meta else {
+            return Err(syn::Error::new_spanned(meta, "expected #[path = \"...\"]"));
         };
-        let nested = syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated
-            .parse2(list.tokens.clone())?;
-        let mut nested = nested.iter();
-        let Some(predicate) = nested.next() else {
+        let Expr::Lit(literal) = &name_value.value else {
             return Err(syn::Error::new_spanned(
                 meta,
-                "cfg_attr requires a predicate",
+                "expected a string module path",
             ));
         };
-        if evaluate_cfg(predicate)? != CfgValue::False {
-            for attribute in nested {
-                collect_conditional_module_paths(attribute, options)?;
-            }
-        }
+        let Lit::Str(value) = &literal.lit else {
+            return Err(syn::Error::new_spanned(
+                meta,
+                "expected a string module path",
+            ));
+        };
+        options.path = Some(PathBuf::from(value.value()));
     }
     Ok(())
-}
-
-fn parse_module_path(meta: &Meta) -> syn::Result<PathBuf> {
-    let Meta::NameValue(name_value) = meta else {
-        return Err(syn::Error::new_spanned(meta, "expected #[path = \"...\"]"));
-    };
-    let Expr::Lit(literal) = &name_value.value else {
-        return Err(syn::Error::new_spanned(
-            meta,
-            "expected a string module path",
-        ));
-    };
-    let Lit::Str(value) = &literal.lit else {
-        return Err(syn::Error::new_spanned(
-            meta,
-            "expected a string module path",
-        ));
-    };
-    Ok(PathBuf::from(value.value()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1114,19 +1044,6 @@ mod tests {
                 "DirectPathModel".to_string(),
                 "InlinePathModel".to_string(),
                 "RelocatedInlinePathModel".to_string(),
-            ])
-        );
-    }
-
-    #[test]
-    fn complementary_unknown_cfg_paths_are_all_inventoried() {
-        let inventory = RustInventory::load(&module_tree_fixture("unknown_cfg_paths")).unwrap();
-
-        assert_eq!(
-            inventory.model_types,
-            BTreeSet::from([
-                "CustomDisabledModel".to_string(),
-                "CustomEnabledModel".to_string(),
             ])
         );
     }
