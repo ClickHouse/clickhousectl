@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   fmt:
     name: cargo fmt --check

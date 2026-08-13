@@ -42,11 +42,28 @@ pub enum Error {
     #[error("No matching version found for: {0}")]
     NoMatchingVersion(String),
 
+    #[error(
+        "build {version} is no longer available for download.\nNearest available in the {series} series: {available} (try `clickhousectl local install {series}`)"
+    )]
+    ExactVersionUnavailable {
+        version: String,
+        series: String,
+        available: String,
+    },
+
+    #[error("build {0} exists, but its release channel could not be determined")]
+    UnknownVersionChannel(String),
+
     #[error("{0}")]
     InvalidVersion(String),
 
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
+
+    /// A child process whose status must be returned unchanged. This is
+    /// intentionally not printed as a clickhousectl error by `run_parsed`.
+    #[error("child process exited with code {0}")]
+    ChildExit(i32),
 
     #[error("Extraction failed: {0}")]
     Extract(String),
@@ -59,6 +76,9 @@ pub enum Error {
 
     #[error("Server '{0}' is already running")]
     ServerAlreadyRunning(String),
+
+    #[error("Server '{0}' is running; stop it first with `clickhousectl local server stop {0}`")]
+    ServerRunningCannotRemove(String),
 
     #[error("{0}")]
     Cloud(String),
@@ -94,12 +114,13 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    /// Process exit code following `gh` CLI conventions:
-    /// `0` success, `1` error, `2` cancelled, `4` auth required.
+    /// Process exit code: `0` success, `1` error, `3` cancelled,
+    /// `4` auth required. Clap reserves `2` for usage errors.
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::AuthRequired(_) => 4,
-            Error::Cancelled => 2,
+            Error::Cancelled => 3,
+            Error::ChildExit(code) => *code,
             _ => 1,
         }
     }
@@ -115,8 +136,8 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_maps_to_2() {
-        assert_eq!(Error::Cancelled.exit_code(), 2);
+    fn cancelled_maps_to_3() {
+        assert_eq!(Error::Cancelled.exit_code(), 3);
     }
 
     #[test]
@@ -132,5 +153,31 @@ mod tests {
             .exit_code(),
             1
         );
+    }
+
+    #[test]
+    fn exact_version_unavailable_error_has_an_actionable_retry() {
+        let error = Error::ExactVersionUnavailable {
+            version: "26.2.8.7".into(),
+            series: "26.2".into(),
+            available: "26.2.20.4".into(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "build 26.2.8.7 is no longer available for download.\n\
+             Nearest available in the 26.2 series: 26.2.20.4 \
+             (try `clickhousectl local install 26.2`)"
+        );
+        assert_eq!(error.exit_code(), 1);
+    }
+
+    #[test]
+    fn child_exit_codes_pass_through_without_changing_normal_mappings() {
+        assert_eq!(Error::ChildExit(42).exit_code(), 42);
+        assert_eq!(Error::ChildExit(255).exit_code(), 255);
+        assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
+        assert_eq!(Error::Cancelled.exit_code(), 3);
+        assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
     }
 }

@@ -242,6 +242,24 @@ class DriftScriptTests(unittest.TestCase):
         self.assertFalse(any("incomplete" in i for i in comment_inputs))
 
     @mock.patch.object(drift.subprocess, "run")
+    def test_analyzer_receives_the_rust_source_tree(self, run):
+        run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"schema_version": 2, "findings": []}),
+            stderr="",
+        )
+
+        drift.run_analyzer({"paths": {}, "components": {"schemas": {}}})
+
+        command = run.call_args.args[0]
+        self.assertIn("--source-root", command)
+        source_root_index = command.index("--source-root") + 1
+        self.assertEqual(command[source_root_index], str(drift.RUST_SOURCE_ROOT))
+        self.assertNotIn("--client", command)
+        self.assertNotIn("--models", command)
+        self.assertNotIn("--meta", command)
+
+    @mock.patch.object(drift.subprocess, "run")
     def test_analyzer_subprocess_failure_is_fatal(self, run):
         run.return_value = SimpleNamespace(returncode=1, stdout="", stderr="bad source")
         with self.assertRaisesRegex(RuntimeError, "bad source"):

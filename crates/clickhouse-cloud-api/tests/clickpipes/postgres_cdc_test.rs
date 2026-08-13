@@ -121,7 +121,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             region: ServicePostRequestRegion::Unknown(ctx.region.clone()),
             min_replica_memory_gb: Some(8.0),
             max_replica_memory_gb: Some(8.0),
-            num_replicas: Some(1.0),
+            num_replicas: Some(1),
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(5.0),
             // Test runner needs to query the service to verify CDC results;

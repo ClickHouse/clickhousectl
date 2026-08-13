@@ -26,6 +26,7 @@ pub mod config;
 pub mod report;
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use config::AnalyzerConfig;
 use openapi::OpenApiInventory;
@@ -37,9 +38,9 @@ use thiserror::Error;
 pub struct AnalysisInput<'a> {
     pub spec_json: &'a str,
     pub snapshot_json: &'a str,
-    pub client_rs: &'a str,
-    pub models_rs: &'a str,
-    pub meta_rs: &'a str,
+    /// Directory containing the `client`, `models`, and `meta` root modules.
+    /// Both `<name>.rs` and `<name>/mod.rs` facade layouts are supported.
+    pub rust_source_root: &'a Path,
 }
 
 #[derive(Debug, Error)]
@@ -48,11 +49,10 @@ pub enum AnalyzeError {
     SpecJson(#[source] serde_json::Error),
     #[error("failed to parse snapshot OpenAPI JSON: {0}")]
     SnapshotJson(#[source] serde_json::Error),
-    // Covers both syn parse failures and analyzer policy rejections (e.g. a banned
-    // `rename_all`), which both surface as a `syn::Error`; the source message is
-    // self-explanatory, so the wrapper text stays neutral rather than claiming a parse failure.
-    #[error("invalid Rust source: {0}")]
-    RustSource(#[source] syn::Error),
+    // Covers module loading, syn parse failures, and source-policy rejections
+    // such as a banned `rename_all`.
+    #[error("invalid Rust source tree: {0}")]
+    RustSource(String),
     #[error("invalid target OpenAPI document: {0}")]
     SpecInventory(String),
     #[error("invalid snapshot OpenAPI document: {0}")]
@@ -65,8 +65,7 @@ pub fn analyze(
 ) -> Result<DriftReport, AnalyzeError> {
     let spec = serde_json::from_str(input.spec_json).map_err(AnalyzeError::SpecJson)?;
     let snapshot = serde_json::from_str(input.snapshot_json).map_err(AnalyzeError::SnapshotJson)?;
-    let rust = RustInventory::parse(input.client_rs, input.models_rs, input.meta_rs)
-        .map_err(AnalyzeError::RustSource)?;
+    let rust = load_rust_inventory(input.rust_source_root)?;
     let spec = OpenApiInventory::build(&spec, config).map_err(AnalyzeError::SpecInventory)?;
     let snapshot =
         OpenApiInventory::build(&snapshot, config).map_err(AnalyzeError::SnapshotInventory)?;
@@ -93,10 +92,10 @@ pub struct ResponseTree {
     pub option_fields_missing_skip_serializing_if: BTreeSet<(String, String)>,
 }
 
-/// Computes response-tree membership from the library's `client.rs` and
-/// `models.rs` sources.
-pub fn response_tree(client_rs: &str, models_rs: &str) -> Result<ResponseTree, AnalyzeError> {
-    let rust = RustInventory::parse(client_rs, models_rs, "").map_err(AnalyzeError::RustSource)?;
+/// Computes response-tree membership from the library's client and model module
+/// trees.
+pub fn response_tree(rust_source_root: &Path) -> Result<ResponseTree, AnalyzeError> {
+    let rust = load_rust_inventory(rust_source_root)?;
     let types = rust.response_reachable_types();
     let mut non_option_fields = BTreeSet::new();
     let mut option_fields_missing_skip_serializing_if = BTreeSet::new();
@@ -120,7 +119,48 @@ pub fn response_tree(client_rs: &str, models_rs: &str) -> Result<ResponseTree, A
     })
 }
 
-/// Lists every public model struct field in `models_rs` that carries a
+/// Lists direct OpenAPI `integer` properties represented as `f64` in a request
+/// model or a model reachable from a wired `Client` response.
+///
+/// The analyzer resolves request/response split variants with the same mapping
+/// used by drift analysis. Response targets are additionally constrained to the
+/// Rust response tree, so unused schemas do not expand the policy surface.
+pub fn integer_model_fields_typed_as_float(
+    spec_json: &str,
+    rust_source_root: &Path,
+    config: &AnalyzerConfig,
+) -> Result<BTreeSet<(String, String)>, AnalyzeError> {
+    let spec = serde_json::from_str(spec_json).map_err(AnalyzeError::SpecJson)?;
+    let spec = OpenApiInventory::build(&spec, config).map_err(AnalyzeError::SpecInventory)?;
+    let rust = load_rust_inventory(rust_source_root)?;
+    let response_types = rust.response_reachable_types();
+    let mut offenders = BTreeSet::new();
+
+    for ((schema_name, property_name), property) in &spec.properties {
+        if property.schema_type.as_deref() != Some("integer") {
+            continue;
+        }
+        for (rust_name, direction) in compare::field_check_targets(&rust, &spec, schema_name) {
+            if direction == compare::Direction::Response && !response_types.contains(&rust_name) {
+                continue;
+            }
+            let Some(field) = rust
+                .structs
+                .get(&rust_name)
+                .and_then(|info| info.fields.get(property_name))
+            else {
+                continue;
+            };
+            if rust.terminal_type(&field.rust_type).as_deref() == Some("f64") {
+                offenders.insert((rust_name, property_name.clone()));
+            }
+        }
+    }
+
+    Ok(offenders)
+}
+
+/// Lists every public model struct field in the model module tree that carries a
 /// field-level `#[serde(default)]` (a container-level one reports every field
 /// of its struct), as `StructName.rust_field_name`.
 ///
@@ -134,12 +174,19 @@ pub fn response_tree(client_rs: &str, models_rs: &str) -> Result<ResponseTree, A
 /// because it compares Rust source against a repository policy rather than
 /// against the OpenAPI spec. The parsing stays behind this narrow function so
 /// `syn` never enters the `clickhouse-cloud-api` dependency graph.
-pub fn model_fields_with_serde_default(models_rs: &str) -> Result<Vec<String>, AnalyzeError> {
-    rust_inventory::model_fields_with_serde_default(models_rs).map_err(AnalyzeError::RustSource)
+pub fn model_fields_with_serde_default(
+    rust_source_root: &Path,
+) -> Result<Vec<String>, AnalyzeError> {
+    Ok(load_rust_inventory(rust_source_root)?.model_fields_with_serde_default())
 }
 
-/// Lists every model type in `models_rs` with a hand-written `impl Default
-/// for` block, sorted by name.
+/// Lists every public struct, enum, and type alias in the model module tree.
+pub fn model_types(rust_source_root: &Path) -> Result<BTreeSet<String>, AnalyzeError> {
+    Ok(load_rust_inventory(rust_source_root)?.model_types)
+}
+
+/// Lists every model type in the model module tree with a hand-written `impl
+/// Default for` block, sorted by name.
 ///
 /// Backs the completeness half of
 /// `discriminated_union_defaults_round_trip_to_the_same_variant` in
@@ -151,14 +198,32 @@ pub fn model_fields_with_serde_default(models_rs: &str) -> Result<Vec<String>, A
 /// [`model_fields_with_serde_default`], this is a repository-policy check
 /// rather than a drift `FindingKind`, and it keeps `syn` out of the published
 /// crate's dependency graph.
-pub fn model_types_with_manual_default_impl(models_rs: &str) -> Result<Vec<String>, AnalyzeError> {
-    rust_inventory::model_types_with_manual_default_impl(models_rs)
-        .map_err(AnalyzeError::RustSource)
+pub fn model_types_with_manual_default_impl(
+    rust_source_root: &Path,
+) -> Result<Vec<String>, AnalyzeError> {
+    Ok(load_rust_inventory(rust_source_root)?
+        .manual_default_impls
+        .into_iter()
+        .collect())
+}
+
+fn load_rust_inventory(rust_source_root: &Path) -> Result<RustInventory, AnalyzeError> {
+    RustInventory::load(rust_source_root)
+        .map_err(|error| AnalyzeError::RustSource(error.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn source_tree(client: &str, models: &str) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("client.rs"), client).unwrap();
+        fs::write(directory.path().join("models.rs"), models).unwrap();
+        fs::write(directory.path().join("meta.rs"), "").unwrap();
+        directory
+    }
 
     #[test]
     fn response_tree_reports_membership_and_non_option_fields() {
@@ -179,7 +244,8 @@ mod tests {
             pub struct WidgetLeaf { pub value: Option<String> }
             pub struct WidgetPostRequest { pub name: String, pub note: Option<String> }
         "#;
-        let tree = response_tree(client, models).unwrap();
+        let source = source_tree(client, models);
+        let tree = response_tree(source.path()).unwrap();
         assert_eq!(
             tree.types,
             BTreeSet::from(["Widget".to_string(), "WidgetLeaf".to_string()])
@@ -194,6 +260,85 @@ mod tests {
             BTreeSet::from([("WidgetLeaf".to_string(), "value".to_string())]),
             "request-only fields (WidgetPostRequest.note) must not be reported, \
              and Option fields with skip_serializing_if (Widget.name) are compliant"
+        );
+    }
+
+    #[test]
+    fn integer_float_inventory_resolves_split_models_and_ignores_number_fields() {
+        let spec = r##"{
+            "paths": {
+                "/widgets": {
+                    "get": {
+                        "operationId": "getWidgets",
+                        "responses": {
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {"$ref": "#/components/schemas/Widget"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "post": {
+                        "operationId": "createWidget",
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Widget"}
+                                }
+                            }
+                        },
+                        "responses": {}
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "Widget": {
+                        "type": "object",
+                        "properties": {
+                            "count": {"type": "integer"},
+                            "nullableCount": {"type": ["integer", "null"]},
+                            "ratio": {"type": "number"}
+                        }
+                    }
+                }
+            }
+        }"##;
+        let client = r#"
+            pub struct Client;
+            impl Client {
+                pub async fn get_widgets(&self) -> Result<WidgetResponse, Error> {
+                    unimplemented!()
+                }
+            }
+        "#;
+        let models = r#"
+            pub struct Widget {
+                pub count: f64,
+                #[serde(rename = "nullableCount")]
+                pub nullable_count: Option<f64>,
+                pub ratio: f64,
+            }
+            pub struct WidgetResponse {
+                pub count: Option<f64>,
+                #[serde(rename = "nullableCount")]
+                pub nullable_count: Option<f64>,
+                pub ratio: Option<f64>,
+            }
+        "#;
+
+        let source = source_tree(client, models);
+        assert_eq!(
+            integer_model_fields_typed_as_float(spec, source.path(), &AnalyzerConfig::default())
+                .unwrap(),
+            BTreeSet::from([
+                ("Widget".to_string(), "count".to_string()),
+                ("Widget".to_string(), "nullableCount".to_string()),
+                ("WidgetResponse".to_string(), "count".to_string()),
+                ("WidgetResponse".to_string(), "nullableCount".to_string()),
+            ])
         );
     }
 }

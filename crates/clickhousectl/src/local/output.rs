@@ -483,6 +483,8 @@ impl fmt::Display for ServerStopOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopEntry {
     pub name: String,
+    /// "clickhouse" or "postgres".
+    pub engine: String,
     pub stopped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -501,12 +503,13 @@ impl fmt::Display for ServerStopAllOutput {
         }
         for s in &self.servers {
             if s.stopped {
-                writeln!(f, "Stopping '{}'... stopped", s.name)?;
+                writeln!(f, "Stopping '{}' ({})... stopped", s.name, s.engine)?;
             } else {
                 writeln!(
                     f,
-                    "Stopping '{}'... error: {}",
+                    "Stopping '{}' ({})... error: {}",
                     s.name,
+                    s.engine,
                     s.error.as_deref().unwrap_or("unknown")
                 )?;
             }
@@ -801,13 +804,15 @@ mod tests {
             servers: vec![
                 ServerStopEntry {
                     name: "default".to_string(),
+                    engine: "clickhouse".to_string(),
                     stopped: true,
                     error: None,
                 },
                 ServerStopEntry {
-                    name: "test".to_string(),
+                    name: "default".to_string(),
+                    engine: "postgres".to_string(),
                     stopped: false,
-                    error: Some("process not found".to_string()),
+                    error: Some("container not found".to_string()),
                 },
             ],
         };
@@ -815,11 +820,13 @@ mod tests {
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["servers"][0]["name"], "default");
+        assert_eq!(json["servers"][0]["engine"], "clickhouse");
         assert_eq!(json["servers"][0]["stopped"], true);
         assert!(json["servers"][0].get("error").is_none());
-        assert_eq!(json["servers"][1]["name"], "test");
+        assert_eq!(json["servers"][1]["name"], "default");
+        assert_eq!(json["servers"][1]["engine"], "postgres");
         assert_eq!(json["servers"][1]["stopped"], false);
-        assert_eq!(json["servers"][1]["error"], "process not found");
+        assert_eq!(json["servers"][1]["error"], "container not found");
     }
 
     #[test]
@@ -1105,19 +1112,21 @@ mod tests {
             servers: vec![
                 ServerStopEntry {
                     name: "default".to_string(),
+                    engine: "clickhouse".to_string(),
                     stopped: true,
                     error: None,
                 },
                 ServerStopEntry {
-                    name: "test".to_string(),
+                    name: "default".to_string(),
+                    engine: "postgres".to_string(),
                     stopped: false,
-                    error: Some("process not found".to_string()),
+                    error: Some("container not found".to_string()),
                 },
             ],
         };
         let text = output.to_string();
-        assert!(text.contains("Stopping 'default'... stopped"));
-        assert!(text.contains("Stopping 'test'... error: process not found"));
+        assert!(text.contains("Stopping 'default' (clickhouse)... stopped"));
+        assert!(text.contains("Stopping 'default' (postgres)... error: container not found"));
         assert!(text.contains("Done"));
     }
 

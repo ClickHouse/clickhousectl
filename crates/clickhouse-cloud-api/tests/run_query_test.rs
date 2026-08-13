@@ -194,7 +194,10 @@ async fn run_query_206_unrecognized_body_maps_to_api_error() {
     match err {
         Error::Api { status, message } => {
             assert_eq!(status, 206);
-            assert_eq!(message, r#"{"data":"Something new"}"#);
+            assert_eq!(
+                message,
+                r#"Query API returned HTTP 206 Partial Content: {"data":"Something new"}"#
+            );
         }
         other => panic!("expected Error::Api, got: {other:?}"),
     }
@@ -212,7 +215,54 @@ async fn run_query_non_success_status_maps_to_api_error() {
     match err {
         Error::Api { status, message } => {
             assert_eq!(status, 404);
-            assert_eq!(message, "query endpoint not found");
+            assert_eq!(
+                message,
+                "Query API returned HTTP 404 Not Found: query endpoint not found"
+            );
+        }
+        other => panic!("expected Error::Api, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn run_query_formats_documented_sql_error_envelope() {
+    let mock = start_mock_query_host(
+        400,
+        r#"{"error":{"code":"62","details":"Syntax error near FROM"}}"#,
+    )
+    .await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT broken FROM", None, "CSV", false)
+        .await
+        .expect_err("expected Api error");
+    match err {
+        Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "SQL error 62: Syntax error near FROM");
+        }
+        other => panic!("expected Error::Api, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn run_query_preserves_malformed_json_error_with_status() {
+    let body = r#"{"error":{"code":"62","details":"truncated"#;
+    let mock = start_mock_query_host(400, body).await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT broken FROM", None, "CSV", false)
+        .await
+        .expect_err("expected Api error");
+    match err {
+        Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(
+                message,
+                format!("Query API returned HTTP 400 Bad Request: {body}")
+            );
         }
         other => panic!("expected Error::Api, got: {other:?}"),
     }

@@ -6,9 +6,10 @@
 //! `cloud service query` invocations can authenticate without contacting the
 //! control plane.
 
+use crate::cloud::api_keys::discard_api_key;
 use crate::cloud::client::CloudClient;
 use crate::cloud::credentials::{self, ServiceQueryKey};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
@@ -41,12 +42,24 @@ fn require_credential_pair(
     Ok((key_id, key_secret))
 }
 
-/// Discard the API key created for a provisioning attempt that then failed,
-/// so a later retry doesn't leave an orphaned key behind per attempt. Best
-/// effort: the caller is already returning an error, and a key we couldn't
-/// delete is no worse than the one we'd otherwise leave behind.
-async fn discard_api_key(client: &CloudClient, org_id: &str, api_key_uuid: &str) {
-    let _ = client.delete_api_key(org_id, api_key_uuid).await;
+fn build_service_query_key(
+    organization_id: &str,
+    api_key_id: String,
+    key_id: String,
+    key_secret: String,
+    endpoint_id: Option<String>,
+    service_name: &str,
+    created_at: DateTime<Utc>,
+) -> ServiceQueryKey {
+    ServiceQueryKey {
+        organization_id: Some(organization_id.to_string()),
+        api_key_id: Some(api_key_id),
+        key_id,
+        key_secret,
+        endpoint_id,
+        service_name: service_name.to_string(),
+        created_at,
+    }
 }
 
 /// Ensure a query endpoint is provisioned for `service_id` and return the
@@ -118,13 +131,15 @@ pub async fn ensure_service_query_setup(
     // `id` is diagnostic only, never an auth input: persist the record
     // without it rather than deleting a working credential and leaving a
     // dangling UUID in the endpoint's `openApiKeys`.
-    let stored = ServiceQueryKey {
+    let stored = build_service_query_key(
+        org_id,
+        api_key_uuid,
         key_id,
         key_secret,
-        endpoint_id: endpoint.id,
-        service_name: service_name.to_string(),
-        created_at: Utc::now(),
-    };
+        endpoint.id,
+        service_name,
+        Utc::now(),
+    );
     credentials::set_service_query_key(service_id, stored.clone())?;
 
     Ok(stored)
@@ -170,7 +185,7 @@ async fn bind_query_endpoint(
         // Only a 404 means there is no endpoint yet, so this binding is the
         // first one and starts from an empty list.
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error(e).into()),
+        Err(e) => return Err(client.convert_error_for_organization(e, org_id).into()),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
         open_api_keys.push(api_key_uuid.to_string());
@@ -223,6 +238,30 @@ mod tests {
             err.to_string(),
             "the API response is missing required field 'keySecret'"
         );
+    }
+
+    #[test]
+    fn stored_query_key_keeps_the_management_resource_ownership() {
+        let created_at = DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let key = build_service_query_key(
+            "org-1",
+            "api-key-uuid".into(),
+            "query-key-id".into(),
+            "query-key-secret".into(),
+            Some("endpoint-id".into()),
+            "demo",
+            created_at,
+        );
+
+        assert_eq!(key.organization_id.as_deref(), Some("org-1"));
+        assert_eq!(key.api_key_id.as_deref(), Some("api-key-uuid"));
+        assert_eq!(key.key_id, "query-key-id");
+        assert_eq!(key.key_secret, "query-key-secret");
+        assert_eq!(key.endpoint_id.as_deref(), Some("endpoint-id"));
+        assert_eq!(key.service_name, "demo");
+        assert_eq!(key.created_at, created_at);
     }
 
     fn endpoint(

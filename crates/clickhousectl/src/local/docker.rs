@@ -17,6 +17,7 @@ use crate::error::{Error, Result};
 use bollard::Docker;
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::io::{self, IsTerminal, Write};
 
 pub const LABEL_ENGINE: &str = "clickhousectl.engine";
 pub const LABEL_NAME: &str = "clickhousectl.name";
@@ -48,20 +49,123 @@ pub async fn connect() -> Result<Docker> {
     Ok(docker)
 }
 
-/// Pull `postgres:<tag>`, streaming progress to stderr.
-pub async fn pull_image(docker: &Docker, tag: &str) -> Result<()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PullProgressMode {
+    Interactive,
+    Collapsed,
+}
+
+fn pull_progress_mode(
+    stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
+    structured_output: bool,
+) -> PullProgressMode {
+    if stdout_is_terminal && stderr_is_terminal && !structured_output {
+        PullProgressMode::Interactive
+    } else {
+        PullProgressMode::Collapsed
+    }
+}
+
+struct PullReporter {
+    image: String,
+    mode: PullProgressMode,
+}
+
+impl PullReporter {
+    fn new(image: String, mode: PullProgressMode) -> Self {
+        Self { image, mode }
+    }
+
+    fn start(&self, output: &mut impl Write) {
+        match self.mode {
+            PullProgressMode::Interactive => {
+                let _ = writeln!(output, "Pulling {}...", self.image);
+            }
+            PullProgressMode::Collapsed => {
+                let _ = write!(output, "Pulling {}...", self.image);
+                let _ = output.flush();
+            }
+        }
+    }
+
+    fn event(&self, info: &bollard::models::CreateImageInfo, output: &mut impl Write) {
+        if self.mode != PullProgressMode::Interactive {
+            return;
+        }
+
+        let Some(status) = info.status.as_deref() else {
+            return;
+        };
+        let _ = write!(output, "  ");
+        if let Some(id) = info.id.as_deref() {
+            let _ = write!(output, "{id}: ");
+        }
+        let _ = write!(output, "{status}");
+        if let Some((current, total)) = info.progress_detail.as_ref().and_then(|progress| {
+            progress
+                .current
+                .zip(progress.total)
+                .filter(|(_, total)| *total > 0)
+        }) {
+            let percent = current.saturating_mul(100) / total;
+            let _ = write!(output, " ({current}/{total} bytes, {percent}%)");
+        }
+        let _ = writeln!(output);
+    }
+
+    fn finish(&self, output: &mut impl Write) {
+        match self.mode {
+            PullProgressMode::Interactive => {
+                let _ = writeln!(output, "Pulled {}", self.image);
+            }
+            PullProgressMode::Collapsed => {
+                let _ = writeln!(output, " done");
+            }
+        }
+    }
+
+    fn fail(&self, output: &mut impl Write) {
+        match self.mode {
+            PullProgressMode::Interactive => {
+                let _ = writeln!(output, "Failed to pull {}", self.image);
+            }
+            PullProgressMode::Collapsed => {
+                let _ = writeln!(output, " failed");
+            }
+        }
+    }
+}
+
+/// Pull `postgres:<tag>`, keeping full progress for interactive terminals and
+/// collapsing it to one bounded summary line for redirected or structured output.
+pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> Result<()> {
     use bollard::query_parameters::CreateImageOptionsBuilder;
     let from = format!("postgres:{}", tag);
+    let mode = pull_progress_mode(
+        io::stdout().is_terminal(),
+        io::stderr().is_terminal(),
+        structured_output,
+    );
+    let reporter = PullReporter::new(from.clone(), mode);
+    let stderr = io::stderr();
+    reporter.start(&mut stderr.lock());
+
     let opts = CreateImageOptionsBuilder::default()
         .from_image(&from)
         .build();
     let mut stream = docker.create_image(Some(opts), None, None);
     while let Some(item) = stream.next().await {
-        let info = item.map_err(|e| Error::DockerError(e.to_string()))?;
-        if let Some(status) = info.status.as_deref() {
-            eprintln!("  {}", status);
-        }
+        let info = match item {
+            Ok(info) => info,
+            Err(error) => {
+                reporter.fail(&mut stderr.lock());
+                return Err(Error::DockerError(error.to_string()));
+            }
+        };
+        reporter.event(&info, &mut stderr.lock());
     }
+    reporter.finish(&mut stderr.lock());
     Ok(())
 }
 
@@ -386,7 +490,7 @@ pub async fn exec_psql_one_shot(
         && let Some(code) = info.exit_code
         && code != 0
     {
-        std::process::exit(code as i32);
+        return Err(Error::ChildExit(code as i32));
     }
     Ok(())
 }
@@ -519,7 +623,7 @@ pub async fn exec_psql_in_container(
         && let Some(code) = info.exit_code
         && code != 0
     {
-        std::process::exit(code as i32);
+        return Err(Error::ChildExit(code as i32));
     }
     Ok(())
 }
@@ -720,4 +824,97 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
         }
         Ok(())
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[test]
+    fn pull_progress_is_interactive_only_for_human_ttys() {
+        assert_eq!(
+            pull_progress_mode(true, true, false),
+            PullProgressMode::Interactive
+        );
+        assert_eq!(
+            pull_progress_mode(false, true, false),
+            PullProgressMode::Collapsed
+        );
+        assert_eq!(
+            pull_progress_mode(true, false, false),
+            PullProgressMode::Collapsed
+        );
+        assert_eq!(
+            pull_progress_mode(true, true, true),
+            PullProgressMode::Collapsed
+        );
+    }
+
+    #[test]
+    fn collapsed_pull_progress_is_one_bounded_summary_line() {
+        let mut output = Vec::new();
+        let reporter = PullReporter::new("postgres:18".to_string(), PullProgressMode::Collapsed);
+        reporter.start(&mut output);
+        for (id, status) in [
+            ("layer-a", "Pulling fs layer"),
+            ("layer-a", "Downloading"),
+            ("layer-b", "Pulling fs layer"),
+            ("layer-b", "Pull complete"),
+        ] {
+            reporter.event(
+                &CreateImageInfo {
+                    id: Some(id.to_string()),
+                    status: Some(status.to_string()),
+                    ..Default::default()
+                },
+                &mut output,
+            );
+        }
+        reporter.finish(&mut output);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Pulling postgres:18... done\n"
+        );
+    }
+
+    #[test]
+    fn interactive_pull_progress_keeps_layer_and_byte_context() {
+        let mut output = Vec::new();
+        let reporter = PullReporter::new("postgres:18".to_string(), PullProgressMode::Interactive);
+        reporter.start(&mut output);
+        reporter.event(
+            &CreateImageInfo {
+                id: Some("layer-a".to_string()),
+                status: Some("Downloading".to_string()),
+                progress_detail: Some(ProgressDetail {
+                    current: Some(50),
+                    total: Some(100),
+                }),
+                ..Default::default()
+            },
+            &mut output,
+        );
+        reporter.finish(&mut output);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Pulling postgres:18...\n  layer-a: Downloading (50/100 bytes, 50%)\nPulled postgres:18\n"
+        );
+    }
+
+    #[test]
+    fn collapsed_pull_failure_closes_the_summary_line() {
+        let mut output = Vec::new();
+        let reporter =
+            PullReporter::new("postgres:missing".to_string(), PullProgressMode::Collapsed);
+        reporter.start(&mut output);
+        reporter.fail(&mut output);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Pulling postgres:missing... failed\n"
+        );
+    }
 }

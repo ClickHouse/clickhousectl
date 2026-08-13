@@ -1,4 +1,3 @@
-use crate::cloud::types::DeleteResponse;
 use crate::dotenv::DotenvVars;
 use std::env;
 
@@ -44,7 +43,7 @@ impl std::error::Error for CloudError {}
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
-    Basic,
+    Basic { key: String, secret: String },
     Bearer,
 }
 
@@ -338,10 +337,15 @@ impl CloudClient {
 
         let resolved = resolve_auth(api_key, api_secret, url_override)?;
         let lib_url = lib_base_url(&resolved.base_url);
-        let (lib_client, auth_mode) = match &resolved.creds {
+        let (lib_client, auth_mode) = match resolved.creds {
             ResolvedCreds::Basic { key, secret } => (
-                clickhouse_cloud_api::Client::with_http_client(http, lib_url, key, secret),
-                AuthMode::Basic,
+                clickhouse_cloud_api::Client::with_http_client(
+                    http,
+                    lib_url,
+                    key.clone(),
+                    secret.clone(),
+                ),
+                AuthMode::Basic { key, secret },
             ),
             ResolvedCreds::Bearer { token } => (
                 clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token),
@@ -360,7 +364,16 @@ impl CloudClient {
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
-        matches!(self.auth_mode, AuthMode::Bearer)
+        matches!(&self.auth_mode, AuthMode::Bearer)
+    }
+
+    /// The active API key pair, for authenticating directly to a Query API
+    /// endpoint that already authorizes this key.
+    pub(crate) fn basic_auth_credentials(&self) -> Option<(&str, &str)> {
+        match &self.auth_mode {
+            AuthMode::Basic { key, secret } => Some((key, secret)),
+            AuthMode::Bearer => None,
+        }
     }
 
     /// The credential source that won precedence when constructing this client.
@@ -373,7 +386,7 @@ impl CloudClient {
         &self.base_url
     }
 
-    /// Access the library client for migrated commands.
+    /// Access the library client from domain-specific wrapper methods.
     pub fn api(&self) -> &clickhouse_cloud_api::Client {
         &self.lib_client
     }
@@ -387,9 +400,36 @@ impl CloudClient {
 
     /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
     pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
+        self.convert_error_with_organization(err, None)
+    }
+
+    /// Add safe request scope to otherwise context-free organization errors.
+    pub fn convert_error_for_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: &str,
+    ) -> CloudError {
+        self.convert_error_with_organization(err, Some(org_id))
+    }
+
+    fn convert_error_with_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: Option<&str>,
+    ) -> CloudError {
         match &err {
             clickhouse_cloud_api::Error::Api { status, message } => {
                 let mut msg = message.clone();
+                let trimmed_message = message.trim();
+                if *status == 404
+                    && matches!(
+                        trimmed_message.to_ascii_uppercase().as_str(),
+                        "NOT_FOUND" | "NOT FOUND"
+                    )
+                    && let Some(org_id) = org_id
+                {
+                    msg = format!("{trimmed_message}: request scoped to organization {org_id}");
+                }
                 if *status == 403 && self.is_bearer_auth() {
                     msg.push_str(
                         "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
@@ -406,694 +446,6 @@ impl CloudClient {
                 }
             }
             other => CloudError::new(other.to_string()),
-        }
-    }
-
-    // Organization endpoints (delegated to library client)
-    pub async fn list_organizations(
-        &self,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Organization>> {
-        let response = self
-            .api()
-            .organization_get_list()
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_organization(
-        &self,
-        org_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_get(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Service endpoints (delegated to library client)
-    pub async fn list_services(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Service>> {
-        let response = self
-            .api()
-            .instance_get_list(org_id, &[])
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn list_services_filtered(
-        &self,
-        org_id: &str,
-        filters: &[String],
-    ) -> Result<Vec<clickhouse_cloud_api::models::Service>> {
-        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
-        let response = self
-            .api()
-            .instance_get_list(org_id, &filter_refs)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_service(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Service> {
-        let response = self
-            .api()
-            .instance_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_service(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::ServicePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServicePostResponse> {
-        let response = self
-            .api()
-            .instance_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .instance_delete(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    pub async fn change_service_state(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        command: clickhouse_cloud_api::models::ServiceStatePatchRequestCommand,
-    ) -> Result<clickhouse_cloud_api::models::Service> {
-        use clickhouse_cloud_api::models::ServiceStatePatchRequest;
-        let request = ServiceStatePatchRequest {
-            command: Some(command),
-        };
-        let response = self
-            .api()
-            .instance_state_update(org_id, service_id, &request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Backup endpoints (delegated to library client)
-    pub async fn list_backups(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Backup>> {
-        let response = self
-            .api()
-            .backup_get_list(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_backup(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        backup_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Backup> {
-        let response = self
-            .api()
-            .backup_get(org_id, service_id, backup_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Update service
-    pub async fn update_service(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServicePatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Service> {
-        let response = self
-            .api()
-            .instance_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Replica scaling
-    pub async fn update_replica_scaling(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServiceReplicaScalingPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServiceScalingPatchResponse> {
-        let response = self
-            .api()
-            .instance_replica_scaling_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Reset password
-    pub async fn reset_password(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServicePasswordPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServicePasswordPatchResponse> {
-        let response = self
-            .api()
-            .instance_password_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Query endpoint (delegated to library client)
-    pub async fn get_query_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        let response = self
-            .api()
-            .instance_query_endpoint_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_query_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::InstanceServiceQueryApiEndpointsPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        let response = self
-            .api()
-            .instance_query_endpoint_upsert(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_query_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .instance_query_endpoint_delete(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    // Private endpoint (delegated to library client)
-    pub async fn create_private_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServicPrivateEndpointePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::InstancePrivateEndpoint> {
-        let response = self
-            .api()
-            .instance_private_endpoint_create(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Private endpoint config (delegated to library client)
-    pub async fn get_service_private_endpoint_config(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::PrivateEndpointConfig> {
-        let response = self
-            .api()
-            .instance_private_endpoint_config_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_service_prometheus(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        filtered_metrics: Option<bool>,
-    ) -> Result<String> {
-        let filtered = filtered_metrics.map(|b| b.to_string());
-        self.api()
-            .instance_prometheus_get(org_id, service_id, filtered.as_deref())
-            .await
-            .map_err(|e| self.convert_error(e))
-    }
-
-    // Organization endpoints (delegated to library client)
-    pub async fn update_organization(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::OrganizationPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_update(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_org_prometheus(
-        &self,
-        org_id: &str,
-        filtered_metrics: Option<bool>,
-    ) -> Result<String> {
-        let fm_str = filtered_metrics.map(|b| if b { "true" } else { "false" });
-        self.api()
-            .organization_prometheus_get(org_id, fm_str)
-            .await
-            .map_err(|e| self.convert_error(e))
-    }
-
-    pub async fn get_org_usage(
-        &self,
-        org_id: &str,
-        from_date: &str,
-        to_date: &str,
-        filters: &[String],
-    ) -> Result<clickhouse_cloud_api::models::UsageCost> {
-        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
-        let response = self
-            .api()
-            .usage_cost_get(org_id, from_date, to_date, &filter_refs)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Phase 4 - Member endpoints (delegated to library client)
-    pub async fn list_members(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Member>> {
-        let response = self
-            .api()
-            .member_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Member> {
-        let response = self
-            .api()
-            .member_get(org_id, user_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-        request: &clickhouse_cloud_api::models::MemberPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Member> {
-        let response = self
-            .api()
-            .member_update(org_id, user_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .member_delete(org_id, user_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    // Phase 4 - Invitation endpoints (delegated to library client)
-    pub async fn list_invitations(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Invitation>> {
-        let response = self
-            .api()
-            .invitation_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_invitation(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::InvitationPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::Invitation> {
-        let response = self
-            .api()
-            .invitation_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Invitation> {
-        let response = self
-            .api()
-            .invitation_get(org_id, invitation_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .invitation_delete(org_id, invitation_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    // Phase 5 - API Key endpoints (delegated to library client)
-    pub async fn list_api_keys(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::ApiKey>> {
-        let response = self
-            .api()
-            .openapi_key_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_api_key(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::ApiKeyPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ApiKeyPostResponse> {
-        let response = self
-            .api()
-            .openapi_key_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_api_key(
-        &self,
-        org_id: &str,
-        key_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ApiKey> {
-        let response = self
-            .api()
-            .openapi_key_get(org_id, key_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_api_key(
-        &self,
-        org_id: &str,
-        key_id: &str,
-        request: &clickhouse_cloud_api::models::ApiKeyPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ApiKey> {
-        let response = self
-            .api()
-            .openapi_key_update(org_id, key_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .openapi_key_delete(org_id, key_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    // Phase 6 - Activity endpoints
-    pub async fn list_activities(
-        &self,
-        org_id: &str,
-        from_date: Option<&str>,
-        to_date: Option<&str>,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Activity>> {
-        let response = self
-            .api()
-            .activity_get_list(org_id, from_date, to_date)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_activity(
-        &self,
-        org_id: &str,
-        activity_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Activity> {
-        let response = self
-            .api()
-            .activity_get(org_id, activity_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Backup Config endpoints (delegated to library client)
-    pub async fn get_backup_config(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::BackupConfiguration> {
-        let response = self
-            .api()
-            .backup_configuration_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_backup_config(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::BackupConfigurationPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::BackupConfiguration> {
-        let response = self
-            .api()
-            .backup_configuration_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // ClickPipe endpoints (delegated to library client)
-    pub async fn list_clickpipes(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::ClickPipe>> {
-        let response = self
-            .api()
-            .click_pipe_get_list(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_create(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .click_pipe_delete(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
-    }
-
-    pub async fn change_clickpipe_state(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        command: clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        use clickhouse_cloud_api::models::ClickPipeStatePatchRequest;
-        let request = ClickPipeStatePatchRequest {
-            command: Some(command),
-        };
-        let response = self
-            .api()
-            .click_pipe_state_update(org_id, service_id, clickpipe_id, &request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_clickpipe_scaling(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeScalingPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_clickpipe_settings(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
-        let response = self
-            .api()
-            .click_pipe_settings_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_clickpipe_settings(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
-        let response = self
-            .api()
-            .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn click_pipe_schema_discovery(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse> {
-        let response = self
-            .api()
-            .click_pipe_schema_discovery(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Helper to get the default organization
-    pub async fn get_default_org_id(&self) -> Result<String> {
-        let orgs = self.list_organizations().await?;
-        match orgs.len() {
-            0 => Err(CloudError::new("No organization found for this API key")),
-            1 => orgs[0]
-                .id
-                .map(|id| id.to_string())
-                .ok_or_else(|| CloudError::new("Organization response is missing its id")),
-            _ => Err(CloudError::new(
-                "Multiple organizations found. Specify --org-id to choose one. \
-                 Use `clickhousectl cloud org list` to see your organizations.",
-            )),
         }
     }
 }
@@ -1114,7 +466,10 @@ mod tests {
         );
         CloudClient {
             lib_client,
-            auth_mode: AuthMode::Basic,
+            auth_mode: AuthMode::Basic {
+                key: "test_key".into(),
+                secret: "test_secret".into(),
+            },
             auth_source: AuthSource::CliFlags,
             base_url: DEFAULT_BASE_URL.to_string(),
         }
@@ -1141,6 +496,15 @@ mod tests {
     fn is_bearer_auth_returns_false_for_basic() {
         let client = test_client();
         assert!(!client.is_bearer_auth());
+    }
+
+    #[test]
+    fn basic_auth_credentials_returns_the_active_pair() {
+        let client = test_client();
+        assert_eq!(
+            client.basic_auth_credentials(),
+            Some(("test_key", "test_secret"))
+        );
     }
 
     #[test]
@@ -1177,7 +541,7 @@ mod tests {
     #[test]
     fn unwrap_response_extracts_result() {
         let response = clickhouse_cloud_api::models::ApiResponse {
-            status: Some(200.0),
+            status: Some(200),
             request_id: None,
             result: Some(vec!["hello".to_string()]),
             error: None,
@@ -1190,7 +554,7 @@ mod tests {
     fn unwrap_response_errors_on_empty_result() {
         let response: clickhouse_cloud_api::models::ApiResponse<String> =
             clickhouse_cloud_api::models::ApiResponse {
-                status: Some(200.0),
+                status: Some(200),
                 request_id: None,
                 result: None,
                 error: None,
@@ -1287,6 +651,34 @@ mod tests {
             message: "Internal Server Error".into(),
         });
         assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_adds_organization_scope_to_bare_not_found() {
+        let err = test_client().convert_error_for_organization(
+            clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: " NOT_FOUND\n".into(),
+            },
+            "00000000-0000-4000-8000-000000000001",
+        );
+        assert_eq!(
+            err.message,
+            "NOT_FOUND: request scoped to organization 00000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_preserves_detailed_not_found() {
+        let err = test_client().convert_error_for_organization(
+            clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "Service svc-1 not found".into(),
+            },
+            "org-1",
+        );
+        assert_eq!(err.message, "Service svc-1 not found");
     }
 
     #[test]

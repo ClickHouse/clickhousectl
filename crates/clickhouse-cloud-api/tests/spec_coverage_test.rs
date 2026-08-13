@@ -1,14 +1,14 @@
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use clickhouse_openapi_analyzer::config::clickhouse_cloud_config;
 use clickhouse_openapi_analyzer::{
-    AnalysisInput, analyze, model_fields_with_serde_default, response_tree,
+    AnalysisInput, analyze, integer_model_fields_typed_as_float, model_fields_with_serde_default,
+    model_types, response_tree,
 };
 
 const SPEC_JSON: &str = include_str!("../clickhouse_cloud_openapi.json");
-const CLIENT_RS: &str = include_str!("../src/client.rs");
-const MODELS_RS: &str = include_str!("../src/models.rs");
-const META_RS: &str = include_str!("../src/meta.rs");
+const RUST_SOURCE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 const LIVE_SPEC_URL: &str = "https://api.clickhouse.cloud/v1";
 
 #[test]
@@ -51,7 +51,7 @@ const ALL_OPTION_EXCEPTIONS: &[(&str, &str)] = &[];
 /// would itself create `FieldOptionalityMismatch` drift.
 #[test]
 fn every_response_tree_field_is_option() {
-    let tree = response_tree(CLIENT_RS, MODELS_RS).unwrap();
+    let tree = response_tree(Path::new(RUST_SOURCE_ROOT)).unwrap();
     assert!(
         tree.types.len() >= 300,
         "vacuous test: the response tree collapsed to {} types — did client.rs \
@@ -78,7 +78,7 @@ fn every_response_tree_field_is_option() {
 /// `#[serde(skip_serializing_if = "Option::is_none")]`.
 #[test]
 fn every_response_tree_option_field_omits_none_when_serialized() {
-    let tree = response_tree(CLIENT_RS, MODELS_RS).unwrap();
+    let tree = response_tree(Path::new(RUST_SOURCE_ROOT)).unwrap();
     assert!(
         !tree.types.is_empty(),
         "vacuous test: the response tree is empty"
@@ -91,15 +91,33 @@ fn every_response_tree_option_field_omits_none_when_serialized() {
     );
 }
 
-/// `#[serde(default)]` is banned in `models.rs`. On a required request field it
-/// fabricates a value (`""`/`0`/`false`) indistinguishable from a genuine
+/// Integer-valued fields must use the repository-standard signed integer type
+/// rather than `f64`; otherwise serde changes API integers such as `3` into
+/// `3.0` when the CLI renders a model as JSON. The analyzer derives this set
+/// from the vendored schema and request/response model mapping.
+#[test]
+fn integer_schema_fields_are_not_typed_as_float() {
+    let offenders = integer_model_fields_typed_as_float(
+        SPEC_JSON,
+        Path::new(RUST_SOURCE_ROOT),
+        &clickhouse_cloud_config(),
+    )
+    .unwrap();
+    assert!(
+        offenders.is_empty(),
+        "OpenAPI integer fields must use i64, not f64: {offenders:?}"
+    );
+}
+
+/// `#[serde(default)]` is banned in the model module tree. On a required request
+/// field it fabricates a value (`""`/`0`/`false`) indistinguishable from a genuine
 /// server-sent one — a consumer doing get → tweak → post would silently persist
 /// it (the write-back hazard that sank the superseded issue-312 policy). On
 /// response fields it is dead weight: every response-tree field is `Option<T>`
 /// (enforced above), where a missing key already deserializes to `None`.
 #[test]
 fn models_carry_no_serde_default() {
-    let offenders = model_fields_with_serde_default(MODELS_RS).unwrap();
+    let offenders = model_fields_with_serde_default(Path::new(RUST_SOURCE_ROOT)).unwrap();
     assert!(
         offenders.is_empty(),
         "remove #[serde(default)] from: {offenders:?}"
@@ -116,11 +134,17 @@ fn models_carry_no_serde_default() {
 /// they return into all-`Option` `{Name}Response` variants before wiring them up.
 #[test]
 fn scim_models_are_outside_the_response_tree() {
+    let model_types = model_types(Path::new(RUST_SOURCE_ROOT)).unwrap();
+    let scim_model_types = model_types
+        .iter()
+        .filter(|name| name.starts_with("Scim"))
+        .collect::<Vec<_>>();
     assert!(
-        MODELS_RS.matches("\npub struct Scim").count() >= 30,
-        "vacuous test: the SCIM model family is no longer named `Scim*`"
+        scim_model_types.len() >= 40,
+        "vacuous test: the SCIM model family collapsed to {} types",
+        scim_model_types.len()
     );
-    let tree = response_tree(CLIENT_RS, MODELS_RS).unwrap();
+    let tree = response_tree(Path::new(RUST_SOURCE_ROOT)).unwrap();
     let scim_response_types = tree
         .types
         .iter()
@@ -159,9 +183,7 @@ fn analyze_spec(
         AnalysisInput {
             spec_json,
             snapshot_json: SPEC_JSON,
-            client_rs: CLIENT_RS,
-            models_rs: MODELS_RS,
-            meta_rs: META_RS,
+            rust_source_root: Path::new(RUST_SOURCE_ROOT),
         },
         config,
     )

@@ -10,9 +10,9 @@ This is a Cargo workspace with two crates:
 
 The user-facing CLI surface. Contains all logic for local commands, wraps `clickhouse-cloud-api` for cloud.
 
-- Cloud handlers go through the `CloudClient` wrapper (`src/cloud/client.rs`), not `clickhouse_cloud_api::Client` directly. The wrapper handles credential precedence, error conversion, and response unwrapping.
+- Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence, error conversion, and response unwrapping.
 - Cloud handlers always support `--json` output unless there is good reason not to. JSON is emitted automatically when `--json` is passed or a coding agent is detected (`is_ai_agent::detect()` via the `json_output()` helper in `main.rs`).
-- `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `main.rs`, driving `gh`-style exit codes via `Error::exit_code()`: `0` success, `1` error, `2` cancelled, `4` auth required.
+- `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `cloud::run`. Dispatched commands exit with `0` on success or use `Error::exit_code()` for failures: `1` error, `3` cancelled, `4` auth required. Clap uses `2` for usage errors.
 
 Use `--help` to learn the current command surface.
 
@@ -22,7 +22,7 @@ The CLI does not need to have 100% coverage of endpoints exposed by the API libr
 
 #### Adding a command
 
-For both local and cloud commands, define the clap variant in the appropriate `cli.rs`, then wire dispatch in `src/main.rs`.
+Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handlers, builders, wrapper methods, dispatch, and tests are co-located in the owning domain module under `src/cloud/`; `src/cloud/cli.rs` contains only the top-level cloud arguments and command enum.
 
 **Local subcommand:**
 
@@ -32,13 +32,13 @@ For both local and cloud commands, define the clap variant in the appropriate `c
 
 **Cloud subcommand:**
 
-1. Make sure `clickhouse-cloud-api` has already been updated to support necessary endpoints & models.
-2. Add the variant to the relevant sub-enum in `src/cloud/cli.rs` (or `src/cloud/postgres.rs` for Postgres). Create a new sub-enum if the surface warrants its own grouping.
-3. Classify the new variant in `CloudCommands::is_write_command()` in `src/cloud/cli.rs` (Postgres variants go in the equivalent `is_write()` on the Postgres enum). OAuth (Bearer) auth is read-only; write commands require API key auth and we fail fast on OAuth + write. The match has no wildcards, so the compiler will reject a missing arm — but you still need to make the read/write call deliberately, and add a case to both the `is_write_command_read_only_commands` and `is_write_command_destructive_commands` tests.
-4. Add the match arm in `run_cloud()` in `src/main.rs`.
-5. Add a thin wrapper method on `CloudClient` in `src/cloud/client.rs`. It should delegate to `self.api().<lib_method>()`, map errors via `self.convert_error(e)`, and unwrap with `Self::unwrap_response`. Use the library's request/response types here.
-6. If the command sends a request body, extract a `build_<name>_request(...)` helper in `src/cloud/commands.rs` that returns the library's request struct. Cover the helper with minimal + maximal unit tests in the `mod tests` block at the bottom of `commands.rs`, asserting directly on library struct fields.
-7. Implement the handler in `src/cloud/commands.rs`. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern. For detail/get views (rendering a single resource), drive human output through `print_human` so it shares serde's behaviour — including deprecated-field hiding — instead of hand-writing `println!` lines:
+1. Make sure `clickhouse-cloud-api` has already been updated to support necessary endpoints and models.
+2. Add the clap variant and argument structs to the owning `src/cloud/<domain>.rs` module. Create a new domain module and privately re-export its command enum from `src/cloud/cli.rs` if the surface warrants its own grouping.
+3. Classify the variant in the domain command enum's exhaustive `is_write()` match. OAuth (Bearer) auth is read-only; write commands require API key auth and fail fast on OAuth + write. `CloudCommands::is_write_command()` in `src/cloud/cli.rs` exhaustively delegates to each domain. Add read/write classification tests next to the domain clap definitions.
+4. Add the exhaustive command match to the domain's `run()` dispatcher. `cloud::dispatch()` in `src/cloud/mod.rs` delegates only at the top-level `CloudCommands` boundary; add one delegation arm there only when introducing a new domain.
+5. Add a thin wrapper method in the domain module's `impl CloudClient` block. It should delegate to `self.api().<lib_method>()`, map errors via `self.convert_error(e)` or `self.convert_error_for_organization(e, org_id)`, and unwrap with `Self::unwrap_response`. Use the library's request/response types here.
+6. If the command sends a request body, extract a `build_<name>_request(...)` helper in the same domain module that returns the library's request struct. Cover the helper with minimal + maximal unit tests in that module's `mod tests`, asserting directly on library struct fields.
+7. Implement the handler in the same domain module. For body-sending commands the handler calls the build helper, passes the result through the `CloudClient` wrapper, and prints with the `--json` output pattern. For detail/get views (rendering a single resource), drive human output through `print_human` so it shares serde's behaviour — including deprecated-field hiding — instead of hand-writing `println!` lines:
    ```rust
    if json {
        println!("{}", serde_json::to_string_pretty(&data)?);
@@ -49,15 +49,17 @@ For both local and cloud commands, define the clap variant in the appropriate `c
    List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`.
 
    Every field of a library response type is `Option` (see Request and response models), so never `unwrap()`/`expect()` one. Render absence with `crate::cloud::output::or_absent` (`-`) or `ABSENT` in `tabled` cells and plain output, and have `--filter`-style predicates treat an absent field as non-matching. `print_human` and `--json` serialize the model and need no per-field work.
-8. Add `Cli::try_parse_from` coverage in `src/cloud/cli.rs` for the new command's body-related flags, asserting parsed values.
+8. Add `Cli::try_parse_from` coverage next to the domain command definition for the new command's body-related flags, asserting parsed values.
 
 ### API library (`crates/clickhouse-cloud-api/`)
 
 Typed Rust client library for the ClickHouse Cloud API. The library owns all OpenAPI interaction and all cloud integration testing.
 
-- `src/client.rs` — `Client` struct with one async method per OpenAPI operation.
-- `src/models.rs` — request/response types matching the spec (see Request and response models below). Model structs, enums and type aliases must live here; it is the only file the drift analyzer inventories.
-- `src/convert.rs` — explicit response→request conversions. The analyzer does not parse it, so nothing declared here counts as a model.
+- `src/client.rs` — `Client` and shared HTTP machinery; endpoint methods live in private per-domain `src/client/*.rs` files.
+- `src/models.rs` — the public model facade and shared discriminated-union macro. Request/response structs, enums, aliases, and their implementations live in private per-domain `src/models/*.rs` files and are re-exported without changing the crate-root or `models::*` paths.
+- `src/convert.rs` — `MissingRequiredFields` and conversion documentation; explicit response→request conversions live in private per-domain `src/convert/*.rs` files.
+
+The drift analyzer recursively traverses the private module trees rooted at `client.rs`, `models.rs`, and `meta.rs`. Model declarations remain literal source in that tree; declarations in conversion files do not count as models.
 
 The API library can be updated independently of the CLI. When OpenAPI drifts, prefer updating API library on its own, add to CLI separately.
 
@@ -67,7 +69,7 @@ A response must never fail to deserialize because the API dropped a field, sent 
 
 - **Request types are strict.** A field the spec requires is `T`; optional or nullable fields are `Option<T>` plus `#[serde(skip_serializing_if = "Option::is_none")]`. The compiler is what enforces "strict in what we send".
 - **Response types are all-`Option`.** Every field of every type reachable from a `Client` return type is `Option<T>` plus `skip_serializing_if`. A missing key *and* an explicit JSON `null` both land as `None`, natively — no attribute needed. Nothing is fabricated, so "the server sent `0`" and "the server dropped the field" stay distinguishable, and each caller resolves absence where it is used.
-- **`#[serde(default)]` is banned in `models.rs`.** On a required request field it invents `""`/`0`/`false` that a get → edit → write-back caller silently persists; on an `Option` field it is dead weight. Sweeping it across every model field was the superseded policy of issues 312 and 313 — do not reintroduce it.
+- **`#[serde(default)]` is banned in the model module tree.** On a required request field it invents `""`/`0`/`false` that a get → edit → write-back caller silently persists; on an `Option` field it is dead weight. Sweeping it across every model field was the superseded policy of issues 312 and 313 — do not reintroduce it.
 - **Unknown fields are ignored.** Never `deny_unknown_fields`.
 
 ##### Naming and the split
@@ -82,7 +84,7 @@ Response types keep `derive(Serialize)` — `--json` and `print_human` serialize
 
 ##### Write-back conversions
 
-Because the variants are distinct types, a caller that fetches a resource, edits it and writes it back must resolve absence explicitly — that is the point of the split, not an inconvenience of it. `src/convert.rs` owns those conversions: `TryFrom<{Name}Response> for {Name}` where a required request field can be absent, `From` where the conversion is total. A fallible one returns `MissingRequiredFields` (re-exported at the crate root; `.fields()` lists the missing **wire** names). Give each nested object its own conversion so a missing field is named at the level it is missing from, and reuse `MissingRequiredFields` rather than adding a second error type.
+Because the variants are distinct types, a caller that fetches a resource, edits it and writes it back must resolve absence explicitly — that is the point of the split, not an inconvenience of it. The owning `src/convert/<domain>.rs` file contains those conversions: `TryFrom<{Name}Response> for {Name}` where a required request field can be absent, `From` where the conversion is total. A fallible one returns `MissingRequiredFields` (re-exported at the crate root; `.fields()` lists the missing **wire** names). Give each nested object its own conversion so a missing field is named at the level it is missing from, and reuse `MissingRequiredFields` rather than adding a second error type.
 
 ##### The residual, honestly
 
@@ -90,7 +92,7 @@ A key that is *present* with a changed type still fails. `Option<T>` absorbs abs
 
 ##### How the policy is enforced
 
-`crates/clickhouse-cloud-api/tests/spec_coverage_test.rs` pins all of it against the analyzer's `response_tree()`, which derives response reachability from `client.rs` return types so a newly wired operation is covered automatically:
+`crates/clickhouse-cloud-api/tests/spec_coverage_test.rs` pins all of it against the analyzer's `response_tree()`, which derives response reachability from return types across the client module tree so a newly wired operation is covered automatically:
 
 - `every_response_tree_field_is_option` — no non-`Option` field in the tree. Its exception list is empty; an entry needs the same bar as an analyzer exemption. A vacuity guard fails the test if the tree collapses.
 - `every_response_tree_option_field_omits_none_when_serialized` — `skip_serializing_if` on every response `Option` field.
@@ -104,7 +106,7 @@ Scope enforcement to the response tree, never to "every model type": operation-u
 ClickHouse Cloud OpenAPI spec: https://api.clickhouse.cloud/v1
 
 - `.github/workflows/openapi-drift.yml` runs `scripts/check-openapi-drift.py` daily. Python owns fetching, issue rendering, and GitHub orchestration only; `python3 scripts/check-openapi-drift.py --dry-run` reproduces the rendered issue without creating one.
-- `crates/clickhouse-openapi-analyzer` is the single implementation of parsing and comparison. `rust_inventory.rs` parses `client.rs`, `models.rs`, and `meta.rs` with `syn`; `openapi.rs` inventories the target spec and vendored snapshot; `compare.rs` maps them and emits typed findings; `config.rs` owns ClickHouse-specific policy; `report.rs` defines the stable JSON/text report; `main.rs` is the executable used by Python. Do not duplicate source parsing, exemptions, or comparison logic in tests or Python.
+- `crates/clickhouse-openapi-analyzer` is the single implementation of parsing and comparison. `rust_inventory.rs` recursively walks and parses private and public modules rooted at `client.rs`, `models.rs`, and `meta.rs` (including both `<module>.rs` and `<module>/mod.rs`) with `syn`; module cfg evaluation uses the analyzer host target, excludes `test`, treats feature-gated API as enabled, and conservatively retains unknown custom cfgs. `openapi.rs` inventories the target spec and vendored snapshot; `compare.rs` maps them and emits typed findings; `config.rs` owns ClickHouse-specific policy; `report.rs` defines the stable JSON/text report; `main.rs` is the executable used by Python. Do not duplicate source parsing, exemptions, or comparison logic in tests or Python.
 - The analyzer is private (`publish = false`) and a dev dependency of `clickhouse-cloud-api`. Parser/tooling dependencies such as `syn` must not enter either published crate's normal dependency graph.
 - `crates/clickhouse-cloud-api/tests/spec_coverage_test.rs` analyzes the vendored snapshot; its ignored test analyzes the live spec. Both and the scheduled workflow call the same analyzer and must agree.
 
@@ -115,11 +117,11 @@ Work from the issue's typed findings. `spec_pointer` is an RFC 6901 location in 
 1. Reproduce with `python3 scripts/check-openapi-drift.py --dry-run`. The command does not update the snapshot.
 2. Replace `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json` with the same live document being remediated; do not hand-edit the spec. Snapshot operation/schema findings mean this file is stale.
 3. Fix the API library before considering CLI exposure. Follow the finding's pointer and Rust item:
-   - Missing/extra operations: add or remove the corresponding `Client` method in `client.rs`; only intentional non-OpenAPI helpers belong in `non_openapi_client_methods`.
-   - Missing models, fields, or extra fields: update public structs/enums/type aliases and Serde names in `models.rs`. An undefined `$ref` (`missing_schema_definition`) is an upstream-spec defect, not a model to invent locally. `models.rs` uses explicit `#[serde(rename = "...")]` wire names exclusively; `rename_all` is rejected by the analyzer parser, because wire vocabulary (Postgres GUCs, SCIM URNs, region IDs, duration literals) cannot be derived from Rust identifiers by any casing rule, and explicit literals keep the code↔spec mapping verbatim and greppable. A new schema needs one Rust type per position it is used in: `{Name}` if the finding is in request position, `{Name}Response` if in response position, both if the spec uses it in both — and the same field added to every variant. See Request and response models above.
+   - Missing/extra operations: add or remove the corresponding `Client` method in the owning `src/client/<domain>.rs` file; only intentional non-OpenAPI helpers belong in `non_openapi_client_methods`.
+   - Missing models, fields, or extra fields: update public structs/enums/type aliases and Serde names in the owning `src/models/<domain>.rs` file, then re-export a new type from the `models.rs` facade. An undefined `$ref` (`missing_schema_definition`) is an upstream-spec defect, not a model to invent locally. The model tree uses explicit `#[serde(rename = "...")]` wire names exclusively; `rename_all` is rejected by the analyzer parser, because wire vocabulary (Postgres GUCs, SCIM URNs, region IDs, duration literals) cannot be derived from Rust identifiers by any casing rule, and explicit literals keep the code↔spec mapping verbatim and greppable. A new schema needs one Rust type per position it is used in: `{Name}` if the finding is in request position, `{Name}Response` if in response position, both if the spec uses it in both — and the same field added to every variant. See Request and response models above.
    - Optionality: express requiredness in the type, and pick the shape from the position. Request-position fields are `T` when the resolved spec requires them and `Option<T>` plus `skip_serializing_if` otherwise; every response-position field is `Option<T>` plus `skip_serializing_if`, whatever the spec says its requiredness is. Never add `#[serde(default)]`. A request field deliberately optional against the resolved spec needs an `optionality_exemptions` entry keyed on the **request** variant's name.
    - Missing/extra enum values: update the typed enum, its Serde wire value, and its `Display` implementation. Preserve data-carrying catch-all variants.
-   - Beta/deprecation findings: regenerate `BETA_OPERATIONS` with `python3 scripts/regenerate-beta-lists.py` and `DEPRECATED_FIELDS` with `python3 scripts/regenerate-deprecated-fields.py`; deprecated fields also need the matching `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`. The generator works from the spec, which knows nothing about split variants, so a deprecated field on a split schema needs the `{Name}Response` entry and its marker added by hand.
+   - Beta/deprecation findings: regenerate `BETA_OPERATIONS` with `python3 scripts/regenerate-beta-lists.py` and `DEPRECATED_FIELDS` with `python3 scripts/regenerate-deprecated-fields.py`; deprecated fields also need the matching `#[cfg(feature = "deprecated-fields")]` marker in their model domain file. The generator works from the spec, which knows nothing about split variants, so a deprecated field on a split schema needs the `{Name}Response` entry and its marker added by hand.
    - Stale exemption: remove or narrow the configuration entry. Do not change comparison logic to preserve a stale exception.
    - Unsupported enum constraint: prefer changing the Rust scalar to a concrete value enum. Acknowledgement is the fallback policy below, not a model-drift fix.
 4. Add focused library tests for changed models/methods. A new response type wants a missing-key → `None` and an explicit-`null` → `None` case; a new split pair wants the request variant's strictness and the `TryFrom` write-back asserted. If the unsupported inventory changes, update `acknowledged_unsupported_enum_pointers`; the snapshot test derives its exact expected inventory from that configuration.
@@ -157,7 +159,7 @@ Enums that the CLI validates against declare `pub const VALUES: &'static [&'stat
 
 ##### Deprecated field hiding
 
-Every spec-deprecated request or response field belongs in `meta.rs::DEPRECATED_FIELDS` and carries `#[cfg(feature = "deprecated-fields")]` on the `models.rs` field. It is therefore absent from the public model by default. Request fields that must be gated out but resolve as required are `Option<T>` with a documented optionality exemption. Entries are keyed per Rust type, so a deprecated field on a split schema needs one entry and one marker for `{Name}` and one for `{Name}Response`. Update CLI code that directly accesses or constructs an affected model so both feature configurations compile.
+Every spec-deprecated request or response field belongs in `meta.rs::DEPRECATED_FIELDS` and carries `#[cfg(feature = "deprecated-fields")]` on the field in its model domain file. It is therefore absent from the public model by default. Request fields that must be gated out but resolve as required are `Option<T>` with a documented optionality exemption. Entries are keyed per Rust type, so a deprecated field on a split schema needs one entry and one marker for `{Name}` and one for `{Name}Response`. Update CLI code that directly accesses or constructs an affected model so both feature configurations compile.
 
 ##### Extending the analyzer
 
@@ -184,8 +186,8 @@ Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason t
 
 ### clickhousectl CLI
 
-- **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, `src/cloud/cli.rs`, `src/cloud/postgres.rs`, `src/local/cli.rs`). Assert flag names, types, defaults, and repeatability.
-- **Request builders** — unit tests for `build_*_request` helpers in `src/cloud/commands.rs`, asserting on library request-struct fields with minimal + maximal inputs.
+- **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, the owning `src/cloud/<domain>.rs`, and `src/local/cli.rs`). Assert flag names, types, defaults, and repeatability.
+- **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on library request-struct fields with minimal + maximal inputs.
 - **Subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock server and assert on the recorded request JSON. Used when the handler has runtime behavior beyond struct construction (file reads, base64 encoding, etc.) — currently ClickPipes.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output formatting, platform detection, and other module-local helpers.
 

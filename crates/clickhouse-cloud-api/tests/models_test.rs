@@ -27,9 +27,9 @@ where
 /// declare `["webhook", "email"]`), so a variant defaulting its discriminator to
 /// another variant's value would silently retype the value on the next
 /// deserialize. The covered list is enforced structurally, not by convention:
-/// it must equal the set of hand-written `impl Default for` blocks in
-/// `models.rs` (via the analyzer's `model_types_with_manual_default_impl`), so
-/// a new union gaining a `Default` without a list entry fails this test.
+/// it must equal the set of hand-written `impl Default for` blocks in the model
+/// module tree (via the analyzer's `model_types_with_manual_default_impl`), so a
+/// new union gaining a `Default` without a list entry fails this test.
 #[test]
 fn discriminated_union_defaults_round_trip_to_the_same_variant() {
     let mut covered: Vec<&str> = Vec::new();
@@ -73,7 +73,7 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
 
     covered.sort_unstable();
     let manual_default_impls = clickhouse_openapi_analyzer::model_types_with_manual_default_impl(
-        include_str!("../src/models.rs"),
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
     )
     .unwrap();
     assert_eq!(
@@ -82,7 +82,7 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        "the covered list must equal the manual `impl Default for` blocks in models.rs"
+        "the covered list must equal the manual `impl Default for` blocks in the model tree"
     );
 }
 
@@ -141,7 +141,7 @@ fn deserialize_api_response_with_org_list() {
         ]
     }"#;
     let resp: ApiResponse<Vec<Organization>> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     assert_eq!(resp.request_id, Some("req-uuid-123".to_string()));
     let result = resp.result.unwrap();
     assert_eq!(result.len(), 2);
@@ -157,7 +157,7 @@ fn deserialize_api_response_error() {
         "requestId": "req-uuid-456"
     }"#;
     let resp: ApiResponse<serde_json::Value> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(401.0));
+    assert_eq!(resp.status, Some(401));
     assert_eq!(resp.error, Some("Unauthorized".to_string()));
     assert!(resp.result.is_none());
 }
@@ -202,7 +202,7 @@ fn deserialize_service() {
     assert_eq!(svc.state, Some(ServiceState::Running));
     #[cfg(feature = "deprecated-fields")]
     assert_eq!(svc.tier, Some(ServiceTier::Production));
-    assert_eq!(svc.num_replicas, Some(3.0));
+    assert_eq!(svc.num_replicas, Some(3));
     assert_eq!(svc.idle_scaling, Some(true));
     assert_eq!(svc.is_primary, Some(true));
 }
@@ -219,7 +219,7 @@ fn serialize_service_post_request() {
         min_total_memory_gb: Some(24.0),
         #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: Some(48.0),
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(5.0),
         ip_access_list: vec![IpAccessListEntry {
@@ -244,14 +244,14 @@ fn serialize_service_post_request_horizontal_autoscaling() {
     let req = ServicePostRequest {
         name: "horizontal-service".to_string(),
         autoscaling_mode: Some(AutoscalingMode::Horizontal),
-        min_replicas: Some(1.0),
-        max_replicas: Some(5.0),
+        min_replicas: Some(1),
+        max_replicas: Some(5),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["autoscalingMode"], "horizontal");
-    assert_eq!(json["minReplicas"], 1.0);
-    assert_eq!(json["maxReplicas"], 5.0);
+    assert_eq!(json["minReplicas"], 1);
+    assert_eq!(json["maxReplicas"], 5);
 
     // Omitted entirely when unset — mutually exclusive with the vertical
     // scaling fields, so they must not serialize as null/defaults.
@@ -425,7 +425,104 @@ fn deserialize_service_endpoint() {
     let ep: ServiceEndpoint = serde_json::from_str(json).unwrap();
     assert_eq!(ep.protocol, Some(ServiceEndpointProtocol::Nativesecure));
     assert_eq!(ep.host.as_deref(), Some("abc123.clickhouse.cloud"));
-    assert_eq!(ep.port, Some(9440.0));
+    assert_eq!(ep.port, Some(9440));
+}
+
+#[test]
+fn api_integer_fields_round_trip_as_json_integers() {
+    let response: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": 200,
+        "result": {
+            "numReplicas": 3,
+            "minReplicas": 1,
+            "maxReplicas": 5,
+            "endpoints": [{"port": 9440}]
+        }
+    }))
+    .unwrap();
+
+    let rendered = serde_json::to_string(&response).unwrap();
+    assert!(
+        !rendered.contains(".0"),
+        "unexpected float JSON: {rendered}"
+    );
+    let json = serde_json::to_value(response).unwrap();
+    assert!(json["status"].is_i64());
+    assert!(json["result"]["numReplicas"].is_i64());
+    assert!(json["result"]["minReplicas"].is_i64());
+    assert!(json["result"]["maxReplicas"].is_i64());
+    assert!(json["result"]["endpoints"][0]["port"].is_i64());
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["result"]["numReplicas"], 3);
+    assert_eq!(json["result"]["endpoints"][0]["port"], 9440);
+}
+
+#[test]
+fn api_integer_fields_tolerate_missing_and_null_values() {
+    let missing: ApiResponse<Service> = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        serde_json::to_value(missing).unwrap(),
+        serde_json::json!({})
+    );
+    let missing_endpoint: ServiceEndpoint = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing_endpoint.port, None);
+
+    let nulled: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": null,
+        "result": {
+            "numReplicas": null,
+            "minReplicas": null,
+            "maxReplicas": null,
+            "endpoints": [{"port": null}]
+        }
+    }))
+    .unwrap();
+    assert_eq!(nulled.status, None);
+    let service = nulled.result.as_ref().unwrap();
+    assert_eq!(service.num_replicas, None);
+    assert_eq!(service.min_replicas, None);
+    assert_eq!(service.max_replicas, None);
+    assert_eq!(service.endpoints.as_ref().unwrap()[0].port, None);
+    assert_eq!(
+        serde_json::to_value(nulled).unwrap(),
+        serde_json::json!({"result": {"endpoints": [{}]}})
+    );
+}
+
+#[test]
+fn de_facto_integer_fields_accept_integral_float_syntax() {
+    let response: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": 200.0,
+        "result": {"endpoints": [{"port": 9440.0}]}
+    }))
+    .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .unwrap()
+            .endpoints
+            .as_ref()
+            .unwrap()[0]
+            .port,
+        Some(9440)
+    );
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"status": 200, "result": {"endpoints": [{"port": 9440}]}})
+    );
+
+    assert!(
+        serde_json::from_value::<ApiResponse<Service>>(serde_json::json!({"status": 200.5}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ServiceEndpoint>(serde_json::json!({"port": 9440.5})).is_err()
+    );
+    assert!(
+        serde_json::from_str::<ApiResponse<Service>>(r#"{"status":9007199254740993.0}"#).is_err()
+    );
 }
 
 #[test]
@@ -585,7 +682,7 @@ fn unknown_enum_display() {
 fn api_response_result_explicitly_null() {
     let json = r#"{"status": 200, "requestId": "req-1", "result": null}"#;
     let resp: ApiResponse<Vec<Organization>> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     assert!(resp.result.is_none());
 }
 
@@ -609,7 +706,7 @@ fn api_response_extra_fields_ignored() {
         "nestedExtra": {"a": 1}
     }"#;
     let resp: ApiResponse<Organization> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     let org = resp.result.unwrap();
     assert_eq!(org.name.as_deref(), Some("Test"));
 }
@@ -668,7 +765,7 @@ fn serialize_service_state_patch_request_stop() {
 #[test]
 fn serialize_service_replica_scaling_patch_request() {
     let req = ServiceReplicaScalingPatchRequest {
-        num_replicas: Some(5.0),
+        num_replicas: Some(5),
         min_replicas: None,
         max_replicas: None,
         min_replica_memory_gb: Some(16.0),
@@ -678,7 +775,7 @@ fn serialize_service_replica_scaling_patch_request() {
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["numReplicas"], 5.0);
+    assert_eq!(json["numReplicas"], 5);
     assert_eq!(json["minReplicaMemoryGb"], 16.0);
     assert_eq!(json["maxReplicaMemoryGb"], 64.0);
     assert_eq!(json["idleScaling"], true);
@@ -688,7 +785,7 @@ fn serialize_service_replica_scaling_patch_request() {
 #[test]
 fn serialize_service_scaling_patch_request() {
     let req = ServiceScalingPatchRequest {
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: Some(24.0),
         #[cfg(feature = "deprecated-fields")]
@@ -696,7 +793,7 @@ fn serialize_service_scaling_patch_request() {
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["numReplicas"], 3.0);
+    assert_eq!(json["numReplicas"], 3);
     #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["minTotalMemoryGb"], 24.0);
     #[cfg(feature = "deprecated-fields")]
@@ -873,7 +970,7 @@ fn deprecated_request_fields_absent_by_default() {
     );
 
     let scaling = ServiceScalingPatchRequest {
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         ..Default::default()
     };
     let scaling = serde_json::to_value(&scaling).unwrap();
@@ -2024,6 +2121,19 @@ fn deserialize_clickpipe_post_pubsub_source_required_fields() {
         src.service_account_key.service_account_file,
         "/path/to/key.json"
     );
+}
+
+#[test]
+fn serialize_clickpipe_patch_pubsub_source_omits_absent_credentials() {
+    let empty = serde_json::to_value(ClickPipePatchPubSubSource::default()).unwrap();
+    assert_eq!(empty, serde_json::json!({}));
+
+    let ack_deadline_only = serde_json::to_value(ClickPipePatchPubSubSource {
+        ack_deadline: Some(30),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(ack_deadline_only, serde_json::json!({"ackDeadline": 30}));
 }
 
 #[test]

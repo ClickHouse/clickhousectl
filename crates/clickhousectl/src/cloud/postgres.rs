@@ -1,7 +1,6 @@
-use crate::cloud::cli::parse_datetime;
 use crate::cloud::client::CloudClient;
-use crate::cloud::commands::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::output::{ABSENT, or_absent};
+use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgVersion,
@@ -238,6 +237,199 @@ impl PostgresCommands {
             PostgresCommands::Config(ConfigCommands::Replace { .. })
             | PostgresCommands::Config(ConfigCommands::Patch { .. }) => true,
             PostgresCommands::ReadReplica(ReadReplicaCommands::Create { .. }) => true,
+        }
+    }
+}
+
+pub async fn run(
+    client: &CloudClient,
+    command: PostgresCommands,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        PostgresCommands::List { org_id, filter } => {
+            postgres_list(client, org_id.as_deref(), &filter, json).await
+        }
+        PostgresCommands::Get {
+            postgres_id,
+            org_id,
+        } => postgres_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Create {
+            name,
+            region,
+            size,
+            provider,
+            pg_version,
+            ha_type,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        } => {
+            let opts = PostgresCreateOptions {
+                name: &name,
+                region: &region,
+                size: &size,
+                provider: &provider,
+                pg_version: pg_version.as_deref(),
+                ha_type: ha_type.as_deref(),
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            postgres_create(client, opts, json).await
+        }
+        PostgresCommands::Update {
+            postgres_id,
+            size,
+            ha_type,
+            add_tag,
+            remove_tag,
+            org_id,
+        } => {
+            let opts = PostgresUpdateOptions {
+                size: size.as_deref(),
+                ha_type: ha_type.as_deref(),
+                add_tag: &add_tag,
+                remove_tag: &remove_tag,
+                org_id: org_id.as_deref(),
+            };
+            postgres_update(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Delete {
+            postgres_id,
+            org_id,
+        } => postgres_delete(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Certs(CertsCommands::Get {
+            postgres_id,
+            output,
+            org_id,
+        }) => {
+            postgres_certs_get(
+                client,
+                &postgres_id,
+                output.as_deref(),
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(ConfigCommands::Get {
+            postgres_id,
+            org_id,
+        }) => postgres_config_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Config(ConfigCommands::Replace {
+            postgres_id,
+            file,
+            org_id,
+        }) => postgres_config_replace(client, &postgres_id, &file, org_id.as_deref(), json).await,
+        PostgresCommands::Config(ConfigCommands::Patch {
+            postgres_id,
+            sets,
+            file,
+            org_id,
+        }) => {
+            postgres_config_patch(
+                client,
+                &postgres_id,
+                &sets,
+                file.as_deref(),
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ResetPassword {
+            postgres_id,
+            password,
+            generate,
+            org_id,
+        } => {
+            postgres_reset_password(
+                client,
+                &postgres_id,
+                password.as_deref(),
+                generate,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ReadReplica(ReadReplicaCommands::Create {
+            postgres_id,
+            name,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        }) => {
+            let opts = PostgresReadReplicaOptions {
+                name: &name,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            postgres_read_replica_create(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Restore {
+            postgres_id,
+            name,
+            restore_target,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+            org_id,
+        } => {
+            let opts = PostgresRestoreOptions {
+                name: &name,
+                restore_target: &restore_target,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                org_id: org_id.as_deref(),
+            };
+            postgres_restore(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Restart {
+            postgres_id,
+            org_id,
+        } => {
+            postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Restart,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Promote {
+            postgres_id,
+            org_id,
+        } => {
+            postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Promote,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Switchover {
+            postgres_id,
+            org_id,
+        } => {
+            postgres_state_change(
+                client,
+                &postgres_id,
+                PostgresServiceSetStateCommand::Switchover,
+                org_id.as_deref(),
+                json,
+            )
+            .await
         }
     }
 }
@@ -536,7 +728,7 @@ pub async fn postgres_list(
         .api()
         .postgres_service_get_list(&org_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let items = unwrap_api(resp)?;
     let filtered: Vec<PostgresServiceListItem> = items
         .into_iter()
@@ -606,7 +798,7 @@ pub async fn postgres_get(
         .api()
         .postgres_service_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -705,7 +897,7 @@ pub async fn postgres_create(
         .api()
         .postgres_service_create(&org_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -755,7 +947,7 @@ pub async fn postgres_update(
             .api()
             .postgres_service_get(&org_id, postgres_id)
             .await
-            .map_err(|e| client.convert_error(e))?;
+            .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
@@ -774,7 +966,7 @@ pub async fn postgres_update(
         .api()
         .postgres_service_patch(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -798,7 +990,7 @@ pub async fn postgres_delete(
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&resp)?);
@@ -820,7 +1012,7 @@ pub async fn postgres_certs_get(
         .api()
         .postgres_service_certs_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
     if let Some(path) = output {
         write_pem_file(path, &pem)?;
@@ -862,7 +1054,7 @@ pub async fn postgres_config_get(
         .api()
         .postgres_instance_config_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let cfg = unwrap_api(resp)?;
     // Config is a flat 20+ field object — always emit as JSON (pretty).
     println!("{}", serde_json::to_string_pretty(&cfg)?);
@@ -882,7 +1074,7 @@ pub async fn postgres_config_replace(
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
 
     if json {
@@ -926,7 +1118,7 @@ pub async fn postgres_config_patch(
         .api()
         .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
 
     if json {
@@ -967,7 +1159,7 @@ pub async fn postgres_reset_password(
         .api()
         .postgres_service_set_password(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
     // Emit what the user now needs to use: the API echoes the password back, but
     // fall back to the one we sent if the response omits it.
@@ -1019,7 +1211,7 @@ pub async fn postgres_read_replica_create(
         .api()
         .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -1064,7 +1256,7 @@ pub async fn postgres_restore(
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -1090,7 +1282,7 @@ pub async fn postgres_state_change(
         .api()
         .postgres_service_patch_state(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -1110,23 +1302,21 @@ pub async fn postgres_state_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::{Cli, Commands};
-    use crate::cloud::cli::CloudCommands;
+    use crate::cli::Cli;
     use clap::Parser;
 
-    fn parse_cloud(args: &[&str]) -> CloudCommands {
-        let cli = Cli::try_parse_from(args).expect("parse");
-        match cli.command {
-            Commands::Cloud(a) => a.command,
-            _ => panic!("expected cloud command"),
-        }
+    #[derive(Parser)]
+    struct PostgresCli {
+        #[command(subcommand)]
+        command: PostgresCommands,
     }
 
     fn parse_postgres(args: &[&str]) -> PostgresCommands {
-        match parse_cloud(args) {
-            CloudCommands::Postgres { command } => command,
-            _ => panic!("expected postgres command"),
-        }
+        assert_eq!(args.get(1), Some(&"cloud"));
+        assert_eq!(args.get(2), Some(&"postgres"));
+        PostgresCli::try_parse_from(std::iter::once(args[0]).chain(args.iter().skip(3).copied()))
+            .expect("parse")
+            .command
     }
 
     #[test]

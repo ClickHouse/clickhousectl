@@ -1,15 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-pub use crate::cloud::cli::{
-    ActivityCommands, AuthCommands, BackupCommands, BackupConfigCommands, ClickPipeCommands,
-    ClickPipeCreateCommands, ClickPipeSettingsCommands, CloudArgs, CloudCommands,
-    InvitationCommands, KeyCommands, MemberCommands, OrgCommands, PrivateEndpointCommands,
-    QueryEndpointCommands, ServiceCommands,
-};
-pub use crate::cloud::postgres::{
-    CertsCommands as PostgresCertsCommands, ConfigCommands as PostgresConfigCommands,
-    PostgresCommands, ReadReplicaCommands as PostgresReadReplicaCommands,
-};
+use crate::cloud::cli::CloudArgs;
 pub use crate::local::cli::LocalArgs;
 
 #[derive(Parser)]
@@ -66,7 +57,7 @@ CONTEXT FOR AGENTS:
     clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
   If the user doesn't have an account, suggest `clickhousectl cloud auth signup` first.
   JSON emitted automatically for known agents.
-  Exit codes follow gh conventions: 0 success, 1 error, 2 cancelled, 4 auth required.
+  Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
   Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(Box<CloudArgs>),
 
@@ -182,6 +173,27 @@ mod tests {
         let oauth = precedence.find("4. OAuth tokens").unwrap();
         assert!(flags < file && file < env && env < oauth, "{help}");
         assert!(help.contains("Higher-precedence credentials override lower-precedence"));
+    }
+
+    #[test]
+    fn cloud_help_distinguishes_usage_errors_from_cancellation() {
+        let mut command = Cli::command();
+        let help = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains(
+            "Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required."
+        ));
+        assert_eq!(
+            Cli::try_parse_from(["clickhousectl", "unknown-command"])
+                .err()
+                .expect("unknown command must be rejected")
+                .exit_code(),
+            2
+        );
     }
 
     #[test]

@@ -179,8 +179,28 @@ async fn resolve_exact(version: &str, platform: &Platform) -> Result<ResolvedVer
     // For "25.12.9.61", search refs matching "v25.12.9.61" — should return the exact tag.
     // Fail fast if the lookup fails: a wrong channel produces a broken download URL,
     // and silently guessing Stable could fetch the wrong artifact.
-    let channel = find_exact_channel(version).await?;
-    Ok(fallback_source(version, channel, platform))
+    match find_exact_channel(version).await {
+        Ok(channel) => Ok(fallback_source(version, channel, platform)),
+        Err(Error::NoMatchingVersion(_)) => {
+            let series = extract_minor(version)?;
+            // The exact miss is definitive; fetching a retry hint is best-effort.
+            let available = find_version_by_refs(&series).await.ok();
+
+            Err(exact_version_no_match(version, &series, available.as_ref()))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn exact_version_no_match(version: &str, series: &str, available: Option<&VersionEntry>) -> Error {
+    match available {
+        Some(entry) => Error::ExactVersionUnavailable {
+            version: version.to_string(),
+            series: series.to_string(),
+            available: entry.version.clone(),
+        },
+        None => Error::NoMatchingVersion(version.to_string()),
+    }
 }
 
 /// Look up the channel for an exact version via GitHub's matching-refs API
@@ -205,10 +225,18 @@ async fn find_exact_channel(version: &str) -> Result<Channel> {
 /// Parse the channel from a list of git refs for an exact version.
 /// Looks for tags like "refs/tags/v26.4.1.562-stable" and extracts the channel suffix.
 fn parse_exact_channel(refs: &[GitRef], version: &str) -> Result<Channel> {
+    let version_prefix = format!("{}-", version);
+    let mut exact_tag_found = false;
+
     for git_ref in refs {
         let Some(tag) = git_ref.ref_name.strip_prefix("refs/tags/v") else {
             continue;
         };
+        if !tag.starts_with(&version_prefix) {
+            continue;
+        }
+        exact_tag_found = true;
+
         if let Some(dash_pos) = tag.rfind('-') {
             let suffix = &tag[dash_pos + 1..];
             if let Some(channel) = Channel::from_tag_suffix(suffix) {
@@ -217,7 +245,11 @@ fn parse_exact_channel(refs: &[GitRef], version: &str) -> Result<Channel> {
         }
     }
 
-    Err(Error::NoMatchingVersion(version.to_string()))
+    if exact_tag_found {
+        Err(Error::UnknownVersionChannel(version.to_string()))
+    } else {
+        Err(Error::NoMatchingVersion(version.to_string()))
+    }
 }
 
 /// Build a fallback download source: packages for Linux, GitHub for macOS
@@ -502,13 +534,60 @@ mod tests {
     fn test_parse_exact_channel_unknown_suffix_errors() {
         // parse_exact_channel does NOT fall back to unknown suffixes
         let refs = vec![make_ref("refs/tags/v26.4.1.1-new")];
-        assert!(parse_exact_channel(&refs, "26.4.1.1").is_err());
+        let error = parse_exact_channel(&refs, "26.4.1.1").unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "build 26.4.1.1 exists, but its release channel could not be determined"
+        );
+        assert!(matches!(
+            error,
+            Error::UnknownVersionChannel(ref version) if version == "26.4.1.1"
+        ));
     }
 
     #[test]
     fn test_parse_exact_channel_empty_refs() {
         let refs: Vec<GitRef> = vec![];
-        assert!(parse_exact_channel(&refs, "25.12.9.61").is_err());
+        let error = parse_exact_channel(&refs, "25.12.9.61").unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::NoMatchingVersion(ref version) if version == "25.12.9.61"
+        ));
+    }
+
+    #[test]
+    fn test_exact_version_no_match_hints_highest_series_version() {
+        let refs = vec![
+            make_ref("refs/tags/v26.2.19.43-stable"),
+            make_ref("refs/tags/v26.2.9.9-stable"),
+            make_ref("refs/tags/v26.2.20.4-stable"),
+        ];
+        let available = parse_version_refs(&refs, "26.2").unwrap();
+
+        let error = exact_version_no_match("26.2.8.7", "26.2", Some(&available));
+
+        assert!(matches!(
+            error,
+            Error::ExactVersionUnavailable {
+                ref version,
+                ref series,
+                ref available,
+            } if version == "26.2.8.7"
+                && series == "26.2"
+                && available == "26.2.20.4"
+        ));
+    }
+
+    #[test]
+    fn test_exact_version_no_match_without_series_preserves_generic_error() {
+        let error = exact_version_no_match("99.99.1.1", "99.99", None);
+
+        assert!(matches!(
+            error,
+            Error::NoMatchingVersion(ref version) if version == "99.99.1.1"
+        ));
     }
 
     // -- find_local_match tests --
