@@ -1440,10 +1440,14 @@ async fn clickpipe_schema_discover(
         ClickPipeSchemaDiscoverCommands::Kafka(args) => ClickPipeSchemaDiscoverySource {
             kafka: Some(build_kafka_source(args)?),
             kinesis: None,
+            object_storage: None,
+            pubsub: None,
         },
         ClickPipeSchemaDiscoverCommands::Kinesis(args) => ClickPipeSchemaDiscoverySource {
             kafka: None,
             kinesis: Some(build_kinesis_source(args)?),
+            object_storage: None,
+            pubsub: None,
         },
     };
 
@@ -1647,6 +1651,7 @@ async fn clickpipe_settings_update(
         clickhouse_max_insert_threads: clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function,
         clickhouse_parallel_view_processing,
+        kafka_read_committed: false,
         clickhouse_max_download_threads: None,
         clickhouse_min_insert_block_size_bytes: None,
         clickhouse_parallel_distributed_insert_select: None,

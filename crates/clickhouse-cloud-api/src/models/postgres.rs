@@ -57,6 +57,29 @@ impl PgProvider {
     pub const VALUES: &'static [&'static str] = &["aws"];
 }
 
+/// Inline enum for `postgresLogsGetList.sort_order`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PostgresLogsGetListSortorder {
+    #[serde(rename = "asc")]
+    Asc,
+    #[serde(rename = "desc")]
+    #[default]
+    Desc,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PostgresLogsGetListSortorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Asc => write!(f, "asc"),
+            Self::Desc => write!(f, "desc"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `pgSize` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgSize {
@@ -686,6 +709,17 @@ pub struct PostgresServiceSetPassword {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PostgresServiceSetState {
     pub command: PostgresServiceSetStateCommand,
+}
+
+/// `PostgresLogEntry` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresLogEntry {
+    #[serde(rename = "timestamp", skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "severity", skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
+    #[serde(rename = "body", skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// `PostgresMetricDataPoint` from the ClickHouse Cloud API.

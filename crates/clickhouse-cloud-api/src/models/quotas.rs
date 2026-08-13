@@ -7,6 +7,8 @@ pub enum OrganizationQuotaQuotacode {
     Services_per_organization,
     #[serde(rename = "postgres-services-per-organization")]
     Postgres_services_per_organization,
+    #[serde(rename = "api-keys-per-organization")]
+    Api_keys_per_organization,
     #[serde(rename = "replicas-per-warehouse")]
     Replicas_per_warehouse,
     /// Catch-all for unknown or newly-added values.
@@ -21,6 +23,7 @@ impl std::fmt::Display for OrganizationQuotaQuotacode {
             Self::Postgres_services_per_organization => {
                 write!(f, "postgres-services-per-organization")
             }
+            Self::Api_keys_per_organization => write!(f, "api-keys-per-organization"),
             Self::Replicas_per_warehouse => write!(f, "replicas-per-warehouse"),
             Self::Unknown(s) => write!(f, "{s}"),
         }

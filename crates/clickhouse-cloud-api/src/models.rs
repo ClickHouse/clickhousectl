@@ -181,19 +181,23 @@ pub use organization_private_endpoints::{
     OrganizationPrivateEndpoint, OrganizationPrivateEndpointCloudprovider,
     OrganizationPrivateEndpointRegion, OrganizationPrivateEndpointsPatch,
 };
-pub use organizations::{Organization, OrganizationPatchRequest};
+pub use organizations::{
+    ActiveBalance, ActiveBalances, Organization, OrganizationPatchRequest,
+    PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
+};
 pub use postgres::{
     BasePostgresService, PgBouncerConfig, PgBouncerConfigResponse, PgConfig,
     PgConfigDefaultTransactionIsolation, PgConfigResponse, PgConfigSslMinProtocolVersion,
     PgConfigWalCompression, PgCreatedAtProperty, PgHaType, PgIdProperty, PgIsPrimaryProperty,
     PgNameProperty, PgPassword, PgPitrRestoreTargetProperty, PgProvider, PgRegion, PgSize,
     PgStateProperty, PgStorageSize, PgTags, PgTagsResponse, PgVersion, PostgresInstanceConfig,
-    PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse, PostgresMetric,
-    PostgresMetricDataPoint, PostgresMetricSeries, PostgresMetrics, PostgresQueryExecution,
-    PostgresService, PostgresServiceListItem, PostgresServicePasswordResource,
-    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
-    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
-    PostgresServiceSetStateCommand, PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail,
+    PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse, PostgresLogEntry,
+    PostgresLogsGetListSortorder, PostgresMetric, PostgresMetricDataPoint, PostgresMetricSeries,
+    PostgresMetrics, PostgresQueryExecution, PostgresService, PostgresServiceListItem,
+    PostgresServicePasswordResource, PostgresServicePatchRequest, PostgresServicePostRequest,
+    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
+    PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
+    PostgresSlowQueryPatternDetail,
 };
 pub use quotas::{OrganizationQuota, OrganizationQuotaQuotacode, OrganizationQuotaScope};
 pub use rbac::{

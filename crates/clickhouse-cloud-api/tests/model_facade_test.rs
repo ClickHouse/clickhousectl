@@ -4,6 +4,10 @@ fn assert_same_type<T>(_: T, _: T) {}
 
 #[test]
 fn extracted_models_keep_root_and_models_paths() {
+    assert_same_type(
+        api::ActiveBalances::default(),
+        api::models::ActiveBalances::default(),
+    );
     assert_same_type(api::Activity::default(), api::models::Activity::default());
     assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
     assert_same_type(
@@ -48,6 +52,18 @@ fn extracted_models_keep_root_and_models_paths() {
     assert_same_type(
         api::PostgresInstanceConfig::default(),
         api::models::PostgresInstanceConfig::default(),
+    );
+    assert_same_type(
+        api::PostgresLogEntry::default(),
+        api::models::PostgresLogEntry::default(),
+    );
+    assert_same_type(
+        api::PostgresLogsGetListSortorder::default(),
+        api::models::PostgresLogsGetListSortorder::default(),
+    );
+    assert_same_type(
+        api::PrometheusDiscoveryTargetGroup::default(),
+        api::models::PrometheusDiscoveryTargetGroup::default(),
     );
     assert_same_type(api::RBACRole::default(), api::models::RBACRole::default());
     assert_same_type(api::ScimUser::default(), api::models::ScimUser::default());

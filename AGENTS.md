@@ -4,13 +4,13 @@ clickhousectl (or chctl) is the official CLI for ClickHouse, by ClickHouse Inc. 
 
 ## Architecture
 
-This is a Cargo workspace with two crates:
+This is a Cargo workspace with three crates:
 
 ### CLI (`crates/clickhousectl/`)
 
 The user-facing CLI surface. Contains all logic for local commands, wraps `clickhouse-cloud-api` for cloud.
 
-- Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence, error conversion, and response unwrapping.
+- New Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence, error conversion, and response unwrapping. Some pre-modularization Postgres and service-query paths still call the API client directly; do not copy that pattern into new commands.
 - Cloud handlers always support `--json` output unless there is good reason not to. JSON is emitted automatically when `--json` is passed or a coding agent is detected (`is_ai_agent::detect()` via the `json_output()` helper in `main.rs`).
 - `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `cloud::run`. Dispatched commands exit with `0` on success or use `Error::exit_code()` for failures: `1` error, `3` cancelled, `4` auth required. Clap uses `2` for usage errors.
 
@@ -22,12 +22,12 @@ The CLI does not need to have 100% coverage of endpoints exposed by the API libr
 
 #### Adding a command
 
-Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handlers, builders, wrapper methods, dispatch, and tests are co-located in the owning domain module under `src/cloud/`; `src/cloud/cli.rs` contains only the top-level cloud arguments and command enum.
+Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handlers, builders, wrapper methods, dispatch, and tests are co-located in the owning domain module under `src/cloud/`; `src/cloud/cli.rs` owns the top-level cloud arguments, command enum, domain re-exports, delegation, and top-level tests.
 
 **Local subcommand:**
 
 1. Add a variant to the relevant enum in `src/local/cli.rs` using clap derive macros.
-2. Add the match arm in `run_local()` in `src/main.rs`.
+2. Add the match arm in `run()` in `src/local/mod.rs`; `main.rs` delegates to that boundary.
 3. Implement the handler in a dedicated module under `src/local/` (e.g. `src/local/server.rs`, `src/local/postgres.rs`). Don't pile new logic into `main.rs`.
 
 **Cloud subcommand:**
@@ -53,13 +53,17 @@ Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handl
 
 ### API library (`crates/clickhouse-cloud-api/`)
 
-Typed Rust client library for the ClickHouse Cloud API. The library owns all OpenAPI interaction and all cloud integration testing.
+Typed Rust client library for the ClickHouse Cloud API. The library owns typed HTTP interaction and all cloud integration testing; the private analyzer owns OpenAPI parsing and comparison.
 
 - `src/client.rs` — `Client` and shared HTTP machinery; endpoint methods live in private per-domain `src/client/*.rs` files.
 - `src/models.rs` — the public model facade and shared discriminated-union macro. Request/response structs, enums, aliases, and their implementations live in private per-domain `src/models/*.rs` files and are re-exported without changing the crate-root or `models::*` paths.
 - `src/convert.rs` — `MissingRequiredFields` and conversion documentation; explicit response→request conversions live in private per-domain `src/convert/*.rs` files.
 
 The drift analyzer recursively traverses the private module trees rooted at `client.rs`, `models.rs`, and `meta.rs`. Model declarations remain literal source in that tree; declarations in conversion files do not count as models.
+
+### OpenAPI analyzer (`crates/clickhouse-openapi-analyzer/`)
+
+Private workspace tooling for OpenAPI and Rust inventory, direction-aware comparison, policy configuration, and stable drift reports. It is not published.
 
 The API library can be updated independently of the CLI. When OpenAPI drifts, prefer updating API library on its own, add to CLI separately.
 
@@ -98,6 +102,7 @@ A key that is *present* with a changed type still fails. `Option<T>` absorbs abs
 - `every_response_tree_option_field_omits_none_when_serialized` — `skip_serializing_if` on every response `Option` field.
 - `models_carry_no_serde_default` — via the analyzer's `model_fields_with_serde_default()`.
 - `scim_models_are_outside_the_response_tree` — the 40 `Scim*` schemas have no path in the spec and no `Client` method, so they are legitimately strict, and the test fails if one becomes response-reachable.
+- `integer_schema_fields_are_not_typed_as_float` — integer schemas do not use floating-point Rust fields.
 
 Scope enforcement to the response tree, never to "every model type": operation-unreferenced and request-only schemas resolve in request position, so making them all-`Option` reports genuine `FieldOptionalityMismatch` drift.
 
@@ -180,15 +185,16 @@ Use cargo build, cargo test, cargo clippy, locally.
 Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason to skip a test.
 
 - `tests/common/support.rs` — generic test infra (polling, logging, env helpers, ClickHouse provisioning & cleanup, HTTP query helper). Used by every integration binary. Call `Client` directly from Rust.
-- `tests/integration_test.rs`, `tests/integration_postgres_test.rs` — cloud-service / Postgres-service CRUD lifecycle tests.
+- `tests/integration_test.rs`, `tests/integration_postgres_test.rs`, `tests/integration_org_test.rs` — cloud-service, Postgres-service, and organization lifecycle tests.
 - `tests/clickpipes/` — ClickPipes E2E suite, including external cloud services. Only Postgres CDC (uses ClickHouse & Postgres inside ClickHouse Cloud) is run in CI. Tests for third party services must be executed manually. CI also optionally runs `clickpipe_smoke_test` against a long-lived service when the `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID` repo variable is set (see `.github/workflows/cloud-integration.yml`); the step is skipped when the variable is unset.
 - `spec_coverage_test.rs`: runs the shared analyzer against the vendored OpenAPI snapshot and requires an actionable-drift-free report.
+- Labeled internal PRs classify the exact base-to-head diff with `scripts/classify-cloud-integration.py` and run only affected `service`, `postgres`, `organization`, and `clickpipes` suites. New or renamed API source/test files must be added to its explicit mappings; unknown paths fail closed to all suites. Scheduled runs still select all suites, while manual runs use the requested scope.
 
 ### clickhousectl CLI
 
 - **Clap parsing** — `Cli::try_parse_from` tests next to each command definition (`src/cli.rs`, the owning `src/cloud/<domain>.rs`, and `src/local/cli.rs`). Assert flag names, types, defaults, and repeatability.
 - **Request builders** — unit tests for `build_*_request` helpers next to the owning cloud domain code, asserting on library request-struct fields with minimal + maximal inputs.
-- **Subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock server and assert on the recorded request JSON. Used when the handler has runtime behavior beyond struct construction (file reads, base64 encoding, etc.) — currently ClickPipes.
+- **Subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock server and assert on requests, auth, errors, and output across Cloud domains. Use it when handler runtime behavior is not covered by clap or request-builder tests.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output formatting, platform detection, and other module-local helpers.
 
 ## Dependencies

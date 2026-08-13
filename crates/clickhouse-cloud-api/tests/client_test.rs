@@ -95,6 +95,35 @@ async fn get_organization() {
 }
 
 #[tokio::test]
+async fn get_active_balances_with_pagination() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/activeBalances"))
+        .and(query_param("limit", "25"))
+        .and(query_param("offset", "50"))
+        .respond_with(ok_json(serde_json::json!({
+            "totalRemainingPrepaidCredits": 12.5,
+            "prepaidBalances": [{
+                "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "remainingPrepaidCredits": 12.5,
+                "expirationDate": "2027-01-01T00:00:00Z"
+            }]
+        })))
+        .mount(&s)
+        .await;
+
+    let balances = c
+        .active_balances_get("org-1", Some(25), Some(50))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(balances.total_remaining_prepaid_credits, Some(12.5));
+    assert_eq!(balances.prepaid_balances.unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn update_organization() {
     let (s, c) = setup().await;
 
@@ -165,6 +194,43 @@ async fn get_prometheus_metrics() {
         .await
         .unwrap();
     assert!(resp.contains("ch_metric"));
+}
+
+#[tokio::test]
+async fn discover_organization_prometheus_targets() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/prometheus/discovery"))
+        .and(query_param("filtered_metrics", "false"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([{
+                "targets": ["api.clickhouse.cloud"],
+                "labels": {
+                    "__scheme__": "https",
+                    "__metrics_path__": "/v1/organizations/org-1/services/svc-1/prometheus",
+                    "__param_filtered_metrics": "false",
+                    "clickhouse_org_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "clickhouse_service_id": "b1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "clickhouse_discovery_service_name": "analytics"
+                }
+            }])),
+        )
+        .mount(&s)
+        .await;
+
+    let groups = c
+        .organization_prometheus_discovery_get("org-1", Some("false"))
+        .await
+        .unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        groups[0]
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.scheme.as_deref()),
+        Some("https")
+    );
 }
 
 #[tokio::test]
@@ -1586,6 +1652,7 @@ async fn update_click_pipe_settings() {
         .await;
 
     let body = ClickPipeSettingsPutRequest {
+        kafka_read_committed: true,
         ..Default::default()
     };
     let resp = c
@@ -1626,6 +1693,8 @@ async fn click_pipe_schema_discovery_kafka() {
                 ..Default::default()
             }),
             kinesis: None,
+            object_storage: None,
+            pubsub: None,
         },
     };
     let resp = c
@@ -3105,6 +3174,47 @@ async fn get_quota() {
 // ===========================================================================
 // PostgreSQL Services
 // ===========================================================================
+
+#[tokio::test]
+async fn list_postgres_logs_with_filters() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/logs"))
+        .and(query_param("from_date", "2026-08-01T00:00:00Z"))
+        .and(query_param("to_date", "2026-08-02T00:00:00Z"))
+        .and(query_param("body_contains", "checkpoint"))
+        .and(query_param("severity", "LOG"))
+        .and(query_param("sort_order", "asc"))
+        .and(query_param("limit", "100"))
+        .and(query_param("offset", "20"))
+        .respond_with(ok_json(serde_json::json!([{
+            "timestamp": "2026-08-01T12:00:00Z",
+            "severity": "LOG",
+            "body": "checkpoint complete"
+        }])))
+        .mount(&s)
+        .await;
+
+    let logs = c
+        .postgres_logs_get_list(
+            "org-1",
+            "pg-1",
+            "2026-08-01T00:00:00Z",
+            "2026-08-02T00:00:00Z",
+            Some("checkpoint"),
+            Some("LOG"),
+            Some(&PostgresLogsGetListSortorder::Asc),
+            Some(100),
+            Some(20),
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].body.as_deref(), Some("checkpoint complete"));
+}
 
 #[tokio::test]
 async fn create_postgres_service() {

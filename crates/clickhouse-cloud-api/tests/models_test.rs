@@ -382,12 +382,14 @@ fn deserialize_clickpipe_settings() {
     let json = r#"{
         "streaming_max_insert_wait_ms": 5000,
         "object_storage_concurrency": null,
-        "clickhouse_max_threads": 4
+        "clickhouse_max_threads": 4,
+        "kafka_read_committed": true
     }"#;
     let settings: ClickPipeSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings.streaming_max_insert_wait_ms, Some(5000));
     assert_eq!(settings.object_storage_concurrency, None);
     assert_eq!(settings.clickhouse_max_threads, Some(4));
+    assert!(settings.kafka_read_committed);
 }
 
 #[test]
@@ -1328,7 +1330,7 @@ fn schema_discovery_response_tolerates_dropped_and_null_meta() {
 fn udf_responses_tolerate_dropped_and_null_fields() {
     let dropped: Udf = serde_json::from_str("{}").unwrap();
     let nulled: Udf = serde_json::from_str(
-        r#"{"functionName":null,"runtime":null,"arguments":null,"createdAt":null}"#,
+        r#"{"functionName":null,"runtime":null,"arguments":null,"createdAt":null,"memoryLimitMib":null}"#,
     )
     .unwrap();
 
@@ -3458,11 +3460,34 @@ fn click_pipe_schema_discovery_request_kafka_source() {
         source: ClickPipeSchemaDiscoverySource {
             kafka: Some(ClickPipePostKafkaSource::default()),
             kinesis: None,
+            object_storage: None,
+            pubsub: None,
         },
     };
     let v = serde_json::to_value(&req).unwrap();
     assert!(v["source"]["kafka"].is_object());
     assert!(v["source"].get("kinesis").is_none());
+    assert!(v["source"].get("objectStorage").is_none());
+    assert!(v["source"].get("pubsub").is_none());
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_supports_new_sources() {
+    let object_storage = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            object_storage: Some(ClickPipePostObjectStorageSource::default()),
+            ..Default::default()
+        },
+    };
+    let pubsub = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            pubsub: Some(ClickPipePostPubSubSource::default()),
+            ..Default::default()
+        },
+    };
+
+    assert!(serde_json::to_value(object_storage).unwrap()["source"]["objectStorage"].is_object());
+    assert!(serde_json::to_value(pubsub).unwrap()["source"]["pubsub"].is_object());
 }
 
 #[test]
@@ -3748,8 +3773,10 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
         serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
         ClickPipePostgresPipeTableMappingResponse::default()
     );
-    // `ClickPipeSettings` is an all-optional schema in both directions, so the
-    // split is visible only in the type name the settings endpoints return.
+    // The new non-nullable Kafka setting is required in requests while the
+    // response variant remains tolerant of a dropped key.
+    assert!(serde_json::from_str::<ClickPipeSettings>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").is_err());
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
         ClickPipeSettingsResponse::default()
@@ -3787,6 +3814,10 @@ fn activity_type_new_wire_values_deserialize_to_typed_variants() {
             "service_update_snapshot_configuration",
             ActivityType::Service_update_snapshot_configuration,
         ),
+        ("backup_bucket_create", ActivityType::Backup_bucket_create),
+        ("role_update", ActivityType::Role_update),
+        ("service_mcp_enabled", ActivityType::Service_mcp_enabled),
+        ("udf_create", ActivityType::Udf_create),
     ];
     for (wire, expected) in cases {
         let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
@@ -5247,6 +5278,51 @@ fn organization_quota_typed_enums_round_trip() {
 
     let back: OrganizationQuota = serde_json::from_value(v).unwrap();
     assert_eq!(back, quota);
+}
+
+#[test]
+fn organization_api_key_quota_code_round_trips() {
+    let parsed: OrganizationQuotaQuotacode =
+        serde_json::from_str("\"api-keys-per-organization\"").unwrap();
+    assert_eq!(
+        parsed,
+        OrganizationQuotaQuotacode::Api_keys_per_organization
+    );
+    assert_eq!(parsed.to_string(), "api-keys-per-organization");
+    assert_eq!(
+        serde_json::to_value(parsed).unwrap(),
+        "api-keys-per-organization"
+    );
+}
+
+#[test]
+fn new_response_models_tolerate_absent_and_null_fields() {
+    let balances: ActiveBalances =
+        serde_json::from_str(r#"{"totalRemainingPrepaidCredits":null,"prepaidBalances":null}"#)
+            .unwrap();
+    let balance: ActiveBalance = serde_json::from_str(
+        r#"{"id":null,"remainingPrepaidCredits":null,"totalAmount":null,"amountSpent":null,"startDate":null,"expirationDate":null}"#,
+    )
+    .unwrap();
+    let labels: PrometheusDiscoveryLabels = serde_json::from_str(
+        r#"{"__scheme__":null,"__metrics_path__":null,"__param_filtered_metrics":null,"clickhouse_org_id":null,"clickhouse_service_id":null,"clickhouse_discovery_service_name":null}"#,
+    )
+    .unwrap();
+    let group: PrometheusDiscoveryTargetGroup =
+        serde_json::from_str(r#"{"targets":null,"labels":null}"#).unwrap();
+    let log: PostgresLogEntry =
+        serde_json::from_str(r#"{"timestamp":null,"severity":null,"body":null}"#).unwrap();
+
+    assert_eq!(balances, ActiveBalances::default());
+    assert_eq!(balance, ActiveBalance::default());
+    assert_eq!(labels, PrometheusDiscoveryLabels::default());
+    assert_eq!(group, PrometheusDiscoveryTargetGroup::default());
+    assert_eq!(log, PostgresLogEntry::default());
+    assert_eq!(
+        serde_json::to_value(balances).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(serde_json::to_value(log).unwrap(), serde_json::json!({}));
 }
 
 #[test]
