@@ -632,8 +632,9 @@ impl RustInventory {
                     let mut integer_values = BTreeSet::new();
                     let mut variant_type_names = BTreeSet::new();
                     let mut is_value_enum = !container.untagged;
-                    let mut has_string_values = false;
-                    let mut has_integer_values = false;
+                    let uses_i64_serde_conversion = container.into.as_deref() == Some("i64")
+                        && (container.from.as_deref() == Some("i64")
+                            || container.try_from.as_deref() == Some("i64"));
                     for variant in &item_enum.variants {
                         for field in variant.fields.iter() {
                             collect_type_names(&field.ty, &mut variant_type_names);
@@ -646,28 +647,28 @@ impl RustInventory {
                             is_value_enum = false;
                             continue;
                         }
-                        if let Some((_, discriminant)) = &variant.discriminant {
+                        if uses_i64_serde_conversion {
+                            let Some((_, discriminant)) = &variant.discriminant else {
+                                // Numeric wire values must stay explicit in model source.
+                                is_value_enum = false;
+                                continue;
+                            };
                             if let Some(value) = integer_discriminant(discriminant) {
                                 integer_values.insert(value);
-                                has_integer_values = true;
                             } else {
                                 is_value_enum = false;
                             }
                         } else {
                             let rust_name = variant.ident.unraw().to_string();
                             values.insert(options.rename.unwrap_or(rust_name));
-                            has_string_values = true;
                         }
                     }
-                    is_value_enum &= !(has_string_values && has_integer_values);
                     self.enums.insert(
                         name,
                         EnumInfo {
                             values,
                             integer_values,
-                            uses_i64_serde_conversion: container.into.as_deref() == Some("i64")
-                                && (container.from.as_deref() == Some("i64")
-                                    || container.try_from.as_deref() == Some("i64")),
+                            uses_i64_serde_conversion,
                             is_value_enum,
                             values_const: None,
                             variant_type_names,
@@ -981,6 +982,7 @@ fn dereference(expression: &Expr) -> &Expr {
 
 fn integer_discriminant(expression: &Expr) -> Option<i64> {
     match expression {
+        Expr::Paren(paren) => integer_discriminant(&paren.expr),
         Expr::Lit(literal) => match &literal.lit {
             Lit::Int(value) => value.base10_parse().ok(),
             _ => None,
@@ -992,7 +994,14 @@ fn integer_discriminant(expression: &Expr) -> Option<i64> {
             let Lit::Int(value) = &literal.lit else {
                 return None;
             };
-            value.base10_parse::<i64>().ok()?.checked_neg()
+            let magnitude = value.base10_parse::<u64>().ok()?;
+            if magnitude == (i64::MAX as u64) + 1 {
+                Some(i64::MIN)
+            } else if magnitude <= i64::MAX as u64 {
+                Some(-(magnitude as i64))
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -1157,6 +1166,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_parenthesized_and_minimum_integer_discriminants() {
+        for (source, expected) in [
+            ("(1)", Some(1)),
+            ("(-1)", Some(-1)),
+            ("-9223372036854775808", Some(i64::MIN)),
+            ("-9223372036854775809", None),
+        ] {
+            let expression = syn::parse_str(source).unwrap();
+            assert_eq!(integer_discriminant(&expression), expected, "{source}");
+        }
+    }
+
+    #[test]
     fn inventories_structural_rust_and_serde_details() {
         let client = r#"
             pub struct Client;
@@ -1190,6 +1212,19 @@ mod tests {
                 #[serde(untagged)]
                 Unknown(i64),
             }
+            #[serde(from = "i64", into = "i64")]
+            pub enum NumericValueWithImplicitDiscriminant {
+                Zero = 0,
+                One,
+                #[serde(untagged)]
+                Unknown(i64),
+            }
+            pub enum StringValueWithDiscriminants {
+                #[serde(rename = "ready")]
+                Ready = 1,
+                #[serde(rename = "done")]
+                Done = 2,
+            }
             pub type WidgetAlias = Option<Vec<Box<WidgetType>>>;
             pub struct Aliased { pub values: WidgetAlias }
         "#;
@@ -1220,6 +1255,20 @@ mod tests {
         assert!(inventory.enums["NumericValue"].values.is_empty());
         assert!(inventory.enums["NumericValue"].is_value_enum);
         assert!(inventory.enums["NumericValue"].uses_i64_serde_conversion);
+        assert!(!inventory.enums["NumericValueWithImplicitDiscriminant"].is_value_enum);
+        assert_eq!(
+            inventory.enums["NumericValueWithImplicitDiscriminant"].integer_values,
+            BTreeSet::from([0])
+        );
+        assert_eq!(
+            inventory.enums["StringValueWithDiscriminants"].values,
+            BTreeSet::from(["done".to_string(), "ready".to_string()])
+        );
+        assert!(
+            inventory.enums["StringValueWithDiscriminants"]
+                .integer_values
+                .is_empty()
+        );
         assert_eq!(
             inventory.array_item_type(&inventory.structs["Aliased"].fields["values"].rust_type),
             Some("WidgetType".to_string())

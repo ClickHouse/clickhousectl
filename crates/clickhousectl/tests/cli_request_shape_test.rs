@@ -240,8 +240,6 @@ async fn query_endpoint_create_sends_typed_roles() {
             "sql_console_admin",
             "--open-api-key",
             "key-1",
-            "--allowed-origins",
-            "https://app.example.com",
             "--org-id",
             "org-1",
         ],
@@ -253,7 +251,7 @@ async fn query_endpoint_create_sends_typed_roles() {
         serde_json::json!({
             "roles": ["sql_console_read_only", "sql_console_admin"],
             "openApiKeys": ["key-1"],
-            "allowedOrigins": "https://app.example.com"
+            "allowedOrigins": "*"
         })
     );
 }

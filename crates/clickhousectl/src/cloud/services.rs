@@ -477,7 +477,7 @@ pub enum QueryEndpointCommands {
         #[arg(long = "open-api-key")]
         open_api_key: Vec<String>,
 
-        /// Allowed origins string for browser access
+        /// Allowed origins string for browser access (defaults to "*")
         #[arg(long)]
         allowed_origins: Option<String>,
 
@@ -1229,7 +1229,10 @@ fn build_query_endpoint_create_request(
             .map(|role| parse_serde_enum(role, "role", QueryEndpointRole::VALUES))
             .collect::<Result<_, _>>()?,
         open_api_keys: options.open_api_keys.clone(),
-        allowed_origins: options.allowed_origins.clone().unwrap_or_default(),
+        allowed_origins: options
+            .allowed_origins
+            .clone()
+            .unwrap_or_else(|| "*".to_string()),
     })
 }
 
@@ -4242,7 +4245,7 @@ mod tests {
 
         assert!(request.roles.is_empty());
         assert!(request.open_api_keys.is_empty());
-        assert!(request.allowed_origins.is_empty());
+        assert_eq!(request.allowed_origins, "*");
     }
 
     #[test]
