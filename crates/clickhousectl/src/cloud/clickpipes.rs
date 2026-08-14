@@ -1641,6 +1641,11 @@ async fn clickpipe_settings_update(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
+    let kafka_read_committed = client
+        .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
+        .await?
+        .kafka_read_committed
+        .ok_or("the API response is missing kafka_read_committed")?;
     let request = clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
         streaming_max_insert_wait_ms: streaming_max_insert_wait_ms.map(i64::from),
         object_storage_concurrency: object_storage_concurrency.map(i64::from),
@@ -1651,7 +1656,7 @@ async fn clickpipe_settings_update(
         clickhouse_max_insert_threads: clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function,
         clickhouse_parallel_view_processing,
-        kafka_read_committed: false,
+        kafka_read_committed,
         clickhouse_max_download_threads: None,
         clickhouse_min_insert_block_size_bytes: None,
         clickhouse_parallel_distributed_insert_select: None,
