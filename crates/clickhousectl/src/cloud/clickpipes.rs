@@ -1645,7 +1645,7 @@ async fn clickpipe_settings_update(
         .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
         .await?
         .kafka_read_committed
-        .ok_or("the API response is missing kafka_read_committed")?;
+        .unwrap_or(false);
     let request = clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
         streaming_max_insert_wait_ms: streaming_max_insert_wait_ms.map(i64::from),
         object_storage_concurrency: object_storage_concurrency.map(i64::from),

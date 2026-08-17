@@ -3584,79 +3584,84 @@ async fn mysql_server_id_absent_when_not_passed() {
 // ── ClickPipe settings updates preserve required values ─────────────────────
 
 #[tokio::test]
-async fn clickpipe_settings_update_preserves_kafka_read_committed() {
-    let mock = MockServer::start().await;
+async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() {
     let settings_path = "/v1/organizations/org/services/svc-id/clickpipes/pipe-id/settings";
-    let current_settings = serde_json::json!({
-        "result": { "kafka_read_committed": true },
-        "status": 200,
-        "requestId": "stub-settings-get",
-    });
-    let updated_settings = serde_json::json!({
-        "result": {
-            "streaming_max_insert_wait_ms": 1000,
-            "kafka_read_committed": true,
-        },
-        "status": 200,
-        "requestId": "stub-settings-update",
-    });
+    for (current_settings, expected) in [
+        (serde_json::json!({ "kafka_read_committed": true }), true),
+        (serde_json::json!({}), false),
+    ] {
+        let mock = MockServer::start().await;
+        let current_settings = serde_json::json!({
+            "result": current_settings,
+            "status": 200,
+            "requestId": "stub-settings-get",
+        });
+        let updated_settings = serde_json::json!({
+            "result": {
+                "streaming_max_insert_wait_ms": 1000,
+                "kafka_read_committed": expected,
+            },
+            "status": 200,
+            "requestId": "stub-settings-update",
+        });
 
-    Mock::given(method("GET"))
-        .and(path(settings_path))
-        .respond_with(ResponseTemplate::new(200).set_body_json(current_settings))
-        .mount(&mock)
-        .await;
-    Mock::given(method("PUT"))
-        .and(path(settings_path))
-        .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
-        .mount(&mock)
-        .await;
+        Mock::given(method("GET"))
+            .and(path(settings_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(current_settings))
+            .mount(&mock)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(settings_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
+            .mount(&mock)
+            .await;
 
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "clickpipe",
-            "settings",
-            "update",
-            "svc-id",
-            "pipe-id",
-            "--streaming-max-insert-wait-ms",
-            "1000",
-            "--org-id",
-            "org",
-        ],
-    );
-    assert_success(&output);
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--streaming-max-insert-wait-ms",
+                "1000",
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_success(&output);
 
-    let requests = mock.received_requests().await.unwrap();
-    let request_shape = requests
-        .iter()
-        .map(|request| {
-            (
-                request.method.as_str().to_string(),
-                request.url.path().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        request_shape,
-        vec![
-            ("GET".to_string(), settings_path.to_string()),
-            ("PUT".to_string(), settings_path.to_string()),
-        ]
-    );
+        let requests = mock.received_requests().await.unwrap();
+        let request_shape = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.method.as_str().to_string(),
+                    request.url.path().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_shape,
+            vec![
+                ("GET".to_string(), settings_path.to_string()),
+                ("PUT".to_string(), settings_path.to_string()),
+            ]
+        );
 
-    let put = requests
-        .iter()
-        .find(|request| request.method == wiremock::http::Method::PUT)
-        .expect("no settings PUT request recorded by mock");
-    assert_eq!(
-        serde_json::from_slice::<Value>(&put.body).unwrap(),
-        serde_json::json!({
-            "streaming_max_insert_wait_ms": 1000,
-            "kafka_read_committed": true,
-        })
-    );
+        let put = requests
+            .iter()
+            .find(|request| request.method == wiremock::http::Method::PUT)
+            .expect("no settings PUT request recorded by mock");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&put.body).unwrap(),
+            serde_json::json!({
+                "streaming_max_insert_wait_ms": 1000,
+                "kafka_read_committed": expected,
+            })
+        );
+    }
 }
 
 // ── ClickPipe schema discovery (#289, beta) ────────────────────────────────
