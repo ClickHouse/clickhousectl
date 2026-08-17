@@ -1,6 +1,7 @@
 import importlib.util
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -281,7 +282,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 self.assertTrue(selection.failed_closed)
 
     @mock.patch.object(classifier.subprocess, "run")
-    def test_diffs_the_exact_revisions_with_rename_and_copy_detection(self, run):
+    def test_diffs_from_merge_base_with_rename_and_copy_detection(self, run):
         run.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=0,
@@ -299,13 +300,51 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "--find-renames",
                 "--find-copies",
                 "--find-copies-harder",
-                "base-sha",
-                "head-sha",
+                "base-sha...head-sha",
                 "--",
             ],
             cwd=classifier.REPO_ROOT,
             capture_output=True,
         )
+
+    def test_stale_base_changes_are_excluded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+
+            git("init", "-b", "main")
+            git("config", "user.name", "Cloud Integration Test")
+            git("config", "user.email", "cloud-integration-test@example.com")
+            git("commit", "--allow-empty", "-m", "initial")
+
+            git("checkout", "-b", "feature")
+            source_root = repo / "crates" / "clickhouse-cloud-api" / "src"
+            source_root.mkdir(parents=True)
+            (source_root / "meta.rs").write_text("feature\n")
+            git("add", ".")
+            git("commit", "-m", "feature")
+            head_sha = git("rev-parse", "HEAD")
+
+            git("checkout", "main")
+            source_root.mkdir(parents=True)
+            (source_root / "services.rs").write_text("base advance\n")
+            git("add", ".")
+            git("commit", "-m", "advance base")
+            base_sha = git("rev-parse", "HEAD")
+
+            with mock.patch.object(classifier, "REPO_ROOT", repo):
+                selection = classifier.select_revisions(base_sha, head_sha)
+
+        self.assertEqual(selection.suites, ())
+        self.assertFalse(selection.failed_closed)
 
     def test_git_failures_fail_closed(self):
         cases = [

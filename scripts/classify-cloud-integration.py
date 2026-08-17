@@ -270,8 +270,7 @@ def select_revisions(base_sha: str, head_sha: str) -> Selection:
         "--find-renames",
         "--find-copies",
         "--find-copies-harder",
-        base_sha,
-        head_sha,
+        f"{base_sha}...{head_sha}",
         "--",
     ]
     try:

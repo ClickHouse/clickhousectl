@@ -72,11 +72,24 @@ jobs:
           case "$EVENT_NAME" in
             pull_request)
               test_sha="$PR_HEAD_SHA"
-              requested_scope="affected (PR immediate diff)"
-              if selected="$(python3 scripts/classify-cloud-integration.py "$PR_BASE_SHA" "$PR_HEAD_SHA")"; then
-                :
+              requested_scope="affected (PR merge-base diff)"
+              if git diff --quiet "$PR_BASE_SHA...$PR_HEAD_SHA" -- \
+                .github/workflows/cloud-integration.yml \
+                scripts/classify-cloud-integration.py \
+                scripts/tests/test_classify_cloud_integration.py; then
+                if selected="$(python3 scripts/classify-cloud-integration.py "$PR_BASE_SHA" "$PR_HEAD_SHA")"; then
+                  :
+                else
+                  echo "::warning::Classifier command failed; selecting all suites"
+                  selected="$all_suites"
+                fi
               else
-                echo "::warning::Classifier command failed; selecting all suites"
+                guard_status=$?
+                if [[ "$guard_status" -eq 1 ]]; then
+                  echo "::warning::Cloud integration selection logic changed; selecting all suites"
+                else
+                  echo "::warning::Selection guard diff failed; selecting all suites"
+                fi
                 selected="$all_suites"
               fi
               ;;
