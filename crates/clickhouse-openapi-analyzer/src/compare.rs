@@ -1319,7 +1319,7 @@ mod tests {
             "#,
             serde_json::json!({
                 "required": ["count"],
-                "properties": {"count": {"type": "integer", "enum": [0, 6]}}
+                "properties": {"count": {"type": "integer", "enum": [0.0, 6.0]}}
             }),
             AnalyzerConfig::default(),
         );
