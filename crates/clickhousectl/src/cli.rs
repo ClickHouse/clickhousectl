@@ -11,15 +11,15 @@ pub use crate::local::cli::LocalArgs;
 CONTEXT FOR AGENTS:
   With clickhousectl you can:
   1. Install and use ClickHouse and Postgres locally (`clickhousectl local` commands)
-  2. Manage ClickHouse and Postgres in ClickHouse Cloud  (`clickhousectl cloud` commands)
+  2. Manage ClickHouse and Postgres in ClickHouse Cloud (`clickhousectl cloud` commands)
 
   Install the ClickHouse Agent Skills: `clickhousectl skills --agent X`
 
   For ClickHouse Cloud:
   Create account: `cloud auth signup`
-  Authenticate: OAuth (`cloud auth login` is read-only) or API keys (`cloud auth login --api-key X --api-secret Y` is write)
+  Authenticate: OAuth (`cloud auth login` is read-only) or API keys (`cloud auth login --api-key X --api-secret Y` provides write access)
 
-  Typical local workflow: `clickhousectl local server start` → `chctl local client -q 'SELECT 1;'`
+  Typical local workflow: `clickhousectl local server start` → `clickhousectl local client -q 'SELECT 1;'`
   Typical cloud workflow: `clickhousectl cloud auth signup` → `clickhousectl cloud auth login --api-key X --api-secret Y` → `clickhousectl cloud service create`
   ")]
 pub struct Cli {
@@ -195,9 +195,7 @@ mod tests {
     fn help_points_agents_to_cloud_signup() {
         let mut command = Cli::command();
         let root_help = command.render_long_help().to_string();
-        assert!(root_help.contains(
-            "To create a ClickHouse Cloud account, use `clickhousectl cloud auth signup`."
-        ));
+        assert!(root_help.contains("Create account: `cloud auth signup`"));
 
         let auth = command
             .find_subcommand_mut("cloud")
@@ -205,9 +203,10 @@ mod tests {
             .find_subcommand_mut("auth")
             .expect("auth subcommand");
         let auth_help = auth.render_long_help().to_string();
-        assert!(auth_help.contains(
-            "To create a ClickHouse Cloud account, use `clickhousectl cloud auth signup`."
-        ));
+        assert!(
+            auth_help
+                .contains("Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.")
+        );
 
         let signup_help = auth
             .find_subcommand_mut("signup")

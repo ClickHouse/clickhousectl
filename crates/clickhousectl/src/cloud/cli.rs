@@ -52,7 +52,7 @@ CONTEXT FOR AGENTS:
   Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.
 
   `login` without flags uses OAuth device flow (interactive, read-only).
-  Use API keys for write access (`login --api-key X --api-secret Y` or set CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET)
+  Use API keys for write access (`login --api-key X --api-secret Y` or set CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET).
 
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
 
