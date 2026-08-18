@@ -359,7 +359,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let api_key_uuid = api_key_uuid.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
-                            roles: vec!["sql_console_admin".to_string()],
+                            roles: vec![QueryEndpointRole::SqlConsoleAdmin],
                             open_api_keys: vec![api_key_uuid],
                             allowed_origins: "*".to_string(),
                         };
@@ -410,7 +410,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             .roles
                             .iter()
                             .flatten()
-                            .any(|r| r == "sql_console_admin")
+                            .any(|r| r == &QueryEndpointRole::SqlConsoleAdmin)
                         {
                             return Err(format!(
                                 "get missing sql_console_admin role: {:?}",
@@ -619,7 +619,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let initial_endpoint = initial_endpoint.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
-                            roles: vec!["sql_console_admin".to_string()],
+                            roles: vec![QueryEndpointRole::SqlConsoleAdmin],
                             open_api_keys: vec![api_key_uuid.clone()],
                             allowed_origins: "*".to_string(),
                         };
@@ -652,7 +652,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             .roles
                             .iter()
                             .flatten()
-                            .any(|r| r == "sql_console_admin")
+                            .any(|r| r == &QueryEndpointRole::SqlConsoleAdmin)
                         {
                             return Err(format!(
                                 "re-upsert dropped sql_console_admin role: {:?}",
@@ -2266,7 +2266,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             // 10a. PUT a known-valid window.
             let put_body = UpgradeWindowPutRequest {
                 weekday: 0,
-                start_hour_utc: 0,
+                start_hour_utc: UpgradeWindowStartHourUtc::Hour0,
             };
             let put_window = failures
                 .run(

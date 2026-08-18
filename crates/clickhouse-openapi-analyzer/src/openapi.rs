@@ -55,6 +55,7 @@ pub(crate) enum EnumContext {
 #[derive(Debug, Clone)]
 pub(crate) enum EnumValues {
     Strings(BTreeSet<String>),
+    Integers(BTreeSet<i64>),
     Numeric,
     Mixed,
 }
@@ -739,6 +740,11 @@ fn walk_schema(
                     .map(str::to_string)
                     .collect(),
             )
+        } else if values
+            .iter()
+            .all(|value| integer_enum_value(value).is_some())
+        {
+            EnumValues::Integers(values.iter().filter_map(integer_enum_value).collect())
         } else if values.iter().all(Value::is_number) {
             EnumValues::Numeric
         } else {
@@ -798,6 +804,17 @@ fn walk_schema(
         walk_schema(root, not, path, output);
         path.pop();
     }
+}
+
+fn integer_enum_value(value: &Value) -> Option<i64> {
+    if let Some(value) = value.as_i64() {
+        return Some(value);
+    }
+
+    let value = value.as_f64()?;
+    const I64_MIN: f64 = -9_223_372_036_854_775_808.0;
+    const I64_MAX_EXCLUSIVE: f64 = 9_223_372_036_854_775_808.0;
+    (value.fract() == 0.0 && (I64_MIN..I64_MAX_EXCLUSIVE).contains(&value)).then_some(value as i64)
 }
 
 fn enum_context(root: &Value, path: &[String]) -> EnumContext {
@@ -972,6 +989,34 @@ mod tests {
             inventory.enum_constraints[1].context,
             EnumContext::Parameter { .. }
         ));
+    }
+
+    #[test]
+    fn distinguishes_integer_and_non_integer_numeric_enums() {
+        let spec = serde_json::json!({
+            "paths": {},
+            "components": {"schemas": {
+                "Widget": {"properties": {
+                    "integer": {"enum": [-6.0, 0, 12.0]},
+                    "numeric": {"enum": [0.5, 1.5]}
+                }}
+            }}
+        });
+        let inventory = OpenApiInventory::build(&spec, &AnalyzerConfig::default()).unwrap();
+
+        assert!(inventory.enum_constraints.iter().any(|constraint| {
+            matches!(
+                &constraint.values,
+                EnumValues::Integers(values)
+                    if values == &BTreeSet::from([-6, 0, 12])
+            )
+        }));
+        assert!(
+            inventory
+                .enum_constraints
+                .iter()
+                .any(|constraint| matches!(constraint.values, EnumValues::Numeric))
+        );
     }
 
     #[test]

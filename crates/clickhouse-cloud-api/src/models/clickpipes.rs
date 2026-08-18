@@ -2945,6 +2945,10 @@ pub struct ClickPipeSchemaDiscoverySource {
     pub kafka: Option<ClickPipePostKafkaSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kinesis: Option<ClickPipePostKinesisSource>,
+    #[serde(rename = "objectStorage", skip_serializing_if = "Option::is_none")]
+    pub object_storage: Option<ClickPipePostObjectStorageSource>,
+    #[serde(rename = "pubsub", skip_serializing_if = "Option::is_none")]
+    pub pubsub: Option<ClickPipePostPubSubSource>,
 }
 
 /// `ClickPipePostObjectStorageSource` from the ClickHouse Cloud API.
@@ -3315,6 +3319,8 @@ pub struct ClickPipeSettings {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
+    #[serde(rename = "kafka_read_committed")]
+    pub kafka_read_committed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3348,6 +3354,11 @@ pub struct ClickPipeSettingsResponse {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
+    #[serde(
+        rename = "kafka_read_committed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kafka_read_committed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3377,6 +3388,8 @@ pub struct ClickPipeSettingsPutRequest {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
+    #[serde(rename = "kafka_read_committed")]
+    pub kafka_read_committed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

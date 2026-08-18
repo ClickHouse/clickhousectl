@@ -16,7 +16,7 @@ SPEC.loader.exec_module(drift)
 class DriftScriptTests(unittest.TestCase):
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 2,
+            "schema_version": 3,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -245,7 +245,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_receives_the_rust_source_tree(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 2, "findings": []}),
+            stdout=json.dumps({"schema_version": 3, "findings": []}),
             stderr="",
         )
 
@@ -269,7 +269,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_report_schema_is_validated(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 3}),
+            stdout=json.dumps({"schema_version": 2}),
             stderr="",
         )
         with self.assertRaisesRegex(RuntimeError, "schema version"):

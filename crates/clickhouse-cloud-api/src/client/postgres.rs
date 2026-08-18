@@ -363,6 +363,53 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// List Postgres logs
+    #[allow(clippy::too_many_arguments)]
+    pub async fn postgres_logs_get_list(
+        &self,
+        organization_id: &str,
+        postgres_id: &str,
+        from_date: &str,
+        to_date: &str,
+        body_contains: Option<&str>,
+        severity: Option<&str>,
+        sort_order: Option<&PostgresLogsGetListSortorder>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ApiResponse<Vec<PostgresLogEntry>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/logs");
+        let mut req = self.request(reqwest::Method::GET, &path);
+        req = req.query(&[("from_date", from_date), ("to_date", to_date)]);
+        if let Some(v) = body_contains {
+            req = req.query(&[("body_contains", v)]);
+        }
+        if let Some(v) = severity {
+            req = req.query(&[("severity", v)]);
+        }
+        if let Some(v) = sort_order {
+            req = req.query(&[("sort_order", v)]);
+        }
+        if let Some(v) = limit {
+            req = req.query(&[("limit", v)]);
+        }
+        if let Some(v) = offset {
+            req = req.query(&[("offset", v)]);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get Postgres metrics
     #[allow(clippy::too_many_arguments)]
     pub async fn postgres_instance_metrics_get(
@@ -406,8 +453,8 @@ impl Client {
         db_user: Option<&str>,
         db_operation: Option<&str>,
         app: Option<&str>,
-        sort_by: Option<&str>,
-        sort_order: Option<&str>,
+        sort_by: Option<&SlowQueryPatternsGetListSortby>,
+        sort_order: Option<&SlowQueryPatternsGetListSortorder>,
         limit: Option<i64>,
         offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<PostgresSlowQueryPattern>>, Error> {

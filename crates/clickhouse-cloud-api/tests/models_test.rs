@@ -382,12 +382,14 @@ fn deserialize_clickpipe_settings() {
     let json = r#"{
         "streaming_max_insert_wait_ms": 5000,
         "object_storage_concurrency": null,
-        "clickhouse_max_threads": 4
+        "clickhouse_max_threads": 4,
+        "kafka_read_committed": true
     }"#;
     let settings: ClickPipeSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings.streaming_max_insert_wait_ms, Some(5000));
     assert_eq!(settings.object_storage_concurrency, None);
     assert_eq!(settings.clickhouse_max_threads, Some(4));
+    assert!(settings.kafka_read_committed);
 }
 
 #[test]
@@ -903,12 +905,34 @@ fn serialize_postgres_read_replica_request() {
 fn serialize_byoc_infrastructure_post_request() {
     let req = ByocInfrastructurePostRequest {
         account_id: "123456789012".to_string(),
+        availability_zone_suffixes: vec![
+            ByocAvailabilityZoneSuffix::A,
+            ByocAvailabilityZoneSuffix::B,
+            ByocAvailabilityZoneSuffix::C,
+            ByocAvailabilityZoneSuffix::D,
+            ByocAvailabilityZoneSuffix::E,
+            ByocAvailabilityZoneSuffix::F,
+        ],
         display_name: "My BYOC".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["accountId"], "123456789012");
+    assert_eq!(
+        json["availabilityZoneSuffixes"],
+        serde_json::json!(["a", "b", "c", "d", "e", "f"])
+    );
     assert_eq!(json["displayName"], "My BYOC");
+}
+
+#[test]
+fn byoc_availability_zone_suffix_preserves_unknown_values() {
+    let suffix: ByocAvailabilityZoneSuffix = serde_json::from_str(r#""future""#).unwrap();
+    assert_eq!(
+        suffix,
+        ByocAvailabilityZoneSuffix::Unknown("future".to_string())
+    );
+    assert_eq!(serde_json::to_string(&suffix).unwrap(), r#""future""#);
 }
 
 #[test]
@@ -1004,12 +1028,39 @@ fn serialize_create_reverse_private_endpoint() {
 fn serialize_instance_query_endpoint_post_request() {
     let req = InstanceServiceQueryApiEndpointsPostRequest {
         allowed_origins: "https://example.com".to_string(),
-        roles: vec!["reader".to_string()],
+        roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["allowedOrigins"], "https://example.com");
-    assert_eq!(json["roles"], serde_json::json!(["reader"]));
+    assert_eq!(json["roles"], serde_json::json!(["sql_console_read_only"]));
+}
+
+#[test]
+fn deserialize_query_endpoint_roles_tolerates_unknown_values() {
+    let endpoint: ServiceQueryAPIEndpoint = serde_json::from_value(serde_json::json!({
+        "roles": ["sql_console_admin", "future_role"]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        endpoint.roles,
+        Some(vec![
+            QueryEndpointRole::SqlConsoleAdmin,
+            QueryEndpointRole::Unknown("future_role".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn slow_query_sort_enums_preserve_unknown_values() {
+    let sort_by: SlowQueryPatternsGetListSortby =
+        serde_json::from_str(r#""future_metric""#).unwrap();
+    let sort_order: SlowQueryPatternsGetListSortorder =
+        serde_json::from_str(r#""future_order""#).unwrap();
+
+    assert_eq!(sort_by.to_string(), "future_metric");
+    assert_eq!(sort_order.to_string(), "future_order");
 }
 
 #[test]
@@ -1328,7 +1379,7 @@ fn schema_discovery_response_tolerates_dropped_and_null_meta() {
 fn udf_responses_tolerate_dropped_and_null_fields() {
     let dropped: Udf = serde_json::from_str("{}").unwrap();
     let nulled: Udf = serde_json::from_str(
-        r#"{"functionName":null,"runtime":null,"arguments":null,"createdAt":null}"#,
+        r#"{"functionName":null,"runtime":null,"arguments":null,"createdAt":null,"memoryLimitMib":null}"#,
     )
     .unwrap();
 
@@ -1750,12 +1801,12 @@ fn scaling_schedule_entry_response_converts_back_into_a_request_entry() {
 fn upgrade_window_response_converts_back_into_a_put_body() {
     let request = UpgradeWindowPutRequest::try_from(UpgradeWindow {
         // `duration` is response-only and does not cross over.
-        duration: Some(21600),
-        start_hour_utc: Some(6),
+        duration: Some(UpgradeWindowDuration::SixHours),
+        start_hour_utc: Some(UpgradeWindowStartHourUtc::Hour6),
         weekday: Some(2),
     })
     .unwrap();
-    assert_eq!(request.start_hour_utc, 6);
+    assert_eq!(request.start_hour_utc, UpgradeWindowStartHourUtc::Hour6);
     assert_eq!(request.weekday, 2);
 
     let missing = UpgradeWindowPutRequest::try_from(UpgradeWindow::default()).unwrap_err();
@@ -2048,24 +2099,68 @@ fn deserialize_upgrade_window() {
     let json = r#"{
         "weekday": 2,
         "startHourUtc": 6,
-        "duration": 21600
+        "duration": 6
     }"#;
     let w: UpgradeWindow = serde_json::from_str(json).unwrap();
     assert_eq!(w.weekday, Some(2));
-    assert_eq!(w.start_hour_utc, Some(6));
-    assert_eq!(w.duration, Some(21600));
+    assert_eq!(w.start_hour_utc, Some(UpgradeWindowStartHourUtc::Hour6));
+    assert_eq!(w.duration, Some(UpgradeWindowDuration::SixHours));
 
     let round_tripped = serde_json::to_value(&w).unwrap();
     assert_eq!(round_tripped["startHourUtc"], 6);
     assert_eq!(round_tripped["weekday"], 2);
-    assert_eq!(round_tripped["duration"], 21600);
+    assert_eq!(round_tripped["duration"], 6);
+}
+
+#[test]
+fn upgrade_window_numeric_enums_round_trip_every_known_value() {
+    for (wire, value) in [
+        (0, UpgradeWindowStartHourUtc::Hour0),
+        (6, UpgradeWindowStartHourUtc::Hour6),
+        (12, UpgradeWindowStartHourUtc::Hour12),
+        (18, UpgradeWindowStartHourUtc::Hour18),
+    ] {
+        assert_eq!(serde_json::to_value(value).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<UpgradeWindowStartHourUtc>(wire.into()).unwrap(),
+            value
+        );
+    }
+
+    assert_eq!(
+        serde_json::to_value(UpgradeWindowDuration::SixHours).unwrap(),
+        6
+    );
+    assert_eq!(
+        serde_json::from_value::<UpgradeWindowDuration>(serde_json::json!(6)).unwrap(),
+        UpgradeWindowDuration::SixHours
+    );
+}
+
+#[test]
+fn deserialize_upgrade_window_tolerates_unknown_numeric_values() {
+    let window: UpgradeWindow = serde_json::from_value(serde_json::json!({
+        "startHourUtc": 3,
+        "duration": 21600
+    }))
+    .unwrap();
+
+    assert_eq!(
+        window.start_hour_utc,
+        Some(UpgradeWindowStartHourUtc::Unknown(3))
+    );
+    assert_eq!(window.duration, Some(UpgradeWindowDuration::Unknown(21600)));
+    assert_eq!(
+        serde_json::to_value(window).unwrap(),
+        serde_json::json!({"startHourUtc": 3, "duration": 21600})
+    );
 }
 
 #[test]
 fn serialize_upgrade_window_put_request() {
     let req = UpgradeWindowPutRequest {
         weekday: 5,
-        start_hour_utc: 18,
+        start_hour_utc: UpgradeWindowStartHourUtc::Hour18,
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["weekday"], 5);
@@ -3458,11 +3553,34 @@ fn click_pipe_schema_discovery_request_kafka_source() {
         source: ClickPipeSchemaDiscoverySource {
             kafka: Some(ClickPipePostKafkaSource::default()),
             kinesis: None,
+            object_storage: None,
+            pubsub: None,
         },
     };
     let v = serde_json::to_value(&req).unwrap();
     assert!(v["source"]["kafka"].is_object());
     assert!(v["source"].get("kinesis").is_none());
+    assert!(v["source"].get("objectStorage").is_none());
+    assert!(v["source"].get("pubsub").is_none());
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_supports_new_sources() {
+    let object_storage = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            object_storage: Some(ClickPipePostObjectStorageSource::default()),
+            ..Default::default()
+        },
+    };
+    let pubsub = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            pubsub: Some(ClickPipePostPubSubSource::default()),
+            ..Default::default()
+        },
+    };
+
+    assert!(serde_json::to_value(object_storage).unwrap()["source"]["objectStorage"].is_object());
+    assert!(serde_json::to_value(pubsub).unwrap()["source"]["pubsub"].is_object());
 }
 
 #[test]
@@ -3748,8 +3866,10 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
         serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
         ClickPipePostgresPipeTableMappingResponse::default()
     );
-    // `ClickPipeSettings` is an all-optional schema in both directions, so the
-    // split is visible only in the type name the settings endpoints return.
+    // The new non-nullable Kafka setting is required in requests while the
+    // response variant remains tolerant of a dropped key.
+    assert!(serde_json::from_str::<ClickPipeSettings>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").is_err());
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
         ClickPipeSettingsResponse::default()
@@ -3787,6 +3907,10 @@ fn activity_type_new_wire_values_deserialize_to_typed_variants() {
             "service_update_snapshot_configuration",
             ActivityType::Service_update_snapshot_configuration,
         ),
+        ("backup_bucket_create", ActivityType::Backup_bucket_create),
+        ("role_update", ActivityType::Role_update),
+        ("service_mcp_enabled", ActivityType::Service_mcp_enabled),
+        ("udf_create", ActivityType::Udf_create),
     ];
     for (wire, expected) in cases {
         let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
@@ -5247,6 +5371,51 @@ fn organization_quota_typed_enums_round_trip() {
 
     let back: OrganizationQuota = serde_json::from_value(v).unwrap();
     assert_eq!(back, quota);
+}
+
+#[test]
+fn organization_api_key_quota_code_round_trips() {
+    let parsed: OrganizationQuotaQuotacode =
+        serde_json::from_str("\"api-keys-per-organization\"").unwrap();
+    assert_eq!(
+        parsed,
+        OrganizationQuotaQuotacode::Api_keys_per_organization
+    );
+    assert_eq!(parsed.to_string(), "api-keys-per-organization");
+    assert_eq!(
+        serde_json::to_value(parsed).unwrap(),
+        "api-keys-per-organization"
+    );
+}
+
+#[test]
+fn new_response_models_tolerate_absent_and_null_fields() {
+    let balances: ActiveBalances =
+        serde_json::from_str(r#"{"totalRemainingPrepaidCredits":null,"prepaidBalances":null}"#)
+            .unwrap();
+    let balance: ActiveBalance = serde_json::from_str(
+        r#"{"id":null,"remainingPrepaidCredits":null,"totalAmount":null,"amountSpent":null,"startDate":null,"expirationDate":null}"#,
+    )
+    .unwrap();
+    let labels: PrometheusDiscoveryLabels = serde_json::from_str(
+        r#"{"__scheme__":null,"__metrics_path__":null,"__param_filtered_metrics":null,"clickhouse_org_id":null,"clickhouse_service_id":null,"clickhouse_discovery_service_name":null}"#,
+    )
+    .unwrap();
+    let group: PrometheusDiscoveryTargetGroup =
+        serde_json::from_str(r#"{"targets":null,"labels":null}"#).unwrap();
+    let log: PostgresLogEntry =
+        serde_json::from_str(r#"{"timestamp":null,"severity":null,"body":null}"#).unwrap();
+
+    assert_eq!(balances, ActiveBalances::default());
+    assert_eq!(balance, ActiveBalance::default());
+    assert_eq!(labels, PrometheusDiscoveryLabels::default());
+    assert_eq!(group, PrometheusDiscoveryTargetGroup::default());
+    assert_eq!(log, PostgresLogEntry::default());
+    assert_eq!(
+        serde_json::to_value(balances).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(serde_json::to_value(log).unwrap(), serde_json::json!({}));
 }
 
 #[test]

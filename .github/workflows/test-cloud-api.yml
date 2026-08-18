@@ -7,6 +7,7 @@ on:
       - "crates/clickhouse-cloud-api/**"
       - "crates/clickhouse-openapi-analyzer/**"
       - "scripts/check-openapi-drift.py"
+      - "scripts/classify-cloud-integration.py"
       - "scripts/tests/**"
       - "Cargo.toml"
       - "Cargo.lock"

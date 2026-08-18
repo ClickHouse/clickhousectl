@@ -188,6 +188,136 @@ pub enum ActivityType {
     Service_update_core_dump,
     #[serde(rename = "backup_delete")]
     Backup_delete,
+    #[serde(rename = "backup_bucket_archive")]
+    Backup_bucket_archive,
+    #[serde(rename = "backup_bucket_create")]
+    Backup_bucket_create,
+    #[serde(rename = "backup_bucket_delete")]
+    Backup_bucket_delete,
+    #[serde(rename = "backup_bucket_update")]
+    Backup_bucket_update,
+    #[serde(rename = "datadog_integration_create")]
+    Datadog_integration_create,
+    #[serde(rename = "datadog_integration_delete")]
+    Datadog_integration_delete,
+    #[serde(rename = "delete_organization")]
+    Delete_organization,
+    #[serde(rename = "organization_member_remove_roles")]
+    Organization_member_remove_roles,
+    #[serde(rename = "organization_saml_connection_delete")]
+    Organization_saml_connection_delete,
+    #[serde(rename = "organization_update_core_dumps")]
+    Organization_update_core_dumps,
+    #[serde(rename = "organization_update_hipaa_status")]
+    Organization_update_hipaa_status,
+    #[serde(rename = "organization_update_pci_compliance")]
+    Organization_update_pci_compliance,
+    #[serde(rename = "organization_update_private_endpoints")]
+    Organization_update_private_endpoints,
+    #[serde(rename = "organization_update_spend_alert")]
+    Organization_update_spend_alert,
+    #[serde(rename = "promo_code_claim")]
+    Promo_code_claim,
+    #[serde(rename = "role_create")]
+    Role_create,
+    #[serde(rename = "role_delete")]
+    Role_delete,
+    #[serde(rename = "role_resources_delete")]
+    Role_resources_delete,
+    #[serde(rename = "role_update")]
+    Role_update,
+    #[serde(rename = "schema_advisor_approve_plan")]
+    Schema_advisor_approve_plan,
+    #[serde(rename = "schema_advisor_drop_sandbox")]
+    Schema_advisor_drop_sandbox,
+    #[serde(rename = "schema_advisor_exchange_tables")]
+    Schema_advisor_exchange_tables,
+    #[serde(rename = "schema_advisor_generate_plan")]
+    Schema_advisor_generate_plan,
+    #[serde(rename = "schema_advisor_run_benchmark")]
+    Schema_advisor_run_benchmark,
+    #[serde(rename = "schema_advisor_seed")]
+    Schema_advisor_seed,
+    #[serde(rename = "schema_advisor_start_benchmark")]
+    Schema_advisor_start_benchmark,
+    #[serde(rename = "schema_advisor_start_deployment")]
+    Schema_advisor_start_deployment,
+    #[serde(rename = "schema_advisor_start_promotion")]
+    Schema_advisor_start_promotion,
+    #[serde(rename = "scim_group_create")]
+    Scim_group_create,
+    #[serde(rename = "scim_group_delete")]
+    Scim_group_delete,
+    #[serde(rename = "scim_group_update")]
+    Scim_group_update,
+    #[serde(rename = "scim_user_profile_update")]
+    Scim_user_profile_update,
+    #[serde(rename = "service_delete_upgrade_window")]
+    Service_delete_upgrade_window,
+    #[serde(rename = "service_encryption_key_check_failed")]
+    Service_encryption_key_check_failed,
+    #[serde(rename = "service_encryption_key_rotated")]
+    Service_encryption_key_rotated,
+    #[serde(rename = "service_encryption_key_rotation_failed")]
+    Service_encryption_key_rotation_failed,
+    #[serde(rename = "service_mcp_disabled")]
+    Service_mcp_disabled,
+    #[serde(rename = "service_mcp_enabled")]
+    Service_mcp_enabled,
+    #[serde(rename = "service_restart_encryption_key_rotation")]
+    Service_restart_encryption_key_rotation,
+    #[serde(rename = "service_scaled_down_for_tier_change")]
+    Service_scaled_down_for_tier_change,
+    #[serde(rename = "service_stop_encryption_key_inaccessible")]
+    Service_stop_encryption_key_inaccessible,
+    #[serde(rename = "service_trigger_failover")]
+    Service_trigger_failover,
+    #[serde(rename = "service_trigger_recovery")]
+    Service_trigger_recovery,
+    #[serde(rename = "service_update_autoscaling_schedule")]
+    Service_update_autoscaling_schedule,
+    #[serde(rename = "service_update_collector_ip_access_list")]
+    Service_update_collector_ip_access_list,
+    #[serde(rename = "service_update_direct_connection")]
+    Service_update_direct_connection,
+    #[serde(rename = "service_update_mysql_interface")]
+    Service_update_mysql_interface,
+    #[serde(rename = "service_update_query_endpoints")]
+    Service_update_query_endpoints,
+    #[serde(rename = "service_update_sql_console_jwt_auth")]
+    Service_update_sql_console_jwt_auth,
+    #[serde(rename = "service_update_upgrade_window")]
+    Service_update_upgrade_window,
+    #[serde(rename = "service_upgrade")]
+    Service_upgrade,
+    #[serde(rename = "transfer_credits_in")]
+    Transfer_credits_in,
+    #[serde(rename = "transfer_credits_out")]
+    Transfer_credits_out,
+    #[serde(rename = "udf_attach")]
+    Udf_attach,
+    #[serde(rename = "udf_create")]
+    Udf_create,
+    #[serde(rename = "udf_delete")]
+    Udf_delete,
+    #[serde(rename = "udf_detach")]
+    Udf_detach,
+    #[serde(rename = "udf_rebuild")]
+    Udf_rebuild,
+    #[serde(rename = "udf_redeploy")]
+    Udf_redeploy,
+    #[serde(rename = "udf_update")]
+    Udf_update,
+    #[serde(rename = "udf_update_services")]
+    Udf_update_services,
+    #[serde(rename = "udf_version_create")]
+    Udf_version_create,
+    #[serde(rename = "udf_version_delete")]
+    Udf_version_delete,
+    #[serde(rename = "warehouse_update_name")]
+    Warehouse_update_name,
+    #[serde(rename = "warehouse_update_release_channel")]
+    Warehouse_update_release_channel,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -273,6 +403,125 @@ impl std::fmt::Display for ActivityType {
             Self::Service_maintenance_end => write!(f, "service_maintenance_end"),
             Self::Service_update_core_dump => write!(f, "service_update_core_dump"),
             Self::Backup_delete => write!(f, "backup_delete"),
+            Self::Backup_bucket_archive => write!(f, "backup_bucket_archive"),
+            Self::Backup_bucket_create => write!(f, "backup_bucket_create"),
+            Self::Backup_bucket_delete => write!(f, "backup_bucket_delete"),
+            Self::Backup_bucket_update => write!(f, "backup_bucket_update"),
+            Self::Datadog_integration_create => write!(f, "datadog_integration_create"),
+            Self::Datadog_integration_delete => write!(f, "datadog_integration_delete"),
+            Self::Delete_organization => write!(f, "delete_organization"),
+            Self::Organization_member_remove_roles => {
+                write!(f, "organization_member_remove_roles")
+            }
+            Self::Organization_saml_connection_delete => {
+                write!(f, "organization_saml_connection_delete")
+            }
+            Self::Organization_update_core_dumps => {
+                write!(f, "organization_update_core_dumps")
+            }
+            Self::Organization_update_hipaa_status => {
+                write!(f, "organization_update_hipaa_status")
+            }
+            Self::Organization_update_pci_compliance => {
+                write!(f, "organization_update_pci_compliance")
+            }
+            Self::Organization_update_private_endpoints => {
+                write!(f, "organization_update_private_endpoints")
+            }
+            Self::Organization_update_spend_alert => {
+                write!(f, "organization_update_spend_alert")
+            }
+            Self::Promo_code_claim => write!(f, "promo_code_claim"),
+            Self::Role_create => write!(f, "role_create"),
+            Self::Role_delete => write!(f, "role_delete"),
+            Self::Role_resources_delete => write!(f, "role_resources_delete"),
+            Self::Role_update => write!(f, "role_update"),
+            Self::Schema_advisor_approve_plan => write!(f, "schema_advisor_approve_plan"),
+            Self::Schema_advisor_drop_sandbox => write!(f, "schema_advisor_drop_sandbox"),
+            Self::Schema_advisor_exchange_tables => {
+                write!(f, "schema_advisor_exchange_tables")
+            }
+            Self::Schema_advisor_generate_plan => write!(f, "schema_advisor_generate_plan"),
+            Self::Schema_advisor_run_benchmark => {
+                write!(f, "schema_advisor_run_benchmark")
+            }
+            Self::Schema_advisor_seed => write!(f, "schema_advisor_seed"),
+            Self::Schema_advisor_start_benchmark => {
+                write!(f, "schema_advisor_start_benchmark")
+            }
+            Self::Schema_advisor_start_deployment => {
+                write!(f, "schema_advisor_start_deployment")
+            }
+            Self::Schema_advisor_start_promotion => {
+                write!(f, "schema_advisor_start_promotion")
+            }
+            Self::Scim_group_create => write!(f, "scim_group_create"),
+            Self::Scim_group_delete => write!(f, "scim_group_delete"),
+            Self::Scim_group_update => write!(f, "scim_group_update"),
+            Self::Scim_user_profile_update => write!(f, "scim_user_profile_update"),
+            Self::Service_delete_upgrade_window => {
+                write!(f, "service_delete_upgrade_window")
+            }
+            Self::Service_encryption_key_check_failed => {
+                write!(f, "service_encryption_key_check_failed")
+            }
+            Self::Service_encryption_key_rotated => {
+                write!(f, "service_encryption_key_rotated")
+            }
+            Self::Service_encryption_key_rotation_failed => {
+                write!(f, "service_encryption_key_rotation_failed")
+            }
+            Self::Service_mcp_disabled => write!(f, "service_mcp_disabled"),
+            Self::Service_mcp_enabled => write!(f, "service_mcp_enabled"),
+            Self::Service_restart_encryption_key_rotation => {
+                write!(f, "service_restart_encryption_key_rotation")
+            }
+            Self::Service_scaled_down_for_tier_change => {
+                write!(f, "service_scaled_down_for_tier_change")
+            }
+            Self::Service_stop_encryption_key_inaccessible => {
+                write!(f, "service_stop_encryption_key_inaccessible")
+            }
+            Self::Service_trigger_failover => write!(f, "service_trigger_failover"),
+            Self::Service_trigger_recovery => write!(f, "service_trigger_recovery"),
+            Self::Service_update_autoscaling_schedule => {
+                write!(f, "service_update_autoscaling_schedule")
+            }
+            Self::Service_update_collector_ip_access_list => {
+                write!(f, "service_update_collector_ip_access_list")
+            }
+            Self::Service_update_direct_connection => {
+                write!(f, "service_update_direct_connection")
+            }
+            Self::Service_update_mysql_interface => {
+                write!(f, "service_update_mysql_interface")
+            }
+            Self::Service_update_query_endpoints => {
+                write!(f, "service_update_query_endpoints")
+            }
+            Self::Service_update_sql_console_jwt_auth => {
+                write!(f, "service_update_sql_console_jwt_auth")
+            }
+            Self::Service_update_upgrade_window => {
+                write!(f, "service_update_upgrade_window")
+            }
+            Self::Service_upgrade => write!(f, "service_upgrade"),
+            Self::Transfer_credits_in => write!(f, "transfer_credits_in"),
+            Self::Transfer_credits_out => write!(f, "transfer_credits_out"),
+            Self::Udf_attach => write!(f, "udf_attach"),
+            Self::Udf_create => write!(f, "udf_create"),
+            Self::Udf_delete => write!(f, "udf_delete"),
+            Self::Udf_detach => write!(f, "udf_detach"),
+            Self::Udf_rebuild => write!(f, "udf_rebuild"),
+            Self::Udf_redeploy => write!(f, "udf_redeploy"),
+            Self::Udf_update => write!(f, "udf_update"),
+            Self::Udf_update_services => write!(f, "udf_update_services"),
+            Self::Udf_version_create => write!(f, "udf_version_create"),
+            Self::Udf_version_delete => write!(f, "udf_version_delete"),
+            Self::Warehouse_update_name => write!(f, "warehouse_update_name"),
+            Self::Warehouse_update_release_channel => {
+                write!(f, "warehouse_update_release_channel")
+            }
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -299,8 +548,16 @@ pub struct Activity {
     pub organization_id: Option<String>,
     #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
     pub service_id: Option<String>,
+    #[serde(rename = "targetActorIds", skip_serializing_if = "Option::is_none")]
+    pub target_actor_ids: Option<Vec<String>>,
     #[serde(rename = "targetKeyId", skip_serializing_if = "Option::is_none")]
     pub target_key_id: Option<String>,
+    #[serde(rename = "targetResourceIds", skip_serializing_if = "Option::is_none")]
+    pub target_resource_ids: Option<Vec<String>>,
+    #[serde(rename = "targetRoleIds", skip_serializing_if = "Option::is_none")]
+    pub target_role_ids: Option<Vec<String>>,
+    #[serde(rename = "targetRoleNames", skip_serializing_if = "Option::is_none")]
+    pub target_role_names: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ActivityType>,
     #[serde(rename = "userAgent", skip_serializing_if = "Option::is_none")]

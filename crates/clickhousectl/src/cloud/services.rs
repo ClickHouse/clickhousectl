@@ -9,13 +9,13 @@ use clap::Subcommand;
 use clap::builder::PossibleValuesParser;
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
-    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, ServicPrivateEndpointePostRequest,
-    Service, ServiceEndpoint, ServiceEndpointChange, ServiceEndpointChangeProtocol,
-    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
-    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
-    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
-    ServiceReplicaScalingPatchRequest, ServiceState, ServiceStatePatchRequest,
-    ServiceStatePatchRequestCommand,
+    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
+    ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
+    ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
+    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
+    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
+    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
+    ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
 use std::io::IsTerminal;
 use tabled::{Table, Tabled, settings::Style};
@@ -470,14 +470,14 @@ pub enum QueryEndpointCommands {
         service_id: String,
 
         /// Roles to grant access (can be specified multiple times)
-        #[arg(long)]
+        #[arg(long, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
         role: Vec<String>,
 
         /// OpenAPI key IDs to authorize
         #[arg(long = "open-api-key")]
         open_api_key: Vec<String>,
 
-        /// Allowed origins string for browser access
+        /// Allowed origins string for browser access (defaults to "*")
         #[arg(long)]
         allowed_origins: Option<String>,
 
@@ -1221,12 +1221,19 @@ fn build_service_password_patch_request(
 
 fn build_query_endpoint_create_request(
     options: &QueryEndpointCreateOptions,
-) -> InstanceServiceQueryApiEndpointsPostRequest {
-    InstanceServiceQueryApiEndpointsPostRequest {
-        roles: options.roles.clone(),
+) -> Result<InstanceServiceQueryApiEndpointsPostRequest, Box<dyn std::error::Error>> {
+    Ok(InstanceServiceQueryApiEndpointsPostRequest {
+        roles: options
+            .roles
+            .iter()
+            .map(|role| parse_serde_enum(role, "role", QueryEndpointRole::VALUES))
+            .collect::<Result<_, _>>()?,
         open_api_keys: options.open_api_keys.clone(),
-        allowed_origins: options.allowed_origins.clone().unwrap_or_default(),
-    }
+        allowed_origins: options
+            .allowed_origins
+            .clone()
+            .unwrap_or_else(|| "*".to_string()),
+    })
 }
 
 fn build_private_endpoint_create_request(
@@ -1646,7 +1653,7 @@ async fn query_endpoint_create(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
-    let request = build_query_endpoint_create_request(&options);
+    let request = build_query_endpoint_create_request(&options)?;
     let endpoint = client
         .create_query_endpoint(&org_id, service_id, &request)
         .await?;
@@ -1658,7 +1665,13 @@ async fn query_endpoint_create(
         println!("  ID: {}", or_absent(endpoint.id.as_deref()));
         println!(
             "  Roles: {}",
-            or_absent(endpoint.roles.as_ref().map(|roles| roles.join(", ")))
+            or_absent(endpoint.roles.as_ref().map(|roles| {
+                roles
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }))
         );
     }
     Ok(())
@@ -3216,9 +3229,9 @@ mod tests {
             "create",
             "svc-1",
             "--role",
-            "admin",
+            "sql_console_read_only",
             "--role",
-            "developer",
+            "sql_console_admin",
             "--open-api-key",
             "key-1",
             "--open-api-key",
@@ -3242,7 +3255,7 @@ mod tests {
             panic!("expected query-endpoint create");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(role, vec!["admin", "developer"]);
+        assert_eq!(role, vec!["sql_console_read_only", "sql_console_admin"]);
         assert_eq!(open_api_key, vec!["key-1", "key-2"]);
         assert_eq!(allowed_origins.as_deref(), Some("https://example.com"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
@@ -3272,6 +3285,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn rejects_unknown_query_endpoint_role() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query-endpoint",
+            "create",
+            "svc-1",
+            "--role",
+            "admin",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]
@@ -4211,23 +4240,34 @@ mod tests {
 
     #[test]
     fn build_query_endpoint_create_request_supports_minimal_fields() {
-        let request = build_query_endpoint_create_request(&QueryEndpointCreateOptions::default());
+        let request =
+            build_query_endpoint_create_request(&QueryEndpointCreateOptions::default()).unwrap();
 
         assert!(request.roles.is_empty());
         assert!(request.open_api_keys.is_empty());
-        assert!(request.allowed_origins.is_empty());
+        assert_eq!(request.allowed_origins, "*");
     }
 
     #[test]
     fn build_query_endpoint_create_request_supports_maximal_fields() {
         let request = build_query_endpoint_create_request(&QueryEndpointCreateOptions {
-            roles: vec!["admin".to_string(), "developer".to_string()],
+            roles: vec![
+                "sql_console_read_only".to_string(),
+                "sql_console_admin".to_string(),
+            ],
             open_api_keys: vec!["key-1".to_string(), "key-2".to_string()],
             allowed_origins: Some("https://example.com".to_string()),
             org_id: None,
-        });
+        })
+        .unwrap();
 
-        assert_eq!(request.roles, vec!["admin", "developer"]);
+        assert_eq!(
+            request.roles,
+            vec![
+                QueryEndpointRole::SqlConsoleReadOnly,
+                QueryEndpointRole::SqlConsoleAdmin,
+            ]
+        );
         assert_eq!(request.open_api_keys, vec!["key-1", "key-2"]);
         assert_eq!(request.allowed_origins, "https://example.com");
     }

@@ -12,15 +12,8 @@ use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
-    InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry,
+    InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry, QueryEndpointRole,
 };
-
-/// The role attached to the query endpoint binding. Grants the key read +
-/// write SQL access through the query endpoint, scoped to this single
-/// service. The binding (not the API key) is what enforces the scope, so the
-/// key cannot reach other services in the org regardless of any future
-/// org-level role assignments.
-const QUERY_ENDPOINT_ROLE: &str = "sql_console_admin";
 
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
 /// caller so CORS doesn't apply, but the API still requires a value.
@@ -192,7 +185,9 @@ async fn bind_query_endpoint(
     }
 
     let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
-        roles: vec![QUERY_ENDPOINT_ROLE.to_string()],
+        // The binding grants read/write SQL access only through this service's
+        // endpoint; it does not assign an organization-level role to the key.
+        roles: vec![QueryEndpointRole::SqlConsoleAdmin],
         open_api_keys,
         allowed_origins: ALLOWED_ORIGINS.to_string(),
     };

@@ -210,6 +210,53 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
 // ── Organization-scoped error context (issue #334) ─────────────────────────
 
 #[tokio::test]
+async fn query_endpoint_create_sends_typed_roles() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "endpoint-1",
+                "roles": ["sql_console_read_only", "sql_console_admin"]
+            },
+            "status": 200,
+            "requestId": "stub-query-endpoint-create"
+        })))
+        .mount(&mock)
+        .await;
+
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "service",
+            "query-endpoint",
+            "create",
+            "svc-1",
+            "--role",
+            "sql_console_read_only",
+            "--role",
+            "sql_console_admin",
+            "--open-api-key",
+            "key-1",
+            "--org-id",
+            "org-1",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "roles": ["sql_console_read_only", "sql_console_admin"],
+            "openApiKeys": ["key-1"],
+            "allowedOrigins": "*"
+        })
+    );
+}
+
+#[tokio::test]
 async fn service_list_bare_not_found_includes_the_requested_organization() {
     const WRONG_ORG_ID: &str = "00000000-0000-4000-8000-000000000001";
     let mock = MockServer::start().await;
@@ -2974,6 +3021,7 @@ async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile
         .find(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
         .expect("the endpoint upsert must be sent");
     let body: Value = serde_json::from_slice(&upsert.body).unwrap();
+    assert_eq!(body["roles"], serde_json::json!(["sql_console_admin"]));
     (dir, body["openApiKeys"].clone())
 }
 
@@ -3531,6 +3579,89 @@ async fn mysql_server_id_absent_when_not_passed() {
         mysql.get("serverId").is_none(),
         "serverId leaked when --server-id not passed: {mysql}",
     );
+}
+
+// ── ClickPipe settings updates preserve required values ─────────────────────
+
+#[tokio::test]
+async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() {
+    let settings_path = "/v1/organizations/org/services/svc-id/clickpipes/pipe-id/settings";
+    for (current_settings, expected) in [
+        (serde_json::json!({ "kafka_read_committed": true }), true),
+        (serde_json::json!({}), false),
+    ] {
+        let mock = MockServer::start().await;
+        let current_settings = serde_json::json!({
+            "result": current_settings,
+            "status": 200,
+            "requestId": "stub-settings-get",
+        });
+        let updated_settings = serde_json::json!({
+            "result": {
+                "streaming_max_insert_wait_ms": 1000,
+                "kafka_read_committed": expected,
+            },
+            "status": 200,
+            "requestId": "stub-settings-update",
+        });
+
+        Mock::given(method("GET"))
+            .and(path(settings_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(current_settings))
+            .mount(&mock)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path(settings_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--streaming-max-insert-wait-ms",
+                "1000",
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_success(&output);
+
+        let requests = mock.received_requests().await.unwrap();
+        let request_shape = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.method.as_str().to_string(),
+                    request.url.path().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            request_shape,
+            vec![
+                ("GET".to_string(), settings_path.to_string()),
+                ("PUT".to_string(), settings_path.to_string()),
+            ]
+        );
+
+        let put = requests
+            .iter()
+            .find(|request| request.method == wiremock::http::Method::PUT)
+            .expect("no settings PUT request recorded by mock");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&put.body).unwrap(),
+            serde_json::json!({
+                "streaming_max_insert_wait_ms": 1000,
+                "kafka_read_committed": expected,
+            })
+        );
+    }
 }
 
 // ── ClickPipe schema discovery (#289, beta) ────────────────────────────────

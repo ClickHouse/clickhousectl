@@ -110,6 +110,8 @@ pub struct Udf {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_command_execution_time: Option<i64>,
+    #[serde(rename = "memoryLimitMib", skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mib: Option<i64>,
     #[serde(rename = "poolSize", skip_serializing_if = "Option::is_none")]
     pub pool_size: Option<i64>,
     #[serde(rename = "returnName", skip_serializing_if = "Option::is_none")]

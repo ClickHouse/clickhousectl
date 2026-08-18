@@ -3,6 +3,36 @@ use crate::error::Error;
 use crate::models::*;
 
 impl Client {
+    /// Get organization active prepaid balances
+    pub async fn active_balances_get(
+        &self,
+        organization_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<ApiResponse<ActiveBalances>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/activeBalances");
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(v) = limit {
+            req = req.query(&[("limit", v)]);
+        }
+        if let Some(v) = offset {
+            req = req.query(&[("offset", v)]);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get list of available organizations
     pub async fn organization_get_list(&self) -> Result<ApiResponse<Vec<Organization>>, Error> {
         let path = "/v1/organizations".to_string();
@@ -542,6 +572,32 @@ impl Client {
             });
         }
         Ok(resp.text().await?)
+    }
+
+    /// Discover Prometheus scrape targets for an organization
+    pub async fn organization_prometheus_discovery_get(
+        &self,
+        organization_id: &str,
+        filtered_metrics: Option<&str>,
+    ) -> Result<Vec<PrometheusDiscoveryTargetGroup>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/prometheus/discovery");
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(v) = filtered_metrics {
+            req = req.query(&[("filtered_metrics", v)]);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
     }
 
     /// Get organization usage costs
