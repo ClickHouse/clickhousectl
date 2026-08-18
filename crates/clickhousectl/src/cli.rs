@@ -9,20 +9,19 @@ pub use crate::local::cli::LocalArgs;
 #[command(version)]
 #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  clickhousectl is a CLI to work with local ClickHouse and ClickHouse Cloud.
+  With clickhousectl you can:
+  1. Install and use ClickHouse and Postgres locally (`clickhousectl local` commands)
+  2. Manage ClickHouse and Postgres in ClickHouse Cloud (`clickhousectl cloud` commands)
 
-  Two main workflows:
-  1. Local: Install and interact with versions of ClickHouse to develop locally.
-  2. Cloud: Manage ClickHouse Cloud infrastructure and push local work to cloud.
+  Install the ClickHouse Agent Skills: `clickhousectl skills --agent X`
 
-  Authentication: OAuth (`cloud auth login`) is read-only. For write operations (create, update,
-  delete), use API key auth: `cloud auth login --api-key X --api-secret Y`.
+  For ClickHouse Cloud:
+  Create account: `cloud auth signup`
+  Authenticate: OAuth (`cloud auth login` is read-only) or API keys (`cloud auth login --api-key X --api-secret Y` provides write access)
 
-  You can install the ClickHouse Agent Skills with:
-
-  `clickhousectl skills`
-
-  Typical local workflow: `clickhousectl local server start` (bootstraps from zero — installs `latest` if nothing is set up).")]
+  Typical local workflow: `clickhousectl local server start` → `clickhousectl local client -q 'SELECT 1;'`
+  Typical cloud workflow: `clickhousectl cloud auth signup` → `clickhousectl cloud auth login --api-key X --api-secret Y` → `clickhousectl cloud service create`
+  ")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -51,14 +50,10 @@ Higher-precedence credentials override lower-precedence credentials. Use
 `clickhousectl cloud auth status` to see which configured source is active.
 
 CONTEXT FOR AGENTS:
-  Used for managing ClickHouse Cloud infrastructure. You need to have a ClickHouse Cloud account and be authenticated.
-  OAuth login (`cloud auth login`) is read-only — it can list and inspect resources but cannot create, modify, or delete.
-  For write operations, authenticate with API keys:
-    clickhousectl cloud auth login --api-key YOUR_KEY --api-secret YOUR_SECRET
-  If the user doesn't have an account, suggest `clickhousectl cloud auth signup` first.
-  JSON emitted automatically for known agents.
+  Create a ClickHouse Cloud account with `clickhousectl cloud auth signup`.
+  Auth with `clickhousectl cloud auth login` (use API keys for write access).
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical workflow: `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
+  Typical workflow: `cloud auth signup` → `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents
@@ -194,6 +189,32 @@ mod tests {
                 .exit_code(),
             2
         );
+    }
+
+    #[test]
+    fn help_points_agents_to_cloud_signup() {
+        let mut command = Cli::command();
+        let root_help = command.render_long_help().to_string();
+        assert!(root_help.contains("Create account: `cloud auth signup`"));
+
+        let auth = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand")
+            .find_subcommand_mut("auth")
+            .expect("auth subcommand");
+        let auth_help = auth.render_long_help().to_string();
+        assert!(
+            auth_help
+                .contains("Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.")
+        );
+
+        let signup_help = auth
+            .find_subcommand_mut("signup")
+            .expect("signup subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(signup_help.contains("Create a ClickHouse Cloud account"));
+        assert!(!signup_help.to_lowercase().contains("browser"));
     }
 
     #[test]
