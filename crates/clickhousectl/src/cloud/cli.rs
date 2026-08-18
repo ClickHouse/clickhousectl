@@ -49,12 +49,15 @@ pub enum CloudCommands {
     /// Manage authentication (OAuth login, API keys)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  To create a ClickHouse Cloud account, use `clickhousectl cloud auth signup`.
-  Default `login` opens a browser for OAuth (read-only).
-  Use `login --api-key X --api-secret Y` for full read/write access, or set
-  CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET env vars (exported or in .env).
+  Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.
+
+  `login` without flags uses OAuth device flow (interactive, read-only).
+  Use API keys for write access (`login --api-key X --api-secret Y` or set CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET)
+
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
+
   `logout` clears all saved credentials (OAuth tokens and API keys).
+
   Related: `clickhousectl cloud org list` to verify credentials work.")]
     Auth {
         #[command(subcommand)]
