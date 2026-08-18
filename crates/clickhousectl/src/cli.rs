@@ -15,6 +15,8 @@ CONTEXT FOR AGENTS:
   1. Local: Install and interact with versions of ClickHouse to develop locally.
   2. Cloud: Manage ClickHouse Cloud infrastructure and push local work to cloud.
 
+  To create a ClickHouse Cloud account, use `clickhousectl cloud auth signup`.
+
   Authentication: OAuth (`cloud auth login`) is read-only. For write operations (create, update,
   delete), use API key auth: `cloud auth login --api-key X --api-secret Y`.
 
@@ -194,6 +196,33 @@ mod tests {
                 .exit_code(),
             2
         );
+    }
+
+    #[test]
+    fn help_points_agents_to_cloud_signup() {
+        let mut command = Cli::command();
+        let root_help = command.render_long_help().to_string();
+        assert!(root_help.contains(
+            "To create a ClickHouse Cloud account, use `clickhousectl cloud auth signup`."
+        ));
+
+        let auth = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand")
+            .find_subcommand_mut("auth")
+            .expect("auth subcommand");
+        let auth_help = auth.render_long_help().to_string();
+        assert!(auth_help.contains(
+            "To create a ClickHouse Cloud account, use `clickhousectl cloud auth signup`."
+        ));
+
+        let signup_help = auth
+            .find_subcommand_mut("signup")
+            .expect("signup subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(signup_help.contains("Create a ClickHouse Cloud account"));
+        assert!(!signup_help.to_lowercase().contains("browser"));
     }
 
     #[test]
