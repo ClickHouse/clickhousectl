@@ -29,6 +29,12 @@ ISSUE_LABEL = "openapi-drift"
 MAX_ISSUE_BODY_CHARS = 65536
 CONTINUATION_NOTICE = "\n---\n\n**Report continues in the next comment.**\n"
 CONTINUATION_HEADER = "**Drift report, continued from above.**\n\n---\n\n"
+INCOMPLETE_REPORT_PREFIX = "**This drift report is incomplete.**"
+CLEAN_ISSUE_COMMENT = (
+    "The automated drift check now reports no actionable drift. Closing this issue "
+    "because its report is no longer current."
+)
+GITHUB_ACTIONS_LOGINS = {"github-actions", "github-actions[bot]", "app/github-actions"}
 
 
 def fetch_live_spec() -> dict | None:
@@ -130,6 +136,8 @@ def ensure_label_exists():
             "--force",
         ],
         capture_output=True,
+        text=True,
+        check=True,
     )
 
 
@@ -144,14 +152,112 @@ def open_drift_issues() -> list[dict]:
             "--state",
             "open",
             "--json",
-            "number,title",
+            "number,title,body,url",
+            "--limit",
+            "100",
         ],
         capture_output=True,
         text=True,
+        check=True,
     )
-    if result.returncode != 0:
-        return []
-    return json.loads(result.stdout)
+    try:
+        issues = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("GitHub returned invalid JSON while listing drift issues") from error
+    if not isinstance(issues, list):
+        raise RuntimeError("GitHub returned an invalid drift issue list")
+    return issues
+
+
+def issue_comments(issue_number: int) -> list[dict]:
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{{owner}}/{{repo}}/issues/{issue_number}/comments?per_page=100",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    try:
+        pages = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("GitHub returned invalid JSON while listing issue comments") from error
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise RuntimeError("GitHub returned an invalid issue comment list")
+    return [comment for page in pages for comment in page]
+
+
+def is_bot_generated_comment(comment: dict) -> bool:
+    user = comment.get("user") or {}
+    body = comment.get("body") or ""
+    return user.get("login") in GITHUB_ACTIONS_LOGINS and (
+        body.startswith(CONTINUATION_HEADER) or body.startswith(INCOMPLETE_REPORT_PREFIX)
+    )
+
+
+def edit_issue(issue_url: str, title: str, body: str):
+    subprocess.run(
+        ["gh", "issue", "edit", issue_url, "--title", title, "--body-file", "-"],
+        input=body,
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+
+def edit_comment(comment_id: int, body: str):
+    subprocess.run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "PATCH",
+            f"repos/{{owner}}/{{repo}}/issues/comments/{comment_id}",
+            "--input",
+            "-",
+        ],
+        input=json.dumps({"body": body}),
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+
+def delete_comment(comment_id: int):
+    subprocess.run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "DELETE",
+            f"repos/{{owner}}/{{repo}}/issues/comments/{comment_id}",
+        ],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
+
+
+def close_issue(issue_url: str):
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "close",
+            issue_url,
+            "--reason",
+            "completed",
+            "--comment",
+            CLEAN_ISSUE_COMMENT,
+        ],
+        text=True,
+        check=True,
+        capture_output=True,
+    )
 
 
 def split_issue_body(body: str) -> list[str]:
@@ -225,6 +331,49 @@ def split_issue_body(body: str) -> list[str]:
     return chunks
 
 
+def post_continuation_comment(issue_url: str, body: str):
+    try:
+        subprocess.run(
+            ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+            input=body,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        # Retry once; transient GitHub failures are common.
+        try:
+            subprocess.run(
+                ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                input=body,
+                text=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            # Never leave an issue that silently looks complete after a failed
+            # continuation update. The next successful sync removes this notice.
+            fallback = (
+                f"{INCOMPLETE_REPORT_PREFIX} A continuation comment failed to post "
+                "after a retry; check the workflow logs and re-run the drift check "
+                "to regenerate the full report.\n"
+            )
+            try:
+                subprocess.run(
+                    ["gh", "issue", "comment", issue_url, "--body-file", "-"],
+                    input=fallback,
+                    text=True,
+                    check=False,
+                    capture_output=True,
+                )
+            except Exception:  # noqa: BLE001 - the fallback must never mask the failure
+                pass
+            print(
+                f"ERROR: failed to post a continuation comment to {issue_url}; "
+                "the drift report is incomplete.",
+                file=sys.stderr,
+            )
+            raise
+
+
 def create_issue(title: str, body: str):
     chunks = split_issue_body(body)
     # The body can exceed the kernel's per-argument size limit; feed it via stdin.
@@ -238,47 +387,78 @@ def create_issue(title: str, body: str):
     issue_url = result.stdout.strip().splitlines()[-1]
     print(issue_url, file=sys.stderr)
     for chunk in chunks[1:]:
-        try:
-            subprocess.run(
-                ["gh", "issue", "comment", issue_url, "--body-file", "-"],
-                input=chunk,
-                text=True,
-                check=True,
-            )
-        except subprocess.CalledProcessError:
-            # Retry once; transient GitHub failures are common.
-            try:
-                subprocess.run(
-                    ["gh", "issue", "comment", issue_url, "--body-file", "-"],
-                    input=chunk,
-                    text=True,
-                    check=True,
-                )
-            except subprocess.CalledProcessError:
-                # A comment failed twice. Never leave an issue that silently
-                # looks complete: best-effort flag it as truncated, then fail
-                # loudly so the CI run still reports the problem.
-                fallback = (
-                    "**This drift report is incomplete.** A continuation comment "
-                    "failed to post after a retry; check the workflow logs and "
-                    "re-run the drift check to regenerate the full report.\n"
-                )
-                try:
-                    subprocess.run(
-                        ["gh", "issue", "comment", issue_url, "--body-file", "-"],
-                        input=fallback,
-                        text=True,
-                        check=False,
-                        capture_output=True,
-                    )
-                except Exception:  # noqa: BLE001 - the fallback must never mask the failure
-                    pass
-                print(
-                    f"ERROR: failed to post a continuation comment to {issue_url}; "
-                    "the drift report is incomplete.",
-                    file=sys.stderr,
-                )
-                raise
+        post_continuation_comment(issue_url, chunk)
+
+
+def sync_drift_issue(title: str | None, body: str | None) -> str:
+    """Synchronize the one open generated drift issue with the latest report."""
+    existing = open_drift_issues()
+    if len(existing) > 1:
+        numbers = ", ".join(f"#{issue.get('number', 'unknown')}" for issue in existing)
+        raise RuntimeError(
+            f"Multiple open {ISSUE_LABEL} issues exist ({numbers}); refusing to choose one"
+        )
+
+    issue = existing[0] if existing else None
+    if title is None or body is None:
+        if title is not None or body is not None:
+            raise ValueError("title and body must either both be set or both be None")
+        if issue is None:
+            print("No open drift issue to close.", file=sys.stderr)
+            return "clean"
+        print(f"Closing clean drift issue #{issue['number']}.", file=sys.stderr)
+        close_issue(issue["url"])
+        return "closed"
+
+    chunks = split_issue_body(body)
+    if issue is None:
+        ensure_label_exists()
+        print(f"Creating issue: {title}", file=sys.stderr)
+        create_issue(title, body)
+        return "created"
+
+    comments = issue_comments(issue["number"])
+    managed = [comment for comment in comments if is_bot_generated_comment(comment)]
+    for comment in managed:
+        if not isinstance(comment.get("id"), int):
+            raise RuntimeError("GitHub returned a generated issue comment without a numeric ID")
+
+    continuations = [
+        comment
+        for comment in managed
+        if (comment.get("body") or "").startswith(CONTINUATION_HEADER)
+    ]
+    incomplete_notices = [
+        comment
+        for comment in managed
+        if (comment.get("body") or "").startswith(INCOMPLETE_REPORT_PREFIX)
+    ]
+    desired_continuations = chunks[1:]
+    unchanged = (
+        issue.get("title") == title
+        and issue.get("body") == chunks[0]
+        and [comment.get("body") for comment in continuations] == desired_continuations
+        and not incomplete_notices
+    )
+    if unchanged:
+        print(f"Open drift issue #{issue['number']} is already current.", file=sys.stderr)
+        return "unchanged"
+
+    print(f"Updating drift issue #{issue['number']}: {title}", file=sys.stderr)
+    if issue.get("title") != title or issue.get("body") != chunks[0]:
+        edit_issue(issue["url"], title, chunks[0])
+
+    shared_count = min(len(continuations), len(desired_continuations))
+    for index in range(shared_count):
+        if continuations[index].get("body") != desired_continuations[index]:
+            edit_comment(continuations[index]["id"], desired_continuations[index])
+    for continuation in desired_continuations[shared_count:]:
+        post_continuation_comment(issue["url"], continuation)
+    for continuation in continuations[shared_count:]:
+        delete_comment(continuation["id"])
+    for notice in incomplete_notices:
+        delete_comment(notice["id"])
+    return "updated"
 
 
 def build_issue_body(report: dict, live_spec: dict) -> str:
@@ -462,23 +642,27 @@ def main():
     print(f"Acknowledged unsupported enum constraints: {acknowledged}", file=sys.stderr)
     if total == 0:
         print("No actionable drift. Library fully covers the live spec.", file=sys.stderr)
-        return
+        if args.dry_run:
+            return
+        title = None
+        body = None
+    else:
+        title = (
+            f"OpenAPI drift: {total} gap{'s' if total != 1 else ''} "
+            "between live spec and library"
+        )
+        body = build_issue_body(report, live_spec)
+        if args.dry_run:
+            print(body)
+            return
 
-    body = build_issue_body(report, live_spec)
-    if args.dry_run:
-        print(body)
-        return
-
-    existing = open_drift_issues()
-    if existing:
-        numbers = ", ".join(f"#{issue['number']}" for issue in existing)
-        print(f"Open drift issue(s) already exist ({numbers}); skipping.", file=sys.stderr)
-        return
-
-    title = f"OpenAPI drift: {total} gap{'s' if total != 1 else ''} between live spec and library"
-    ensure_label_exists()
-    print(f"Creating issue: {title}", file=sys.stderr)
-    create_issue(title, body)
+    try:
+        sync_drift_issue(title, body)
+    except (RuntimeError, subprocess.CalledProcessError) as error:
+        detail = getattr(error, "stderr", None)
+        message = detail.strip() if isinstance(detail, str) and detail.strip() else str(error)
+        print(f"ERROR: Could not synchronize the OpenAPI drift issue: {message}", file=sys.stderr)
+        raise SystemExit(1) from error
     print("Done.", file=sys.stderr)
 
 
