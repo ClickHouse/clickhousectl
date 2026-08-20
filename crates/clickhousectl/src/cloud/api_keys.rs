@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, resolve_org_id};
@@ -121,11 +121,7 @@ impl KeyCommands {
     }
 }
 
-pub async fn run(
-    client: &CloudClient,
-    command: KeyCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> CloudResult<()> {
     match command {
         KeyCommands::List { org_id } => key_list(client, org_id.as_deref(), json).await,
         KeyCommands::Create {
@@ -207,7 +203,7 @@ fn parse_api_key_hash_data(
     key_id_hash: Option<&str>,
     key_id_suffix: Option<&str>,
     key_secret_hash: Option<&str>,
-) -> Result<Option<clickhouse_cloud_api::models::ApiKeyHashData>, Box<dyn std::error::Error>> {
+) -> CloudResult<Option<clickhouse_cloud_api::models::ApiKeyHashData>> {
     match (key_id_hash, key_id_suffix, key_secret_hash) {
         (None, None, None) => Ok(None),
         (Some(key_id_hash), Some(key_id_suffix), Some(key_secret_hash)) => {
@@ -217,10 +213,9 @@ fn parse_api_key_hash_data(
                 key_secret_hash: key_secret_hash.to_string(),
             }))
         }
-        _ => Err(
-            "pre-hashed API key input requires --hash-key-id, --hash-key-id-suffix, and --hash-key-secret together"
-                .into(),
-        ),
+        _ => Err(CloudError::new(
+            "pre-hashed API key input requires --hash-key-id, --hash-key-id-suffix, and --hash-key-secret together",
+        )),
     }
 }
 
@@ -236,64 +231,51 @@ fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> 
     })
 }
 
-fn parse_uuid_list(
-    values: &[String],
-    field: &str,
-) -> Result<Vec<uuid::Uuid>, Box<dyn std::error::Error>> {
+fn parse_uuid_list(values: &[String], field: &str) -> CloudResult<Vec<uuid::Uuid>> {
     values
         .iter()
         .map(|value| {
-            uuid::Uuid::parse_str(value)
-                .map_err(|error| format!("invalid {} UUID '{}': {}", field, value, error).into())
+            uuid::Uuid::parse_str(value).map_err(|error| {
+                CloudError::new(format!("invalid {} UUID '{}': {}", field, value, error))
+            })
         })
         .collect()
 }
 
-fn parse_api_key_state_post(
-    value: &str,
-) -> Result<ApiKeyPostRequestState, Box<dyn std::error::Error>> {
+fn parse_api_key_state_post(value: &str) -> CloudResult<ApiKeyPostRequestState> {
     match value {
         "enabled" => Ok(ApiKeyPostRequestState::Enabled),
         "disabled" => Ok(ApiKeyPostRequestState::Disabled),
-        _ => Err(format!(
+        _ => Err(CloudError::new(format!(
             "invalid state: unknown value '{}', expected one of: enabled, disabled",
             value
-        )
-        .into()),
+        ))),
     }
 }
 
-fn parse_api_key_state_patch(
-    value: &str,
-) -> Result<ApiKeyPatchRequestState, Box<dyn std::error::Error>> {
+fn parse_api_key_state_patch(value: &str) -> CloudResult<ApiKeyPatchRequestState> {
     match value {
         "enabled" => Ok(ApiKeyPatchRequestState::Enabled),
         "disabled" => Ok(ApiKeyPatchRequestState::Disabled),
-        _ => Err(format!(
+        _ => Err(CloudError::new(format!(
             "invalid state: unknown value '{}', expected one of: enabled, disabled",
             value
-        )
-        .into()),
+        ))),
     }
 }
 
-fn parse_expire_at(
-    value: &str,
-) -> Result<chrono::DateTime<chrono::Utc>, Box<dyn std::error::Error>> {
+fn parse_expire_at(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|datetime| datetime.with_timezone(&chrono::Utc))
         .map_err(|error| {
-            format!(
+            CloudError::new(format!(
                 "invalid expire_at '{}': expected ISO 8601 / RFC 3339 format (e.g. 2025-12-31T23:59:59Z): {}",
                 value, error
-            )
-            .into()
+            ))
         })
 }
 
-fn build_api_key_create_request(
-    options: &KeyCreateOptions,
-) -> Result<ApiKeyPostRequest, Box<dyn std::error::Error>> {
+fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKeyPostRequest> {
     Ok(ApiKeyPostRequest {
         name: options.name.clone(),
         expire_at: options
@@ -317,9 +299,7 @@ fn build_api_key_create_request(
     })
 }
 
-fn build_api_key_update_request(
-    options: &KeyUpdateOptions,
-) -> Result<ApiKeyPatchRequest, Box<dyn std::error::Error>> {
+fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKeyPatchRequest> {
     Ok(ApiKeyPatchRequest {
         name: options.name.clone(),
         assigned_role_ids: if options.role_ids.is_empty() {
@@ -343,11 +323,7 @@ fn build_api_key_update_request(
     })
 }
 
-async fn key_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn key_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let keys = client.list_api_keys(&org_id).await?;
 
@@ -400,7 +376,7 @@ fn resolve_key_create_material<'a>(
     key_id: Option<&'a str>,
     key_secret: Option<&'a str>,
     key_name: Option<&str>,
-) -> Result<KeyCreateMaterial<'a>, Box<dyn std::error::Error>> {
+) -> CloudResult<KeyCreateMaterial<'a>> {
     if pre_hashed {
         return Ok(KeyCreateMaterial::PreHashed);
     }
@@ -411,13 +387,12 @@ fn resolve_key_create_material<'a>(
                 Some(name) => format!(" '{}'", name),
                 None => String::new(),
             };
-            Err(format!(
+            Err(CloudError::new(format!(
                 "the API response omitted the generated key material, so the one-time key secret \
                  cannot be shown: the key{} may still have been created — list the organization's \
                  keys and delete it if so",
                 named
-            )
-            .into())
+            )))
         }
     }
 }
@@ -426,7 +401,7 @@ async fn key_create(
     client: &CloudClient,
     options: KeyCreateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     // Validate before organization resolution so malformed inputs make no network call.
     let request = build_api_key_create_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
@@ -466,7 +441,7 @@ async fn key_get(
     key_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let key = client.get_api_key(&org_id, key_id).await?;
 
@@ -483,7 +458,7 @@ async fn key_update(
     key_id: &str,
     options: KeyUpdateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     // Validate before organization resolution so malformed inputs make no network call.
     let request = build_api_key_update_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
@@ -504,7 +479,7 @@ async fn key_delete(
     key_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client.delete_api_key(&org_id, key_id).await?;
     if json {
@@ -521,7 +496,7 @@ async fn key_delete(
 pub(crate) fn service_query_key_cleanup(
     org_id: &str,
     service_id: &str,
-) -> Result<(Option<String>, bool), Box<dyn std::error::Error>> {
+) -> CloudResult<(Option<String>, bool)> {
     let Some(key) = credentials::try_get_service_query_key(service_id)? else {
         return Ok((None, false));
     };
@@ -541,11 +516,10 @@ pub(crate) fn service_query_key_cleanup(
         return Ok((None, true));
     };
     if key_org_id != org_id {
-        return Err(format!(
+        return Err(CloudError::new(format!(
             "the stored query key for service {service_id} belongs to organization {key_org_id}, \
              not {org_id}; refusing to delete either resource"
-        )
-        .into());
+        )));
     }
     Ok((Some(api_key_id), false))
 }
@@ -555,7 +529,7 @@ pub(crate) async fn cleanup_service_query_key(
     org_id: &str,
     service_id: &str,
     api_key_id: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let Some(api_key_id) = api_key_id else {
         return Ok(());
     };

@@ -1,6 +1,6 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::backups::BackupConfigCommands;
-use crate::cloud::client::{CloudClient, CloudError};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
@@ -559,11 +559,7 @@ impl ServiceCommands {
     }
 }
 
-pub async fn run(
-    client: &CloudClient,
-    command: ServiceCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> CloudResult<()> {
     match command {
         ServiceCommands::List { org_id, filter } => {
             service_list(client, org_id.as_deref(), &filter, json).await
@@ -819,7 +815,7 @@ async fn resolve_service(
     org_id: &str,
     name: Option<&str>,
     id: Option<&str>,
-) -> Result<Service, Box<dyn std::error::Error>> {
+) -> CloudResult<Service> {
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
@@ -828,18 +824,22 @@ async fn resolve_service(
                 .filter(|service| service.name.as_deref() == Some(name))
                 .collect();
             match matches.len() {
-                0 => Err(format!("no service found with name '{}'", name).into()),
+                0 => Err(CloudError::new(format!(
+                    "no service found with name '{}'",
+                    name
+                ))),
                 1 => Ok(matches.into_iter().next().unwrap()),
-                count => Err(format!(
+                count => Err(CloudError::new(format!(
                     "found {} services named '{}' — use --id to disambiguate",
                     count, name
-                )
-                .into()),
+                ))),
             }
         }
         (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
-        (Some(_), Some(_)) => Err("specify either --name or --id, not both".into()),
-        (None, None) => Err("specify --name or --id to identify the service".into()),
+        (Some(_), Some(_)) => Err(CloudError::new("specify either --name or --id, not both")),
+        (None, None) => Err(CloudError::new(
+            "specify --name or --id to identify the service",
+        )),
     }
 }
 
@@ -883,7 +883,7 @@ fn parse_private_endpoint_ids_patch(
 fn parse_service_endpoint_changes(
     enable: &[String],
     disable: &[String],
-) -> Result<Option<Vec<ServiceEndpointChange>>, Box<dyn std::error::Error>> {
+) -> CloudResult<Option<Vec<ServiceEndpointChange>>> {
     let mut changes = Vec::new();
 
     for protocol in enable {
@@ -914,7 +914,7 @@ fn parse_service_endpoint_changes(
 fn parse_instance_tags_patch(
     add: &[String],
     remove: &[String],
-) -> Result<Option<InstanceTagsPatch>, Box<dyn std::error::Error>> {
+) -> CloudResult<Option<InstanceTagsPatch>> {
     let patch = InstanceTagsPatch {
         add: parse_tags(add)?.unwrap_or_default(),
         remove: parse_tags(remove)?.unwrap_or_default(),
@@ -928,7 +928,7 @@ async fn service_list(
     org_id: Option<&str>,
     filters: &[String],
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     let services = if filters.is_empty() {
@@ -980,7 +980,7 @@ async fn service_get(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let service = client.get_service(&org_id, service_id).await?;
 
@@ -1065,9 +1065,11 @@ fn resolve_horizontal_autoscaling(
     autoscaling_mode: Option<&str>,
     min_replicas: Option<u32>,
     max_replicas: Option<u32>,
-) -> Result<HorizontalAutoscaling, Box<dyn std::error::Error>> {
+) -> CloudResult<HorizontalAutoscaling> {
     if min_replicas.is_some() != max_replicas.is_some() {
-        return Err("--min-replicas and --max-replicas must be specified together".into());
+        return Err(CloudError::new(
+            "--min-replicas and --max-replicas must be specified together",
+        ));
     }
     let autoscaling_mode = autoscaling_mode
         .map(|value| {
@@ -1081,9 +1083,7 @@ fn resolve_horizontal_autoscaling(
     })
 }
 
-fn build_create_service_request(
-    options: &CreateServiceOptions,
-) -> Result<ServicePostRequest, Box<dyn std::error::Error>> {
+fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<ServicePostRequest> {
     let ip_access_list = if options.ip_allow.is_empty() {
         vec![IpAccessListEntry {
             source: "0.0.0.0/0".to_string(),
@@ -1122,7 +1122,7 @@ fn build_create_service_request(
             .as_deref()
             .map(uuid::Uuid::parse_str)
             .transpose()
-            .map_err(|error| format!("invalid backup_id: {}", error))?,
+            .map_err(|error| CloudError::new(format!("invalid backup_id: {}", error)))?,
         release_channel: match options.release_channel.as_deref() {
             Some(value) => Some(parse_serde_enum::<ServicePostRequestReleasechannel>(
                 value,
@@ -1184,7 +1184,7 @@ fn build_create_service_request(
 
 fn build_update_service_request(
     options: &ServiceUpdateOptions,
-) -> Result<ServicePatchRequest, Box<dyn std::error::Error>> {
+) -> CloudResult<ServicePatchRequest> {
     Ok(ServicePatchRequest {
         name: options.name.clone(),
         ip_access_list: parse_ip_access_list_patch(&options.add_ip_allow, &options.remove_ip_allow),
@@ -1224,7 +1224,7 @@ fn build_service_password_patch_request(
 
 fn build_query_endpoint_create_request(
     options: &QueryEndpointCreateOptions,
-) -> Result<InstanceServiceQueryApiEndpointsPostRequest, Box<dyn std::error::Error>> {
+) -> CloudResult<InstanceServiceQueryApiEndpointsPostRequest> {
     Ok(InstanceServiceQueryApiEndpointsPostRequest {
         roles: options
             .roles
@@ -1292,7 +1292,7 @@ async fn service_create(
     client: &CloudClient,
     options: CreateServiceOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let request = build_create_service_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let response = client.create_service(&org_id, &request).await?;
@@ -1319,24 +1319,23 @@ async fn service_create(
     Ok(())
 }
 
-fn classify_stop_poll_state(
-    state: Option<&ServiceState>,
-) -> Result<bool, Box<dyn std::error::Error>> {
+fn classify_stop_poll_state(state: Option<&ServiceState>) -> CloudResult<bool> {
     let state = state
-        .ok_or(
-            "the API response omitted the service state while waiting for the service to stop, \
+        .ok_or_else(|| {
+            CloudError::new(
+                "the API response omitted the service state while waiting for the service to stop, \
              so the stop cannot be confirmed",
-        )?
+            )
+        })?
         .to_string();
     if matches!(state.as_str(), "stopped" | "idle") {
         return Ok(true);
     }
     if matches!(state.as_str(), "terminated" | "failed" | "deleted") {
-        return Err(format!(
+        return Err(CloudError::new(format!(
             "service entered unexpected state '{}' while waiting for stop",
             state
-        )
-        .into());
+        )));
     }
     Ok(false)
 }
@@ -1374,7 +1373,7 @@ async fn service_delete(
     force: bool,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let (query_key_id, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
 
@@ -1430,7 +1429,7 @@ async fn service_start(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let service = client
         .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Start)
@@ -1453,7 +1452,7 @@ async fn service_stop(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let service = client
         .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
@@ -1476,7 +1475,7 @@ async fn service_update(
     service_id: &str,
     options: ServiceUpdateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let request = build_update_service_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let service = client.update_service(&org_id, service_id, &request).await?;
@@ -1506,7 +1505,7 @@ struct ServiceScaleOptions {
 
 fn build_service_scale_request(
     options: &ServiceScaleOptions,
-) -> Result<ServiceReplicaScalingPatchRequest, Box<dyn std::error::Error>> {
+) -> CloudResult<ServiceReplicaScalingPatchRequest> {
     let horizontal = resolve_horizontal_autoscaling(
         options.autoscaling_mode.as_deref(),
         options.min_replicas,
@@ -1530,7 +1529,7 @@ async fn service_scale(
     service_id: &str,
     options: ServiceScaleOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let request = build_service_scale_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let service = client
@@ -1579,7 +1578,7 @@ async fn service_reset_password(
     service_id: &str,
     options: ServiceResetPasswordOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let request = build_service_password_patch_request(&options);
     let response = client.reset_password(&org_id, service_id, &request).await?;
@@ -1617,18 +1616,17 @@ fn generation_requested(request: &ServicePasswordPatchRequest) -> bool {
 fn resolve_reset_password_outcome(
     generation_requested: bool,
     password: Option<&str>,
-) -> Result<ResetPasswordOutcome<'_>, Box<dyn std::error::Error>> {
+) -> CloudResult<ResetPasswordOutcome<'_>> {
     if !generation_requested {
         return Ok(ResetPasswordOutcome::HashUpdated);
     }
     match password {
         Some(password) => Ok(ResetPasswordOutcome::Generated(password)),
-        None => Err(
+        None => Err(CloudError::new(
             "the API response omitted the generated password, so it cannot be shown: the \
              service password may already have been rotated — run the reset again to get \
-             a password you can use"
-                .into(),
-        ),
+             a password you can use",
+        )),
     }
 }
 
@@ -1637,7 +1635,7 @@ async fn query_endpoint_get(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let endpoint = client.get_query_endpoint(&org_id, service_id).await?;
 
@@ -1654,7 +1652,7 @@ async fn query_endpoint_create(
     service_id: &str,
     options: QueryEndpointCreateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let request = build_query_endpoint_create_request(&options)?;
     let endpoint = client
@@ -1685,7 +1683,7 @@ async fn query_endpoint_delete(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client.delete_query_endpoint(&org_id, service_id).await?;
     if json {
@@ -1743,10 +1741,7 @@ fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
     )
 }
 
-async fn service_query(
-    client: &CloudClient,
-    options: ServiceQueryOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
     let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let service = resolve_service(
@@ -1761,7 +1756,7 @@ async fn service_query(
         None => options
             .id
             .clone()
-            .ok_or("the API response is missing the service id")?,
+            .ok_or_else(|| CloudError::new("the API response is missing the service id"))?,
     };
     let service_name = or_absent(service.name.as_deref());
 
@@ -1809,7 +1804,7 @@ async fn service_query(
         } else {
             let (key_id, key_secret) = client
                 .basic_auth_credentials()
-                .ok_or("API key credentials are unavailable")?;
+                .ok_or_else(|| CloudError::new("API key credentials are unavailable"))?;
             match run_basic_service_query(
                 client,
                 &service_id,
@@ -1824,10 +1819,9 @@ async fn service_query(
             {
                 Err(error) if query_requires_provisioning(&error) => {
                     if options.no_auto_enable {
-                        return Err(format!(
+                        return Err(CloudError::new(format!(
                             "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
-                        )
-                        .into());
+                        )));
                     }
                     eprintln!(
                         "Provisioning Query API endpoint + key for service '{}'...",
@@ -1868,9 +1862,8 @@ async fn service_query(
     let mut byte_count = 0;
     let mut last_byte = None;
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk.map_err(|error| -> Box<dyn std::error::Error> {
-            format!("Failed to read query response: {error}").into()
-        })?;
+        let bytes = chunk
+            .map_err(|error| CloudError::new(format!("Failed to read query response: {error}")))?;
         handle.write_all(&bytes)?;
         byte_count += bytes.len();
         if let Some(last) = bytes.last() {
@@ -1925,25 +1918,21 @@ fn convert_query_error(
     service_name: &str,
     service_id: &str,
     org_id: &str,
-) -> Box<dyn std::error::Error> {
+) -> CloudError {
     match error {
-        clickhouse_cloud_api::Error::ServiceStopped => format!(
+        clickhouse_cloud_api::Error::ServiceStopped => CloudError::new(format!(
             "service '{service_name}' is stopped; start it with `clickhousectl cloud service start {service_id} --org-id {org_id}` and retry"
-        )
-        .into(),
-        other => client.convert_error(other).into(),
+        )),
+        other => client.convert_error(other),
     }
 }
 
-fn read_query_sql(
-    inline: Option<&str>,
-    queries_file: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
+fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResult<String> {
     use std::io::Read as _;
 
     if let Some(query) = inline {
         if query.trim().is_empty() {
-            return Err("--query was empty".into());
+            return Err(CloudError::new("--query was empty"));
         }
         return Ok(query.to_string());
     }
@@ -1956,19 +1945,21 @@ fn read_query_sql(
             content = std::fs::read_to_string(path)?;
         }
         if content.trim().is_empty() {
-            return Err("queries file was empty".into());
+            return Err(CloudError::new("queries file was empty"));
         }
         return Ok(content);
     }
 
     if std::io::stdin().is_terminal() {
-        return Err("no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.".into());
+        return Err(CloudError::new(
+            "no SQL provided. Pass --query, --queries-file, or pipe SQL on stdin.",
+        ));
     }
 
     let mut content = String::new();
     std::io::stdin().read_to_string(&mut content)?;
     if content.trim().is_empty() {
-        return Err("no SQL received on stdin".into());
+        return Err(CloudError::new("no SQL received on stdin"));
     }
     Ok(content)
 }
@@ -1988,7 +1979,7 @@ async fn private_endpoint_create(
     description: Option<&str>,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let request = build_private_endpoint_create_request(endpoint_id, description);
     let endpoint = client
@@ -2013,7 +2004,7 @@ async fn private_endpoint_get_config(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let config = client
         .get_service_private_endpoint_config(&org_id, service_id)
@@ -2032,7 +2023,7 @@ async fn service_prometheus(
     service_id: &str,
     org_id: Option<&str>,
     filtered_metrics: Option<bool>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let prometheus = client
         .get_service_prometheus(&org_id, service_id, filtered_metrics)

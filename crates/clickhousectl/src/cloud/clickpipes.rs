@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
 use clap::builder::PossibleValuesParser;
@@ -911,11 +911,7 @@ pub struct BigQueryCreateArgs {
     pub org_id: Option<String>,
 }
 
-pub async fn run(
-    client: &CloudClient,
-    command: ClickPipeCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -> CloudResult<()> {
     match command {
         ClickPipeCommands::List { service_id, org_id } => {
             clickpipe_list(client, &service_id, org_id.as_deref(), json).await
@@ -1075,7 +1071,7 @@ async fn clickpipe_list(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let clickpipes = client.list_clickpipes(&org_id, service_id).await?;
 
@@ -1101,7 +1097,7 @@ async fn clickpipe_create_object_storage(
     client: &CloudClient,
     args: &ObjectStorageCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
         ClickPipePostRequest, ClickPipePostSource, MskIamUser,
@@ -1199,7 +1195,7 @@ fn build_kafka_credentials(
     authentication: &clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication,
     args: &KafkaSourceFields,
     mtls_contents: Option<(String, String)>,
-) -> Result<serde_json::Value, String> {
+) -> CloudResult<serde_json::Value> {
     use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
     match authentication {
         Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512 => {
@@ -1207,10 +1203,10 @@ fn build_kafka_credentials(
                 (Some(username), Some(password)) => {
                     Ok(serde_json::json!({ "username": username, "password": password }))
                 }
-                _ => Err(format!(
+                _ => Err(CloudError::new(format!(
                     "{} requires --username and --password",
                     args.auth.as_deref().unwrap_or("PLAIN")
-                )),
+                ))),
             }
         }
         Auth::IAM_USER => match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
@@ -1218,11 +1214,13 @@ fn build_kafka_credentials(
                 "accessKeyId": access_key_id,
                 "secretKey": secret_key
             })),
-            _ => Err("IAM_USER requires --access-key-id and --secret-key".into()),
+            _ => Err(CloudError::new(
+                "IAM_USER requires --access-key-id and --secret-key",
+            )),
         },
         Auth::IAM_ROLE => {
             if args.iam_role.is_none() {
-                Err("IAM_ROLE requires --iam-role".into())
+                Err(CloudError::new("IAM_ROLE requires --iam-role"))
             } else {
                 Ok(serde_json::Value::Null)
             }
@@ -1232,7 +1230,9 @@ fn build_kafka_credentials(
                 "certificate": certificate,
                 "privateKey": private_key
             })),
-            None => Err("MUTUAL_TLS requires --client-certificate and --client-key".into()),
+            None => Err(CloudError::new(
+                "MUTUAL_TLS requires --client-certificate and --client-key",
+            )),
         },
         Auth::Unknown(_) => Ok(serde_json::Value::Null),
     }
@@ -1245,7 +1245,7 @@ fn build_kafka_credentials(
 /// handlers.
 fn build_kafka_source(
     args: &KafkaSourceFields,
-) -> Result<clickhouse_cloud_api::models::ClickPipePostKafkaSource, Box<dyn std::error::Error>> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
     use clickhouse_cloud_api::models::{
         ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
         ClickPipeMutateKafkaSchemaRegistry, ClickPipePostKafkaSource,
@@ -1275,7 +1275,7 @@ fn build_kafka_source(
     let schema_registry = args
         .schema_registry_url
         .as_ref()
-        .map(|url| -> Result<_, Box<dyn std::error::Error>> {
+        .map(|url| -> CloudResult<_> {
             let credentials = match (
                 args.schema_registry_username.as_deref(),
                 args.schema_registry_password.as_deref(),
@@ -1329,7 +1329,7 @@ fn build_kafka_source(
 /// handlers.
 fn build_kinesis_source(
     args: &KinesisSourceFields,
-) -> Result<clickhouse_cloud_api::models::ClickPipePostKinesisSource, Box<dyn std::error::Error>> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKinesisSource> {
     use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
 
     let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
@@ -1356,8 +1356,9 @@ fn build_kinesis_source(
         timestamp: args
             .iterator_timestamp
             .map(|timestamp| {
-                i64::try_from(timestamp)
-                    .map_err(|_| format!("--iterator-timestamp {timestamp} is out of range"))
+                i64::try_from(timestamp).map_err(|_| {
+                    CloudError::new(format!("--iterator-timestamp {timestamp} is out of range"))
+                })
             })
             .transpose()?,
     })
@@ -1367,7 +1368,7 @@ async fn clickpipe_create_kafka(
     client: &CloudClient,
     args: &KafkaCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
 
     // Validate args and build the source before any network call so bad
@@ -1397,7 +1398,7 @@ async fn clickpipe_create_kinesis(
     client: &CloudClient,
     args: &KinesisCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
@@ -1431,7 +1432,7 @@ async fn clickpipe_schema_discover(
     command: &ClickPipeSchemaDiscoverCommands,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
     };
@@ -1498,7 +1499,7 @@ async fn clickpipe_get(
     clickpipe_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let clickpipe = client
         .get_clickpipe(&org_id, service_id, clickpipe_id)
@@ -1518,7 +1519,7 @@ async fn clickpipe_delete(
     clickpipe_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     client
         .delete_clickpipe(&org_id, service_id, clickpipe_id)
@@ -1539,13 +1540,15 @@ async fn clickpipe_state(
     command: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand;
     let command_value = match command {
         "start" => ClickPipeStatePatchRequestCommand::Start,
         "stop" => ClickPipeStatePatchRequestCommand::Stop,
         "resync" => ClickPipeStatePatchRequestCommand::Resync,
-        other => return Err(format!("Unknown state command: {}", other).into()),
+        other => {
+            return Err(CloudError::new(format!("Unknown state command: {}", other)));
+        }
     };
     let org_id = resolve_org_id(client, org_id).await?;
     let clickpipe = client
@@ -1575,7 +1578,7 @@ async fn clickpipe_scale(
     memory_gb: Option<f64>,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let request = clickhouse_cloud_api::models::ClickPipeScalingPatchRequest {
         replicas: replicas.map(i64::from),
@@ -1609,7 +1612,7 @@ async fn clickpipe_settings_get(
     clickpipe_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let settings = client
         .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
@@ -1639,7 +1642,7 @@ async fn clickpipe_settings_update(
     clickhouse_parallel_view_processing: Option<bool>,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let kafka_read_committed = client
         .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
@@ -1684,21 +1687,24 @@ async fn clickpipe_settings_update(
 /// Parse a CLI string into a library enum. Library enums have a
 /// `#[serde(untagged)] Unknown(String)` variant so unknown inputs are
 /// forwarded to the API (which returns the canonical validation error).
-fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, String> {
+fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> CloudResult<T> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|error| format!("invalid value '{}': {}", value, error))
+        .map_err(|error| CloudError::new(format!("invalid value '{}': {}", value, error)))
 }
 
 /// Parse `name:type` column specifications into library destination columns.
 fn parse_columns(
     columns: &[String],
-) -> Result<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>, String> {
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
     columns
         .iter()
         .map(|column| {
-            let (name, column_type) = column
-                .split_once(':')
-                .ok_or_else(|| format!("Invalid column format '{}': expected name:type", column))?;
+            let (name, column_type) = column.split_once(':').ok_or_else(|| {
+                CloudError::new(format!(
+                    "Invalid column format '{}': expected name:type",
+                    column
+                ))
+            })?;
             Ok(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
                 name: name.to_string(),
                 r#type: column_type.to_string(),
@@ -1739,7 +1745,7 @@ fn build_destination(
 /// base64-encoded contents. Used by both the object-storage and BigQuery
 /// `create` handlers — the upstream API wants the encoded blob regardless
 /// of which source it ends up on.
-fn read_gcp_service_account_file(path: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn read_gcp_service_account_file(path: &str) -> CloudResult<String> {
     let contents = std::fs::read_to_string(path)?;
     Ok(base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
@@ -1751,7 +1757,7 @@ fn read_gcp_service_account_file(path: &str) -> Result<String, Box<dyn std::erro
 fn print_created(
     clickpipe: &clickhouse_cloud_api::models::ClickPipe,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(clickpipe)?);
     } else {
@@ -1765,19 +1771,22 @@ fn print_created(
 
 /// Parse `schema.table:target_table` mappings into (schema, table, target) tuples.
 /// Source-specific handlers map these into their own TableMapping struct.
-fn parse_db_table_mappings(mappings: &[String]) -> Result<Vec<(String, String, String)>, String> {
+fn parse_db_table_mappings(mappings: &[String]) -> CloudResult<Vec<(String, String, String)>> {
     mappings
         .iter()
         .map(|mapping| {
             let (source, target) = mapping.split_once(':').ok_or_else(|| {
-                format!(
+                CloudError::new(format!(
                     "Invalid table mapping '{}': expected schema.table:target_table",
                     mapping
-                )
+                ))
             })?;
-            let (schema, table) = source
-                .split_once('.')
-                .ok_or_else(|| format!("Invalid source '{}': expected schema.table", source))?;
+            let (schema, table) = source.split_once('.').ok_or_else(|| {
+                CloudError::new(format!(
+                    "Invalid source '{}': expected schema.table",
+                    source
+                ))
+            })?;
             Ok((schema.to_string(), table.to_string(), target.to_string()))
         })
         .collect()
@@ -1787,7 +1796,7 @@ async fn clickpipe_create_postgres(
     client: &CloudClient,
     args: &PostgresCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource,
         ClickPipePostgresPipeSettings, ClickPipePostgresPipeTableMapping, PLAIN,
@@ -1858,7 +1867,7 @@ async fn clickpipe_create_mysql(
     client: &CloudClient,
     args: &MySqlCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutateMySQLSource, ClickPipeMySQLPipeSettings, ClickPipeMySQLPipeTableMapping,
         ClickPipePostRequest, ClickPipePostSource, PLAIN,
@@ -1932,7 +1941,7 @@ async fn clickpipe_create_mongodb(
     client: &CloudClient,
     args: &MongoDbCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipeMongoDBPipeSettings, ClickPipeMongoDBPipeTableMapping,
         ClickPipeMutateMongoDBSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
@@ -1946,14 +1955,17 @@ async fn clickpipe_create_mongodb(
         .iter()
         .map(|mapping| {
             let (source, target_table) = mapping.split_once(':').ok_or_else(|| {
-                format!(
+                CloudError::new(format!(
                     "Invalid table mapping '{}': expected database.collection:target_table",
                     mapping
-                )
+                ))
             })?;
             let (source_database_name, source_collection) =
                 source.split_once('.').ok_or_else(|| {
-                    format!("Invalid source '{}': expected database.collection", source)
+                    CloudError::new(format!(
+                        "Invalid source '{}': expected database.collection",
+                        source
+                    ))
                 })?;
             Ok(ClickPipeMongoDBPipeTableMapping {
                 source_database_name: source_database_name.to_string(),
@@ -1962,7 +1974,7 @@ async fn clickpipe_create_mongodb(
                 table_engine: None,
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<CloudResult<Vec<_>>>()?;
 
     let ca_certificate = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
@@ -2008,7 +2020,7 @@ async fn clickpipe_create_bigquery(
     client: &CloudClient,
     args: &BigQueryCreateArgs,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
         ClickPipeMutateBigQuerySource, ClickPipePostRequest, ClickPipePostSource, ServiceAccount,
@@ -2023,14 +2035,17 @@ async fn clickpipe_create_bigquery(
         .iter()
         .map(|mapping| {
             let (source, target_table) = mapping.split_once(':').ok_or_else(|| {
-                format!(
+                CloudError::new(format!(
                     "Invalid table mapping '{}': expected dataset.table:target_table",
                     mapping
-                )
+                ))
             })?;
-            let (source_dataset_name, source_table) = source
-                .split_once('.')
-                .ok_or_else(|| format!("Invalid source '{}': expected dataset.table", source))?;
+            let (source_dataset_name, source_table) = source.split_once('.').ok_or_else(|| {
+                CloudError::new(format!(
+                    "Invalid source '{}': expected dataset.table",
+                    source
+                ))
+            })?;
             Ok(ClickPipeBigQueryPipeTableMapping {
                 source_dataset_name: source_dataset_name.to_string(),
                 source_table: source_table.to_string(),
@@ -2038,7 +2053,7 @@ async fn clickpipe_create_bigquery(
                 ..Default::default()
             })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<CloudResult<Vec<_>>>()?;
 
     let source = ClickPipeMutateBigQuerySource {
         credentials: ServiceAccount {
@@ -4014,6 +4029,7 @@ mod tests {
         assert!(
             result
                 .unwrap_err()
+                .message
                 .contains("expected schema.table:target_table")
         );
     }
@@ -4023,7 +4039,12 @@ mod tests {
         let mappings = vec!["users:target".to_string()];
         let result = parse_db_table_mappings(&mappings);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("expected schema.table"));
+        assert!(
+            result
+                .unwrap_err()
+                .message
+                .contains("expected schema.table")
+        );
     }
 
     #[test]
@@ -4083,7 +4104,7 @@ mod tests {
     fn parse_columns_missing_colon_errors() {
         let columns = vec!["id_without_type".to_string()];
         let error = parse_columns(&columns).unwrap_err();
-        assert!(error.contains("expected name:type"));
+        assert!(error.message.contains("expected name:type"));
     }
 
     #[test]
@@ -4351,7 +4372,7 @@ mod tests {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let args = kafka_args();
         let error = build_kafka_credentials(&Auth::IAM_USER, &args.source, None).unwrap_err();
-        assert!(error.contains("--access-key-id"));
+        assert!(error.message.contains("--access-key-id"));
     }
 
     #[test]
@@ -4360,6 +4381,6 @@ mod tests {
         let mut args = kafka_args();
         args.source.auth = Some("IAM_ROLE".into());
         let error = build_kafka_credentials(&Auth::IAM_ROLE, &args.source, None).unwrap_err();
-        assert!(error.contains("--iam-role"));
+        assert!(error.message.contains("--iam-role"));
     }
 }

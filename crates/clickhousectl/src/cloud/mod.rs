@@ -98,7 +98,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 
     dispatch(&client, args.command, json)
         .await
-        .map_err(boxed_cloud_error_to_top_level)
+        .map_err(cloud_error_to_top_level)
 }
 
 fn cloud_error_to_top_level(e: CloudError) -> Error {
@@ -108,21 +108,7 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
     }
 }
 
-// Cloud command fns return `Box<dyn std::error::Error>`, so the `CloudError.kind`
-// only survives via downcast — without it, auth-flagged errors silently fall back
-// to `Error::Cloud` (exit 1) instead of `Error::AuthRequired` (exit 4).
-fn boxed_cloud_error_to_top_level(e: Box<dyn std::error::Error>) -> Error {
-    match e.downcast::<CloudError>() {
-        Ok(ce) => cloud_error_to_top_level(*ce),
-        Err(other) => Error::Cloud(other.to_string()),
-    }
-}
-
-async fn dispatch(
-    client: &CloudClient,
-    command: CloudCommands,
-    json: bool,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> client::Result<()> {
     match command {
         CloudCommands::Auth { .. } => unreachable!("handled above"),
         CloudCommands::Org { command } => organizations::run_org(client, command, json).await,
@@ -200,33 +186,21 @@ mod runtime_tests {
 
     #[test]
     fn cloud_error_kind_routes_to_top_level() {
-        assert!(matches!(
-            cloud_error_to_top_level(CloudError::auth("nope")),
-            Error::AuthRequired(_)
-        ));
-        assert!(matches!(
-            cloud_error_to_top_level(CloudError::new("boom")),
-            Error::Cloud(_)
-        ));
+        let auth = cloud_error_to_top_level(CloudError::auth("nope"));
+        assert!(matches!(&auth, Error::AuthRequired(message) if message == "nope"));
+        assert_eq!(auth.exit_code(), 4);
+
+        let generic = cloud_error_to_top_level(CloudError::new("boom"));
+        assert!(matches!(&generic, Error::Cloud(message) if message == "boom"));
+        assert_eq!(generic.exit_code(), 1);
         assert_eq!(CloudError::new("x").kind, CloudErrorKind::Generic);
     }
 
     #[test]
-    fn boxed_cloud_error_preserves_auth_kind_through_downcast() {
-        let boxed: Box<dyn std::error::Error> = Box::new(CloudError::auth("nope"));
+    fn concrete_cloud_error_preserves_auth_kind() {
         assert!(matches!(
-            boxed_cloud_error_to_top_level(boxed),
+            cloud_error_to_top_level(CloudError::auth("nope")),
             Error::AuthRequired(_)
-        ));
-    }
-
-    #[test]
-    fn boxed_non_cloud_error_falls_back_to_generic() {
-        // Anything that isn't a CloudError must not downcast to AuthRequired.
-        let boxed: Box<dyn std::error::Error> = "plain string error".into();
-        assert!(matches!(
-            boxed_cloud_error_to_top_level(boxed),
-            Error::Cloud(_)
         ));
     }
 }

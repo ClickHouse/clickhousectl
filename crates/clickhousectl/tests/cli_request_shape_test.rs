@@ -234,6 +234,55 @@ async fn backup_config_rejects_incompatible_period_before_any_request() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── Concrete Cloud error routing (issue #233) ──────────────────────────────
+
+async fn invoke_service_list_api_error(status: u16, message: &str) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(
+            ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                "status": status,
+                "error": message,
+                "requestId": format!("stub-{status}"),
+            })),
+        )
+        .mount(&mock)
+        .await;
+
+    invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", "org-1"])
+}
+
+#[tokio::test]
+async fn dispatched_cloud_401_exits_with_auth_required() {
+    let output = invoke_service_list_api_error(401, "Unauthorized").await;
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Unauthorized\n"
+    );
+}
+
+#[tokio::test]
+async fn dispatched_cloud_403_exits_with_auth_required() {
+    let output = invoke_service_list_api_error(403, "Forbidden").await;
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Forbidden\n"
+    );
+}
+
+#[tokio::test]
+async fn dispatched_cloud_500_remains_a_generic_error() {
+    let output = invoke_service_list_api_error(500, "Internal Server Error").await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Internal Server Error\n"
+    );
+}
+
 // ── Organization-scoped error context (issue #334) ─────────────────────────
 
 #[tokio::test]

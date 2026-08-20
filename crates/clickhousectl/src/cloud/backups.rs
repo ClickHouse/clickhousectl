@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
 use clap::Subcommand;
@@ -98,11 +98,7 @@ impl BackupConfigCommands {
     }
 }
 
-pub async fn run(
-    client: &CloudClient,
-    command: BackupCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(client: &CloudClient, command: BackupCommands, json: bool) -> CloudResult<()> {
     match command {
         BackupCommands::List { service_id, org_id } => {
             backup_list(client, &service_id, org_id.as_deref(), json).await
@@ -119,7 +115,7 @@ pub async fn run_config(
     client: &CloudClient,
     command: BackupConfigCommands,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     match command {
         BackupConfigCommands::Get { service_id, org_id } => {
             backup_config_get(client, &service_id, org_id.as_deref(), json).await
@@ -172,13 +168,13 @@ fn parse_backup_start_time(value: &str) -> Result<String, String> {
 
 fn build_backup_config_update_request(
     options: &BackupConfigUpdateOptions,
-) -> Result<BackupConfigurationPatchRequest, Box<dyn std::error::Error>> {
+) -> CloudResult<BackupConfigurationPatchRequest> {
     if options.backup_start_time.is_some()
         && matches!(options.backup_period_hours, Some(period) if period != 24 && period != 48)
     {
-        return Err(
-            "--backup-period-hours must be 24 or 48 when --backup-start-time is set".into(),
-        );
+        return Err(CloudError::new(
+            "--backup-period-hours must be 24 or 48 when --backup-start-time is set",
+        ));
     }
 
     Ok(BackupConfigurationPatchRequest {
@@ -193,7 +189,7 @@ async fn backup_list(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let backups = client.list_backups(&org_id, service_id).await?;
 
@@ -235,7 +231,7 @@ async fn backup_get(
     backup_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let backup = client.get_backup(&org_id, service_id, backup_id).await?;
 
@@ -252,7 +248,7 @@ async fn backup_config_get(
     service_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let config = client.get_backup_config(&org_id, service_id).await?;
 
@@ -269,7 +265,7 @@ async fn backup_config_update(
     service_id: &str,
     options: BackupConfigUpdateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let request = build_backup_config_update_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let config = client

@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use clickhouse_cloud_api::models::ResourceTagsV1;
 
@@ -6,7 +6,7 @@ use clickhouse_cloud_api::models::ResourceTagsV1;
 pub(super) async fn resolve_org_id(
     client: &CloudClient,
     org_id: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> CloudResult<String> {
     match org_id {
         Some(id) => Ok(id.to_string()),
         None => Ok(client.get_default_org_id().await?),
@@ -18,26 +18,28 @@ pub(super) fn parse_serde_enum<T: serde::de::DeserializeOwned>(
     value: &str,
     field: &str,
     known_values: &[&str],
-) -> Result<T, Box<dyn std::error::Error>> {
+) -> CloudResult<T> {
     if !known_values.contains(&value) {
-        return Err(format!(
+        return Err(CloudError::new(format!(
             "invalid {}: unknown value '{}', expected one of: {}",
             field,
             value,
             known_values.join(", ")
-        )
-        .into());
+        )));
     }
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| format!("invalid {}: {}", field, e).into())
+        .map_err(|e| CloudError::new(format!("invalid {}: {}", field, e)))
 }
 
-pub(super) fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::error::Error>> {
+pub(super) fn parse_tag(value: &str) -> CloudResult<ResourceTagsV1> {
     match value.split_once('=') {
         Some((key, tag_value)) => {
             let key = key.trim();
             if key.is_empty() {
-                Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
+                Err(CloudError::new(format!(
+                    "invalid tag '{}': tag key cannot be empty",
+                    value
+                )))
             } else {
                 Ok(ResourceTagsV1 {
                     key: key.to_string(),
@@ -48,7 +50,10 @@ pub(super) fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::erro
         None => {
             let key = value.trim();
             if key.is_empty() {
-                Err(format!("invalid tag '{}': tag key cannot be empty", value).into())
+                Err(CloudError::new(format!(
+                    "invalid tag '{}': tag key cannot be empty",
+                    value
+                )))
             } else {
                 Ok(ResourceTagsV1 {
                     key: key.to_string(),
@@ -59,9 +64,7 @@ pub(super) fn parse_tag(value: &str) -> Result<ResourceTagsV1, Box<dyn std::erro
     }
 }
 
-pub(super) fn parse_tags(
-    values: &[String],
-) -> Result<Option<Vec<ResourceTagsV1>>, Box<dyn std::error::Error>> {
+pub(super) fn parse_tags(values: &[String]) -> CloudResult<Option<Vec<ResourceTagsV1>>> {
     if values.is_empty() {
         Ok(None)
     } else {

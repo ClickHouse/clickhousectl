@@ -1,4 +1,4 @@
-use crate::cloud::client::{CloudClient, CloudError};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
@@ -214,11 +214,7 @@ impl InvitationCommands {
     }
 }
 
-pub async fn run_org(
-    client: &CloudClient,
-    command: OrgCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> CloudResult<()> {
     match command {
         OrgCommands::List => org_list(client, json).await,
         OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
@@ -260,7 +256,7 @@ pub async fn run_member(
     client: &CloudClient,
     command: MemberCommands,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     match command {
         MemberCommands::List { org_id } => member_list(client, org_id.as_deref(), json).await,
         MemberCommands::Get { user_id, org_id } => {
@@ -281,7 +277,7 @@ pub async fn run_invitation(
     client: &CloudClient,
     command: InvitationCommands,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     match command {
         InvitationCommands::List { org_id } => {
             invitation_list(client, org_id.as_deref(), json).await
@@ -309,9 +305,7 @@ struct OrgUpdateOptions {
     enable_core_dumps: Option<bool>,
 }
 
-fn parse_org_private_endpoint_remove(
-    value: &str,
-) -> Result<OrganizationPatchPrivateEndpoint, Box<dyn std::error::Error>> {
+fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPatchPrivateEndpoint> {
     let mut endpoint = OrganizationPatchPrivateEndpoint {
         id: String::new(),
         description: None,
@@ -330,9 +324,12 @@ fn parse_org_private_endpoint_remove(
             continue;
         }
 
-        let (key, raw_value) = part
-            .split_once('=')
-            .ok_or_else(|| format!("invalid remove-private-endpoint segment '{}'", part))?;
+        let (key, raw_value) = part.split_once('=').ok_or_else(|| {
+            CloudError::new(format!(
+                "invalid remove-private-endpoint segment '{}'",
+                part
+            ))
+        })?;
 
         match key {
             "id" => endpoint.id = raw_value.to_string(),
@@ -345,28 +342,25 @@ fn parse_org_private_endpoint_remove(
                     .expect("enum with Unknown variant should always deserialize");
             }
             "region" => {
-                endpoint.region =
-                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
-                        serde_json::Value::String(raw_value.to_string()),
-                    )
-                    .expect("enum with Unknown variant should always deserialize");
+                endpoint.region = serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
+                    serde_json::Value::String(raw_value.to_string()),
+                )
+                .expect("enum with Unknown variant should always deserialize");
             }
             _ => {
-                return Err(format!(
+                return Err(CloudError::new(format!(
                     "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
                     key
-                )
-                .into())
+                )));
             }
         }
     }
 
     if endpoint.id.trim().is_empty() {
-        return Err(format!(
+        return Err(CloudError::new(format!(
             "remove-private-endpoint '{}' requires a non-empty id",
             value
-        )
-        .into());
+        )));
     }
 
     Ok(endpoint)
@@ -374,7 +368,7 @@ fn parse_org_private_endpoint_remove(
 
 fn parse_org_private_endpoints_patch(
     remove: &[String],
-) -> Result<Option<OrganizationPrivateEndpointsPatch>, Box<dyn std::error::Error>> {
+) -> CloudResult<Option<OrganizationPrivateEndpointsPatch>> {
     if remove.is_empty() {
         return Ok(None);
     }
@@ -391,9 +385,7 @@ fn parse_org_private_endpoints_patch(
     }))
 }
 
-fn build_org_update_request(
-    options: &OrgUpdateOptions,
-) -> Result<OrganizationPatchRequest, Box<dyn std::error::Error>> {
+fn build_org_update_request(options: &OrgUpdateOptions) -> CloudResult<OrganizationPatchRequest> {
     Ok(OrganizationPatchRequest {
         name: options.name.clone(),
         private_endpoints: parse_org_private_endpoints_patch(&options.remove_private_endpoints)?,
@@ -429,7 +421,7 @@ fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String 
     }
 }
 
-async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn org_list(client: &CloudClient, json: bool) -> CloudResult<()> {
     let orgs = client.list_organizations().await?;
 
     if json {
@@ -458,11 +450,7 @@ async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-async fn org_get(
-    client: &CloudClient,
-    org_id: &str,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn org_get(client: &CloudClient, org_id: &str, json: bool) -> CloudResult<()> {
     let organization = client.get_organization(org_id).await?;
 
     if json {
@@ -478,7 +466,7 @@ async fn org_update(
     org_id: &str,
     options: OrgUpdateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let request = build_org_update_request(&options)?;
     let organization = client.update_organization(org_id, &request).await?;
 
@@ -499,7 +487,7 @@ async fn org_prometheus(
     org_id: Option<&str>,
     filtered_metrics: Option<bool>,
     _json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let prometheus = client.get_org_prometheus(&org_id, filtered_metrics).await?;
     println!("{}", prometheus);
@@ -513,7 +501,7 @@ async fn org_usage(
     to_date: &str,
     filters: &[String],
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let usage = client
         .get_org_usage(&org_id, from_date, to_date, filters)
@@ -562,11 +550,7 @@ fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
     }
 }
 
-async fn member_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn member_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let members = client.list_members(&org_id).await?;
 
@@ -609,7 +593,7 @@ async fn member_get(
     user_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let member = client.get_member(&org_id, user_id).await?;
 
@@ -627,7 +611,7 @@ async fn member_update(
     role_ids: &[String],
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let request = build_member_update_request(role_ids);
     let member = client.update_member(&org_id, user_id, &request).await?;
@@ -645,7 +629,7 @@ async fn member_remove(
     user_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client.delete_member(&org_id, user_id).await?;
     if json {
@@ -660,7 +644,7 @@ async fn invitation_list(
     client: &CloudClient,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let invitations = client.list_invitations(&org_id).await?;
 
@@ -704,7 +688,7 @@ async fn invitation_create(
     role_ids: &[String],
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let request = build_invitation_create_request(email, role_ids);
     let invitation = client.create_invitation(&org_id, &request).await?;
@@ -726,7 +710,7 @@ async fn invitation_get(
     invitation_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let invitation = client.get_invitation(&org_id, invitation_id).await?;
 
@@ -743,7 +727,7 @@ async fn invitation_delete(
     invitation_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client.delete_invitation(&org_id, invitation_id).await?;
     if json {
