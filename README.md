@@ -94,18 +94,20 @@ clickhousectl local postgres client --query "SELECT version()"
 
 ### ClickHouse Cloud account and services
 
-Create an account, then use browser-based OAuth to inspect Cloud resources and run read-only queries:
+Create an account, then authenticate with browser-based OAuth for read-only access or an API key for read/write access:
 
 ```bash
-# Opens the ClickHouse Cloud sign-up page
+# Create a ClickHouse Cloud account
 clickhousectl cloud auth signup
 
 # Opens an OAuth login in the browser (read-only)
 clickhousectl cloud auth login
+# Or use API keys non-interactively (read/write)
+clickhousectl cloud auth login --api-key X --api-secret Y
 clickhousectl cloud org list
 ```
 
-Creating or changing Cloud resources requires an API key with the appropriate role. [Create an API key](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl), then save it with `clickhousectl cloud auth login --interactive` (secret input is hidden). For automation, provide `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` through your secret manager instead of command-line flags.
+Creating or changing Cloud resources requires an API key with the appropriate role. [Create an API key](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl). You can also export `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` or add them to your `.env` file.
 
 Create and query a ClickHouse Cloud service:
 
@@ -113,8 +115,7 @@ Create and query a ClickHouse Cloud service:
 clickhousectl cloud service create \
   --name my-clickhouse \
   --provider aws \
-  --region us-east-1 \
-  --ip-allow <trusted-public-ip>/32
+  --region us-east-1
 
 # Repeat until the service state is `running`
 clickhousectl cloud service get <service-id>
@@ -124,7 +125,7 @@ clickhousectl cloud service query \
   --query "SELECT version()"
 ```
 
-`service create` returns immediately. When the API returns an initial password, the CLI prints it once; store it securely. If it is omitted, the CLI shows the reset command. SQL through `service query` does not require that password.
+`service create` returns an initial password, which the CLI prints once; store it securely. SQL through `service query` does not require that password.
 
 Create a managed Postgres service:
 
@@ -143,7 +144,7 @@ clickhousectl cloud postgres get <postgres-id>
 psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 ```
 
-When the API returns a connection string and credentials, `postgres create` prints them. The password is shown only once; store it securely. If the API omits both, the CLI shows how to generate a password with `postgres reset-password --generate`.
+`postgres create` returns an initial password, which the CLI prints once; store it securely.
 
 ## Local
 
@@ -152,29 +153,26 @@ When the API returns a connection string and credentials, `postgres create` prin
 `clickhousectl` downloads ClickHouse binaries from `builds.clickhouse.com`, falling back to `packages.clickhouse.com` (Linux) or [GitHub releases](https://github.com/ClickHouse/ClickHouse/releases) (macOS) when a build isn't available there.
 
 ```bash
+# Manage default version
+clickhousectl local use latest              # Latest master build; installs if needed and creates ~/.local/bin/clickhouse
+clickhousectl local use 26.8                # Latest 26.8.x.x (installs if needed)
+clickhousectl local use 26.8.1.1760         # Exact version
+clickhousectl local use latest --no-global  # Set default but don't touch ~/.local/bin/clickhouse
+clickhousectl local which                   # Show current default
+
 # Install a version
 clickhousectl local install latest          # Latest master build
-clickhousectl local install stable          # Latest stable release
-clickhousectl local install lts             # Latest LTS release
-clickhousectl local install 25              # Latest 25.x.x.x
-clickhousectl local install 25.12           # Latest 25.12.x.x
-clickhousectl local install 25.12.5.44      # Exact version
+clickhousectl local install 26              # Latest 26.x.x.x
+clickhousectl local install 26.8            # Latest 26.8.x.x
+clickhousectl local install 26.8.1.1760      # Exact version
 
 # List versions
 clickhousectl local list                    # Installed versions
 clickhousectl local list --remote           # Available for download
 
-# Manage default version
-clickhousectl local use latest              # Latest master build (installs if needed)
-clickhousectl local use lts                 # Latest LTS (installs if needed)
-clickhousectl local use 25.12               # Latest 25.12.x.x (installs if needed)
-clickhousectl local use 25.12.5.44          # Exact version
-clickhousectl local use latest --no-global  # Set default but don't touch ~/.local/bin/clickhouse
-clickhousectl local which                   # Show current default
-
 # Remove a version
-clickhousectl local remove 25.12.5.44
-clickhousectl local remove 25.12.5.44 --force   # Stop running servers on this version first
+clickhousectl local remove 26.8.1.1760
+clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this version first
 ```
 
 `local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning. `local remove` of the active default version also clears the symlink.
@@ -188,7 +186,7 @@ ClickHouse binaries are stored in a global repository, so they can be used by mu
 ```
 ~/.clickhouse/
 ├── versions/
-│   └── 25.12.5.44/
+│   └── 26.8.1.1760/
 │       └── clickhouse
 └── default              # tracks the active version
 ```
@@ -243,7 +241,6 @@ clickhousectl local server start --foreground             # Run in foreground (-
 clickhousectl local server start --no-wait                # Return after spawning without waiting for readiness
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start --config analytics       # Apply a custom config (see "Custom config files" below)
-clickhousectl local server start dev -- --logger.level=trace  # Pass clickhouse-server arguments after --
 
 # List custom config files available to --config
 clickhousectl local server configs
@@ -271,13 +268,9 @@ clickhousectl local server dotenv --local                # Write to .env.local i
 clickhousectl local server dotenv --local --user default --database mydb  # Include user and database
 ```
 
-**Idempotent stop:** `server stop [name]` is idempotent — stopping a server that exists but is already stopped exits 0 (it reports "is already stopped" rather than erroring), so scripts don't need to guard against it. The name defaults to "default". An unknown server name still errors, so typos are caught. `server stop-all` likewise exits 0 when nothing is running.
-
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
 
-**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly. The existing `--name <name>` form remains accepted for compatibility, but cannot be combined with a positional name.
-
-**ClickHouse arguments:** Additional `clickhouse-server` arguments must follow `--`. This boundary keeps clickhousectl options such as `--version` unambiguous after the optional server name.
+**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 
@@ -885,16 +878,9 @@ clickhousectl cloud --json service get <service-id>
 
 `clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: Prometheus commands emit text, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
-### Absent fields
-
-Cloud commands never invent values for data the API did not return. A field the API omits is shown as `-` in tables and human-readable output, and is left out of `--json` output entirely rather than emitted as `null` — so `--json` reflects exactly what the API sent.
-
 ### Exit codes
 
 Usage errors and cancelled actions use distinct exit codes.
-
-**Breaking change in v0.4.1:** cancelled actions now exit with `3`; `2` is
-reserved for command-line usage errors.
 
 | Code | Meaning                                                  |
 | ---- | -------------------------------------------------------- |
@@ -991,16 +977,13 @@ Each event contains exactly:
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
 
-Nothing is ever sent before you have seen the notice or explicitly enabled telemetry with `clickhousectl telemetry enable`: the first run prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run — or immediately if you opt in by running `telemetry enable`, which is explicit consent and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
+Nothing is sent before you have seen the notice unless you explicitly enable telemetry with `clickhousectl telemetry enable`. The first run normally prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. Explicitly enabling telemetry starts it immediately and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 
 Opt out any of these ways:
 
 ```bash
 # Persistently, per machine
 clickhousectl telemetry disable
-
-# Check the current state
-clickhousectl telemetry status
 
 # Per environment/shell (https://consoledonottrack.com)
 export DO_NOT_TRACK=1
@@ -1025,7 +1008,7 @@ export CLICKHOUSE_CLOUD_API_KEY=...
 export CLICKHOUSE_CLOUD_API_SECRET=...
 export CLICKHOUSE_CLOUD_TEST_ORG_ID=...
 export CLICKHOUSE_CLOUD_TEST_PROVIDER=aws
-export CLICKHOUSE_CLOUD_TEST_REGION=us-east-1
+export CLICKHOUSE_CLOUD_TEST_REGION=eu-west-1
 # Required for the org integration suite (members + invitations need a
 # second user in the test org); optional otherwise.
 export CLICKHOUSE_CLOUD_TEST_SECONDARY_USER_ID=...
