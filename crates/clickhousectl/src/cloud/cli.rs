@@ -44,6 +44,21 @@ pub struct CloudArgs {
     pub command: CloudCommands,
 }
 
+impl CloudArgs {
+    pub fn has_explicit_json_format_conflict(&self) -> bool {
+        self.json
+            && matches!(
+                &self.command,
+                CloudCommands::Service {
+                    command: ServiceCommands::Query {
+                        format: Some(_),
+                        ..
+                    }
+                }
+            )
+    }
+}
+
 #[derive(Subcommand)]
 pub enum CloudCommands {
     /// Manage authentication (OAuth login, API keys)

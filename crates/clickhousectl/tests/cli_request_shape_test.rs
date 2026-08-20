@@ -2425,14 +2425,29 @@ async fn service_query_agent_json_uses_json_each_row_unless_format_is_explicit()
     assert_eq!(requests[0].url.query(), Some("format=CSV"));
 }
 
-#[test]
-fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
-    let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .args([
+#[tokio::test]
+async fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
+    let control = MockServer::start().await;
+    let url = control.uri();
+    let cases = [
+        vec![
             "cloud",
+            "--url",
+            &url,
+            "--json",
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--query",
+            "SELECT 1",
+            "--format",
+            "CSV",
+        ],
+        vec![
+            "cloud",
+            "--url",
+            &url,
             "service",
             "query",
             "--id",
@@ -2442,14 +2457,31 @@ fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
             "--json",
             "--format",
             "CSV",
-        ])
-        .output()
-        .expect("failed to spawn clickhousectl");
+        ],
+    ];
 
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--json"));
-    assert!(stderr.contains("--format"));
+    for args in cases {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_agent_env(&mut command);
+        let output = command
+            .env("DO_NOT_TRACK", "1")
+            .env("CLICKHOUSE_CLOUD_API_KEY", "unused-key")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "unused-secret")
+            .args(args)
+            .output()
+            .expect("failed to spawn clickhousectl");
+
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--json"), "{stderr}");
+        assert!(stderr.contains("--format"), "{stderr}");
+        assert!(
+            stderr.contains("clickhousectl cloud service query"),
+            "{stderr}"
+        );
+    }
+
+    assert!(control.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
