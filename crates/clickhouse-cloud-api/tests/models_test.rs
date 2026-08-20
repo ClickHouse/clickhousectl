@@ -641,6 +641,92 @@ fn deserialize_postgres_service() {
 }
 
 #[test]
+fn postgres_gcp_provider_roundtrips() {
+    let provider: PgProvider = serde_json::from_str(r#""gcp""#).unwrap();
+    assert_eq!(provider, PgProvider::Gcp);
+    assert_eq!(provider.to_string(), "gcp");
+    assert_eq!(serde_json::to_string(&provider).unwrap(), r#""gcp""#);
+    assert_eq!(PgProvider::VALUES, &["aws", "gcp"]);
+}
+
+#[test]
+fn postgres_gcp_sizes_roundtrip_as_known_variants() {
+    let sizes = [
+        "c4a-highmem-4",
+        "c4a-highmem-8",
+        "c4a-highmem-16",
+        "c4a-highmem-32",
+        "c4a-highmem-48",
+        "c4a-highmem-64",
+        "c4a-highmem-72",
+        "c4a-standard-4",
+        "c4a-standard-8",
+        "c4a-standard-16",
+        "c4a-standard-32",
+        "c4a-standard-48",
+        "c4a-standard-64",
+        "c4a-standard-72",
+        "c4-highmem-4",
+        "c4-highmem-8",
+        "c4-highmem-16",
+        "c4-highmem-24",
+        "c4-highmem-32",
+        "c4-highmem-48",
+        "c4-highmem-96",
+        "c4-highmem-144",
+        "c4-highmem-192",
+        "c4-highmem-288",
+        "c4-standard-4",
+        "c4-standard-8",
+        "c4-standard-16",
+        "c4-standard-24",
+        "c4-standard-32",
+        "c4-standard-48",
+        "c4-standard-96",
+        "c4-standard-144",
+        "c4-standard-192",
+        "c4-standard-288",
+        "c4d-highmem-8",
+        "c4d-highmem-16",
+        "c4d-highmem-32",
+        "c4d-highmem-48",
+        "c4d-highmem-64",
+        "c4d-highmem-96",
+        "c4d-highmem-192",
+        "c4d-highmem-384",
+        "c4d-standard-8",
+        "c4d-standard-16",
+        "c4d-standard-32",
+        "c4d-standard-48",
+        "c4d-standard-64",
+        "c4d-standard-96",
+        "c4d-standard-192",
+        "c4d-standard-384",
+        "z3-highlssd-8",
+        "z3-highlssd-16",
+        "z3-highlssd-22",
+        "z3-highlssd-32",
+        "z3-highlssd-44",
+        "z3-highlssd-88",
+        "z3-standardlssd-14",
+        "z3-standardlssd-22",
+        "z3-standardlssd-44",
+        "z3-standardlssd-88",
+        "z3-standardlssd-176",
+    ];
+
+    for wire_value in sizes {
+        let size: PgSize = serde_json::from_value(wire_value.into()).unwrap();
+        assert!(
+            !matches!(&size, PgSize::Unknown(_)),
+            "{wire_value} deserialized through the catch-all"
+        );
+        assert_eq!(size.to_string(), wire_value);
+        assert_eq!(serde_json::to_value(&size).unwrap(), wire_value);
+    }
+}
+
+#[test]
 fn unknown_enum_variant_deserializes() {
     // An unknown service state from the API should deserialize into Unknown(String)
     let json = r#"{"state": "brand-new-state"}"#;
