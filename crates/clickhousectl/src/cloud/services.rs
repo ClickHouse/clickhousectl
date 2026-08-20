@@ -1790,7 +1790,9 @@ async fn service_query(
             }
             other => other,
         };
-        result.map_err(|error| convert_query_error(client, error, &service_name, &service_id))?
+        result.map_err(|error| {
+            convert_query_error(client, error, &service_name, &service_id, &org_id)
+        })?
     } else {
         let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
             run_basic_service_query(
@@ -1853,7 +1855,9 @@ async fn service_query(
                 other => other,
             }
         };
-        result.map_err(|error| convert_query_error(client, error, &service_name, &service_id))?
+        result.map_err(|error| {
+            convert_query_error(client, error, &service_name, &service_id, &org_id)
+        })?
     };
 
     use futures_util::StreamExt;
@@ -1920,10 +1924,11 @@ fn convert_query_error(
     error: clickhouse_cloud_api::Error,
     service_name: &str,
     service_id: &str,
+    org_id: &str,
 ) -> Box<dyn std::error::Error> {
     match error {
         clickhouse_cloud_api::Error::ServiceStopped => format!(
-            "service '{service_name}' is stopped; start it with `clickhousectl cloud service start {service_id}` and retry"
+            "service '{service_name}' is stopped; start it with `clickhousectl cloud service start {service_id} --org-id {org_id}` and retry"
         )
         .into(),
         other => client.convert_error(other).into(),

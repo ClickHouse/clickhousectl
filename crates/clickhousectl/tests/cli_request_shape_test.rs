@@ -3274,6 +3274,8 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir(&home_dir).unwrap();
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
@@ -3292,6 +3294,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
             "SELECT 1",
         ])
         .current_dir(dir.path())
+        .env("HOME", home_dir)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
@@ -3303,7 +3306,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         format!(
-            "Error: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID}` and retry\n"
+            "Error: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id org-1` and retry\n"
         ),
     );
 
