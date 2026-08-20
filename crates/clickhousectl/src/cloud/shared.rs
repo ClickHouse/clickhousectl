@@ -1,5 +1,5 @@
 use crate::cloud::client::CloudClient;
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveTime};
+use chrono::{DateTime, FixedOffset, NaiveDate};
 use clickhouse_cloud_api::models::ResourceTagsV1;
 
 /// Resolve an organization ID from an explicit argument or auto-detection.
@@ -88,14 +88,6 @@ pub(super) fn parse_datetime(value: &str) -> Result<String, String> {
             "invalid datetime '{}': expected ISO 8601 / RFC 3339",
             value
         ));
-    }
-
-    Ok(value.to_string())
-}
-
-pub(super) fn parse_time_only(value: &str) -> Result<String, String> {
-    if NaiveTime::parse_from_str(value, "%H:%M").is_err() {
-        return Err(format!("invalid time '{}': expected HH:MM", value));
     }
 
     Ok(value.to_string())

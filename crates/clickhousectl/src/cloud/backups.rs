@@ -1,6 +1,6 @@
 use crate::cloud::client::CloudClient;
 use crate::cloud::output::{or_absent, print_human};
-use crate::cloud::shared::{parse_time_only, resolve_org_id};
+use crate::cloud::shared::resolve_org_id;
 use clap::Subcommand;
 use clickhouse_cloud_api::models::BackupConfigurationPatchRequest;
 use tabled::{Table, Tabled, settings::Style};
@@ -69,7 +69,8 @@ pub enum BackupConfigCommands {
         /// Service ID
         service_id: String,
 
-        /// The interval in hours between each backup
+        /// The interval in hours between each backup. With --backup-start-time,
+        /// an explicitly supplied period must be 24 or 48 hours.
         #[arg(long)]
         backup_period_hours: Option<u32>,
 
@@ -77,8 +78,9 @@ pub enum BackupConfigCommands {
         #[arg(long)]
         backup_retention_period_hours: Option<u32>,
 
-        /// Backup start time in UTC (HH:MM)
-        #[arg(long, value_parser = parse_time_only)]
+        /// Backup start time in UTC, exactly on the hour (HH:00). If the period
+        /// is omitted, the API sets it to 24 hours.
+        #[arg(long, value_parser = parse_backup_start_time)]
         backup_start_time: Option<String>,
 
         /// Organization ID (auto-detected if not specified)
@@ -148,14 +150,42 @@ struct BackupConfigUpdateOptions {
     org_id: Option<String>,
 }
 
+fn parse_backup_start_time(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let valid_syntax = bytes.len() == 5
+        && bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[2] == b':'
+        && bytes[3] == b'0'
+        && bytes[4] == b'0';
+    let valid_hour = valid_syntax && (bytes[0] - b'0') * 10 + (bytes[1] - b'0') <= 23;
+
+    if !valid_hour {
+        return Err(format!(
+            "invalid backup start time '{}': expected HH:00 with HH from 00 to 23",
+            value
+        ));
+    }
+
+    Ok(value.to_string())
+}
+
 fn build_backup_config_update_request(
     options: &BackupConfigUpdateOptions,
-) -> BackupConfigurationPatchRequest {
-    BackupConfigurationPatchRequest {
+) -> Result<BackupConfigurationPatchRequest, Box<dyn std::error::Error>> {
+    if options.backup_start_time.is_some()
+        && matches!(options.backup_period_hours, Some(period) if period != 24 && period != 48)
+    {
+        return Err(
+            "--backup-period-hours must be 24 or 48 when --backup-start-time is set".into(),
+        );
+    }
+
+    Ok(BackupConfigurationPatchRequest {
         backup_period_in_hours: options.backup_period_hours.map(f64::from),
         backup_retention_period_in_hours: options.backup_retention_period_hours.map(f64::from),
         backup_start_time: options.backup_start_time.clone(),
-    }
+    })
 }
 
 async fn backup_list(
@@ -240,8 +270,8 @@ async fn backup_config_update(
     options: BackupConfigUpdateOptions,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let request = build_backup_config_update_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
-    let request = build_backup_config_update_request(&options);
     let config = client
         .update_backup_config(&org_id, service_id, &request)
         .await?;
@@ -385,7 +415,7 @@ mod tests {
             "update",
             "svc-1",
             "--backup-period-hours",
-            "12",
+            "48",
             "--backup-retention-period-hours",
             "336",
             "--backup-start-time",
@@ -412,7 +442,7 @@ mod tests {
             panic!("expected backup-config update");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(backup_period_hours, Some(12));
+        assert_eq!(backup_period_hours, Some(48));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
         assert!(org_id.is_none());
@@ -436,7 +466,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_backup_start_time() {
+    fn parses_hourly_backup_start_time_boundaries() {
+        for value in ["00:00", "02:00", "23:00"] {
+            assert_eq!(parse_backup_start_time(value).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn rejects_non_hourly_or_out_of_range_backup_start_times() {
+        for value in ["2:00", "02:30", "24:00", "25:00", "02:000", "aa:00"] {
+            let error = parse_backup_start_time(value).unwrap_err();
+            assert!(error.contains("expected HH:00"), "{value}: {error}");
+        }
+
         let result = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
@@ -445,13 +487,31 @@ mod tests {
             "update",
             "svc-1",
             "--backup-start-time",
-            "25:00",
+            "02:30",
         ]);
 
         match result {
             Ok(_) => panic!("expected invalid backup start time to be rejected"),
-            Err(error) => assert!(error.to_string().contains("expected HH:MM")),
+            Err(error) => assert!(error.to_string().contains("expected HH:00")),
         }
+    }
+
+    #[test]
+    fn backup_config_update_help_describes_start_time_constraints() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "--help",
+        ])
+        .err()
+        .expect("help should stop parsing");
+        let help = error.to_string();
+        assert!(help.contains("exactly on the hour (HH:00)"));
+        assert!(help.contains("must be 24 or 48 hours"));
+        assert!(help.contains("API sets it to 24 hours"));
     }
 
     #[test]
@@ -494,19 +554,75 @@ mod tests {
 
     #[test]
     fn build_backup_config_update_request_supports_minimal_and_maximal_inputs() {
-        let minimal = build_backup_config_update_request(&BackupConfigUpdateOptions::default());
+        let minimal =
+            build_backup_config_update_request(&BackupConfigUpdateOptions::default()).unwrap();
         assert!(minimal.backup_period_in_hours.is_none());
         assert!(minimal.backup_retention_period_in_hours.is_none());
         assert!(minimal.backup_start_time.is_none());
 
         let maximal = build_backup_config_update_request(&BackupConfigUpdateOptions {
-            backup_period_hours: Some(12),
+            backup_period_hours: Some(48),
             backup_retention_period_hours: Some(336),
             backup_start_time: Some("03:00".to_string()),
             org_id: None,
-        });
-        assert_eq!(maximal.backup_period_in_hours, Some(12.0));
+        })
+        .unwrap();
+        assert_eq!(maximal.backup_period_in_hours, Some(48.0));
         assert_eq!(maximal.backup_retention_period_in_hours, Some(336.0));
         assert_eq!(maximal.backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn build_backup_config_update_request_preserves_start_time_without_period() {
+        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
+            backup_start_time: Some("03:00".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(request.backup_period_in_hours.is_none());
+        assert_eq!(request.backup_start_time.as_deref(), Some("03:00"));
+    }
+
+    #[test]
+    fn build_backup_config_update_request_allows_compatible_explicit_periods() {
+        for period in [24, 48] {
+            let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
+                backup_period_hours: Some(period),
+                backup_start_time: Some("03:00".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+            assert_eq!(request.backup_period_in_hours, Some(f64::from(period)));
+            assert_eq!(request.backup_start_time.as_deref(), Some("03:00"));
+        }
+    }
+
+    #[test]
+    fn build_backup_config_update_request_allows_other_periods_without_start_time() {
+        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
+            backup_period_hours: Some(12),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(request.backup_period_in_hours, Some(12.0));
+        assert!(request.backup_start_time.is_none());
+    }
+
+    #[test]
+    fn build_backup_config_update_request_rejects_incompatible_explicit_period() {
+        let error = build_backup_config_update_request(&BackupConfigUpdateOptions {
+            backup_period_hours: Some(12),
+            backup_start_time: Some("03:00".to_string()),
+            ..Default::default()
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--backup-period-hours must be 24 or 48 when --backup-start-time is set"
+        );
     }
 }

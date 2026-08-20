@@ -207,6 +207,33 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     .unwrap();
 }
 
+// ── Backup configuration validation (issue #425) ────────────────────────────
+
+#[tokio::test]
+async fn backup_config_rejects_incompatible_period_before_any_request() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-period-hours",
+            "12",
+            "--backup-start-time",
+            "02:00",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--backup-period-hours must be 24 or 48 when --backup-start-time is set")
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── Organization-scoped error context (issue #334) ─────────────────────────
 
 #[tokio::test]
