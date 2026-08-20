@@ -183,6 +183,25 @@ async fn run_query_206_service_stopped_maps_to_service_stopped() {
 }
 
 #[tokio::test]
+async fn run_query_404_unavailable_service_maps_to_service_stopped() {
+    let mock = start_mock_query_host(
+        404,
+        r#"{"error":"ClickHouse service is currently unavailable. Please try again later."}"#,
+    )
+    .await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
+        .await
+        .expect_err("expected ServiceStopped");
+    assert!(
+        matches!(err, Error::ServiceStopped),
+        "expected ServiceStopped, got: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn run_query_206_unrecognized_body_maps_to_api_error() {
     let mock = start_mock_query_host(206, r#"{"data":"Something new"}"#).await;
     let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());

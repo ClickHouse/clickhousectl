@@ -3084,13 +3084,12 @@ async fn service_query_merges_the_new_key_into_the_reported_keys() {
     );
 }
 
-// ── Idled / stopped services (query host 206 protocol) ─────────────────────
+// ── Idled / stopped services ───────────────────────────────────────────────
 //
-// An idled or stopped service answers the run request with 206 and
-// `{"data": "<state>"}` instead of executing the query. For `Confirm wake
-// service` the CLI must resend the query once with the `wake-service: true`
-// header (waking the service, like the SQL console does after prompting);
-// for `Service is stopped` it must fail with a hint to start the service.
+// An idled service answers 206 `Confirm wake service`, which the CLI retries
+// with `wake-service: true`. A stopped service currently answers 404 with an
+// unavailable-service error; the CLI must not treat that 404 as a missing
+// query endpoint and must instead fail with a hint to start the service.
 
 /// Write an OAuth tokens.json into `ch_dir` (the caller's `$HOME/.clickhouse`)
 /// so the binary authenticates with a bearer token against the given control
@@ -3268,17 +3267,13 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
     let query_host = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-        .respond_with(
-            ResponseTemplate::new(206).set_body_string(r#"{"data":"Service is stopped"}"#),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_string(
+            r#"{"error":"ClickHouse service is currently unavailable. Please try again later."}"#,
+        ))
         .mount(&query_host)
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    let home_dir = dir.path().join("home");
-    let ch_dir = home_dir.join(".clickhouse");
-    std::fs::create_dir_all(&ch_dir).unwrap();
-    write_oauth_tokens(&ch_dir, &control.uri());
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
@@ -3297,27 +3292,37 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
             "SELECT 1",
         ])
         .current_dir(dir.path())
-        .env("HOME", &home_dir)
-        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
-        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
         .output()
         .expect("failed to spawn clickhousectl");
 
-    assert!(
-        !output.status.success(),
-        "querying a stopped service must fail\nstdout:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("stopped") && stderr.contains("service start"),
-        "stderr should say the service is stopped and hint at `service start`:\n{stderr}",
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID}` and retry\n"
+        ),
     );
 
-    // A stopped service is never woken: no wake-service resend.
+    // The stopped response is terminal: no wake resend and no endpoint/key
+    // provisioning despite its HTTP 404 status.
     let query_requests = query_host.received_requests().await.unwrap();
     assert_eq!(query_requests.len(), 1);
+    let control_requests = control.received_requests().await.unwrap();
+    assert!(
+        control_requests
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "stopped service query attempted provisioning: {:?}",
+        control_requests
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect::<Vec<_>>(),
+    );
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
 }
 
 // Shell env vars must win over `.env` — if both are set, the request is

@@ -26,8 +26,8 @@ pub enum Error {
     ServiceIdle,
 
     /// The Query API reported the service is stopped (HTTP 206 `Service is
-    /// stopped`). A stopped service is never woken by the Query API; it must
-    /// be started explicitly.
+    /// stopped`, or its HTTP 404 unavailable-service response). A stopped
+    /// service is never woken by the Query API; it must be started explicitly.
     #[error("service is stopped; it must be started before it can be queried")]
     ServiceStopped,
 }
