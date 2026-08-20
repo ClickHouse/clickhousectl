@@ -25,6 +25,10 @@ LIVE_SPEC_URL = os.environ.get(
     "CLICKHOUSE_OPENAPI_SPEC_URL", "https://api.clickhouse.cloud/v1"
 )
 ISSUE_LABEL = "openapi-drift"
+GENERATED_ISSUE_MARKER = "<!-- clickhousectl-openapi-drift -->"
+REPORT_INTRO = (
+    "The live ClickHouse Cloud OpenAPI spec has drifted from the Rust API library."
+)
 # GitHub rejects issue bodies and comments over 65,536 characters.
 MAX_ISSUE_BODY_CHARS = 65536
 CONTINUATION_NOTICE = "\n---\n\n**Report continues in the next comment.**\n"
@@ -152,7 +156,7 @@ def open_drift_issues() -> list[dict]:
             "--state",
             "open",
             "--json",
-            "number,title,body,url",
+            "number,title,body,url,author",
             "--limit",
             "100",
         ],
@@ -197,6 +201,16 @@ def is_bot_generated_comment(comment: dict) -> bool:
     return user.get("login") in GITHUB_ACTIONS_LOGINS and (
         body.startswith(CONTINUATION_HEADER) or body.startswith(INCOMPLETE_REPORT_PREFIX)
     )
+
+
+def is_generated_drift_issue(issue: dict) -> bool:
+    body = issue.get("body") or ""
+    if body.startswith(GENERATED_ISSUE_MARKER):
+        return True
+
+    # Migrate the bot-authored issue created before generated issues had a marker.
+    author = issue.get("author") or {}
+    return author.get("login") in GITHUB_ACTIONS_LOGINS and body.startswith(REPORT_INTRO)
 
 
 def edit_issue(issue_url: str, title: str, body: str):
@@ -400,6 +414,12 @@ def sync_drift_issue(title: str | None, body: str | None) -> str:
         )
 
     issue = existing[0] if existing else None
+    if issue is not None and not is_generated_drift_issue(issue):
+        raise RuntimeError(
+            f"Open {ISSUE_LABEL} issue #{issue.get('number', 'unknown')} is not generated "
+            "by this script; refusing to modify it"
+        )
+
     if title is None or body is None:
         if title is not None or body is not None:
             raise ValueError("title and body must either both be set or both be None")
@@ -410,11 +430,12 @@ def sync_drift_issue(title: str | None, body: str | None) -> str:
         close_issue(issue["url"])
         return "closed"
 
-    chunks = split_issue_body(body)
+    generated_body = f"{GENERATED_ISSUE_MARKER}\n\n{body}"
+    chunks = split_issue_body(generated_body)
     if issue is None:
         ensure_label_exists()
         print(f"Creating issue: {title}", file=sys.stderr)
-        create_issue(title, body)
+        create_issue(title, generated_body)
         return "created"
 
     comments = issue_comments(issue["number"])
@@ -471,7 +492,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         return sum(counts[kind] for kind in kinds)
 
     lines = [
-        "The live ClickHouse Cloud OpenAPI spec has drifted from the Rust API library.",
+        REPORT_INTRO,
         "The comparison was produced by the shared `syn`-based analyzer.",
         "",
         f"- **Live spec:** `{LIVE_SPEC_URL}`",

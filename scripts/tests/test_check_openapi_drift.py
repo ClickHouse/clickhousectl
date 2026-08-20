@@ -13,6 +13,10 @@ sys.modules[SPEC.name] = drift
 SPEC.loader.exec_module(drift)
 
 
+def generated_issue_body(body):
+    return f"{drift.GENERATED_ISSUE_MARKER}\n\n{body}"
+
+
 class DriftScriptTests(unittest.TestCase):
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
@@ -78,13 +82,13 @@ class DriftScriptTests(unittest.TestCase):
 
         self.assertEqual(action, "created")
         ensure_label.assert_called_once_with()
-        create_issue.assert_called_once_with("new title", "new body")
+        create_issue.assert_called_once_with("new title", generated_issue_body("new body"))
 
     def test_sync_updates_issue_and_only_reconciles_bot_generated_comments(self):
         issue = {
             "number": 42,
             "title": "old title",
-            "body": "old body",
+            "body": generated_issue_body("old body"),
             "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
         }
         old_first = drift.CONTINUATION_HEADER + "old first"
@@ -125,7 +129,11 @@ class DriftScriptTests(unittest.TestCase):
         with (
             mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
             mock.patch.object(drift, "issue_comments", return_value=comments),
-            mock.patch.object(drift, "split_issue_body", return_value=["new body", desired]),
+            mock.patch.object(
+                drift,
+                "split_issue_body",
+                return_value=[generated_issue_body("new body"), desired],
+            ),
             mock.patch.object(drift, "edit_issue") as edit_issue,
             mock.patch.object(drift, "edit_comment") as edit_comment,
             mock.patch.object(drift, "delete_comment") as delete_comment,
@@ -134,7 +142,9 @@ class DriftScriptTests(unittest.TestCase):
             action = drift.sync_drift_issue("new title", "rendered body")
 
         self.assertEqual(action, "updated")
-        edit_issue.assert_called_once_with(issue["url"], "new title", "new body")
+        edit_issue.assert_called_once_with(
+            issue["url"], "new title", generated_issue_body("new body")
+        )
         edit_comment.assert_called_once_with(101, desired)
         self.assertEqual(delete_comment.call_args_list, [mock.call(102), mock.call(103)])
         post_comment.assert_not_called()
@@ -143,7 +153,7 @@ class DriftScriptTests(unittest.TestCase):
         issue = {
             "number": 42,
             "title": "current title",
-            "body": "current body",
+            "body": generated_issue_body("current body"),
             "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
         }
         desired = drift.CONTINUATION_HEADER + "new continuation"
@@ -158,7 +168,9 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
             mock.patch.object(drift, "issue_comments", return_value=comments),
             mock.patch.object(
-                drift, "split_issue_body", return_value=["current body", desired]
+                drift,
+                "split_issue_body",
+                return_value=[generated_issue_body("current body"), desired],
             ),
             mock.patch.object(drift, "edit_issue") as edit_issue,
             mock.patch.object(drift, "post_continuation_comment") as post_comment,
@@ -174,7 +186,7 @@ class DriftScriptTests(unittest.TestCase):
         issue = {
             "number": 42,
             "title": "current title",
-            "body": "current body",
+            "body": generated_issue_body("current body"),
             "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
         }
         comments = [
@@ -193,7 +205,9 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
             mock.patch.object(drift, "issue_comments", return_value=comments),
             mock.patch.object(
-                drift, "split_issue_body", return_value=["current body", desired]
+                drift,
+                "split_issue_body",
+                return_value=[generated_issue_body("current body"), desired],
             ),
             mock.patch.object(drift, "edit_issue") as edit_issue,
             mock.patch.object(drift, "edit_comment") as edit_comment,
@@ -214,7 +228,7 @@ class DriftScriptTests(unittest.TestCase):
         issue = {
             "number": 42,
             "title": "old title",
-            "body": "old body",
+            "body": generated_issue_body("old body"),
             "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
         }
         with (
@@ -237,6 +251,49 @@ class DriftScriptTests(unittest.TestCase):
 
         self.assertEqual(action, "clean")
         close_issue.assert_not_called()
+
+    def test_sync_refuses_to_modify_manually_created_labeled_issue(self):
+        issue = {
+            "number": 42,
+            "title": "manual report",
+            "body": "Manually maintained drift notes",
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+            "author": {"login": "alice"},
+        }
+        for title, body in (("new title", "new body"), (None, None)):
+            with self.subTest(clean=title is None):
+                with (
+                    mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+                    mock.patch.object(drift, "issue_comments") as issue_comments,
+                    mock.patch.object(drift, "edit_issue") as edit_issue,
+                    mock.patch.object(drift, "close_issue") as close_issue,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "is not generated"):
+                        drift.sync_drift_issue(title, body)
+
+                issue_comments.assert_not_called()
+                edit_issue.assert_not_called()
+                close_issue.assert_not_called()
+
+    def test_sync_migrates_legacy_bot_generated_issue(self):
+        issue = {
+            "number": 42,
+            "title": "old title",
+            "body": f"{drift.REPORT_INTRO}\n\nold report",
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+            "author": {"login": "github-actions[bot]"},
+        }
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments", return_value=[]),
+            mock.patch.object(drift, "edit_issue") as edit_issue,
+        ):
+            action = drift.sync_drift_issue("new title", "new body")
+
+        self.assertEqual(action, "updated")
+        edit_issue.assert_called_once_with(
+            issue["url"], "new title", generated_issue_body("new body")
+        )
 
     def test_sync_refuses_multiple_open_drift_issues(self):
         issues = [
@@ -269,7 +326,7 @@ class DriftScriptTests(unittest.TestCase):
         issue = {
             "number": 42,
             "title": "old title",
-            "body": "old body",
+            "body": generated_issue_body("old body"),
             "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
         }
         error = drift.subprocess.CalledProcessError(1, ["gh", "issue", "edit"])
@@ -297,6 +354,9 @@ class DriftScriptTests(unittest.TestCase):
         with self.assertRaises(drift.subprocess.CalledProcessError):
             drift.open_drift_issues()
 
+        command = run.call_args.args[0]
+        fields = command[command.index("--json") + 1].split(",")
+        self.assertIn("author", fields)
         self.assertTrue(run.call_args.kwargs["check"])
 
     @mock.patch.object(drift.subprocess, "run")
