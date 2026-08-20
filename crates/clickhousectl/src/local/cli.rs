@@ -45,6 +45,7 @@ CONTEXT FOR AGENTS:
   Accepts version specs: \"latest\" (recommended), \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
   Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
+  This makes standard subcommands such as `clickhouse client`, `clickhouse benchmark`, and `clickhouse format` available directly.
   Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
     Use {
         /// Version to use as default. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.5.44".
@@ -481,6 +482,20 @@ mod tests {
             panic!("expected local command");
         };
         local.command
+    }
+
+    #[test]
+    fn use_help_documents_standard_clickhouse_subcommands() {
+        let error = Cli::try_parse_from(["clickhousectl", "local", "use", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        assert!(help.contains("`~/.local/bin/clickhouse`"), "{help}");
+        assert!(help.contains("`clickhouse client`"), "{help}");
+        assert!(help.contains("`clickhouse benchmark`"), "{help}");
+        assert!(help.contains("`clickhouse format`"), "{help}");
     }
 
     #[test]

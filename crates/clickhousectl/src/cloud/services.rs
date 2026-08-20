@@ -411,6 +411,9 @@ CONTEXT FOR AGENTS:
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
+  For queries that may exceed Query API timeouts, `clickhousectl local use latest`
+  puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
+  to the service instead.
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
   on a TTY, TabSeparated when piped. --json selects JSONEachRow and cannot be
   combined with --format; an explicit --format takes precedence over agent
@@ -2285,6 +2288,19 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
+    }
+
+    #[test]
+    fn service_query_help_documents_native_client_for_long_queries() {
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        assert!(help.contains("Query API timeouts"), "{help}");
+        assert!(help.contains("`clickhousectl local use latest`"), "{help}");
+        assert!(help.contains("`clickhouse client`"), "{help}");
     }
 
     #[test]
