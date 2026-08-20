@@ -401,6 +401,27 @@ fn build_org_update_request(
     })
 }
 
+fn build_member_update_request(role_ids: &[String]) -> MemberPatchRequest {
+    MemberPatchRequest {
+        assigned_role_ids: if role_ids.is_empty() {
+            None
+        } else {
+            Some(role_ids.to_vec())
+        },
+        #[cfg(feature = "deprecated-fields")]
+        role: None,
+    }
+}
+
+fn build_invitation_create_request(email: &str, role_ids: &[String]) -> InvitationPostRequest {
+    InvitationPostRequest {
+        email: email.to_string(),
+        assigned_role_ids: role_ids.to_vec(),
+        #[cfg(feature = "deprecated-fields")]
+        role: None,
+    }
+}
+
 fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String {
     match items {
         Some(items) => items.iter().map(render).collect::<Vec<_>>().join(", "),
@@ -608,15 +629,7 @@ async fn member_update(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let request = MemberPatchRequest {
-        assigned_role_ids: if role_ids.is_empty() {
-            None
-        } else {
-            Some(role_ids.to_vec())
-        },
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
-    };
+    let request = build_member_update_request(role_ids);
     let member = client.update_member(&org_id, user_id, &request).await?;
 
     if json {
@@ -693,12 +706,7 @@ async fn invitation_create(
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let request = InvitationPostRequest {
-        email: email.to_string(),
-        assigned_role_ids: role_ids.to_vec(),
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
-    };
+    let request = build_invitation_create_request(email, role_ids);
     let invitation = client.create_invitation(&org_id, &request).await?;
 
     if json {
@@ -943,12 +951,16 @@ mod tests {
     use crate::cloud::cli::CloudCommands;
     use clap::Parser;
 
-    fn assert_write(args: &[&str], expected: bool) {
+    fn parse_cloud_command(args: &[&str]) -> CloudCommands {
         let cli = Cli::try_parse_from(args).expect("parse");
         let Commands::Cloud(cloud_args) = cli.command else {
             panic!("expected cloud command");
         };
-        let command = cloud_args.command;
+        cloud_args.command
+    }
+
+    fn assert_write(args: &[&str], expected: bool) {
+        let command = parse_cloud_command(args);
         assert!(matches!(
             &command,
             CloudCommands::Org { .. }
@@ -961,6 +973,162 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
+    }
+
+    #[test]
+    fn parses_organization_body_command_defaults() {
+        let CloudCommands::Org { command } =
+            parse_cloud_command(&["clickhousectl", "cloud", "org", "update", "org-1"])
+        else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Update {
+            org_id,
+            name,
+            remove_private_endpoint,
+            enable_core_dumps,
+        } = command
+        else {
+            panic!("expected org update");
+        };
+        assert_eq!(org_id, "org-1");
+        assert!(name.is_none());
+        assert!(remove_private_endpoint.is_empty());
+        assert!(enable_core_dumps.is_none());
+
+        let CloudCommands::Member { command } =
+            parse_cloud_command(&["clickhousectl", "cloud", "member", "update", "user-1"])
+        else {
+            panic!("expected member command");
+        };
+        let MemberCommands::Update {
+            user_id,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected member update");
+        };
+        assert_eq!(user_id, "user-1");
+        assert!(role_id.is_empty());
+        assert!(org_id.is_none());
+
+        let CloudCommands::Invitation { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "invitation",
+            "create",
+            "--email",
+            "user@example.com",
+        ]) else {
+            panic!("expected invitation command");
+        };
+        let InvitationCommands::Create {
+            email,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected invitation create");
+        };
+        assert_eq!(email, "user@example.com");
+        assert!(role_id.is_empty());
+        assert!(org_id.is_none());
+    }
+
+    #[test]
+    fn parses_organization_body_command_maximal_and_repeatable_flags() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "update",
+            "org-1",
+            "--name",
+            "Updated Org",
+            "--remove-private-endpoint",
+            "pe-1,description=old,cloud-provider=aws,region=us-east-1",
+            "--remove-private-endpoint",
+            "pe-2,description=legacy,cloud-provider=azure,region=eastus",
+            "--enable-core-dumps",
+            "false",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Update {
+            org_id,
+            name,
+            remove_private_endpoint,
+            enable_core_dumps,
+        } = command
+        else {
+            panic!("expected org update");
+        };
+        assert_eq!(org_id, "org-1");
+        assert_eq!(name.as_deref(), Some("Updated Org"));
+        assert_eq!(
+            remove_private_endpoint,
+            vec![
+                "pe-1,description=old,cloud-provider=aws,region=us-east-1",
+                "pe-2,description=legacy,cloud-provider=azure,region=eastus",
+            ]
+        );
+        assert_eq!(enable_core_dumps, Some(false));
+
+        let CloudCommands::Member { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "member",
+            "update",
+            "user-1",
+            "--role-id",
+            "role-1",
+            "--role-id",
+            "role-2",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected member command");
+        };
+        let MemberCommands::Update {
+            user_id,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected member update");
+        };
+        assert_eq!(user_id, "user-1");
+        assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let CloudCommands::Invitation { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "invitation",
+            "create",
+            "--email",
+            "user@example.com",
+            "--role-id",
+            "role-1",
+            "--role-id",
+            "role-2",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected invitation command");
+        };
+        let InvitationCommands::Create {
+            email,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected invitation create");
+        };
+        assert_eq!(email, "user@example.com");
+        assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -1257,22 +1425,102 @@ mod tests {
     }
 
     #[test]
-    fn build_org_update_request_matches_tested_shape() {
+    fn build_org_update_request_supports_minimal_fields() {
+        let request = build_org_update_request(&OrgUpdateOptions::default()).unwrap();
+
+        assert!(request.name.is_none());
+        assert!(request.private_endpoints.is_none());
+        assert!(request.enable_core_dumps.is_none());
+    }
+
+    #[test]
+    fn build_org_update_request_supports_maximal_fields() {
         let options = OrgUpdateOptions {
             name: Some("Updated Org".to_string()),
             remove_private_endpoints: vec![
                 "pe-1,description=old,cloud-provider=aws,region=us-east-1".to_string(),
+                "pe-2,description=legacy,cloud-provider=azure,region=eastus".to_string(),
             ],
             enable_core_dumps: Some(false),
         };
         let request = build_org_update_request(&options).unwrap();
-        let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["privateEndpoints"]["remove"][0]["id"], "pe-1");
+
+        assert_eq!(request.name.as_deref(), Some("Updated Org"));
+        assert_eq!(request.enable_core_dumps, Some(false));
+        let private_endpoints = request.private_endpoints.as_ref().unwrap();
+        #[cfg(feature = "deprecated-fields")]
+        assert!(private_endpoints.add.is_none());
+        assert_eq!(private_endpoints.remove.len(), 2);
+        assert_eq!(private_endpoints.remove[0].id, "pe-1");
         assert_eq!(
-            json["privateEndpoints"]["remove"][0]["cloudProvider"],
-            "aws"
+            private_endpoints.remove[0].description.as_deref(),
+            Some("old")
         );
-        assert_eq!(json["enableCoreDumps"], false);
+        assert_eq!(
+            private_endpoints.remove[0].cloud_provider,
+            OrganizationPatchPrivateEndpointCloudprovider::Aws
+        );
+        assert_eq!(
+            private_endpoints.remove[0].region,
+            OrganizationPatchPrivateEndpointRegion::Us_east_1
+        );
+        assert_eq!(private_endpoints.remove[1].id, "pe-2");
+        assert_eq!(
+            private_endpoints.remove[1].description.as_deref(),
+            Some("legacy")
+        );
+        assert_eq!(
+            private_endpoints.remove[1].cloud_provider,
+            OrganizationPatchPrivateEndpointCloudprovider::Azure
+        );
+        assert_eq!(
+            private_endpoints.remove[1].region,
+            OrganizationPatchPrivateEndpointRegion::Eastus
+        );
+    }
+
+    #[test]
+    fn build_member_update_request_supports_minimal_fields() {
+        let request = build_member_update_request(&[]);
+
+        assert!(request.assigned_role_ids.is_none());
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_member_update_request_supports_maximal_fields() {
+        let request = build_member_update_request(&["role-1".to_string(), "role-2".to_string()]);
+
+        assert_eq!(
+            request.assigned_role_ids,
+            Some(vec!["role-1".to_string(), "role-2".to_string()])
+        );
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_invitation_create_request_supports_minimal_fields() {
+        let request = build_invitation_create_request("user@example.com", &[]);
+
+        assert_eq!(request.email, "user@example.com");
+        assert!(request.assigned_role_ids.is_empty());
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_invitation_create_request_supports_maximal_fields() {
+        let request = build_invitation_create_request(
+            "user@example.com",
+            &["role-1".to_string(), "role-2".to_string()],
+        );
+
+        assert_eq!(request.email, "user@example.com");
+        assert_eq!(request.assigned_role_ids, vec!["role-1", "role-2"]);
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
     }
 
     #[test]

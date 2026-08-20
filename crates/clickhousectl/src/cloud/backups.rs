@@ -449,6 +449,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_backup_config_update_defaults() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let crate::cloud::cli::ServiceCommands::BackupConfig { command } = command else {
+            panic!("expected backup-config command");
+        };
+        let crate::cloud::cli::BackupConfigCommands::Update {
+            service_id,
+            backup_period_hours,
+            backup_retention_period_hours,
+            backup_start_time,
+            org_id,
+        } = command
+        else {
+            panic!("expected backup-config update");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert!(backup_period_hours.is_none());
+        assert!(backup_retention_period_hours.is_none());
+        assert!(backup_start_time.is_none());
+        assert!(org_id.is_none());
+    }
+
+    #[test]
     fn parses_backup_list_with_top_level_cli_defaults() {
         let cli =
             Cli::try_parse_from(["clickhousectl", "cloud", "backup", "list", "svc-1"]).unwrap();

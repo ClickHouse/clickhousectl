@@ -683,9 +683,74 @@ mod tests {
             .command
     }
 
+    fn parse_top_level_key(args: &[&str]) -> KeyCommands {
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let Commands::Cloud(cloud_args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Key { command } = cloud_args.command else {
+            panic!("expected key command");
+        };
+        command
+    }
+
+    #[test]
+    fn parses_key_body_command_defaults() {
+        let KeyCommands::Create {
+            name,
+            role_id,
+            expires_at,
+            state,
+            ip_allow,
+            hash_key_id,
+            hash_key_id_suffix,
+            hash_key_secret,
+            org_id,
+        } = parse_top_level_key(&[
+            "clickhousectl",
+            "cloud",
+            "key",
+            "create",
+            "--name",
+            "ci-key",
+        ])
+        else {
+            panic!("expected key create");
+        };
+        assert_eq!(name, "ci-key");
+        assert!(role_id.is_empty());
+        assert!(expires_at.is_none());
+        assert!(state.is_none());
+        assert!(ip_allow.is_empty());
+        assert!(hash_key_id.is_none());
+        assert!(hash_key_id_suffix.is_none());
+        assert!(hash_key_secret.is_none());
+        assert!(org_id.is_none());
+
+        let KeyCommands::Update {
+            key_id,
+            name,
+            role_id,
+            expires_at,
+            state,
+            ip_allow,
+            org_id,
+        } = parse_top_level_key(&["clickhousectl", "cloud", "key", "update", "key-1"])
+        else {
+            panic!("expected key update");
+        };
+        assert_eq!(key_id, "key-1");
+        assert!(name.is_none());
+        assert!(role_id.is_empty());
+        assert!(expires_at.is_none());
+        assert!(state.is_none());
+        assert!(ip_allow.is_empty());
+        assert!(org_id.is_none());
+    }
+
     #[test]
     fn parses_key_create_flags() {
-        let cli = Cli::try_parse_from([
+        let command = parse_top_level_key(&[
             "clickhousectl",
             "cloud",
             "key",
@@ -706,16 +771,15 @@ mod tests {
             "abcd",
             "--hash-key-secret",
             "secret-hash",
-        ])
-        .unwrap();
+            "--expires-at",
+            "2025-12-31T23:59:59Z",
+            "--state",
+            "disabled",
+            "--org-id",
+            "org-1",
+        ]);
 
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Key { command } = args.command else {
-            panic!("expected key command");
-        };
-        let crate::cloud::cli::KeyCommands::Create {
+        let KeyCommands::Create {
             name,
             role_id,
             expires_at,
@@ -731,13 +795,60 @@ mod tests {
         };
         assert_eq!(name, "ci-key");
         assert_eq!(role_id, vec!["role-1", "role-2"]);
-        assert!(expires_at.is_none());
-        assert!(state.is_none());
+        assert_eq!(expires_at.as_deref(), Some("2025-12-31T23:59:59Z"));
+        assert_eq!(state.as_deref(), Some("disabled"));
         assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
         assert_eq!(hash_key_id.as_deref(), Some("id-hash"));
         assert_eq!(hash_key_id_suffix.as_deref(), Some("abcd"));
         assert_eq!(hash_key_secret.as_deref(), Some("secret-hash"));
-        assert!(org_id.is_none());
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_key_update_flags() {
+        let command = parse_top_level_key(&[
+            "clickhousectl",
+            "cloud",
+            "key",
+            "update",
+            "key-1",
+            "--name",
+            "renamed",
+            "--role-id",
+            "role-1",
+            "--role-id",
+            "role-2",
+            "--expires-at",
+            "2025-01-01T00:00:00Z",
+            "--state",
+            "enabled",
+            "--ip-allow",
+            "10.0.0.0/8",
+            "--ip-allow",
+            "192.0.2.0/24",
+            "--org-id",
+            "org-1",
+        ]);
+
+        let KeyCommands::Update {
+            key_id,
+            name,
+            role_id,
+            expires_at,
+            state,
+            ip_allow,
+            org_id,
+        } = command
+        else {
+            panic!("expected key update");
+        };
+        assert_eq!(key_id, "key-1");
+        assert_eq!(name.as_deref(), Some("renamed"));
+        assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert_eq!(expires_at.as_deref(), Some("2025-01-01T00:00:00Z"));
+        assert_eq!(state.as_deref(), Some("enabled"));
+        assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -807,6 +918,8 @@ mod tests {
         assert!(create.hash_data.is_none());
         assert!(create.ip_access_list.is_empty());
         assert_eq!(create.state, ApiKeyPostRequestState::Enabled);
+        #[cfg(feature = "deprecated-fields")]
+        assert!(create.roles.is_none());
 
         let update = build_api_key_update_request(&KeyUpdateOptions::default()).unwrap();
         assert!(update.name.is_none());
@@ -814,6 +927,8 @@ mod tests {
         assert!(update.expire_at.is_none());
         assert!(update.state.is_none());
         assert!(update.ip_access_list.is_none());
+        #[cfg(feature = "deprecated-fields")]
+        assert!(update.roles.is_none());
     }
 
     #[test]
@@ -823,7 +938,7 @@ mod tests {
             name: "ci-key".to_string(),
             role_ids: vec![role_id.to_string()],
             expires_at: Some("2025-12-31T23:59:59Z".to_string()),
-            state: Some("enabled".to_string()),
+            state: Some("disabled".to_string()),
             ip_allow: vec!["10.0.0.0/8".to_string()],
             hash_key_id: Some("id-hash".to_string()),
             hash_key_id_suffix: Some("abcd".to_string()),
@@ -839,12 +954,16 @@ mod tests {
         assert_eq!(create.name, "ci-key");
         assert_eq!(create.assigned_role_ids, vec![expected_role_id]);
         assert_eq!(create.expire_at, Some(expected_create_expiration));
-        assert_eq!(create.state, ApiKeyPostRequestState::Enabled);
+        assert_eq!(create.state, ApiKeyPostRequestState::Disabled);
+        assert_eq!(create.ip_access_list.len(), 1);
         assert_eq!(create.ip_access_list[0].source, "10.0.0.0/8");
+        assert!(create.ip_access_list[0].description.is_none());
         let hash_data = create.hash_data.as_ref().expect("maximal hash data");
         assert_eq!(hash_data.key_id_hash, "id-hash");
         assert_eq!(hash_data.key_id_suffix, "abcd");
         assert_eq!(hash_data.key_secret_hash, "secret-hash");
+        #[cfg(feature = "deprecated-fields")]
+        assert!(create.roles.is_none());
 
         let update = build_api_key_update_request(&KeyUpdateOptions {
             name: Some("renamed".to_string()),
@@ -863,7 +982,12 @@ mod tests {
         assert_eq!(update.assigned_role_ids, Some(vec![expected_role_id]));
         assert_eq!(update.expire_at, Some(expected_update_expiration));
         assert_eq!(update.state, Some(ApiKeyPatchRequestState::Disabled));
-        assert_eq!(update.ip_access_list.unwrap()[0].source, "0.0.0.0/0");
+        let ip_access_list = update.ip_access_list.as_ref().unwrap();
+        assert_eq!(ip_access_list.len(), 1);
+        assert_eq!(ip_access_list[0].source, "0.0.0.0/0");
+        assert!(ip_access_list[0].description.is_none());
+        #[cfg(feature = "deprecated-fields")]
+        assert!(update.roles.is_none());
     }
 
     #[test]
