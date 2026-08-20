@@ -406,8 +406,8 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             );
             #[cfg(feature = "deprecated-fields")]
             assert_eq!(
-                invitation.role.to_string(),
-                InvitationPostRequestRole::Developer.to_string(),
+                invitation.role,
+                Some(InvitationRole::Developer),
                 "invitation create echoed unexpected role"
             );
 
@@ -468,9 +468,9 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                             .into());
                         }
                         #[cfg(feature = "deprecated-fields")]
-                        if fetched.role.to_string() != "developer" {
+                        if fetched.role != Some(InvitationRole::Developer) {
                             return Err(format!(
-                                "invitation get returned wrong role {}; wanted developer",
+                                "invitation get returned wrong role {:?}; wanted developer",
                                 fetched.role
                             )
                             .into());
