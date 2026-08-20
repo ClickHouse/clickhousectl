@@ -200,7 +200,7 @@ EOF
     local out; out=$("$CTL" local --json server stop-all 2>&1) || { die "server stop-all: $out"; return 1; }
     jq -e '.servers | any(.name == "c" and .engine == "clickhouse" and .stopped == true)' <<<"$out" >/dev/null \
         || { die "server stop-all did not report ClickHouse: $out"; return 1; }
-    jq -e '.servers | any(.name == "p-pg18" and .engine == "postgres" and .stopped == true)' <<<"$out" >/dev/null \
+    jq -e '.servers | any(.name == "p" and .engine == "postgres" and .version == "postgres:18-alpine" and .stopped == true)' <<<"$out" >/dev/null \
         || { die "server stop-all did not report Postgres: $out"; return 1; }
     ! kill -0 "$ch_pid" 2>/dev/null || { die "server stop-all left ClickHouse process running"; return 1; }
     trap - EXIT

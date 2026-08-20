@@ -984,10 +984,19 @@ where
     let servers = servers
         .iter()
         .map(|server| {
-            let name = server.name.clone();
+            let (name, version) = match server.engine {
+                server::Engine::Clickhouse => (server.name.clone(), None),
+                server::Engine::Postgres => (
+                    postgres::user_name_from_key(&server.name).to_string(),
+                    Some(server.version.clone()),
+                ),
+            };
             let engine = server.engine.as_str().to_string();
             if !json {
-                print!("Stopping '{}' ({})...", name, engine);
+                match version.as_deref() {
+                    Some(version) => print!("Stopping '{}' ({}, {})...", name, engine, version),
+                    None => print!("Stopping '{}' ({})...", name, engine),
+                }
                 let _ = std::io::stdout().flush();
             }
             let result = stop(&server.name);
@@ -1000,6 +1009,7 @@ where
             output::ServerStopEntry {
                 name,
                 engine,
+                version,
                 stopped: result.is_ok(),
                 error: result.err().map(|error| error.to_string()),
             }
@@ -1030,6 +1040,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
                 stop_entries.push(output::ServerStopEntry {
                     name: s.name.clone(),
                     engine: s.engine.as_str().to_string(),
+                    version: None,
                     stopped: true,
                     error: None,
                 });
@@ -1041,6 +1052,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
                 stop_entries.push(output::ServerStopEntry {
                     name: s.name.clone(),
                     engine: s.engine.as_str().to_string(),
+                    version: None,
                     stopped: false,
                     error: Some(e.to_string()),
                 });
@@ -1064,14 +1076,11 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn server_info(name: &str, engine: server::Engine) -> server::ServerInfo {
+    fn server_info(name: &str, engine: server::Engine, version: &str) -> server::ServerInfo {
         server::ServerInfo {
             name: name.to_string(),
             pid: 1,
-            version: match engine {
-                server::Engine::Clickhouse => "25.12.9.61".to_string(),
-                server::Engine::Postgres => "postgres:18".to_string(),
-            },
+            version: version.to_string(),
             http_port: 0,
             tcp_port: 0,
             started_at: "test".to_string(),
@@ -1101,9 +1110,9 @@ mod tests {
     #[test]
     fn stop_servers_attempts_and_reports_both_engines() {
         let servers = vec![
-            server_info("default", server::Engine::Clickhouse),
-            server_info("default-pg17", server::Engine::Postgres),
-            server_info("default-pg18", server::Engine::Postgres),
+            server_info("default", server::Engine::Clickhouse, "25.12.9.61"),
+            server_info("default-pg17", server::Engine::Postgres, "postgres:17"),
+            server_info("default-pg18", server::Engine::Postgres, "postgres:18"),
         ];
         let mut attempts = Vec::new();
 
@@ -1120,17 +1129,20 @@ mod tests {
         assert_eq!(output.servers.len(), 3);
         assert_eq!(output.servers[0].name, "default");
         assert_eq!(output.servers[0].engine, "clickhouse");
+        assert_eq!(output.servers[0].version, None);
         assert!(!output.servers[0].stopped);
         assert_eq!(
             output.servers[0].error.as_deref(),
             Some("Failed to execute ClickHouse: process stop failed")
         );
-        assert_eq!(output.servers[1].name, "default-pg17");
+        assert_eq!(output.servers[1].name, "default");
         assert_eq!(output.servers[1].engine, "postgres");
+        assert_eq!(output.servers[1].version.as_deref(), Some("postgres:17"));
         assert!(output.servers[1].stopped);
         assert_eq!(output.servers[1].error, None);
-        assert_eq!(output.servers[2].name, "default-pg18");
+        assert_eq!(output.servers[2].name, "default");
         assert_eq!(output.servers[2].engine, "postgres");
+        assert_eq!(output.servers[2].version.as_deref(), Some("postgres:18"));
         assert!(output.servers[2].stopped);
         assert_eq!(output.servers[2].error, None);
     }
