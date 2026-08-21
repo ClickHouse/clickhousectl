@@ -671,6 +671,25 @@ async fn parent_never_waits_for_a_slow_endpoint() {
         elapsed < Duration::from_secs(5),
         "parent waited on the telemetry send: {elapsed:?}"
     );
+
+    // Keep the mock alive until the detached child has connected. Otherwise
+    // its port can be reused by another parallel test before the child sends.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if !mock
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "detached telemetry child did not connect within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Check the marker file used by `Sandbox::state_path` matches what the
