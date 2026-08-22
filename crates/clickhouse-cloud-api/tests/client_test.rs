@@ -485,7 +485,7 @@ async fn get_invitation() {
     let inv = resp.result.unwrap();
     assert_eq!(inv.email.as_deref(), Some("bob@example.com"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(inv.role, InvitationRole::Admin);
+    assert_eq!(inv.role, Some(InvitationRole::Admin));
 }
 
 #[tokio::test]
@@ -663,8 +663,8 @@ async fn list_members() {
     assert_eq!(members.len(), 2);
     #[cfg(feature = "deprecated-fields")]
     {
-        assert_eq!(members[0].role, MemberRole::Admin);
-        assert_eq!(members[1].role, MemberRole::Developer);
+        assert_eq!(members[0].role, Some(MemberRole::Admin));
+        assert_eq!(members[1].role, Some(MemberRole::Developer));
     }
 }
 
@@ -687,7 +687,7 @@ async fn get_member() {
     let member = resp.result.unwrap();
     assert_eq!(member.name.as_deref(), Some("Alice"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(member.role, MemberRole::Admin);
+    assert_eq!(member.role, Some(MemberRole::Admin));
 }
 
 #[tokio::test]
@@ -714,7 +714,7 @@ async fn update_member() {
     let member = resp.result.unwrap();
     assert_eq!(member.email.as_deref(), Some("alice@example.com"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(member.role, MemberRole::Admin);
+    assert_eq!(member.role, Some(MemberRole::Admin));
 }
 
 #[tokio::test]

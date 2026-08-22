@@ -13,6 +13,10 @@ sys.modules[SPEC.name] = drift
 SPEC.loader.exec_module(drift)
 
 
+def generated_issue_body(body):
+    return f"{drift.GENERATED_ISSUE_MARKER}\n\n{body}"
+
+
 class DriftScriptTests(unittest.TestCase):
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
@@ -67,6 +71,360 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn('"operationId": "listWidgets"', body)
         self.assertIn("## Acknowledged Unsupported Enum Constraints", body)
         self.assertIn("## Enum VALUES Const Mismatches", body)
+
+    def test_sync_creates_issue_when_none_is_open(self):
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[]),
+            mock.patch.object(drift, "ensure_label_exists") as ensure_label,
+            mock.patch.object(drift, "create_issue") as create_issue,
+        ):
+            action = drift.sync_drift_issue("new title", "new body")
+
+        self.assertEqual(action, "created")
+        ensure_label.assert_called_once_with()
+        create_issue.assert_called_once_with("new title", generated_issue_body("new body"))
+
+    def test_sync_updates_issue_and_only_reconciles_bot_generated_comments(self):
+        issue = {
+            "number": 42,
+            "title": "old title",
+            "body": generated_issue_body("old body"),
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+        }
+        old_first = drift.CONTINUATION_HEADER + "old first"
+        stale_second = drift.CONTINUATION_HEADER + "stale second"
+        desired = drift.CONTINUATION_HEADER + "new first"
+        comments = [
+            {
+                "id": 101,
+                "user": {"login": "github-actions[bot]"},
+                "body": old_first,
+            },
+            {
+                "id": 201,
+                "user": {"login": "alice"},
+                "body": stale_second,
+            },
+            {
+                "id": 202,
+                "user": {"login": "another-bot[bot]"},
+                "body": stale_second,
+            },
+            {
+                "id": 102,
+                "user": {"login": "github-actions[bot]"},
+                "body": stale_second,
+            },
+            {
+                "id": 103,
+                "user": {"login": "github-actions[bot]"},
+                "body": drift.INCOMPLETE_REPORT_PREFIX + " retry failed",
+            },
+            {
+                "id": 104,
+                "user": {"login": "github-actions[bot]"},
+                "body": "Unrelated automation comment",
+            },
+        ]
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments", return_value=comments),
+            mock.patch.object(
+                drift,
+                "split_issue_body",
+                return_value=[generated_issue_body("new body"), desired],
+            ),
+            mock.patch.object(drift, "edit_issue") as edit_issue,
+            mock.patch.object(drift, "edit_comment") as edit_comment,
+            mock.patch.object(drift, "delete_comment") as delete_comment,
+            mock.patch.object(drift, "post_continuation_comment") as post_comment,
+        ):
+            action = drift.sync_drift_issue("new title", "rendered body")
+
+        self.assertEqual(action, "updated")
+        edit_issue.assert_called_once_with(
+            issue["url"], "new title", generated_issue_body("new body")
+        )
+        edit_comment.assert_called_once_with(101, desired)
+        self.assertEqual(delete_comment.call_args_list, [mock.call(102), mock.call(103)])
+        post_comment.assert_not_called()
+
+    def test_sync_adds_new_continuation_comments_on_update(self):
+        issue = {
+            "number": 42,
+            "title": "current title",
+            "body": generated_issue_body("current body"),
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+        }
+        desired = drift.CONTINUATION_HEADER + "new continuation"
+        comments = [
+            {
+                "id": 201,
+                "user": {"login": "alice"},
+                "body": "Keep this human comment",
+            }
+        ]
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments", return_value=comments),
+            mock.patch.object(
+                drift,
+                "split_issue_body",
+                return_value=[generated_issue_body("current body"), desired],
+            ),
+            mock.patch.object(drift, "edit_issue") as edit_issue,
+            mock.patch.object(drift, "post_continuation_comment") as post_comment,
+        ):
+            action = drift.sync_drift_issue("current title", "rendered body")
+
+        self.assertEqual(action, "updated")
+        edit_issue.assert_not_called()
+        post_comment.assert_called_once_with(issue["url"], desired)
+
+    def test_sync_leaves_unchanged_report_and_human_comments_untouched(self):
+        desired = drift.CONTINUATION_HEADER + "current continuation"
+        issue = {
+            "number": 42,
+            "title": "current title",
+            "body": generated_issue_body("current body"),
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+        }
+        comments = [
+            {
+                "id": 101,
+                "user": {"login": "github-actions[bot]"},
+                "body": desired,
+            },
+            {
+                "id": 201,
+                "user": {"login": "alice"},
+                "body": "Keep this human comment",
+            },
+        ]
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments", return_value=comments),
+            mock.patch.object(
+                drift,
+                "split_issue_body",
+                return_value=[generated_issue_body("current body"), desired],
+            ),
+            mock.patch.object(drift, "edit_issue") as edit_issue,
+            mock.patch.object(drift, "edit_comment") as edit_comment,
+            mock.patch.object(drift, "delete_comment") as delete_comment,
+            mock.patch.object(drift, "post_continuation_comment") as post_comment,
+            mock.patch.object(drift, "close_issue") as close_issue,
+        ):
+            action = drift.sync_drift_issue("current title", "rendered body")
+
+        self.assertEqual(action, "unchanged")
+        edit_issue.assert_not_called()
+        edit_comment.assert_not_called()
+        delete_comment.assert_not_called()
+        post_comment.assert_not_called()
+        close_issue.assert_not_called()
+
+    def test_sync_closes_open_issue_for_clean_report(self):
+        issue = {
+            "number": 42,
+            "title": "old title",
+            "body": generated_issue_body("old body"),
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+        }
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments") as issue_comments,
+            mock.patch.object(drift, "close_issue") as close_issue,
+        ):
+            action = drift.sync_drift_issue(None, None)
+
+        self.assertEqual(action, "closed")
+        close_issue.assert_called_once_with(issue["url"])
+        issue_comments.assert_not_called()
+
+    def test_sync_clean_report_without_open_issue_is_noop(self):
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[]),
+            mock.patch.object(drift, "close_issue") as close_issue,
+        ):
+            action = drift.sync_drift_issue(None, None)
+
+        self.assertEqual(action, "clean")
+        close_issue.assert_not_called()
+
+    def test_sync_refuses_to_modify_manually_created_labeled_issue(self):
+        issue = {
+            "number": 42,
+            "title": "manual report",
+            "body": "Manually maintained drift notes",
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+            "author": {"login": "alice"},
+        }
+        for title, body in (("new title", "new body"), (None, None)):
+            with self.subTest(clean=title is None):
+                with (
+                    mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+                    mock.patch.object(drift, "issue_comments") as issue_comments,
+                    mock.patch.object(drift, "edit_issue") as edit_issue,
+                    mock.patch.object(drift, "close_issue") as close_issue,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "is not generated"):
+                        drift.sync_drift_issue(title, body)
+
+                issue_comments.assert_not_called()
+                edit_issue.assert_not_called()
+                close_issue.assert_not_called()
+
+    def test_sync_migrates_legacy_bot_generated_issue(self):
+        issue = {
+            "number": 42,
+            "title": "old title",
+            "body": f"{drift.REPORT_INTRO}\n\nold report",
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+            "author": {"login": "github-actions[bot]"},
+        }
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments", return_value=[]),
+            mock.patch.object(drift, "edit_issue") as edit_issue,
+        ):
+            action = drift.sync_drift_issue("new title", "new body")
+
+        self.assertEqual(action, "updated")
+        edit_issue.assert_called_once_with(
+            issue["url"], "new title", generated_issue_body("new body")
+        )
+
+    def test_sync_refuses_multiple_open_drift_issues(self):
+        issues = [
+            {"number": 41, "url": "https://example.test/41"},
+            {"number": 42, "url": "https://example.test/42"},
+        ]
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=issues),
+            mock.patch.object(drift, "create_issue") as create_issue,
+            mock.patch.object(drift, "close_issue") as close_issue,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Multiple open"):
+                drift.sync_drift_issue("title", "body")
+
+        create_issue.assert_not_called()
+        close_issue.assert_not_called()
+
+    def test_sync_propagates_lookup_failure_without_creating_issue(self):
+        error = drift.subprocess.CalledProcessError(1, ["gh", "issue", "list"])
+        with (
+            mock.patch.object(drift, "open_drift_issues", side_effect=error),
+            mock.patch.object(drift, "create_issue") as create_issue,
+        ):
+            with self.assertRaises(drift.subprocess.CalledProcessError):
+                drift.sync_drift_issue("title", "body")
+
+        create_issue.assert_not_called()
+
+    def test_sync_propagates_update_failure_without_touching_comments(self):
+        issue = {
+            "number": 42,
+            "title": "old title",
+            "body": generated_issue_body("old body"),
+            "url": "https://github.com/ClickHouse/clickhousectl/issues/42",
+        }
+        error = drift.subprocess.CalledProcessError(1, ["gh", "issue", "edit"])
+        with (
+            mock.patch.object(drift, "open_drift_issues", return_value=[issue]),
+            mock.patch.object(drift, "issue_comments", return_value=[]),
+            mock.patch.object(drift, "edit_issue", side_effect=error),
+            mock.patch.object(drift, "edit_comment") as edit_comment,
+            mock.patch.object(drift, "delete_comment") as delete_comment,
+            mock.patch.object(drift, "post_continuation_comment") as post_comment,
+        ):
+            with self.assertRaises(drift.subprocess.CalledProcessError):
+                drift.sync_drift_issue("new title", "new body")
+
+        edit_comment.assert_not_called()
+        delete_comment.assert_not_called()
+        post_comment.assert_not_called()
+
+    @mock.patch.object(drift.subprocess, "run")
+    def test_open_issue_lookup_fails_closed(self, run):
+        run.side_effect = drift.subprocess.CalledProcessError(
+            1, ["gh", "issue", "list"], stderr="lookup failed"
+        )
+
+        with self.assertRaises(drift.subprocess.CalledProcessError):
+            drift.open_drift_issues()
+
+        command = run.call_args.args[0]
+        fields = command[command.index("--json") + 1].split(",")
+        self.assertIn("author", fields)
+        self.assertTrue(run.call_args.kwargs["check"])
+
+    @mock.patch.object(drift.subprocess, "run")
+    def test_issue_comment_lookup_flattens_all_pages(self, run):
+        comments = [
+            {"id": 1, "body": "first"},
+            {"id": 2, "body": "second"},
+        ]
+        run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps([[comments[0]], [comments[1]]]),
+            stderr="",
+        )
+
+        self.assertEqual(drift.issue_comments(42), comments)
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:2], ["gh", "api"])
+        self.assertIn("--paginate", command)
+        self.assertIn("--slurp", command)
+        self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_dry_run_never_queries_or_mutates_github(self):
+        reports = [
+            {"schema_version": 3, "findings": []},
+            {"schema_version": 3, "findings": [{"kind": "missing_struct_field"}]},
+        ]
+        for report in reports:
+            with self.subTest(findings=len(report["findings"])):
+                with (
+                    mock.patch.object(sys, "argv", [str(SCRIPT), "--dry-run"]),
+                    mock.patch.object(drift, "fetch_live_spec", return_value={}),
+                    mock.patch.object(drift, "run_analyzer", return_value=report),
+                    mock.patch.object(drift, "build_issue_body", return_value="body"),
+                    mock.patch.object(drift, "sync_drift_issue") as sync_issue,
+                    mock.patch("builtins.print"),
+                ):
+                    drift.main()
+
+                sync_issue.assert_not_called()
+
+    def test_main_exits_nonzero_when_synchronization_fails(self):
+        report = {"schema_version": 3, "findings": []}
+        with (
+            mock.patch.object(sys, "argv", [str(SCRIPT)]),
+            mock.patch.object(drift, "fetch_live_spec", return_value={}),
+            mock.patch.object(drift, "run_analyzer", return_value=report),
+            mock.patch.object(
+                drift, "sync_drift_issue", side_effect=RuntimeError("lookup failed")
+            ),
+            mock.patch("builtins.print"),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                drift.main()
+
+        self.assertEqual(raised.exception.code, 1)
+
+    @mock.patch.object(drift.subprocess, "run")
+    def test_close_issue_marks_report_completed(self, run):
+        run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        drift.close_issue("https://github.com/ClickHouse/clickhousectl/issues/42")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:3], ["gh", "issue", "close"])
+        self.assertIn("completed", command)
+        self.assertIn(drift.CLEAN_ISSUE_COMMENT, command)
+        self.assertTrue(run.call_args.kwargs["check"])
 
     def test_split_issue_body_keeps_short_bodies_intact(self):
         body = "short body"

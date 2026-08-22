@@ -13,6 +13,11 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
 
+concurrency:
+  group: openapi-drift
+  queue: max
+  cancel-in-progress: false
+
 jobs:
   check-drift:
     name: Check for OpenAPI spec drift
@@ -28,7 +33,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      - name: Check for drift and create issue
+      - name: Check for drift and synchronize issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/check-openapi-drift.py

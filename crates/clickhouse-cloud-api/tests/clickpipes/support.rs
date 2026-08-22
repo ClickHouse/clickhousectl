@@ -120,7 +120,7 @@ impl AwsCleanupRegistry {
 
         // Terminate instances first so they release their ENIs, then drop SGs.
         if !self.ec2_instances.is_empty() {
-            let ids: Vec<String> = self.ec2_instances.drain(..).collect();
+            let ids = std::mem::take(&mut self.ec2_instances);
             if let Err(error) = terminate_and_wait(ec2_client, &ids).await {
                 failures.push(format!("ec2 instances {ids:?}: {error}"));
             }

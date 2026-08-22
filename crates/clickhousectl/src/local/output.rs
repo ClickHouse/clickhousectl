@@ -485,6 +485,9 @@ pub struct ServerStopEntry {
     pub name: String,
     /// "clickhouse" or "postgres".
     pub engine: String,
+    /// Postgres image version, used to distinguish same-name major versions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub stopped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -502,14 +505,18 @@ impl fmt::Display for ServerStopAllOutput {
             return Ok(());
         }
         for s in &self.servers {
+            let engine = match s.version.as_deref() {
+                Some(version) => format!("{}, {}", s.engine, version),
+                None => s.engine.clone(),
+            };
             if s.stopped {
-                writeln!(f, "Stopping '{}' ({})... stopped", s.name, s.engine)?;
+                writeln!(f, "Stopping '{}' ({})... stopped", s.name, engine)?;
             } else {
                 writeln!(
                     f,
                     "Stopping '{}' ({})... error: {}",
                     s.name,
-                    s.engine,
+                    engine,
                     s.error.as_deref().unwrap_or("unknown")
                 )?;
             }
@@ -805,12 +812,14 @@ mod tests {
                 ServerStopEntry {
                     name: "default".to_string(),
                     engine: "clickhouse".to_string(),
+                    version: None,
                     stopped: true,
                     error: None,
                 },
                 ServerStopEntry {
                     name: "default".to_string(),
                     engine: "postgres".to_string(),
+                    version: Some("postgres:18".to_string()),
                     stopped: false,
                     error: Some("container not found".to_string()),
                 },
@@ -822,9 +831,11 @@ mod tests {
         assert_eq!(json["servers"][0]["name"], "default");
         assert_eq!(json["servers"][0]["engine"], "clickhouse");
         assert_eq!(json["servers"][0]["stopped"], true);
+        assert!(json["servers"][0].get("version").is_none());
         assert!(json["servers"][0].get("error").is_none());
         assert_eq!(json["servers"][1]["name"], "default");
         assert_eq!(json["servers"][1]["engine"], "postgres");
+        assert_eq!(json["servers"][1]["version"], "postgres:18");
         assert_eq!(json["servers"][1]["stopped"], false);
         assert_eq!(json["servers"][1]["error"], "container not found");
     }
@@ -1113,12 +1124,14 @@ mod tests {
                 ServerStopEntry {
                     name: "default".to_string(),
                     engine: "clickhouse".to_string(),
+                    version: None,
                     stopped: true,
                     error: None,
                 },
                 ServerStopEntry {
                     name: "default".to_string(),
                     engine: "postgres".to_string(),
+                    version: Some("postgres:18".to_string()),
                     stopped: false,
                     error: Some("container not found".to_string()),
                 },
@@ -1126,7 +1139,11 @@ mod tests {
         };
         let text = output.to_string();
         assert!(text.contains("Stopping 'default' (clickhouse)... stopped"));
-        assert!(text.contains("Stopping 'default' (postgres)... error: container not found"));
+        assert!(
+            text.contains(
+                "Stopping 'default' (postgres, postgres:18)... error: container not found"
+            )
+        );
         assert!(text.contains("Done"));
     }
 

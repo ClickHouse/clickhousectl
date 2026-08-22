@@ -1,3 +1,4 @@
+use crate::cloud::client::{CloudError, Result as CloudResult};
 use crate::init;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ pub fn clear_credentials() {
     let _ = std::fs::remove_file(path);
 }
 
-pub fn save_credentials(creds: &Credentials) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
     let dir = init::local_dir();
     if !dir.exists() {
         std::fs::create_dir_all(&dir)?;
@@ -76,32 +77,30 @@ pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
     creds.service_query_keys.get(service_id).cloned()
 }
 
-pub fn try_get_service_query_key(
-    service_id: &str,
-) -> Result<Option<ServiceQueryKey>, Box<dyn std::error::Error>> {
+pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
     let path = credentials_path();
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(format!("failed to read {}: {error}", path.display()).into());
+            return Err(CloudError::new(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )));
         }
     };
     let creds: Credentials = serde_json::from_str(&data)
-        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+        .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))?;
     Ok(creds.service_query_keys.get(service_id).cloned())
 }
 
-pub fn set_service_query_key(
-    service_id: &str,
-    key: ServiceQueryKey,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn set_service_query_key(service_id: &str, key: ServiceQueryKey) -> CloudResult<()> {
     let mut creds = load_credentials().unwrap_or_default();
     creds.service_query_keys.insert(service_id.to_string(), key);
     save_credentials(&creds)
 }
 
-pub fn remove_service_query_key(service_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
     let Some(mut creds) = load_credentials() else {
         return Ok(());
     };

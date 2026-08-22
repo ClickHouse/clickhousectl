@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use clap::Subcommand;
@@ -41,11 +41,7 @@ impl ActivityCommands {
     }
 }
 
-pub async fn run(
-    client: &CloudClient,
-    command: ActivityCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(client: &CloudClient, command: ActivityCommands, json: bool) -> CloudResult<()> {
     match command {
         ActivityCommands::List {
             org_id,
@@ -74,7 +70,7 @@ async fn activity_list(
     from_date: Option<&str>,
     to_date: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let activities = client.list_activities(&org_id, from_date, to_date).await?;
 
@@ -112,7 +108,7 @@ async fn activity_get(
     activity_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let activity = client.get_activity(&org_id, activity_id).await?;
 

@@ -91,6 +91,19 @@ fn query_api_error_message(status: reqwest::StatusCode, body: &str) -> String {
     })
 }
 
+fn query_api_reports_stopped_service(status: reqwest::StatusCode, body: &str) -> bool {
+    const STOPPED_SERVICE_MESSAGE: &str =
+        "ClickHouse service is currently unavailable. Please try again later.";
+
+    status == reqwest::StatusCode::NOT_FOUND
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value.get("error").and_then(serde_json::Value::as_str)
+                    == Some(STOPPED_SERVICE_MESSAGE)
+            })
+}
+
 impl Client {
     /// Create a new client with the default base URL (`https://api.clickhouse.cloud`).
     pub fn new(key_id: impl Into<String>, key_secret: impl Into<String>) -> Self {
@@ -383,6 +396,9 @@ impl Client {
                     "Query API returned HTTP {status}, but its response body could not be read: {error}"
                 ),
             })?;
+            if query_api_reports_stopped_service(status, &body_text) {
+                return Err(Error::ServiceStopped);
+            }
             return Err(Error::Api {
                 status: status.as_u16(),
                 message: query_api_error_message(status, &body_text),

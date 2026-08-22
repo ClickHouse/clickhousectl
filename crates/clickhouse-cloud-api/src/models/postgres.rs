@@ -38,6 +38,8 @@ pub enum PgProvider {
     #[serde(rename = "aws")]
     #[default]
     Aws,
+    #[serde(rename = "gcp")]
+    Gcp,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -47,6 +49,7 @@ impl std::fmt::Display for PgProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Aws => write!(f, "aws"),
+            Self::Gcp => write!(f, "gcp"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -54,7 +57,7 @@ impl std::fmt::Display for PgProvider {
 
 impl PgProvider {
     /// Wire values accepted by the API, excluding the catch-all.
-    pub const VALUES: &'static [&'static str] = &["aws"];
+    pub const VALUES: &'static [&'static str] = &["aws", "gcp"];
 }
 
 /// Inline enum for `postgresLogsGetList.sort_order`.
@@ -327,6 +330,128 @@ pub enum PgSize {
     R8gd_24xlarge,
     #[serde(rename = "r8gd.48xlarge")]
     R8gd_48xlarge,
+    #[serde(rename = "c4a-highmem-4")]
+    C4a_highmem_4,
+    #[serde(rename = "c4a-highmem-8")]
+    C4a_highmem_8,
+    #[serde(rename = "c4a-highmem-16")]
+    C4a_highmem_16,
+    #[serde(rename = "c4a-highmem-32")]
+    C4a_highmem_32,
+    #[serde(rename = "c4a-highmem-48")]
+    C4a_highmem_48,
+    #[serde(rename = "c4a-highmem-64")]
+    C4a_highmem_64,
+    #[serde(rename = "c4a-highmem-72")]
+    C4a_highmem_72,
+    #[serde(rename = "c4a-standard-4")]
+    C4a_standard_4,
+    #[serde(rename = "c4a-standard-8")]
+    C4a_standard_8,
+    #[serde(rename = "c4a-standard-16")]
+    C4a_standard_16,
+    #[serde(rename = "c4a-standard-32")]
+    C4a_standard_32,
+    #[serde(rename = "c4a-standard-48")]
+    C4a_standard_48,
+    #[serde(rename = "c4a-standard-64")]
+    C4a_standard_64,
+    #[serde(rename = "c4a-standard-72")]
+    C4a_standard_72,
+    #[serde(rename = "c4-highmem-4")]
+    C4_highmem_4,
+    #[serde(rename = "c4-highmem-8")]
+    C4_highmem_8,
+    #[serde(rename = "c4-highmem-16")]
+    C4_highmem_16,
+    #[serde(rename = "c4-highmem-24")]
+    C4_highmem_24,
+    #[serde(rename = "c4-highmem-32")]
+    C4_highmem_32,
+    #[serde(rename = "c4-highmem-48")]
+    C4_highmem_48,
+    #[serde(rename = "c4-highmem-96")]
+    C4_highmem_96,
+    #[serde(rename = "c4-highmem-144")]
+    C4_highmem_144,
+    #[serde(rename = "c4-highmem-192")]
+    C4_highmem_192,
+    #[serde(rename = "c4-highmem-288")]
+    C4_highmem_288,
+    #[serde(rename = "c4-standard-4")]
+    C4_standard_4,
+    #[serde(rename = "c4-standard-8")]
+    C4_standard_8,
+    #[serde(rename = "c4-standard-16")]
+    C4_standard_16,
+    #[serde(rename = "c4-standard-24")]
+    C4_standard_24,
+    #[serde(rename = "c4-standard-32")]
+    C4_standard_32,
+    #[serde(rename = "c4-standard-48")]
+    C4_standard_48,
+    #[serde(rename = "c4-standard-96")]
+    C4_standard_96,
+    #[serde(rename = "c4-standard-144")]
+    C4_standard_144,
+    #[serde(rename = "c4-standard-192")]
+    C4_standard_192,
+    #[serde(rename = "c4-standard-288")]
+    C4_standard_288,
+    #[serde(rename = "c4d-highmem-8")]
+    C4d_highmem_8,
+    #[serde(rename = "c4d-highmem-16")]
+    C4d_highmem_16,
+    #[serde(rename = "c4d-highmem-32")]
+    C4d_highmem_32,
+    #[serde(rename = "c4d-highmem-48")]
+    C4d_highmem_48,
+    #[serde(rename = "c4d-highmem-64")]
+    C4d_highmem_64,
+    #[serde(rename = "c4d-highmem-96")]
+    C4d_highmem_96,
+    #[serde(rename = "c4d-highmem-192")]
+    C4d_highmem_192,
+    #[serde(rename = "c4d-highmem-384")]
+    C4d_highmem_384,
+    #[serde(rename = "c4d-standard-8")]
+    C4d_standard_8,
+    #[serde(rename = "c4d-standard-16")]
+    C4d_standard_16,
+    #[serde(rename = "c4d-standard-32")]
+    C4d_standard_32,
+    #[serde(rename = "c4d-standard-48")]
+    C4d_standard_48,
+    #[serde(rename = "c4d-standard-64")]
+    C4d_standard_64,
+    #[serde(rename = "c4d-standard-96")]
+    C4d_standard_96,
+    #[serde(rename = "c4d-standard-192")]
+    C4d_standard_192,
+    #[serde(rename = "c4d-standard-384")]
+    C4d_standard_384,
+    #[serde(rename = "z3-highlssd-8")]
+    Z3_highlssd_8,
+    #[serde(rename = "z3-highlssd-16")]
+    Z3_highlssd_16,
+    #[serde(rename = "z3-highlssd-22")]
+    Z3_highlssd_22,
+    #[serde(rename = "z3-highlssd-32")]
+    Z3_highlssd_32,
+    #[serde(rename = "z3-highlssd-44")]
+    Z3_highlssd_44,
+    #[serde(rename = "z3-highlssd-88")]
+    Z3_highlssd_88,
+    #[serde(rename = "z3-standardlssd-14")]
+    Z3_standardlssd_14,
+    #[serde(rename = "z3-standardlssd-22")]
+    Z3_standardlssd_22,
+    #[serde(rename = "z3-standardlssd-44")]
+    Z3_standardlssd_44,
+    #[serde(rename = "z3-standardlssd-88")]
+    Z3_standardlssd_88,
+    #[serde(rename = "z3-standardlssd-176")]
+    Z3_standardlssd_176,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -417,6 +542,67 @@ impl std::fmt::Display for PgSize {
             Self::R8gd_16xlarge => write!(f, "r8gd.16xlarge"),
             Self::R8gd_24xlarge => write!(f, "r8gd.24xlarge"),
             Self::R8gd_48xlarge => write!(f, "r8gd.48xlarge"),
+            Self::C4a_highmem_4 => write!(f, "c4a-highmem-4"),
+            Self::C4a_highmem_8 => write!(f, "c4a-highmem-8"),
+            Self::C4a_highmem_16 => write!(f, "c4a-highmem-16"),
+            Self::C4a_highmem_32 => write!(f, "c4a-highmem-32"),
+            Self::C4a_highmem_48 => write!(f, "c4a-highmem-48"),
+            Self::C4a_highmem_64 => write!(f, "c4a-highmem-64"),
+            Self::C4a_highmem_72 => write!(f, "c4a-highmem-72"),
+            Self::C4a_standard_4 => write!(f, "c4a-standard-4"),
+            Self::C4a_standard_8 => write!(f, "c4a-standard-8"),
+            Self::C4a_standard_16 => write!(f, "c4a-standard-16"),
+            Self::C4a_standard_32 => write!(f, "c4a-standard-32"),
+            Self::C4a_standard_48 => write!(f, "c4a-standard-48"),
+            Self::C4a_standard_64 => write!(f, "c4a-standard-64"),
+            Self::C4a_standard_72 => write!(f, "c4a-standard-72"),
+            Self::C4_highmem_4 => write!(f, "c4-highmem-4"),
+            Self::C4_highmem_8 => write!(f, "c4-highmem-8"),
+            Self::C4_highmem_16 => write!(f, "c4-highmem-16"),
+            Self::C4_highmem_24 => write!(f, "c4-highmem-24"),
+            Self::C4_highmem_32 => write!(f, "c4-highmem-32"),
+            Self::C4_highmem_48 => write!(f, "c4-highmem-48"),
+            Self::C4_highmem_96 => write!(f, "c4-highmem-96"),
+            Self::C4_highmem_144 => write!(f, "c4-highmem-144"),
+            Self::C4_highmem_192 => write!(f, "c4-highmem-192"),
+            Self::C4_highmem_288 => write!(f, "c4-highmem-288"),
+            Self::C4_standard_4 => write!(f, "c4-standard-4"),
+            Self::C4_standard_8 => write!(f, "c4-standard-8"),
+            Self::C4_standard_16 => write!(f, "c4-standard-16"),
+            Self::C4_standard_24 => write!(f, "c4-standard-24"),
+            Self::C4_standard_32 => write!(f, "c4-standard-32"),
+            Self::C4_standard_48 => write!(f, "c4-standard-48"),
+            Self::C4_standard_96 => write!(f, "c4-standard-96"),
+            Self::C4_standard_144 => write!(f, "c4-standard-144"),
+            Self::C4_standard_192 => write!(f, "c4-standard-192"),
+            Self::C4_standard_288 => write!(f, "c4-standard-288"),
+            Self::C4d_highmem_8 => write!(f, "c4d-highmem-8"),
+            Self::C4d_highmem_16 => write!(f, "c4d-highmem-16"),
+            Self::C4d_highmem_32 => write!(f, "c4d-highmem-32"),
+            Self::C4d_highmem_48 => write!(f, "c4d-highmem-48"),
+            Self::C4d_highmem_64 => write!(f, "c4d-highmem-64"),
+            Self::C4d_highmem_96 => write!(f, "c4d-highmem-96"),
+            Self::C4d_highmem_192 => write!(f, "c4d-highmem-192"),
+            Self::C4d_highmem_384 => write!(f, "c4d-highmem-384"),
+            Self::C4d_standard_8 => write!(f, "c4d-standard-8"),
+            Self::C4d_standard_16 => write!(f, "c4d-standard-16"),
+            Self::C4d_standard_32 => write!(f, "c4d-standard-32"),
+            Self::C4d_standard_48 => write!(f, "c4d-standard-48"),
+            Self::C4d_standard_64 => write!(f, "c4d-standard-64"),
+            Self::C4d_standard_96 => write!(f, "c4d-standard-96"),
+            Self::C4d_standard_192 => write!(f, "c4d-standard-192"),
+            Self::C4d_standard_384 => write!(f, "c4d-standard-384"),
+            Self::Z3_highlssd_8 => write!(f, "z3-highlssd-8"),
+            Self::Z3_highlssd_16 => write!(f, "z3-highlssd-16"),
+            Self::Z3_highlssd_22 => write!(f, "z3-highlssd-22"),
+            Self::Z3_highlssd_32 => write!(f, "z3-highlssd-32"),
+            Self::Z3_highlssd_44 => write!(f, "z3-highlssd-44"),
+            Self::Z3_highlssd_88 => write!(f, "z3-highlssd-88"),
+            Self::Z3_standardlssd_14 => write!(f, "z3-standardlssd-14"),
+            Self::Z3_standardlssd_22 => write!(f, "z3-standardlssd-22"),
+            Self::Z3_standardlssd_44 => write!(f, "z3-standardlssd-44"),
+            Self::Z3_standardlssd_88 => write!(f, "z3-standardlssd-88"),
+            Self::Z3_standardlssd_176 => write!(f, "z3-standardlssd-176"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }

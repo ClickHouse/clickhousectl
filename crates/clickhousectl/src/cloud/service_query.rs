@@ -7,7 +7,7 @@
 //! control plane.
 
 use crate::cloud::api_keys::discard_api_key;
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
@@ -20,16 +20,18 @@ use clickhouse_cloud_api::models::{
 const ALLOWED_ORIGINS: &str = "*";
 
 /// Requires a response field the provisioning flow cannot proceed without.
-fn require_field<T>(value: Option<T>, field: &str) -> Result<T, Box<dyn std::error::Error>> {
-    value.ok_or_else(|| format!("the API response is missing required field '{field}'").into())
+fn require_field<T>(value: Option<T>, field: &str) -> CloudResult<T> {
+    value.ok_or_else(|| {
+        CloudError::new(format!(
+            "the API response is missing required field '{field}'"
+        ))
+    })
 }
 
 /// The `key_id`/`key_secret` pair the query host authenticates with, taken
 /// from the key-creation response. Both halves are required together: a key
 /// id without its secret is as unusable as neither.
-fn require_credential_pair(
-    key_response: &ApiKeyPostResponse,
-) -> Result<(String, String), Box<dyn std::error::Error>> {
+fn require_credential_pair(key_response: &ApiKeyPostResponse) -> CloudResult<(String, String)> {
     let key_id = require_field(key_response.key_id.clone(), "keyId")?;
     let key_secret = require_field(key_response.key_secret.clone(), "keySecret")?;
     Ok((key_id, key_secret))
@@ -65,7 +67,7 @@ pub async fn ensure_service_query_setup(
     org_id: &str,
     service_id: &str,
     service_name: &str,
-) -> Result<ServiceQueryKey, Box<dyn std::error::Error>> {
+) -> CloudResult<ServiceQueryKey> {
     if let Some(existing) = credentials::get_service_query_key(service_id) {
         return Ok(existing);
     }
@@ -145,13 +147,12 @@ pub async fn ensure_service_query_setup(
 /// report. An explicitly empty list is a real answer and merges normally.
 fn existing_open_api_keys(
     endpoint: Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    let incomplete = |field: &str| -> Box<dyn std::error::Error> {
-        format!(
+) -> CloudResult<Vec<String>> {
+    let incomplete = |field: &str| {
+        CloudError::new(format!(
             "the query endpoint response is missing field '{field}', so the keys currently bound \
              to the endpoint are unknown; binding a new key would revoke them"
-        )
-        .into()
+        ))
     };
     endpoint
         .ok_or_else(|| incomplete("result"))?
@@ -168,7 +169,7 @@ async fn bind_query_endpoint(
     org_id: &str,
     service_id: &str,
     api_key_uuid: &str,
-) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint, Box<dyn std::error::Error>> {
+) -> CloudResult<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
     let mut open_api_keys = match client
         .api()
         .instance_query_endpoint_get(org_id, service_id)
@@ -178,7 +179,7 @@ async fn bind_query_endpoint(
         // Only a 404 means there is no endpoint yet, so this binding is the
         // first one and starts from an empty list.
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error_for_organization(e, org_id).into()),
+        Err(e) => return Err(client.convert_error_for_organization(e, org_id)),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
         open_api_keys.push(api_key_uuid.to_string());
@@ -192,9 +193,9 @@ async fn bind_query_endpoint(
         allowed_origins: ALLOWED_ORIGINS.to_string(),
     };
 
-    Ok(client
+    client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
-        .await?)
+        .await
 }
 
 #[cfg(test)]

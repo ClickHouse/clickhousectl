@@ -207,6 +207,82 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     .unwrap();
 }
 
+// ── Backup configuration validation (issue #425) ────────────────────────────
+
+#[tokio::test]
+async fn backup_config_rejects_incompatible_period_before_any_request() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-period-hours",
+            "12",
+            "--backup-start-time",
+            "02:00",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--backup-period-hours must be 24 or 48 when --backup-start-time is set")
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+// ── Concrete Cloud error routing (issue #233) ──────────────────────────────
+
+async fn invoke_service_list_api_error(status: u16, message: &str) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(
+            ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                "status": status,
+                "error": message,
+                "requestId": format!("stub-{status}"),
+            })),
+        )
+        .mount(&mock)
+        .await;
+
+    invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", "org-1"])
+}
+
+#[tokio::test]
+async fn dispatched_cloud_401_exits_with_auth_required() {
+    let output = invoke_service_list_api_error(401, "Unauthorized").await;
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Unauthorized\n"
+    );
+}
+
+#[tokio::test]
+async fn dispatched_cloud_403_exits_with_auth_required() {
+    let output = invoke_service_list_api_error(403, "Forbidden").await;
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Forbidden\n"
+    );
+}
+
+#[tokio::test]
+async fn dispatched_cloud_500_remains_a_generic_error() {
+    let output = invoke_service_list_api_error(500, "Internal Server Error").await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Internal Server Error\n"
+    );
+}
+
 // ── Organization-scoped error context (issue #334) ─────────────────────────
 
 #[tokio::test]
@@ -2425,14 +2501,29 @@ async fn service_query_agent_json_uses_json_each_row_unless_format_is_explicit()
     assert_eq!(requests[0].url.query(), Some("format=CSV"));
 }
 
-#[test]
-fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
-    let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .args([
+#[tokio::test]
+async fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
+    let control = MockServer::start().await;
+    let url = control.uri();
+    let cases = [
+        vec![
             "cloud",
+            "--url",
+            &url,
+            "--json",
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--query",
+            "SELECT 1",
+            "--format",
+            "CSV",
+        ],
+        vec![
+            "cloud",
+            "--url",
+            &url,
             "service",
             "query",
             "--id",
@@ -2442,14 +2533,31 @@ fn service_query_rejects_json_with_an_explicit_format_before_network_access() {
             "--json",
             "--format",
             "CSV",
-        ])
-        .output()
-        .expect("failed to spawn clickhousectl");
+        ],
+    ];
 
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--json"));
-    assert!(stderr.contains("--format"));
+    for args in cases {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_agent_env(&mut command);
+        let output = command
+            .env("DO_NOT_TRACK", "1")
+            .env("CLICKHOUSE_CLOUD_API_KEY", "unused-key")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "unused-secret")
+            .args(args)
+            .output()
+            .expect("failed to spawn clickhousectl");
+
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--json"), "{stderr}");
+        assert!(stderr.contains("--format"), "{stderr}");
+        assert!(
+            stderr.contains("clickhousectl cloud service query"),
+            "{stderr}"
+        );
+    }
+
+    assert!(control.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -3052,13 +3160,12 @@ async fn service_query_merges_the_new_key_into_the_reported_keys() {
     );
 }
 
-// ── Idled / stopped services (query host 206 protocol) ─────────────────────
+// ── Idled / stopped services ───────────────────────────────────────────────
 //
-// An idled or stopped service answers the run request with 206 and
-// `{"data": "<state>"}` instead of executing the query. For `Confirm wake
-// service` the CLI must resend the query once with the `wake-service: true`
-// header (waking the service, like the SQL console does after prompting);
-// for `Service is stopped` it must fail with a hint to start the service.
+// An idled service answers 206 `Confirm wake service`, which the CLI retries
+// with `wake-service: true`. A stopped service currently answers 404 with an
+// unavailable-service error; the CLI must not treat that 404 as a missing
+// query endpoint and must instead fail with a hint to start the service.
 
 /// Write an OAuth tokens.json into `ch_dir` (the caller's `$HOME/.clickhouse`)
 /// so the binary authenticates with a bearer token against the given control
@@ -3236,17 +3343,15 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
     let query_host = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-        .respond_with(
-            ResponseTemplate::new(206).set_body_string(r#"{"data":"Service is stopped"}"#),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_string(
+            r#"{"error":"ClickHouse service is currently unavailable. Please try again later."}"#,
+        ))
         .mount(&query_host)
         .await;
 
     let dir = tempfile::tempdir().unwrap();
     let home_dir = dir.path().join("home");
-    let ch_dir = home_dir.join(".clickhouse");
-    std::fs::create_dir_all(&ch_dir).unwrap();
-    write_oauth_tokens(&ch_dir, &control.uri());
+    std::fs::create_dir(&home_dir).unwrap();
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
@@ -3265,27 +3370,38 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
             "SELECT 1",
         ])
         .current_dir(dir.path())
-        .env("HOME", &home_dir)
-        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
-        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("HOME", home_dir)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
         .output()
         .expect("failed to spawn clickhousectl");
 
-    assert!(
-        !output.status.success(),
-        "querying a stopped service must fail\nstdout:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("stopped") && stderr.contains("service start"),
-        "stderr should say the service is stopped and hint at `service start`:\n{stderr}",
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id org-1` and retry\n"
+        ),
     );
 
-    // A stopped service is never woken: no wake-service resend.
+    // The stopped response is terminal: no wake resend and no endpoint/key
+    // provisioning despite its HTTP 404 status.
     let query_requests = query_host.received_requests().await.unwrap();
     assert_eq!(query_requests.len(), 1);
+    let control_requests = control.received_requests().await.unwrap();
+    assert!(
+        control_requests
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "stopped service query attempted provisioning: {:?}",
+        control_requests
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect::<Vec<_>>(),
+    );
+    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
 }
 
 // Shell env vars must win over `.env` — if both are set, the request is

@@ -1,4 +1,4 @@
-use crate::cloud::client::{CloudClient, CloudError};
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
@@ -214,11 +214,7 @@ impl InvitationCommands {
     }
 }
 
-pub async fn run_org(
-    client: &CloudClient,
-    command: OrgCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> CloudResult<()> {
     match command {
         OrgCommands::List => org_list(client, json).await,
         OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
@@ -260,7 +256,7 @@ pub async fn run_member(
     client: &CloudClient,
     command: MemberCommands,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     match command {
         MemberCommands::List { org_id } => member_list(client, org_id.as_deref(), json).await,
         MemberCommands::Get { user_id, org_id } => {
@@ -281,7 +277,7 @@ pub async fn run_invitation(
     client: &CloudClient,
     command: InvitationCommands,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     match command {
         InvitationCommands::List { org_id } => {
             invitation_list(client, org_id.as_deref(), json).await
@@ -309,9 +305,7 @@ struct OrgUpdateOptions {
     enable_core_dumps: Option<bool>,
 }
 
-fn parse_org_private_endpoint_remove(
-    value: &str,
-) -> Result<OrganizationPatchPrivateEndpoint, Box<dyn std::error::Error>> {
+fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPatchPrivateEndpoint> {
     let mut endpoint = OrganizationPatchPrivateEndpoint {
         id: String::new(),
         description: None,
@@ -330,9 +324,12 @@ fn parse_org_private_endpoint_remove(
             continue;
         }
 
-        let (key, raw_value) = part
-            .split_once('=')
-            .ok_or_else(|| format!("invalid remove-private-endpoint segment '{}'", part))?;
+        let (key, raw_value) = part.split_once('=').ok_or_else(|| {
+            CloudError::new(format!(
+                "invalid remove-private-endpoint segment '{}'",
+                part
+            ))
+        })?;
 
         match key {
             "id" => endpoint.id = raw_value.to_string(),
@@ -345,28 +342,25 @@ fn parse_org_private_endpoint_remove(
                     .expect("enum with Unknown variant should always deserialize");
             }
             "region" => {
-                endpoint.region =
-                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
-                        serde_json::Value::String(raw_value.to_string()),
-                    )
-                    .expect("enum with Unknown variant should always deserialize");
+                endpoint.region = serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
+                    serde_json::Value::String(raw_value.to_string()),
+                )
+                .expect("enum with Unknown variant should always deserialize");
             }
             _ => {
-                return Err(format!(
+                return Err(CloudError::new(format!(
                     "invalid remove-private-endpoint key '{}'; expected id, description, cloud-provider, or region",
                     key
-                )
-                .into())
+                )));
             }
         }
     }
 
     if endpoint.id.trim().is_empty() {
-        return Err(format!(
+        return Err(CloudError::new(format!(
             "remove-private-endpoint '{}' requires a non-empty id",
             value
-        )
-        .into());
+        )));
     }
 
     Ok(endpoint)
@@ -374,7 +368,7 @@ fn parse_org_private_endpoint_remove(
 
 fn parse_org_private_endpoints_patch(
     remove: &[String],
-) -> Result<Option<OrganizationPrivateEndpointsPatch>, Box<dyn std::error::Error>> {
+) -> CloudResult<Option<OrganizationPrivateEndpointsPatch>> {
     if remove.is_empty() {
         return Ok(None);
     }
@@ -391,14 +385,33 @@ fn parse_org_private_endpoints_patch(
     }))
 }
 
-fn build_org_update_request(
-    options: &OrgUpdateOptions,
-) -> Result<OrganizationPatchRequest, Box<dyn std::error::Error>> {
+fn build_org_update_request(options: &OrgUpdateOptions) -> CloudResult<OrganizationPatchRequest> {
     Ok(OrganizationPatchRequest {
         name: options.name.clone(),
         private_endpoints: parse_org_private_endpoints_patch(&options.remove_private_endpoints)?,
         enable_core_dumps: options.enable_core_dumps,
     })
+}
+
+fn build_member_update_request(role_ids: &[String]) -> MemberPatchRequest {
+    MemberPatchRequest {
+        assigned_role_ids: if role_ids.is_empty() {
+            None
+        } else {
+            Some(role_ids.to_vec())
+        },
+        #[cfg(feature = "deprecated-fields")]
+        role: None,
+    }
+}
+
+fn build_invitation_create_request(email: &str, role_ids: &[String]) -> InvitationPostRequest {
+    InvitationPostRequest {
+        email: email.to_string(),
+        assigned_role_ids: role_ids.to_vec(),
+        #[cfg(feature = "deprecated-fields")]
+        role: None,
+    }
 }
 
 fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String {
@@ -408,7 +421,7 @@ fn join_absent<T>(items: Option<&[T]>, render: impl Fn(&T) -> String) -> String 
     }
 }
 
-async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn org_list(client: &CloudClient, json: bool) -> CloudResult<()> {
     let orgs = client.list_organizations().await?;
 
     if json {
@@ -437,11 +450,7 @@ async fn org_list(client: &CloudClient, json: bool) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-async fn org_get(
-    client: &CloudClient,
-    org_id: &str,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn org_get(client: &CloudClient, org_id: &str, json: bool) -> CloudResult<()> {
     let organization = client.get_organization(org_id).await?;
 
     if json {
@@ -457,7 +466,7 @@ async fn org_update(
     org_id: &str,
     options: OrgUpdateOptions,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let request = build_org_update_request(&options)?;
     let organization = client.update_organization(org_id, &request).await?;
 
@@ -478,7 +487,7 @@ async fn org_prometheus(
     org_id: Option<&str>,
     filtered_metrics: Option<bool>,
     _json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let prometheus = client.get_org_prometheus(&org_id, filtered_metrics).await?;
     println!("{}", prometheus);
@@ -492,7 +501,7 @@ async fn org_usage(
     to_date: &str,
     filters: &[String],
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let usage = client
         .get_org_usage(&org_id, from_date, to_date, filters)
@@ -541,11 +550,7 @@ fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
     }
 }
 
-async fn member_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn member_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let members = client.list_members(&org_id).await?;
 
@@ -588,7 +593,7 @@ async fn member_get(
     user_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let member = client.get_member(&org_id, user_id).await?;
 
@@ -606,17 +611,9 @@ async fn member_update(
     role_ids: &[String],
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let request = MemberPatchRequest {
-        assigned_role_ids: if role_ids.is_empty() {
-            None
-        } else {
-            Some(role_ids.to_vec())
-        },
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
-    };
+    let request = build_member_update_request(role_ids);
     let member = client.update_member(&org_id, user_id, &request).await?;
 
     if json {
@@ -632,7 +629,7 @@ async fn member_remove(
     user_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client.delete_member(&org_id, user_id).await?;
     if json {
@@ -647,7 +644,7 @@ async fn invitation_list(
     client: &CloudClient,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let invitations = client.list_invitations(&org_id).await?;
 
@@ -691,14 +688,9 @@ async fn invitation_create(
     role_ids: &[String],
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let request = InvitationPostRequest {
-        email: email.to_string(),
-        assigned_role_ids: role_ids.to_vec(),
-        #[cfg(feature = "deprecated-fields")]
-        role: None,
-    };
+    let request = build_invitation_create_request(email, role_ids);
     let invitation = client.create_invitation(&org_id, &request).await?;
 
     if json {
@@ -718,7 +710,7 @@ async fn invitation_get(
     invitation_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let invitation = client.get_invitation(&org_id, invitation_id).await?;
 
@@ -735,7 +727,7 @@ async fn invitation_delete(
     invitation_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client.delete_invitation(&org_id, invitation_id).await?;
     if json {
@@ -943,12 +935,16 @@ mod tests {
     use crate::cloud::cli::CloudCommands;
     use clap::Parser;
 
-    fn assert_write(args: &[&str], expected: bool) {
+    fn parse_cloud_command(args: &[&str]) -> CloudCommands {
         let cli = Cli::try_parse_from(args).expect("parse");
         let Commands::Cloud(cloud_args) = cli.command else {
             panic!("expected cloud command");
         };
-        let command = cloud_args.command;
+        cloud_args.command
+    }
+
+    fn assert_write(args: &[&str], expected: bool) {
+        let command = parse_cloud_command(args);
         assert!(matches!(
             &command,
             CloudCommands::Org { .. }
@@ -961,6 +957,162 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
+    }
+
+    #[test]
+    fn parses_organization_body_command_defaults() {
+        let CloudCommands::Org { command } =
+            parse_cloud_command(&["clickhousectl", "cloud", "org", "update", "org-1"])
+        else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Update {
+            org_id,
+            name,
+            remove_private_endpoint,
+            enable_core_dumps,
+        } = command
+        else {
+            panic!("expected org update");
+        };
+        assert_eq!(org_id, "org-1");
+        assert!(name.is_none());
+        assert!(remove_private_endpoint.is_empty());
+        assert!(enable_core_dumps.is_none());
+
+        let CloudCommands::Member { command } =
+            parse_cloud_command(&["clickhousectl", "cloud", "member", "update", "user-1"])
+        else {
+            panic!("expected member command");
+        };
+        let MemberCommands::Update {
+            user_id,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected member update");
+        };
+        assert_eq!(user_id, "user-1");
+        assert!(role_id.is_empty());
+        assert!(org_id.is_none());
+
+        let CloudCommands::Invitation { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "invitation",
+            "create",
+            "--email",
+            "user@example.com",
+        ]) else {
+            panic!("expected invitation command");
+        };
+        let InvitationCommands::Create {
+            email,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected invitation create");
+        };
+        assert_eq!(email, "user@example.com");
+        assert!(role_id.is_empty());
+        assert!(org_id.is_none());
+    }
+
+    #[test]
+    fn parses_organization_body_command_maximal_and_repeatable_flags() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "update",
+            "org-1",
+            "--name",
+            "Updated Org",
+            "--remove-private-endpoint",
+            "pe-1,description=old,cloud-provider=aws,region=us-east-1",
+            "--remove-private-endpoint",
+            "pe-2,description=legacy,cloud-provider=azure,region=eastus",
+            "--enable-core-dumps",
+            "false",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Update {
+            org_id,
+            name,
+            remove_private_endpoint,
+            enable_core_dumps,
+        } = command
+        else {
+            panic!("expected org update");
+        };
+        assert_eq!(org_id, "org-1");
+        assert_eq!(name.as_deref(), Some("Updated Org"));
+        assert_eq!(
+            remove_private_endpoint,
+            vec![
+                "pe-1,description=old,cloud-provider=aws,region=us-east-1",
+                "pe-2,description=legacy,cloud-provider=azure,region=eastus",
+            ]
+        );
+        assert_eq!(enable_core_dumps, Some(false));
+
+        let CloudCommands::Member { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "member",
+            "update",
+            "user-1",
+            "--role-id",
+            "role-1",
+            "--role-id",
+            "role-2",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected member command");
+        };
+        let MemberCommands::Update {
+            user_id,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected member update");
+        };
+        assert_eq!(user_id, "user-1");
+        assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let CloudCommands::Invitation { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "invitation",
+            "create",
+            "--email",
+            "user@example.com",
+            "--role-id",
+            "role-1",
+            "--role-id",
+            "role-2",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected invitation command");
+        };
+        let InvitationCommands::Create {
+            email,
+            role_id,
+            org_id,
+        } = command
+        else {
+            panic!("expected invitation create");
+        };
+        assert_eq!(email, "user@example.com");
+        assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -1257,22 +1409,102 @@ mod tests {
     }
 
     #[test]
-    fn build_org_update_request_matches_tested_shape() {
+    fn build_org_update_request_supports_minimal_fields() {
+        let request = build_org_update_request(&OrgUpdateOptions::default()).unwrap();
+
+        assert!(request.name.is_none());
+        assert!(request.private_endpoints.is_none());
+        assert!(request.enable_core_dumps.is_none());
+    }
+
+    #[test]
+    fn build_org_update_request_supports_maximal_fields() {
         let options = OrgUpdateOptions {
             name: Some("Updated Org".to_string()),
             remove_private_endpoints: vec![
                 "pe-1,description=old,cloud-provider=aws,region=us-east-1".to_string(),
+                "pe-2,description=legacy,cloud-provider=azure,region=eastus".to_string(),
             ],
             enable_core_dumps: Some(false),
         };
         let request = build_org_update_request(&options).unwrap();
-        let json = serde_json::to_value(&request).unwrap();
-        assert_eq!(json["privateEndpoints"]["remove"][0]["id"], "pe-1");
+
+        assert_eq!(request.name.as_deref(), Some("Updated Org"));
+        assert_eq!(request.enable_core_dumps, Some(false));
+        let private_endpoints = request.private_endpoints.as_ref().unwrap();
+        #[cfg(feature = "deprecated-fields")]
+        assert!(private_endpoints.add.is_none());
+        assert_eq!(private_endpoints.remove.len(), 2);
+        assert_eq!(private_endpoints.remove[0].id, "pe-1");
         assert_eq!(
-            json["privateEndpoints"]["remove"][0]["cloudProvider"],
-            "aws"
+            private_endpoints.remove[0].description.as_deref(),
+            Some("old")
         );
-        assert_eq!(json["enableCoreDumps"], false);
+        assert_eq!(
+            private_endpoints.remove[0].cloud_provider,
+            OrganizationPatchPrivateEndpointCloudprovider::Aws
+        );
+        assert_eq!(
+            private_endpoints.remove[0].region,
+            OrganizationPatchPrivateEndpointRegion::Us_east_1
+        );
+        assert_eq!(private_endpoints.remove[1].id, "pe-2");
+        assert_eq!(
+            private_endpoints.remove[1].description.as_deref(),
+            Some("legacy")
+        );
+        assert_eq!(
+            private_endpoints.remove[1].cloud_provider,
+            OrganizationPatchPrivateEndpointCloudprovider::Azure
+        );
+        assert_eq!(
+            private_endpoints.remove[1].region,
+            OrganizationPatchPrivateEndpointRegion::Eastus
+        );
+    }
+
+    #[test]
+    fn build_member_update_request_supports_minimal_fields() {
+        let request = build_member_update_request(&[]);
+
+        assert!(request.assigned_role_ids.is_none());
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_member_update_request_supports_maximal_fields() {
+        let request = build_member_update_request(&["role-1".to_string(), "role-2".to_string()]);
+
+        assert_eq!(
+            request.assigned_role_ids,
+            Some(vec!["role-1".to_string(), "role-2".to_string()])
+        );
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_invitation_create_request_supports_minimal_fields() {
+        let request = build_invitation_create_request("user@example.com", &[]);
+
+        assert_eq!(request.email, "user@example.com");
+        assert!(request.assigned_role_ids.is_empty());
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_invitation_create_request_supports_maximal_fields() {
+        let request = build_invitation_create_request(
+            "user@example.com",
+            &["role-1".to_string(), "role-2".to_string()],
+        );
+
+        assert_eq!(request.email, "user@example.com");
+        assert_eq!(request.assigned_role_ids, vec!["role-1", "role-2"]);
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.role.is_none());
     }
 
     #[test]

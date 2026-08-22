@@ -40,6 +40,18 @@ impl std::fmt::Display for CloudError {
 
 impl std::error::Error for CloudError {}
 
+impl From<std::io::Error> for CloudError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(error.to_string())
+    }
+}
+
+impl From<serde_json::Error> for CloudError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::new(error.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {

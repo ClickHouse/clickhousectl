@@ -64,7 +64,13 @@ async fn main() {
             // a clap derive bug, not a user error.
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
-            let (exit_code, is_child_exit) = run_parsed(cli).await;
+            let (exit_code, is_child_exit) = match validate_post_parse(&cli, &mut cmd) {
+                Ok(()) => run_parsed(cli).await,
+                Err(e) => {
+                    let _ = e.print();
+                    (e.exit_code(), false)
+                }
+            };
             #[cfg(feature = "telemetry")]
             if is_child_exit {
                 invocation.mark_child_exit();
@@ -113,6 +119,28 @@ async fn main() {
     let () = telemetry_invocation;
 
     std::process::exit(exit_code);
+}
+
+fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Result<(), clap::Error> {
+    let Commands::Cloud(args) = &cli.command else {
+        return Ok(());
+    };
+    if !args.has_explicit_json_format_conflict() {
+        return Ok(());
+    }
+
+    // clap validates each subcommand before propagating values supplied for a
+    // global argument at a parent level, so this cross-level conflict needs a
+    // post-parse check. Format the error against the owning command.
+    let query = cmd
+        .find_subcommand_mut("cloud")
+        .and_then(|cloud| cloud.find_subcommand_mut("service"))
+        .and_then(|service| service.find_subcommand_mut("query"))
+        .expect("service query command must exist");
+    Err(query.error(
+        ErrorKind::ArgumentConflict,
+        "the argument '--json' cannot be used with '--format <FORMAT>'",
+    ))
 }
 
 /// Run a successfully parsed invocation to completion and report the exit
@@ -258,6 +286,60 @@ mod tests {
 
     fn parse(args: &[&str]) -> Commands {
         Cli::try_parse_from(args).unwrap().command
+    }
+
+    fn parse_and_validate(args: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        let mut cmd = Cli::command();
+        let matches = cmd.try_get_matches_from_mut(args)?;
+        let cli = Cli::from_arg_matches(&matches)
+            .expect("Cli::from_arg_matches must accept matches from Cli::command()");
+        validate_post_parse(&cli, &mut cmd)?;
+        Ok(cli)
+    }
+
+    #[test]
+    fn service_query_rejects_explicit_json_with_format_in_both_orders() {
+        for args in [
+            &[
+                "clickhousectl",
+                "cloud",
+                "--json",
+                "service",
+                "query",
+                "--id",
+                "svc-1",
+                "--query",
+                "SELECT 1",
+                "--format",
+                "CSV",
+            ][..],
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query",
+                "--id",
+                "svc-1",
+                "--query",
+                "SELECT 1",
+                "--json",
+                "--format",
+                "CSV",
+            ][..],
+        ] {
+            let error = parse_and_validate(args)
+                .err()
+                .expect("explicit --json and --format should conflict");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains("--json"), "{message}");
+            assert!(message.contains("--format"), "{message}");
+            assert!(
+                message.contains("clickhousectl cloud service query"),
+                "{message}"
+            );
+        }
     }
 
     #[test]

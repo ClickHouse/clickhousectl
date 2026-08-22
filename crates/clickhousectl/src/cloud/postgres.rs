@@ -1,4 +1,4 @@
-use crate::cloud::client::CloudClient;
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::Subcommand;
@@ -241,11 +241,7 @@ impl PostgresCommands {
     }
 }
 
-pub async fn run(
-    client: &CloudClient,
-    command: PostgresCommands,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) -> CloudResult<()> {
     match command {
         PostgresCommands::List { org_id, filter } => {
             postgres_list(client, org_id.as_deref(), &filter, json).await
@@ -438,23 +434,21 @@ pub async fn run(
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn unwrap_api<T>(resp: ApiResponse<T>) -> Result<T, Box<dyn std::error::Error>> {
+fn unwrap_api<T>(resp: ApiResponse<T>) -> CloudResult<T> {
     resp.result
-        .ok_or_else(|| "API response was missing a result body".into())
+        .ok_or_else(|| CloudError::new("API response was missing a result body"))
 }
 
-fn parse_pg_size(
-    value: &str,
-) -> Result<clickhouse_cloud_api::models::PgSize, Box<dyn std::error::Error>> {
+fn parse_pg_size(value: &str) -> CloudResult<clickhouse_cloud_api::models::PgSize> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| format!("invalid size '{}': {}", value, e).into())
+        .map_err(|e| CloudError::new(format!("invalid size '{}': {}", value, e)))
 }
 
-fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::error::Error>> {
+fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
     let contents = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
+        .map_err(|e| CloudError::new(format!("failed to read {}: {}", path.display(), e)))?;
     serde_json::from_str(&contents)
-        .map_err(|e| format!("failed to parse {} as JSON: {}", path.display(), e).into())
+        .map_err(|e| CloudError::new(format!("failed to parse {} as JSON: {}", path.display(), e)))
 }
 
 /// Builds the `postgres config` write body from a user-supplied JSON document.
@@ -466,12 +460,10 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::er
 /// The API rejects a body that omits either `pgConfig` or `pgBouncerConfig`, and
 /// the request model is strict (no serde defaults), so an omitted key of an
 /// object root resolves to an empty object here — explicitly, at the point of use.
-fn instance_config_from_json(
-    doc: &serde_json::Value,
-) -> Result<PostgresInstanceConfig, Box<dyn std::error::Error>> {
+fn instance_config_from_json(doc: &serde_json::Value) -> CloudResult<PostgresInstanceConfig> {
     let root = doc
         .as_object()
-        .ok_or("configuration document must be a JSON object")?;
+        .ok_or_else(|| CloudError::new("configuration document must be a JSON object"))?;
     let section = |key: &str| {
         root.get(key)
             .cloned()
@@ -479,9 +471,9 @@ fn instance_config_from_json(
     };
     Ok(PostgresInstanceConfig {
         pg_config: serde_json::from_value(section("pgConfig"))
-            .map_err(|e| format!("invalid pgConfig: {}", e))?,
+            .map_err(|e| CloudError::new(format!("invalid pgConfig: {}", e)))?,
         pg_bouncer_config: serde_json::from_value(section("pgBouncerConfig"))
-            .map_err(|e| format!("invalid pgBouncerConfig: {}", e))?,
+            .map_err(|e| CloudError::new(format!("invalid pgBouncerConfig: {}", e)))?,
     })
 }
 
@@ -491,15 +483,18 @@ fn instance_config_from_json(
 /// falling back to a string if JSON parsing fails (`statement_timeout=5s`).
 pub(super) fn parse_pg_config_overrides(
     sets: &[String],
-) -> Result<serde_json::Map<String, serde_json::Value>, Box<dyn std::error::Error>> {
+) -> CloudResult<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     for entry in sets {
-        let (key, val) = entry
-            .split_once('=')
-            .ok_or_else(|| format!("invalid --set '{}': expected key=value", entry))?;
+        let (key, val) = entry.split_once('=').ok_or_else(|| {
+            CloudError::new(format!("invalid --set '{}': expected key=value", entry))
+        })?;
         let key = key.trim();
         if key.is_empty() {
-            return Err(format!("invalid --set '{}': key cannot be empty", entry).into());
+            return Err(CloudError::new(format!(
+                "invalid --set '{}': key cannot be empty",
+                entry
+            )));
         }
         let parsed = serde_json::from_str::<serde_json::Value>(val)
             .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
@@ -516,22 +511,22 @@ fn generate_compliant_password() -> String {
     format!("A1{}{}", u1, u2)
 }
 
-fn validate_password(pw: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_password(pw: &str) -> CloudResult<()> {
     if pw.len() < 12 {
-        return Err("password must be at least 12 characters".into());
+        return Err(CloudError::new("password must be at least 12 characters"));
     }
     let has_lower = pw.chars().any(|c| c.is_ascii_lowercase());
     let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
     let has_digit = pw.chars().any(|c| c.is_ascii_digit());
     if !(has_lower && has_upper && has_digit) {
-        return Err(
-            "password must include at least one lowercase, one uppercase, and one digit".into(),
-        );
+        return Err(CloudError::new(
+            "password must include at least one lowercase, one uppercase, and one digit",
+        ));
     }
     Ok(())
 }
 
-fn write_pem_file(path: &Path, pem: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_pem_file(path: &Path, pem: &str) -> CloudResult<()> {
     use std::io::Write;
     #[cfg(unix)]
     {
@@ -658,16 +653,19 @@ fn merge_response_tags(
     current: Option<Vec<ResourceTagsV1Response>>,
     add: &[ResourceTagsV1],
     remove_keys: &[String],
-) -> Result<Vec<ResourceTagsV1>, Box<dyn std::error::Error>> {
-    let current = current.ok_or(
-        "the API response omitted the tags field, so --add-tag/--remove-tag cannot be merged \
-         safely: an update replaces the tag set wholesale, and merging against an assumed empty \
-         set would delete any tags the service already has",
-    )?;
+) -> CloudResult<Vec<ResourceTagsV1>> {
+    let current = current.ok_or_else(|| {
+        CloudError::new(
+            "the API response omitted the tags field, so --add-tag/--remove-tag cannot be merged \
+             safely: an update replaces the tag set wholesale, and merging against an assumed empty \
+             set would delete any tags the service already has",
+        )
+    })?;
     let existing = current
         .into_iter()
         .map(ResourceTagsV1::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CloudError::new(error.to_string()))?;
     Ok(merge_tags(&existing, add, remove_keys))
 }
 
@@ -722,7 +720,7 @@ pub async fn postgres_list(
     org_id: Option<&str>,
     filters: &[String],
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
         .api()
@@ -792,7 +790,7 @@ pub async fn postgres_get(
     postgres_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
         .api()
@@ -858,7 +856,7 @@ pub async fn postgres_create(
     client: &CloudClient,
     opts: PostgresCreateOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, opts.org_id).await?;
 
     let provider: PgProvider = parse_serde_enum(opts.provider, "provider", PgProvider::VALUES)?;
@@ -932,7 +930,7 @@ pub async fn postgres_update(
     postgres_id: &str,
     opts: PostgresUpdateOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, opts.org_id).await?;
 
     let size = opts.size.map(parse_pg_size).transpose()?;
@@ -984,7 +982,7 @@ pub async fn postgres_delete(
     postgres_id: &str,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
         .api()
@@ -1006,7 +1004,7 @@ pub async fn postgres_certs_get(
     output: Option<&Path>,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let pem = client
         .api()
@@ -1048,7 +1046,7 @@ pub async fn postgres_config_get(
     postgres_id: &str,
     org_id: Option<&str>,
     _json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
         .api()
@@ -1067,7 +1065,7 @@ pub async fn postgres_config_replace(
     file: &Path,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
     let resp = client
@@ -1095,11 +1093,11 @@ pub async fn postgres_config_patch(
     file: Option<&Path>,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     if sets.is_empty() && file.is_none() {
-        return Err("provide --set key=value... or --file PATH".into());
+        return Err(CloudError::new("provide --set key=value... or --file PATH"));
     }
 
     let cfg = if let Some(path) = file {
@@ -1111,7 +1109,7 @@ pub async fn postgres_config_patch(
         instance_config_from_json(&serde_json::json!({
             "pgConfig": serde_json::Value::Object(overrides),
         }))
-        .map_err(|e| format!("failed to build config from --set entries: {}", e))?
+        .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
     };
 
     let resp = client
@@ -1139,7 +1137,7 @@ pub async fn postgres_reset_password(
     generate: bool,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
 
     let pw = match (password, generate) {
@@ -1148,7 +1146,9 @@ pub async fn postgres_reset_password(
             p.to_string()
         }
         (None, true) => generate_compliant_password(),
-        (None, false) => return Err("provide --password VALUE or --generate".into()),
+        (None, false) => {
+            return Err(CloudError::new("provide --password VALUE or --generate"));
+        }
         (Some(_), true) => unreachable!("clap conflicts_with prevents this"),
     };
 
@@ -1188,7 +1188,7 @@ pub async fn postgres_read_replica_create(
     postgres_id: &str,
     opts: PostgresReadReplicaOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, opts.org_id).await?;
     let tags = parse_tags(opts.tags)?;
     let pg_config = opts
@@ -1229,7 +1229,7 @@ pub async fn postgres_restore(
     postgres_id: &str,
     opts: PostgresRestoreOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, opts.org_id).await?;
     let tags = parse_tags(opts.tags)?;
     let pg_config = opts
@@ -1241,7 +1241,7 @@ pub async fn postgres_restore(
         .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
     let restore_target = chrono::DateTime::parse_from_rfc3339(opts.restore_target)
-        .map_err(|e| format!("invalid restore-target: {}", e))?
+        .map_err(|e| CloudError::new(format!("invalid restore-target: {}", e)))?
         .with_timezone(&chrono::Utc);
 
     let req = PostgresServiceRestoreRequest {
@@ -1275,7 +1275,7 @@ pub async fn postgres_state_change(
     cmd: PostgresServiceSetStateCommand,
     org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let req = PostgresServiceSetState { command: cmd };
     let resp = client

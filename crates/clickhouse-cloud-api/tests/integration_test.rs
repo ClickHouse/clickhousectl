@@ -1936,8 +1936,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // Sanity: the deprecated body's totals only equal per-replica when
         // num_replicas == 1. We rely on the previous step landing us there.
         assert_eq!(pre_vertical.num_replicas, Some(base_replicas));
-        let pre_min_total = pre_vertical.min_total_memory_gb;
-        let pre_max_total = pre_vertical.max_total_memory_gb;
+        let pre_min_total = pre_vertical
+            .min_total_memory_gb
+            .ok_or("service response omitted minTotalMemoryGb before deprecated vertical scaling")?;
+        let pre_max_total = pre_vertical
+            .max_total_memory_gb
+            .ok_or("service response omitted maxTotalMemoryGb before deprecated vertical scaling")?;
 
         failures
             .run(
@@ -2725,8 +2729,8 @@ async fn scale_service_vertical_and_wait(
             async move {
                 let resp = client.instance_get(&org_id, &service_id).await?;
                 let svc = resp.result.ok_or("service get returned no result")?;
-                if min_total_memory_gb.is_none_or(|v| svc.min_total_memory_gb == v)
-                    && max_total_memory_gb.is_none_or(|v| svc.max_total_memory_gb == v)
+                if min_total_memory_gb.is_none_or(|v| svc.min_total_memory_gb == Some(v))
+                    && max_total_memory_gb.is_none_or(|v| svc.max_total_memory_gb == Some(v))
                 {
                     Ok(Some(()))
                 } else {
