@@ -1809,9 +1809,33 @@ async fn clickpipe_create_postgres(
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
-        .await?;
+        .await
+        .map_err(add_postgres_tls_guidance)?;
     print_created(&clickpipe, json)?;
     Ok(())
+}
+
+fn add_postgres_tls_guidance(mut error: CloudError) -> CloudError {
+    let message = error.message.to_ascii_lowercase();
+    let hint = if message.contains("x509: certificate signed by unknown authority") {
+        Some("Provide the PostgreSQL source's PEM CA bundle with --ca-certificate <path>.")
+    } else if message.contains("x509: hostname mismatch")
+        || (message.contains("x509: certificate is valid for ") && message.contains(", not "))
+        || (message.contains("x509: cannot validate certificate for ")
+            && message.contains(" because it doesn't contain any ip sans"))
+    {
+        Some(
+            "Set --tls-host <hostname> to a DNS name covered by the PostgreSQL source certificate (it defaults to --host).",
+        )
+    } else {
+        None
+    };
+
+    if let Some(hint) = hint {
+        error.message.push_str("\n\nHint: ");
+        error.message.push_str(hint);
+    }
+    error
 }
 
 fn build_postgres_request(
@@ -2350,9 +2374,15 @@ mod tests {
             "https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic",
             "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips",
         ] {
-            assert!(help.contains(expected), "missing {expected:?} in help:\n{help}");
+            assert!(
+                help.contains(expected),
+                "missing {expected:?} in help:\n{help}"
+            );
         }
-        assert!(!help.contains("--disable-tls"), "unexpected TLS bypass flag");
+        assert!(
+            !help.contains("--disable-tls"),
+            "unexpected TLS bypass flag"
+        );
         assert!(
             !help.contains("--skip-cert-verification"),
             "unexpected certificate bypass flag"
