@@ -1709,6 +1709,11 @@ struct ServiceQueryOptions {
     no_auto_enable: bool,
 }
 
+const QUERY_ENDPOINT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const QUERY_ENDPOINT_RETRY_INITIAL_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+const QUERY_ENDPOINT_RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[allow(clippy::too_many_arguments)]
 async fn run_basic_service_query(
     client: &CloudClient,
@@ -1739,9 +1744,53 @@ fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
         error,
         clickhouse_cloud_api::Error::Api {
             status: 401 | 403 | 404,
-            ..
-        }
+            message,
+        } if !message.starts_with("SQL error ")
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_newly_provisioned_service_query(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    service_name: &str,
+) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+    let deadline = tokio::time::Instant::now() + QUERY_ENDPOINT_READY_TIMEOUT;
+    let mut delay = QUERY_ENDPOINT_RETRY_INITIAL_DELAY;
+    let mut waiting = false;
+
+    loop {
+        let result = run_basic_service_query(
+            client,
+            service_id,
+            key_id,
+            key_secret,
+            sql,
+            database,
+            format,
+            service_name,
+        )
+        .await;
+        if !result.as_ref().is_err_and(query_requires_provisioning) {
+            return result;
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return result;
+        }
+        if !waiting {
+            eprintln!("Waiting for the Query API endpoint to become ready...");
+            waiting = true;
+        }
+        tokio::time::sleep(delay.min(remaining)).await;
+        delay = (delay * 2).min(QUERY_ENDPOINT_RETRY_MAX_DELAY);
+    }
 }
 
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
@@ -1837,7 +1886,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         &service_name,
                     )
                     .await?;
-                    run_basic_service_query(
+                    run_newly_provisioned_service_query(
                         client,
                         &service_id,
                         &key.key_id,
@@ -3796,6 +3845,12 @@ mod tests {
                 }
             ));
         }
+        assert!(!query_requires_provisioning(
+            &clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "SQL error 60: Table does not exist".into(),
+            }
+        ));
         for status in [400, 408, 429, 500] {
             assert!(!query_requires_provisioning(
                 &clickhouse_cloud_api::Error::Api {

@@ -3694,6 +3694,140 @@ async fn service_query_auto_provisioning_is_single_flight_across_processes() {
     );
 }
 
+#[tokio::test]
+async fn service_query_retries_new_endpoint_readiness_without_reprovisioning() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let control = start_mock_control_plane_with_service().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "provisioned-key-id",
+                "keySecret": "provisioned-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let query_host = MockServer::start().await;
+    let basic_auth = |credentials: &str| {
+        format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+        )
+    };
+    let primary_auth = basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", primary_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let provisioned_auth = basic_auth("provisioned-key-id:provisioned-key-secret");
+    let attempt = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", provisioned_auth.as_str()))
+        .respond_with(
+            move |_: &wiremock::Request| match attempt.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(401).set_body_string("new key not ready"),
+                1 => ResponseTemplate::new(403).set_body_string("new binding not ready"),
+                2 => ResponseTemplate::new(404).set_body_string("query endpoint not found"),
+                _ => ResponseTemplate::new(200).set_body_string("1\n"),
+            },
+        )
+        .expect(4)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Waiting for the Query API endpoint to become ready")
+    );
+
+    let control_requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1,
+        "readiness retries must reuse the newly created key",
+    );
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == endpoint_path
+            })
+            .count(),
+        1,
+        "readiness retries must not repeat the endpoint upsert",
+    );
+}
+
 /// Mount a key-creation POST returning `result`, plus a key DELETE, on the
 /// control plane. `result` lets each test omit exactly the field under test.
 async fn mount_key_create_and_delete(control: &MockServer, result: Value) {
