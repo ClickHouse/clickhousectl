@@ -221,15 +221,6 @@ case_port_zero_rejected() {
 # ── 12. Non-TTY query path returns query result ──
 case_non_tty_query() {
     "$CTL" local postgres start --name q --version 18-alpine >/dev/null 2>&1 || { die "start"; return 1; }
-    # Wait for pg to be query-ready (up to ~5s); the first start already waits
-    # for the container, but pg itself takes a moment to accept queries.
-    local cid; cid=$(jq -r .container_id .clickhouse/servers/q-pg18.json)
-    # `pg_isready` without -h checks a unix socket dir that may not exist in
-    # alpine builds yet; force TCP to wait for actual query readiness.
-    for _ in {1..50}; do
-        docker exec "$cid" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break
-        sleep 0.2
-    done
     # Hide host psql to force the docker-exec fallback.
     local out; out=$(PATH=/usr/bin:/bin "$CTL" local postgres client --name q --query "select 7 as seven" 2>&1)
     echo "$out" | grep -q "7" || { die "query did not return 7: $out"; return 1; }
@@ -272,16 +263,8 @@ case_majors_start_and_serve() {
             continue
         fi
         local cid; cid=$(jq -r .container_id ".clickhouse/servers/$n-pg$tag.json")
-        local ready=0
-        for _ in {1..50}; do
-            if docker exec "$cid" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
-                ready=1
-                break
-            fi
-            sleep 0.2
-        done
-        if (( ready != 1 )); then
-            die "postgres:$tag not query-ready after 10s"
+        if ! docker exec "$cid" pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; then
+            die "postgres:$tag not query-ready when start returned"
             fail=1
         fi
         "$CTL" local postgres stop "$n" >/dev/null 2>&1
