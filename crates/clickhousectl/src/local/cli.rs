@@ -98,14 +98,15 @@ CONTEXT FOR AGENTS:
   Two connection modes:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
      locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
-  2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
-     ClickHouse server directly, bypassing local server lookup.
+  2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
+     to localhost (for example, `local client --port 9000`); a missing port defaults to 9000.
+  Named and direct selectors cannot be combined.
   --query and --queries-file execute SQL inline or from a file.
   Additional clickhouse-client args can be passed after --.
   Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers.")]
     Client {
         /// Server name to connect to (default: "default")
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with_all = ["host", "port"])]
         name: Option<String>,
 
         /// Host to connect to (bypasses local server lookup)
@@ -113,7 +114,7 @@ CONTEXT FOR AGENTS:
         host: Option<String>,
 
         /// TCP port to connect to (bypasses local server lookup if set)
-        #[arg(long, short)]
+        #[arg(long, short, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
 
         /// Execute a SQL query
@@ -420,14 +421,16 @@ CONTEXT FOR AGENTS:
   1. Named server: `clickhousectl local postgres client --name dev` — looks up the host port
      and credentials from a locally managed Postgres started via `local postgres start`.
      Defaults to \"default\".
-  2. Explicit host/port: `clickhousectl local postgres client --host myhost --port 5432`.
+  2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
+     to 127.0.0.1; a missing port defaults to 5432.
+  Named and direct selectors cannot be combined.
   If `psql` is on PATH on the host, it is execed directly. Otherwise, falls back to running
   `psql` inside the container via Docker exec (no host psql required).
   --query and --queries-file pass through to psql (-c / -f).
   Additional psql args can be passed after --.")]
     Client {
         /// Server name to connect to (default: "default")
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with_all = ["host", "port"])]
         name: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
@@ -439,7 +442,7 @@ CONTEXT FOR AGENTS:
         host: Option<String>,
 
         /// TCP port to connect to (bypasses local server lookup if set)
-        #[arg(long, short)]
+        #[arg(long, short, value_parser = clap::value_parser!(u16).range(1..))]
         port: Option<u16>,
 
         /// Execute a single SQL query
@@ -483,13 +486,42 @@ mod tests {
     use clap::Parser;
 
     fn local_command(args: &[&str]) -> LocalCommands {
+        try_local_command(args).unwrap()
+    }
+
+    fn try_local_command(args: &[&str]) -> Result<LocalCommands, clap::Error> {
         let mut argv = vec!["clickhousectl", "local"];
         argv.extend_from_slice(args);
-        let cli = Cli::try_parse_from(argv).unwrap();
+        let cli = Cli::try_parse_from(argv)?;
         let Commands::Local(local) = cli.command else {
             panic!("expected local command");
         };
-        local.command
+        Ok(local.command)
+    }
+
+    fn client_selectors(
+        postgres: bool,
+        selectors: &[&str],
+    ) -> (Option<String>, Option<String>, Option<u16>) {
+        let mut args = if postgres {
+            vec!["postgres", "client"]
+        } else {
+            vec!["client"]
+        };
+        args.extend_from_slice(selectors);
+
+        match local_command(&args) {
+            LocalCommands::Client {
+                name, host, port, ..
+            }
+            | LocalCommands::Postgres {
+                command:
+                    PostgresCommands::Client {
+                        name, host, port, ..
+                    },
+            } => (name, host, port),
+            _ => panic!("expected local client command"),
+        }
     }
 
     #[test]
@@ -504,6 +536,96 @@ mod tests {
         assert!(help.contains("`clickhouse client`"), "{help}");
         assert!(help.contains("`clickhouse benchmark`"), "{help}");
         assert!(help.contains("`clickhouse format`"), "{help}");
+    }
+
+    #[test]
+    fn client_selector_matrix_accepts_unambiguous_modes_and_port_bounds() {
+        let cases = [
+            (&[][..], None, None, None),
+            (&["--name", "dev"][..], Some("dev"), None, None),
+            (
+                &["--host", "db.example"][..],
+                None,
+                Some("db.example"),
+                None,
+            ),
+            (&["--port", "1"][..], None, None, Some(1)),
+            (&["--port", "65535"][..], None, None, Some(65535)),
+            (
+                &["--host", "db.example", "--port", "9440"][..],
+                None,
+                Some("db.example"),
+                Some(9440),
+            ),
+            (
+                &["--port", "9440", "--host", "db.example"][..],
+                None,
+                Some("db.example"),
+                Some(9440),
+            ),
+        ];
+
+        for postgres in [false, true] {
+            for (selectors, expected_name, expected_host, expected_port) in cases {
+                let (name, host, port) = client_selectors(postgres, selectors);
+                assert_eq!(name.as_deref(), expected_name, "selectors: {selectors:?}");
+                assert_eq!(host.as_deref(), expected_host, "selectors: {selectors:?}");
+                assert_eq!(port, expected_port, "selectors: {selectors:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn client_selector_matrix_rejects_named_and_direct_modes_in_either_order() {
+        let cases = [
+            &["--name", "dev", "--host", "db.example"][..],
+            &["--host", "db.example", "--name", "dev"][..],
+            &["--name", "dev", "--port", "9000"][..],
+            &["--port", "9000", "--name", "dev"][..],
+            &["--name", "dev", "--host", "db.example", "--port", "9000"][..],
+            &["--host", "db.example", "--port", "9000", "--name", "dev"][..],
+        ];
+
+        for postgres in [false, true] {
+            for selectors in cases {
+                let mut args = if postgres {
+                    vec!["postgres", "client"]
+                } else {
+                    vec!["client"]
+                };
+                args.extend_from_slice(selectors);
+                let error = try_local_command(&args)
+                    .err()
+                    .expect("selectors should conflict");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "selectors: {selectors:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn client_ports_reject_zero_and_nonnumeric_values() {
+        for postgres in [false, true] {
+            for port in ["0", "not-a-port"] {
+                let mut args = if postgres {
+                    vec!["postgres", "client"]
+                } else {
+                    vec!["client"]
+                };
+                args.extend(["--port", port]);
+                let error = try_local_command(&args)
+                    .err()
+                    .expect("port should be invalid");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "port: {port}"
+                );
+            }
+        }
     }
 
     #[test]
