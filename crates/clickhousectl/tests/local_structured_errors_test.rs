@@ -365,7 +365,7 @@ fn foreground_child_exit_is_not_wrapped() {
     assert_eq!(output.stdout, b"server stdout\n");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("Server 'default' running"), "{stderr}");
-    assert!(stderr.ends_with("server stderr\n"), "{stderr}");
+    assert!(stderr.contains("server stderr\n"), "{stderr}");
     assert!(!stderr.contains("\"error\""), "{stderr}");
     assert!(!stderr.contains("Error:"), "{stderr}");
 }

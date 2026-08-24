@@ -900,10 +900,10 @@ pub fn now_timestamp() -> String {
 /// metadata file, a new `ServerInfo` is saved so it appears in `server list`
 /// and can be managed normally.
 pub fn recover_current_project_servers() -> Result<()> {
-    let current_dir = match std::env::current_dir().and_then(|p| p.canonicalize()) {
-        Ok(p) => p.display().to_string(),
-        Err(source) => return Err(source.into()),
-    };
+    let current_dir = std::env::current_dir()
+        .and_then(|path| path.canonicalize())?
+        .display()
+        .to_string();
 
     let processes = discovery::discover_clickhouse_processes();
     for proc in processes {
