@@ -599,7 +599,9 @@ Use `clickhousectl cloud service create --help` for the complete option list. If
 
 `--query` and `--queries-file` are mutually exclusive. Omit both to read SQL from stdin; `--queries-file -` also reads stdin explicitly.
 
-Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it.
+Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it. Concurrent queries from the same project directory share one provisioning operation and reuse its atomically stored credential.
+
+The control-plane endpoint upsert replaces the complete `openApiKeys` list and does not support conditional updates. Provisioning the same service concurrently from different project directories can therefore still lose another project's endpoint binding; coordinate first use across projects when they share a service.
 
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes an auto-provisioned key by its stored management and organization IDs, then removes the local record. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
 

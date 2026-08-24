@@ -64,6 +64,7 @@ pub fn lock_service_query_provisioning() -> CloudResult<ServiceQueryProvisionLoc
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|error| CloudError::new(format!("failed to open {}: {error}", path.display())))?;
     file.lock()

@@ -3017,6 +3017,234 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
 
 const QUERY_TEST_KEY_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
+#[tokio::test]
+async fn service_query_auto_provisioning_is_single_flight_across_processes() {
+    const PROCESS_COUNT: usize = 6;
+
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "provisioned-key-id",
+                "keySecret": "provisioned-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(credentials_dir.join(".gitignore"), "*\n").unwrap();
+    let credentials_path = credentials_dir.join("credentials.json");
+    let initial_credentials = serde_json::json!({
+        "api_key": "fake-key-for-tests",
+        "api_secret": "fake-secret-for-tests",
+        "service_query_keys": {
+            "existing-service": {
+                "key_id": "existing-key-id",
+                "key_secret": "existing-key-secret",
+                "endpoint_id": "existing-endpoint",
+                "service_name": "existing",
+                "created_at": "2026-05-11T12:00:00Z",
+            }
+        }
+    });
+    std::fs::write(
+        &credentials_path,
+        serde_json::to_vec(&initial_credentials).unwrap(),
+    )
+    .unwrap();
+    let initial_metadata = std::fs::metadata(&credentials_path).unwrap();
+
+    // Hold the same project lock as the CLI until every process has reached
+    // provisioning. This makes the contention deterministic rather than
+    // relying on process startup timing.
+    let provision_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(credentials_dir.join("query-provision.lock"))
+        .unwrap();
+    provision_lock.lock().unwrap();
+
+    let control_url = control.uri();
+    let query_host_url = query_host.uri();
+    let mut children = Vec::with_capacity(PROCESS_COUNT);
+    for _ in 0..PROCESS_COUNT {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_agent_env(&mut command);
+        children.push(
+            command
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", &home_dir)
+                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+                .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
+                .current_dir(dir.path())
+                .args([
+                    "cloud",
+                    "--url",
+                    control_url.as_str(),
+                    "service",
+                    "query",
+                    "--id",
+                    QUERY_TEST_SERVICE_ID,
+                    "--org-id",
+                    "org-1",
+                    "--query",
+                    "SELECT 1",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("failed to spawn concurrent clickhousectl"),
+        );
+    }
+
+    let primary_auth = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "fake-key-for-tests:fake-secret-for-tests",
+        )
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let started = query_host
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| {
+                    request
+                        .headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        == Some(primary_auth.as_str())
+                })
+                .count();
+            if started == PROCESS_COUNT {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("concurrent queries did not all reach provisioning");
+
+    provision_lock.unlock().unwrap();
+    drop(provision_lock);
+    let outputs = futures_util::future::join_all(
+        children
+            .into_iter()
+            .map(|child| tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())),
+    )
+    .await;
+    for output in outputs {
+        let output = output.unwrap();
+        assert_success(&output);
+        assert_eq!(output.stdout, b"1\n");
+    }
+
+    let control_requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1,
+        "only the lock winner may create a key",
+    );
+    let endpoint_upserts: Vec<_> = control_requests
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
+        })
+        .collect();
+    assert_eq!(endpoint_upserts.len(), 1, "the key must be bound once");
+    let upsert_body: Value = serde_json::from_slice(&endpoint_upserts[0].body).unwrap();
+    assert_eq!(
+        upsert_body["openApiKeys"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+    assert!(
+        control_requests
+            .iter()
+            .all(|request| request.method != wiremock::http::Method::DELETE),
+        "a successfully shared key must not be deleted",
+    );
+
+    let stored: Value = serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
+    assert_eq!(stored["api_key"], "fake-key-for-tests");
+    assert_eq!(stored["api_secret"], "fake-secret-for-tests");
+    assert_eq!(
+        stored["service_query_keys"]["existing-service"]["key_id"], "existing-key-id",
+        "the lock winner must merge the credentials it re-read",
+    );
+    let new_key = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(new_key["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(new_key["key_id"], "provisioned-key-id");
+    assert_eq!(new_key["key_secret"], "provisioned-key-secret");
+    assert_eq!(stored["service_query_keys"].as_object().unwrap().len(), 2);
+
+    let final_metadata = std::fs::metadata(&credentials_path).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        assert_ne!(
+            initial_metadata.ino(),
+            final_metadata.ino(),
+            "credentials must be replaced atomically, not truncated in place",
+        );
+        assert_eq!(final_metadata.permissions().mode() & 0o777, 0o600);
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&credentials_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        [".gitignore", "credentials.json", "query-provision.lock"],
+        "atomic persistence must not leave a temporary file",
+    );
+}
+
 /// Mount a key-creation POST returning `result`, plus a key DELETE, on the
 /// control plane. `result` lets each test omit exactly the field under test.
 async fn mount_key_create_and_delete(control: &MockServer, result: Value) {
@@ -3274,6 +3502,88 @@ async fn service_query_deletes_the_key_when_the_endpoint_get_omits_open_api_keys
         stderr.contains("'openApiKeys'"),
         "stderr should name the omitted field:\n{stderr}",
     );
+}
+
+#[tokio::test]
+async fn service_query_deletes_the_exact_key_when_atomic_persistence_fails() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(credentials_dir.join(".gitignore"), "*\n").unwrap();
+    let credentials_path = credentials_dir.join("credentials.json");
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(move |_: &wiremock::Request| {
+            // The child has already re-read credentials by the time it binds
+            // the endpoint. A directory at the destination makes the atomic
+            // commit fail after key creation and binding have succeeded.
+            std::fs::create_dir(&credentials_path).unwrap();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": "ep-1" },
+                "status": 200,
+                "requestId": "stub-endpoint-upsert",
+            }))
+        })
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "persistence failure must delete the exact key it created",
+    );
+    assert!(credentials_dir.join("credentials.json").is_dir());
 }
 
 /// Provision against an endpoint GET that reports `existing_keys`, and return
