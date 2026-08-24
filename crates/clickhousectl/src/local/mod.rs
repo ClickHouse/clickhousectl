@@ -714,9 +714,11 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
         }
         ServerCommands::Stop {
             name,
+            name_flag,
             global,
             project,
         } => {
+            let name = name.or(name_flag).unwrap_or_else(|| "default".to_string());
             if global {
                 stop_server_global(&name, project.as_deref(), json)
             } else {
@@ -772,7 +774,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             password,
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
-        ServerCommands::Remove { name } => {
+        ServerCommands::Remove { name, name_flag } => {
+            let name = name.or(name_flag).unwrap_or_else(|| "default".to_string());
             server::validate_server_name(&name)?;
 
             // Recover orphaned servers so we correctly detect a running
