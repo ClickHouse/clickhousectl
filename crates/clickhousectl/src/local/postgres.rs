@@ -384,14 +384,22 @@ async fn wait_for_postgres_ready(
     let mut last_probe_error = None;
 
     loop {
-        let inspect = docker
-            .inspect_container(id, None)
-            .await
-            .map_err(|error| {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let inspect = match tokio::time::timeout(remaining, docker.inspect_container(id, None)).await
+        {
+            Ok(result) => result.map_err(|error| {
                 Error::DockerError(format!(
                     "could not inspect container '{display_name}' while waiting for PostgreSQL readiness: {error}"
                 ))
-            })?;
+            })?,
+            Err(_) => {
+                last_probe_error = Some("container inspection timed out".to_string());
+                break;
+            }
+        };
         let state = inspect.state.unwrap_or_default();
         if state.running != Some(true) {
             let status = state
