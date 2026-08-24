@@ -253,8 +253,9 @@ CONTEXT FOR AGENTS:
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a ClickHouse server. The name defaults to \"default\"; use `clickhousectl local server list`
-  to find other server names.
+  Stops a ClickHouse server. The name defaults to \"default\"; pass it positionally to select
+  another server (e.g., `server stop dev`). The older `--name dev` form remains accepted, but
+  cannot be combined with a positional name. Use `clickhousectl local server list` to find names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
@@ -263,8 +264,12 @@ CONTEXT FOR AGENTS:
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop (default: "default")
-        #[arg(default_value = "default")]
-        name: String,
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        name: Option<String>,
+
+        /// Compatibility form for the server name; prefer positional NAME
+        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        name_flag: Option<String>,
 
         /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
         #[arg(long)]
@@ -295,12 +300,17 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  The name defaults to \"default\".
+  The name defaults to \"default\"; pass it positionally to select another server. The older
+  `--name dev` form remains accepted, but cannot be combined with a positional name.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (default: "default")
-        #[arg(default_value = "default")]
-        name: String,
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        name: Option<String>,
+
+        /// Compatibility form for the server name; prefer positional NAME
+        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        name_flag: Option<String>,
     },
 
     /// Write ClickHouse connection env vars to a .env file
@@ -707,25 +717,136 @@ mod tests {
     }
 
     #[test]
-    fn server_stop_name_defaults_to_default() {
+    fn server_stop_omission_stays_explicit() {
         let LocalCommands::Server {
-            command: ServerCommands::Stop { name, .. },
+            command: ServerCommands::Stop {
+                name, name_flag, ..
+            },
         } = local_command(&["server", "stop"])
         else {
             panic!("expected server stop");
         };
-        assert_eq!(name, "default");
+        assert_eq!(name, None);
+        assert_eq!(name_flag, None);
     }
 
     #[test]
-    fn server_remove_name_defaults_to_default() {
+    fn server_remove_omission_stays_explicit() {
         let LocalCommands::Server {
-            command: ServerCommands::Remove { name },
+            command: ServerCommands::Remove { name, name_flag },
         } = local_command(&["server", "remove"])
         else {
             panic!("expected server remove");
         };
-        assert_eq!(name, "default");
+        assert_eq!(name, None);
+        assert_eq!(name_flag, None);
+    }
+
+    #[test]
+    fn server_stop_accepts_both_name_forms_before_trailing_options() {
+        let LocalCommands::Server {
+            command:
+                ServerCommands::Stop {
+                    name,
+                    name_flag,
+                    global,
+                    project,
+                },
+        } = local_command(&[
+            "server",
+            "stop",
+            "analytics",
+            "--global",
+            "--project",
+            "/tmp/project",
+        ])
+        else {
+            panic!("expected server stop");
+        };
+        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(name_flag, None);
+        assert!(global);
+        assert_eq!(project.as_deref(), Some("/tmp/project"));
+
+        let LocalCommands::Server {
+            command:
+                ServerCommands::Stop {
+                    name,
+                    name_flag,
+                    global,
+                    project,
+                },
+        } = local_command(&[
+            "server",
+            "stop",
+            "--name",
+            "analytics",
+            "--global",
+            "--project",
+            "/tmp/project",
+        ])
+        else {
+            panic!("expected server stop");
+        };
+        assert_eq!(name, None);
+        assert_eq!(name_flag.as_deref(), Some("analytics"));
+        assert!(global);
+        assert_eq!(project.as_deref(), Some("/tmp/project"));
+    }
+
+    #[test]
+    fn server_remove_accepts_both_name_forms_before_trailing_options() {
+        let LocalCommands::Server {
+            command: ServerCommands::Remove { name, name_flag },
+        } = local_command(&["server", "remove", "analytics", "--json"])
+        else {
+            panic!("expected server remove");
+        };
+        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(name_flag, None);
+
+        let LocalCommands::Server {
+            command: ServerCommands::Remove { name, name_flag },
+        } = local_command(&["server", "remove", "--name", "analytics", "--json"])
+        else {
+            panic!("expected server remove");
+        };
+        assert_eq!(name, None);
+        assert_eq!(name_flag.as_deref(), Some("analytics"));
+    }
+
+    #[test]
+    fn server_stop_name_forms_conflict() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "local",
+            "server",
+            "stop",
+            "existing",
+            "--name",
+            "other",
+        ])
+        .err()
+        .expect("name forms should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn server_remove_name_forms_conflict() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "local",
+            "server",
+            "remove",
+            "existing",
+            "--name",
+            "other",
+        ])
+        .err()
+        .expect("name forms should conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
@@ -769,15 +890,15 @@ mod tests {
         else {
             panic!("expected server stop");
         };
-        assert_eq!(name, "analytics");
+        assert_eq!(name.as_deref(), Some("analytics"));
 
         let LocalCommands::Server {
-            command: ServerCommands::Remove { name },
+            command: ServerCommands::Remove { name, .. },
         } = local_command(&["server", "remove", "analytics"])
         else {
             panic!("expected server remove");
         };
-        assert_eq!(name, "analytics");
+        assert_eq!(name.as_deref(), Some("analytics"));
 
         let LocalCommands::Postgres {
             command: PostgresCommands::Stop { name, .. },
