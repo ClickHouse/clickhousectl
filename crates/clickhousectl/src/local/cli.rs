@@ -1,4 +1,26 @@
+use crate::version_manager::spec::VersionSpec;
 use clap::{Args, Subcommand};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallVersionOperand {
+    ClickHouse(VersionSpec),
+    Postgres(String),
+}
+
+fn parse_clickhouse_version_operand(input: &str) -> Result<VersionSpec, String> {
+    crate::version_manager::parse_version_spec(input).map_err(|error| error.to_string())
+}
+
+fn parse_install_version_operand(input: &str) -> Result<InstallVersionOperand, String> {
+    if let Some(tag) = input
+        .strip_prefix("postgres@")
+        .or_else(|| input.strip_prefix("postgres:"))
+    {
+        return Ok(InstallVersionOperand::Postgres(tag.to_string()));
+    }
+
+    parse_clickhouse_version_operand(input).map(InstallVersionOperand::ClickHouse)
+}
 
 #[derive(Args)]
 pub struct LocalArgs {
@@ -18,7 +40,8 @@ CONTEXT FOR AGENTS:
   `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
     Install {
         /// Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.9.61".
-        version: String,
+        #[arg(value_parser = parse_install_version_operand)]
+        version: InstallVersionOperand,
 
         /// Force re-install even if version is already installed
         #[arg(long)]
@@ -50,7 +73,8 @@ CONTEXT FOR AGENTS:
   Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
     Use {
         /// Version to use as default. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.5.44".
-        version: String,
+        #[arg(value_parser = parse_clickhouse_version_operand)]
+        version: VersionSpec,
 
         /// Do not create or update the ~/.local/bin/clickhouse symlink
         #[arg(long)]
@@ -217,8 +241,8 @@ CONTEXT FOR AGENTS:
         name_flag: Option<String>,
 
         /// ClickHouse version to use (e.g. "latest" (recommended), stable, lts, 25.12). Installs if needed. Does not change the default version.
-        #[arg(long, short = 'v')]
-        version: Option<String>,
+        #[arg(long, short = 'v', value_parser = parse_clickhouse_version_operand)]
+        version: Option<VersionSpec>,
 
         /// HTTP port (default: 8123, auto-assigns a free port if in use)
         #[arg(long)]
@@ -545,6 +569,34 @@ mod tests {
         }
     }
 
+    fn valid_version_operands() -> Vec<(&'static str, VersionSpec)> {
+        vec![
+            ("latest", VersionSpec::Latest),
+            (
+                "stable",
+                VersionSpec::Channel(crate::version_manager::list::Channel::Stable),
+            ),
+            (
+                "lts",
+                VersionSpec::Channel(crate::version_manager::list::Channel::Lts),
+            ),
+            ("25", VersionSpec::Major(25)),
+            ("25.12", VersionSpec::Minor(25, 12)),
+            ("25.12.9.61", VersionSpec::Exact("25.12.9.61".to_string())),
+        ]
+    }
+
+    fn assert_version_parse_error(args: &[&str], expected: &str) {
+        let mut argv = vec!["clickhousectl", "local"];
+        argv.extend_from_slice(args);
+        let error = Cli::try_parse_from(argv)
+            .err()
+            .expect("invalid version should fail during parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+
     #[test]
     fn use_help_documents_standard_clickhouse_subcommands() {
         let error = Cli::try_parse_from(["clickhousectl", "local", "use", "--help"])
@@ -597,6 +649,16 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_documented_clickhouse_version_operands() {
+        for (input, expected) in valid_version_operands() {
+            let LocalCommands::Install { version, .. } = local_command(&["install", input]) else {
+                panic!("expected install");
+            };
+            assert_eq!(version, InstallVersionOperand::ClickHouse(expected));
+        }
+    }
+
+    #[test]
     fn client_selector_matrix_rejects_named_and_direct_modes_in_either_order() {
         let cases = [
             &["--name", "dev", "--host", "db.example"][..],
@@ -628,6 +690,16 @@ mod tests {
     }
 
     #[test]
+    fn use_accepts_documented_clickhouse_version_operands() {
+        for (input, expected) in valid_version_operands() {
+            let LocalCommands::Use { version, .. } = local_command(&["use", input]) else {
+                panic!("expected use");
+            };
+            assert_eq!(version, expected);
+        }
+    }
+
+    #[test]
     fn client_ports_reject_zero_and_nonnumeric_values() {
         for postgres in [false, true] {
             for port in ["0", "not-a-port"] {
@@ -646,6 +718,19 @@ mod tests {
                     "port: {port}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn server_start_accepts_documented_clickhouse_version_operands() {
+        for (input, expected) in valid_version_operands() {
+            let LocalCommands::Server {
+                command: ServerCommands::Start { version, .. },
+            } = local_command(&["server", "start", "--version", input])
+            else {
+                panic!("expected server start");
+            };
+            assert_eq!(version, Some(expected));
         }
     }
 
@@ -680,6 +765,19 @@ mod tests {
                 version.as_deref(),
                 Some(expected_version),
                 "selectors: {selectors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_preserves_postgres_version_operand_forms() {
+        for (input, expected) in [("postgres@18", "18"), ("postgres:17-alpine", "17-alpine")] {
+            let LocalCommands::Install { version, .. } = local_command(&["install", input]) else {
+                panic!("expected install");
+            };
+            assert_eq!(
+                version,
+                InstallVersionOperand::Postgres(expected.to_string())
             );
         }
     }
@@ -825,6 +923,16 @@ mod tests {
     }
 
     #[test]
+    fn use_and_server_reject_postgres_install_operands() {
+        for args in [
+            &["use", "postgres@18"][..],
+            &["server", "start", "--version", "postgres:18"][..],
+        ] {
+            assert_version_parse_error(args, "all parts must be numeric");
+        }
+    }
+
+    #[test]
     fn clickhouse_client_query_help_documents_native_multiplicity_and_exclusion() {
         let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
             .err()
@@ -840,6 +948,28 @@ mod tests {
             help.contains("Inline queries and query files cannot be combined"),
             "{help}"
         );
+    }
+
+    #[test]
+    fn clickhouse_version_operands_reject_malformed_values() {
+        for args in [
+            &["install", "not.a.version"][..],
+            &["use", "not.a.version"][..],
+            &["server", "start", "--version", "not.a.version"][..],
+        ] {
+            assert_version_parse_error(args, "all parts must be numeric");
+        }
+    }
+
+    #[test]
+    fn clickhouse_version_operands_reject_three_part_versions() {
+        for args in [
+            &["install", "25.12.9"][..],
+            &["use", "25.12.9"][..],
+            &["server", "start", "--version", "25.12.9"][..],
+        ] {
+            assert_version_parse_error(args, "3-part version '25.12.9' is not supported");
+        }
     }
 
     #[test]
@@ -937,7 +1067,7 @@ mod tests {
         };
         assert_eq!(name.as_deref(), Some("existing"));
         assert_eq!(name_flag, None);
-        assert_eq!(version.as_deref(), Some("25.12.9.61"));
+        assert_eq!(version, Some(VersionSpec::Exact("25.12.9.61".to_string())));
         assert!(args.is_empty());
     }
 
@@ -995,7 +1125,7 @@ mod tests {
             panic!("expected server start");
         };
         assert_eq!(name.as_deref(), Some("existing"));
-        assert_eq!(version.as_deref(), Some("25.12.9.61"));
+        assert_eq!(version, Some(VersionSpec::Exact("25.12.9.61".to_string())));
         assert_eq!(
             args,
             ["--logger.level=trace", "--max_server_memory_usage=1000000"]
