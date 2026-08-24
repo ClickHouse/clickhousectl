@@ -14,6 +14,7 @@
 
 use crate::error::Result;
 use crate::paths;
+use crate::version_manager::network::{NetworkFailure, NetworkStage, OperationClient};
 use crate::version_manager::platform::{DownloadSource, Platform};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -123,14 +124,21 @@ pub async fn head_info(platform: &Platform) -> Option<HeadInfo> {
     }
     .url(platform);
 
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
-        .build()
-        .ok()?;
+    let client = OperationClient::metadata(NetworkStage::MasterCheck, &url).ok()?;
+    head_info_from_url(&client, &url).await.ok().flatten()
+}
 
-    let resp = client.head(&url).send().await.ok()?;
+async fn head_info_from_url(
+    client: &OperationClient,
+    url: &str,
+) -> std::result::Result<Option<HeadInfo>, NetworkFailure> {
+    let resp = client.head(url, NetworkStage::MasterCheck).await?;
     if !resp.status().is_success() {
-        return None;
+        return Err(NetworkFailure::from_response(
+            NetworkStage::MasterCheck,
+            url,
+            &resp,
+        ));
     }
     let header = |name: reqwest::header::HeaderName| {
         resp.headers()
@@ -138,12 +146,14 @@ pub async fn head_info(platform: &Platform) -> Option<HeadInfo> {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string())
     };
-    let etag = header(reqwest::header::ETAG)?;
+    let Some(etag) = header(reqwest::header::ETAG) else {
+        return Ok(None);
+    };
     let last_modified = header(reqwest::header::LAST_MODIFIED);
-    Some(HeadInfo {
+    Ok(Some(HeadInfo {
         etag,
         last_modified,
-    })
+    }))
 }
 
 /// Pure reuse decision: reuse the recorded build only when we have a record,

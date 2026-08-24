@@ -155,7 +155,8 @@ async fn resolve_major(
             Ok(ProbeOutcome::Available) => highest_available = Some(minor),
             Ok(ProbeOutcome::Unavailable(_)) => {}
             Err(error) => {
-                first_probe_failure.get_or_insert(error);
+                first_probe_failure = Some(error);
+                break;
             }
         }
     }
