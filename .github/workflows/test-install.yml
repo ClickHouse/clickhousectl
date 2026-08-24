@@ -3,11 +3,45 @@ name: Test Install
 on:
   pull_request:
     paths:
-      - "crates/clickhousectl/src/version_manager/**"
-      - "crates/clickhousectl/src/main.rs"
-      - "crates/clickhousectl/src/cli.rs"
-      - "crates/clickhousectl/Cargo.toml"
+      # Exact entries are enforced by test_classify_install_integration.py.
+      - ".cargo/config"
+      - ".cargo/config.toml"
+      - ".github/workflows/test-cli.yml"
       - ".github/workflows/test-install.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/clickhousectl/Cargo.toml"
+      - "crates/clickhousectl/src/cli.rs"
+      - "crates/clickhousectl/src/error.rs"
+      - "crates/clickhousectl/src/http.rs"
+      - "crates/clickhousectl/src/local/cli.rs"
+      - "crates/clickhousectl/src/local/discovery.rs"
+      - "crates/clickhousectl/src/local/mod.rs"
+      - "crates/clickhousectl/src/local/output.rs"
+      - "crates/clickhousectl/src/local/server.rs"
+      - "crates/clickhousectl/src/local/symlink.rs"
+      - "crates/clickhousectl/src/main.rs"
+      - "crates/clickhousectl/src/paths.rs"
+      - "crates/clickhousectl/src/update.rs"
+      - "crates/clickhousectl/src/user_agent.rs"
+      - "crates/clickhousectl/src/version_manager/download.rs"
+      - "crates/clickhousectl/src/version_manager/install.rs"
+      - "crates/clickhousectl/src/version_manager/list.rs"
+      - "crates/clickhousectl/src/version_manager/lock.rs"
+      - "crates/clickhousectl/src/version_manager/master.rs"
+      - "crates/clickhousectl/src/version_manager/mod.rs"
+      - "crates/clickhousectl/src/version_manager/network.rs"
+      - "crates/clickhousectl/src/version_manager/platform.rs"
+      - "crates/clickhousectl/src/version_manager/resolve.rs"
+      - "crates/clickhousectl/src/version_manager/spec.rs"
+      - "crates/clickhousectl/tests/local_install_local_first_test.rs"
+      - "crates/clickhousectl/tests/local_server_start_args_test.rs"
+      - "crates/clickhousectl/tests/local_version_error_test.rs"
+      - "crates/clickhousectl/tests/telemetry_test.rs"
+      - "rust-toolchain"
+      - "rust-toolchain.toml"
+      - "scripts/classify-install-integration.py"
+      - "scripts/tests/test_classify_install_integration.py"
 
 permissions:
   contents: read
@@ -23,6 +57,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Check install integration path inventory
+        run: python3 -m unittest discover -s scripts/tests -p 'test_classify_install_integration.py'
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
       - run: cargo test
 

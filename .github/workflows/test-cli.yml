@@ -6,6 +6,9 @@ on:
     paths:
       - "crates/clickhousectl/**"
       - "Cargo.lock"
+      - ".github/workflows/test-install.yml"
+      - "scripts/classify-install-integration.py"
+      - "scripts/tests/test_classify_install_integration.py"
       - ".github/workflows/test-cli.yml"
 
 permissions:
@@ -25,6 +28,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
+
+      - name: Check install integration path inventory
+        run: python3 -m unittest discover -s scripts/tests -p 'test_classify_install_integration.py'
 
       - name: Build
         run: cargo build -p clickhousectl
