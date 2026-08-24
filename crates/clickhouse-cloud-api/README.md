@@ -80,11 +80,14 @@ cargo test --test clickpipe_kinesis_test -- --ignored --nocapture        # per-s
 cargo test --test clickpipe_mongo_test -- --ignored --nocapture          # per-source: MongoDB
 cargo test --test clickpipe_mysql_test -- --ignored --nocapture          # per-source: MySQL
 cargo test --test clickpipe_postgres_ec2_test -- --ignored --nocapture   # per-source: Postgres-on-EC2
-cargo test --test clickpipe_postgres_cdc_test -- --ignored --nocapture   # CHC-managed Postgres CDC
+cargo build -p clickhousectl
+CLICKHOUSECTL_TEST_BINARY=../../target/debug/clickhousectl cargo test --test clickpipe_postgres_cdc_test -- --ignored --nocapture # CHC-managed Postgres CDC through the CLI
 cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # create-only smoke against a shared service
 ```
 
 All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
+
+The managed-Postgres CDC test fetches its private CA, writes it to a temporary file, and exercises failed CLI creation without `--ca-certificate` followed by successful snapshot and CDC with the flag. The mandatory CI fixtures do not currently include a PostgreSQL source with a publicly trusted certificate, so successful creation without an uploaded CA remains untested.
 
 Applying `run-cloud-integration` to an eligible PR selects suites from that PR's merge-base-to-head diff; known changes without a live suite finish without entering the environment-bearing job, while unknown API source or test paths select all suites. Changes to the classifier, its tests, or the workflow also select all suites through an independent workflow guard. Manual `Cloud Integration` dispatches accept `scope=all`, `service`, `postgres`, `organization`, or `clickpipes`. The focused scopes run only their corresponding suite; `clickpipes` runs Postgres CDC plus the fixture-gated smoke test, while `all` runs all four mandatory suites plus that optional smoke test. Because stacked-PR diffs exclude inherited changes, manually run `scope=all` against the top stack branch for full-stack validation.
 
