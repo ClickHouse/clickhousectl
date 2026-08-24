@@ -422,6 +422,7 @@ CONTEXT FOR AGENTS:
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
   The first `-e POSTGRES_PASSWORD=...` overrides --password. --user, --database, and
   managed PGDATA take precedence over same-named `-e` variables.
+  Start reports success only after PostgreSQL accepts connections, waiting up to 30 seconds.
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
   `clickhousectl.project=<cwd>`, `created_by=clickhousectl_<version>` for safe discovery.
   Requires Docker to be installed and running.")]
