@@ -456,6 +456,51 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
 }
 
 #[tokio::test]
+async fn invalid_local_versions_report_invalid_value_without_leaking_operands() {
+    for (args, command, operand) in [
+        (
+            &["local", "install", "25.12.9"][..],
+            "local install",
+            "25.12.9",
+        ),
+        (
+            &["local", "use", "not.a.version"][..],
+            "local use",
+            "not.a.version",
+        ),
+        (
+            &["local", "server", "start", "--version", "25.12.9"][..],
+            "local server start",
+            "25.12.9",
+        ),
+    ] {
+        let sandbox = Sandbox::new().await;
+        sandbox.write_state(false);
+
+        let output = sandbox.run(args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr: {}",
+            stderr_of(&output)
+        );
+        assert!(
+            stderr_of(&output).contains("error: invalid value"),
+            "stderr: {}",
+            stderr_of(&output)
+        );
+
+        let payloads = sandbox.wait_for_requests(1).await;
+        let event = &payloads[0];
+        assert_eq!(event["command"], command);
+        assert_eq!(event["exit_code"], 2);
+        assert_eq!(event["outcome"], "invalid_value");
+        let raw = serde_json::to_string(event).unwrap();
+        assert!(!raw.contains(operand), "version operand leaked: {raw}");
+    }
+}
+
+#[tokio::test]
 async fn typo_carries_definition_derived_suggestion() {
     let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
