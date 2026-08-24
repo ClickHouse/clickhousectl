@@ -22,6 +22,7 @@ pub const DEFAULT_PG_TAG: &str = "18";
 const POSTGRES_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const POSTGRES_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const POSTGRES_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const POSTGRES_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Extract the major-version digits from a Postgres image tag. `17-alpine` →
 /// `"17"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
@@ -464,14 +465,22 @@ async fn wait_for_postgres_ready(
 }
 
 async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) -> Error {
-    let logs = match docker::container_logs_tail(docker, id, 50).await {
-        Ok(logs) if logs.trim().is_empty() => format!(
+    let logs = match tokio::time::timeout(
+        POSTGRES_DIAGNOSTICS_TIMEOUT,
+        docker::container_logs_tail(docker, id, 50),
+    )
+    .await
+    {
+        Ok(Ok(logs)) if logs.trim().is_empty() => format!(
             "No container logs were available. Run `docker logs {id}` for current diagnostics."
         ),
-        Ok(logs) => logs,
-        Err(error) => format!(
+        Ok(Ok(logs)) => logs,
+        Ok(Err(error)) => format!(
             "Could not read container logs ({error}). Run `docker logs {id}` for diagnostics."
         ),
+        Err(_) => {
+            format!("Timed out reading container logs. Run `docker logs {id}` for diagnostics.")
+        }
     };
     Error::DockerError(format!(
         "{message}\n--- container logs (last 50 lines) ---\n{logs}"
@@ -860,6 +869,7 @@ mod tests {
         ready_on_probe: Option<usize>,
         probes: AtomicUsize,
         saw_probe_args: AtomicBool,
+        stall_logs: AtomicBool,
     }
 
     struct FakeDocker {
@@ -884,6 +894,7 @@ mod tests {
                 ready_on_probe,
                 probes: AtomicUsize::new(0),
                 saw_probe_args: AtomicBool::new(false),
+                stall_logs: AtomicBool::new(false),
             });
             let stop = Arc::new(AtomicBool::new(false));
             let daemon_state = Arc::clone(&state);
@@ -911,7 +922,7 @@ mod tests {
             });
             let client = bollard::Docker::connect_with_unix(
                 socket_path.to_str().expect("UTF-8 socket path"),
-                2,
+                10,
                 bollard::API_DEFAULT_VERSION,
             )
             .expect("connect fake Docker client");
@@ -927,6 +938,10 @@ mod tests {
 
         fn probes(&self) -> usize {
             self.state.probes.load(Ordering::SeqCst)
+        }
+
+        fn stall_logs(&self) {
+            self.state.stall_logs.store(true, Ordering::SeqCst);
         }
 
         fn finish(mut self) {
@@ -1021,6 +1036,9 @@ mod tests {
     fn respond_to_docker_request(stream: &mut UnixStream, request: &str, state: &FakeDockerState) {
         let request_line = request.lines().next().expect("Docker request line");
         if request_line.starts_with("GET ") && request_line.contains("/containers/test/logs?") {
+            if state.stall_logs.load(Ordering::SeqCst) {
+                thread::sleep(POSTGRES_DIAGNOSTICS_TIMEOUT + Duration::from_secs(1));
+            }
             write_docker_response(stream, "database system is starting up\n");
         } else if request_line.starts_with("GET ")
             && request_line.contains("/containers/test/json ")
@@ -1153,6 +1171,22 @@ mod tests {
         assert!(error.contains("did not become ready within 1 seconds"));
         assert!(error.contains("database system is starting up"));
         assert!(docker.probes() >= 2);
+        docker.finish();
+    }
+
+    #[tokio::test]
+    async fn postgres_readiness_log_collection_is_bounded() {
+        let docker = FakeDocker::spawn(true, None);
+        docker.stall_logs();
+        let started = std::time::Instant::now();
+
+        let error = readiness_error(&docker.client, "test", "readiness failed".to_string())
+            .await
+            .to_string();
+
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(error.contains("Timed out reading container logs"));
+        assert!(error.contains("docker logs test"));
         docker.finish();
     }
 
