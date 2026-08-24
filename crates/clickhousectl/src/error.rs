@@ -179,15 +179,25 @@ pub enum Error {
     DefaultServerNotFoundForRemove,
 
     #[error(
-        "No removable 'default' ClickHouse server exists. Run `clickhousectl local server list`, then pass a custom server name explicitly with `clickhousectl local server remove <name>`."
+        "No removable 'default' ClickHouse server exists. Run `clickhousectl local server list`, then retry with an explicit custom server name."
     )]
     ServerNameRequiredForRemove,
 
     #[error("Server '{0}' is already running")]
     ServerAlreadyRunning(String),
 
-    #[error("Server '{0}' is running; stop it first with `clickhousectl local server stop {0}`")]
+    #[error(
+        "Server '{0}' is running and cannot be removed. Run `clickhousectl local server list`, then stop it by name before retrying."
+    )]
     ServerRunningCannotRemove(String),
+
+    #[error("{message}")]
+    ProjectServerScope {
+        message: String,
+        project: String,
+        #[source]
+        source: Box<Error>,
+    },
 
     #[error("{0}")]
     Cloud(String),
@@ -249,6 +259,39 @@ impl Error {
             _ => 1,
         }
     }
+
+    pub fn with_project_server_scope(self, project: String) -> Self {
+        if !matches!(
+            &self,
+            Error::ServerNotFound(_)
+                | Error::ServerNotRunning(_)
+                | Error::ServerMetadataRead { .. }
+                | Error::ServerMetadataPermission { .. }
+                | Error::ServerMetadataParse { .. }
+                | Error::ServerMetadataWrite { .. }
+                | Error::ServerNameRequiredForStop
+                | Error::DefaultServerNotFoundForRemove
+                | Error::ServerNameRequiredForRemove
+                | Error::ServerRunningCannotRemove(_)
+        ) {
+            return self;
+        }
+
+        let message = format!(
+            "{}\nProject directory used for lookup: {project:?}\n\
+             Only this exact directory's `.clickhouse` is searched; parent `.clickhouse` \
+             directories are not searched.\n\
+             Run `clickhousectl local server list --global` to find running servers. For stopped \
+             servers, change to the intended project directory and run \
+             `clickhousectl local server list`.",
+            self
+        );
+        Error::ProjectServerScope {
+            message,
+            project,
+            source: Box::new(self),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -304,6 +347,28 @@ mod tests {
         assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
         assert_eq!(Error::Cancelled.exit_code(), 3);
         assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
+    }
+
+    #[test]
+    fn project_server_scope_wraps_only_lookup_and_state_errors() {
+        let project = "/tmp/project".to_string();
+        let error =
+            Error::ServerNotFound("default".into()).with_project_server_scope(project.clone());
+
+        assert!(matches!(
+            error,
+            Error::ProjectServerScope {
+                ref project,
+                ref source,
+                ..
+            } if project == "/tmp/project" && matches!(source.as_ref(), Error::ServerNotFound(_))
+        ));
+        assert_eq!(
+            Error::InvalidServerName("../private".into())
+                .with_project_server_scope(project)
+                .to_string(),
+            "Invalid server name '../private': must not contain path separators or '..'"
+        );
     }
 
     #[test]

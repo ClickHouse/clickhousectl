@@ -282,6 +282,8 @@ When a project-scoped `server stop` omits the name, it selects an existing `defa
 
 An omitted `server remove` is deliberately more conservative: it removes only an existing `default` server. It never infers a custom name, even when there is only one. If `default` does not exist, the command reports whether custom ClickHouse servers are available and directs you to `server list` before you pass a name explicitly.
 
+Project-scoped `server list`, `stop`, and `remove` use `.clickhouse` under the canonical current directory only. They do not search parent directories, including when the current directory is reached through a symlink or has its own nested `.clickhouse`. Lookup and state errors print that canonical project directory, direct you to change to the intended project directory for stopped servers, and suggest `clickhousectl local server list --global` for finding running servers across projects.
+
 **Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
@@ -926,13 +928,14 @@ When a dispatched `local` command fails in explicit `--json` or detected-agent m
 {
   "error": {
     "code": "server_not_found",
-    "message": "Server 'missing' not found",
-    "command": "clickhousectl local server list"
+    "message": "Server 'missing' not found\nProject directory used for lookup: \"/work/app\"\nOnly this exact directory's `.clickhouse` is searched; parent `.clickhouse` directories are not searched.\nRun `clickhousectl local server list --global` to find running servers. For stopped servers, change to the intended project directory and run `clickhousectl local server list`.",
+    "command": "clickhousectl local server list --global",
+    "project": "/work/app"
   }
 }
 ```
 
-`code` is a stable, bounded value. `command` is fixed CLI guidance and never contains user input. Opaque download, filesystem, startup, and fallback diagnostics are not copied into the JSON message.
+`code` is a stable, bounded value. `command` is fixed CLI guidance and never contains user input. Project-scoped server lookup and state errors also include the canonical `project` directory; that path is emitted only in command output and is never added to telemetry. Opaque download, filesystem, startup, and fallback diagnostics are not copied into the JSON message.
 
 | Local runtime code     | Meaning                                      |
 | ---------------------- | -------------------------------------------- |

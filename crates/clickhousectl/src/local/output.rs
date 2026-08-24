@@ -39,10 +39,25 @@ pub struct LocalErrorBody {
     pub code: LocalErrorCode,
     pub message: String,
     pub command: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 impl LocalErrorOutput {
     pub fn from_error(error: &Error) -> Self {
+        if let Error::ProjectServerScope {
+            message,
+            project,
+            source,
+        } = error
+        {
+            let mut output = Self::from_error(source);
+            output.error.message = message.clone();
+            output.error.command = "clickhousectl local server list --global";
+            output.error.project = Some(project.clone());
+            return output;
+        }
+
         let (code, message, command) = match error {
             Error::ServerNotFound(_)
             | Error::ServerNameRequiredForStop
@@ -156,6 +171,7 @@ impl LocalErrorOutput {
                 code,
                 message,
                 command,
+                project: None,
             },
         }
     }
@@ -876,6 +892,27 @@ mod tests {
             assert_eq!(output.error.command, command);
             assert!(!output.error.command.contains(['\n', '\r']));
         }
+    }
+
+    #[test]
+    fn project_scoped_errors_preserve_codes_and_expose_the_lookup_directory() {
+        let output = LocalErrorOutput::from_error(
+            &Error::ServerRunningCannotRemove("default".into())
+                .with_project_server_scope("/tmp/project".into()),
+        );
+
+        assert_eq!(output.error.code, LocalErrorCode::ServerRunning);
+        assert_eq!(output.error.project.as_deref(), Some("/tmp/project"));
+        assert_eq!(
+            output.error.command,
+            "clickhousectl local server list --global"
+        );
+        assert!(
+            output
+                .error
+                .message
+                .contains("parent `.clickhouse` directories are not searched")
+        );
     }
 
     #[test]

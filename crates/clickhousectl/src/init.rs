@@ -7,6 +7,10 @@ pub fn local_dir() -> PathBuf {
         .join(".clickhouse")
 }
 
+pub fn canonical_project_dir() -> Result<PathBuf> {
+    Ok(std::env::current_dir()?.canonicalize()?)
+}
+
 pub fn project_dir() -> PathBuf {
     std::env::current_dir()
         .expect("failed to get current directory")

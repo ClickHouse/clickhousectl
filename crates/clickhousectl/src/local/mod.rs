@@ -738,7 +738,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             if global {
                 list_servers_global(json)
             } else {
-                list_servers_local(json)
+                let project = canonical_project_dir()?;
+                list_servers_local(json).map_err(|error| error.with_project_server_scope(project))
             }
         }
         ServerCommands::Stop {
@@ -752,7 +753,9 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
                 let name = name.unwrap_or_else(|| "default".to_string());
                 stop_server_global(&name, project.as_deref(), json)
             } else {
+                let project = canonical_project_dir()?;
                 stop_server_local(name, json)
+                    .map_err(|error| error.with_project_server_scope(project))
             }
         }
         ServerCommands::StopAll { global } => {
@@ -769,8 +772,16 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             password,
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
-        ServerCommands::Remove { name, name_flag } => remove_server_local(name.or(name_flag), json),
+        ServerCommands::Remove { name, name_flag } => {
+            let project = canonical_project_dir()?;
+            remove_server_local(name.or(name_flag), json)
+                .map_err(|error| error.with_project_server_scope(project))
+        }
     }
+}
+
+fn canonical_project_dir() -> Result<String> {
+    Ok(init::canonical_project_dir()?.display().to_string())
 }
 
 fn stop_server_local(name: Option<String>, json: bool) -> Result<()> {

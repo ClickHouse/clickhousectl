@@ -49,7 +49,7 @@ fn valid_metadata(project: &Path) -> Vec<u8> {
     .unwrap()
 }
 
-fn assert_json_error(output: &Output, code: &str, message_fragment: &str) {
+fn assert_json_error(output: &Output, project: &Path, code: &str, message_fragment: &str) {
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -60,12 +60,24 @@ fn assert_json_error(output: &Output, code: &str, message_fragment: &str) {
     assert!(output.stdout.is_empty());
     let body: Value = serde_json::from_slice(&output.stderr).expect("parse structured error");
     assert_eq!(body["error"]["code"], code);
-    assert_eq!(body["error"]["command"], "clickhousectl local server list");
+    let project = project.canonicalize().expect("canonical project");
+    assert_eq!(
+        body["error"]["command"],
+        "clickhousectl local server list --global"
+    );
+    assert_eq!(body["error"]["project"], project.display().to_string());
     assert!(
         body["error"]["message"]
             .as_str()
             .unwrap()
             .contains(message_fragment),
+        "{body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("parent `.clickhouse` directories are not searched"),
         "{body}"
     );
 }
@@ -84,6 +96,7 @@ fn selected_partial_json_and_invalid_utf8_are_parse_errors() {
         let json = run(project.path(), home.path(), true);
         assert_json_error(
             &json,
+            project.path(),
             "server_metadata_invalid",
             "Metadata for server 'default'",
         );
@@ -109,6 +122,7 @@ fn selected_metadata_read_failure_is_not_reported_as_stopped() {
     let json = run(project.path(), home.path(), true);
     assert_json_error(
         &json,
+        project.path(),
         "server_metadata_read",
         "Could not read metadata for server 'default'",
     );
@@ -136,6 +150,7 @@ fn selected_metadata_permission_failure_has_its_own_action() {
 
     assert_json_error(
         &json,
+        project.path(),
         "server_metadata_permission",
         "Permission denied accessing metadata for server 'default'",
     );

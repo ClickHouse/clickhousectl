@@ -33,6 +33,28 @@ fn expected_error(code: &str, message: &str, command: &str) -> String {
     )
 }
 
+fn scoped_message(message: &str, project: &Path) -> String {
+    let project = project.canonicalize().expect("canonical project");
+    format!(
+        "{message}\nProject directory used for lookup: {:?}\n\
+         Only this exact directory's `.clickhouse` is searched; parent `.clickhouse` \
+         directories are not searched.\n\
+         Run `clickhousectl local server list --global` to find running servers. For stopped \
+         servers, change to the intended project directory and run \
+         `clickhousectl local server list`.",
+        project.display().to_string()
+    )
+}
+
+fn expected_scoped_error(code: &str, message: &str, project: &Path) -> String {
+    let project = project.canonicalize().expect("canonical project");
+    let message = serde_json::to_string(&scoped_message(message, &project)).unwrap();
+    let project = serde_json::to_string(&project.display().to_string()).unwrap();
+    format!(
+        "{{\n  \"error\": {{\n    \"code\": \"{code}\",\n    \"message\": {message},\n    \"command\": \"clickhousectl local server list --global\",\n    \"project\": {project}\n  }}\n}}\n"
+    )
+}
+
 fn assert_structured_error(output: &Output, expected: &str) {
     assert_eq!(
         output.status.code(),
@@ -83,10 +105,10 @@ fn explicit_json_writes_exact_server_not_found_error_to_stderr() {
 
     assert_structured_error(
         &output,
-        &expected_error(
+        &expected_scoped_error(
             "server_not_found",
             "Server 'missing' not found",
-            "clickhousectl local server list",
+            project.path(),
         ),
     );
 }
@@ -145,10 +167,10 @@ fn agent_mode_writes_the_same_structured_error_without_json_flag() {
 
     assert_structured_error(
         &output,
-        &expected_error(
+        &expected_scoped_error(
             "server_not_found",
             "Server 'missing' not found",
-            "clickhousectl local server list",
+            project.path(),
         ),
     );
 }
@@ -165,7 +187,13 @@ fn human_mode_keeps_concise_error_text() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert_eq!(output.stderr, b"Error: Server 'missing' not found\n");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: {}\n",
+            scoped_message("Server 'missing' not found", project.path())
+        )
+    );
 }
 
 #[test]

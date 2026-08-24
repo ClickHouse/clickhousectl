@@ -206,7 +206,7 @@ fn start_fake_server(project: &Path, home: &Path, name: &str) -> u32 {
         .expect("server pid") as u32
 }
 
-fn assert_json_error(output: &Output, message: &str) {
+fn assert_json_error(output: &Output, project: &Path, message: &str) {
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -216,8 +216,18 @@ fn assert_json_error(output: &Output, message: &str) {
     assert!(output.stdout.is_empty());
     let body: Value = serde_json::from_slice(&output.stderr).expect("parse structured error");
     assert_eq!(body["error"]["code"], "server_not_found");
-    assert_eq!(body["error"]["message"], message);
-    assert_eq!(body["error"]["command"], "clickhousectl local server list");
+    let project = project.canonicalize().expect("canonical project");
+    let scoped_message = body["error"]["message"].as_str().unwrap();
+    assert!(scoped_message.starts_with(message), "{scoped_message}");
+    assert!(
+        scoped_message.contains("parent `.clickhouse` directories are not searched"),
+        "{scoped_message}"
+    );
+    assert_eq!(
+        body["error"]["command"],
+        "clickhousectl local server list --global"
+    );
+    assert_eq!(body["error"]["project"], project.display().to_string());
 }
 
 struct ProcessGuard {
@@ -386,13 +396,14 @@ fn omitted_stop_prefers_default_and_rejects_multiple_non_default_servers() {
         &["local", "--json", "server", "stop"],
     );
     let message = "No server name was provided and multiple non-default ClickHouse servers exist. Pass a name or run `clickhousectl local server stop-all`; use `clickhousectl local server list` to see available servers.";
-    assert_json_error(&ambiguous, message);
+    assert_json_error(&ambiguous, project.path(), message);
 
     let human = run(project.path(), home.path(), &["local", "server", "stop"]);
     assert_eq!(human.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&human.stderr),
-        format!("Error: {message}\n")
+    assert!(
+        String::from_utf8_lossy(&human.stderr).starts_with(&format!("Error: {message}\n")),
+        "stderr: {}",
+        String::from_utf8_lossy(&human.stderr)
     );
 
     create_stopped_server(project.path(), "default");
@@ -418,6 +429,7 @@ fn omitted_remove_never_guesses_custom_servers() {
     );
     assert_json_error(
         &empty,
+        empty_project.path(),
         "No removable 'default' ClickHouse server exists, and no custom ClickHouse servers are available. Run `clickhousectl local server list` to inspect local server state.",
     );
 
@@ -430,16 +442,17 @@ fn omitted_remove_never_guesses_custom_servers() {
         home.path(),
         &["local", "--json", "server", "remove"],
     );
-    let message = "No removable 'default' ClickHouse server exists. Run `clickhousectl local server list`, then pass a custom server name explicitly with `clickhousectl local server remove <name>`.";
-    assert_json_error(&one, message);
+    let message = "No removable 'default' ClickHouse server exists. Run `clickhousectl local server list`, then retry with an explicit custom server name.";
+    assert_json_error(&one, project.path(), message);
     assert!(project.path().join(".clickhouse/servers/dev/data").exists());
 
     create_stopped_server(project.path(), "analytics");
     let many = run(project.path(), home.path(), &["local", "server", "remove"]);
     assert_eq!(many.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8_lossy(&many.stderr),
-        format!("Error: {message}\n")
+    assert!(
+        String::from_utf8_lossy(&many.stderr).starts_with(&format!("Error: {message}\n")),
+        "stderr: {}",
+        String::from_utf8_lossy(&many.stderr)
     );
     assert!(project.path().join(".clickhouse/servers/dev/data").exists());
     assert!(
@@ -480,7 +493,10 @@ fn omitted_remove_refuses_running_default_and_explicit_unknown_stays_a_typo() {
     assert_eq!(body["error"]["code"], "server_running");
     assert_eq!(
         body["error"]["message"],
-        "Server 'default' is running; stop it first with `clickhousectl local server stop default`"
+        format!(
+            "Server 'default' is running and cannot be removed. Run `clickhousectl local server list`, then stop it by name before retrying.\nProject directory used for lookup: {:?}\nOnly this exact directory's `.clickhouse` is searched; parent `.clickhouse` directories are not searched.\nRun `clickhousectl local server list --global` to find running servers. For stopped servers, change to the intended project directory and run `clickhousectl local server list`.",
+            project.path().canonicalize().unwrap().display().to_string()
+        )
     );
 
     let stop = run(
@@ -496,5 +512,5 @@ fn omitted_remove_refuses_running_default_and_explicit_unknown_stays_a_typo() {
         home.path(),
         &["local", "--json", "server", "remove", "--name", "missing"],
     );
-    assert_json_error(&unknown, "Server 'missing' not found");
+    assert_json_error(&unknown, project.path(), "Server 'missing' not found");
 }

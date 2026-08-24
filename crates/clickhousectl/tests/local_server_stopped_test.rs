@@ -270,8 +270,9 @@ fn running_server_remove_has_stop_first_error_and_start_keeps_collision_error() 
     assert_eq!(remove.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&remove.stderr);
     assert!(stderr.contains(
-        "Server 'test2' is running; stop it first with `clickhousectl local server stop test2`"
+        "Server 'test2' is running and cannot be removed. Run `clickhousectl local server list`, then stop it by name before retrying."
     ));
+    assert!(stderr.contains("parent `.clickhouse` directories are not searched"));
     assert!(!stderr.contains("already running"));
 
     let restart = run(

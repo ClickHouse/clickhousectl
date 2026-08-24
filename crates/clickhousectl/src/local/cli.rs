@@ -195,6 +195,8 @@ CONTEXT FOR AGENTS:
   Manage named local server instances. Project-scoped `server list` and `server stop-all`
   include both ClickHouse processes and Docker-backed Postgres containers; other commands
   here manage ClickHouse.
+  Project-scoped lookup uses only the canonical current directory; parent `.clickhouse`
+  directories are not searched.
   Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start test`.
@@ -301,6 +303,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
+  The default view reads only the canonical current directory's `.clickhouse`; it does not
+  search parent project directories. Use `server list --global` to find running servers elsewhere.
   Processes that exited unexpectedly are retained and shown as stopped.
   Running ClickHouse entries also show their PID, version, and ports.
   Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop [name]` to stop one.")]
@@ -323,6 +327,8 @@ CONTEXT FOR AGENTS:
   Restart with `clickhousectl local server start <name>`.
   Idempotent: a server that exists but is already stopped exits 0 (no error).
   An unknown server name still errors so typos are caught.
+  Project lookup uses only the canonical current directory; parent `.clickhouse` directories
+  are not searched. Use `server list --global` to find running servers in other projects.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Server name; omitted selection prefers "default", then a sole known ClickHouse server
@@ -365,6 +371,8 @@ CONTEXT FOR AGENTS:
   Without a name, removes \"default\" only when it exists. It never guesses a custom server;
   use `server list`, then pass a custom name explicitly. The older `--name dev` form remains
   accepted, but cannot be combined with a positional name.
+  Project lookup uses only the canonical current directory; parent `.clickhouse` directories
+  are not searched. Change to the intended project directory before retrying.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Server name; when omitted, only an existing "default" is removed
