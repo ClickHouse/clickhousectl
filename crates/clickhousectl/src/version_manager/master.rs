@@ -14,10 +14,13 @@
 
 use crate::error::Result;
 use crate::paths;
+use crate::version_manager::lock::FileLock;
 use crate::version_manager::network::{NetworkFailure, NetworkStage, OperationClient};
 use crate::version_manager::platform::{DownloadSource, Platform};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// One installed master build's change-detection state, per platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,21 +51,31 @@ struct Sidecar {
     builds: BTreeMap<String, MasterRecord>,
 }
 
+const SIDECAR_NAME: &str = ".master-builds.json";
+
 /// Path to the sidecar file (`~/.clickhouse/versions/.master-builds.json`).
-fn sidecar_path() -> Result<std::path::PathBuf> {
-    Ok(paths::versions_dir()?.join(".master-builds.json"))
+fn sidecar_path() -> Result<PathBuf> {
+    Ok(sidecar_path_in(&paths::versions_dir()?))
+}
+
+fn sidecar_path_in(versions_dir: &Path) -> PathBuf {
+    versions_dir.join(SIDECAR_NAME)
+}
+
+fn load_sidecar_from(path: &Path) -> Sidecar {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Sidecar::default();
+    };
+    // A corrupt/old-format sidecar is treated as absent -- worst case is one
+    // extra download that rewrites it.
+    serde_json::from_slice(&bytes).unwrap_or_default()
 }
 
 fn load_sidecar() -> Sidecar {
     let Ok(path) = sidecar_path() else {
         return Sidecar::default();
     };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return Sidecar::default();
-    };
-    // A corrupt/old-format sidecar is treated as absent -- worst case is one
-    // extra download that rewrites it.
-    serde_json::from_slice(&bytes).unwrap_or_default()
+    load_sidecar_from(&path)
 }
 
 /// Load the recorded master state for this platform, if any.
@@ -89,31 +102,134 @@ fn clear_version_from(sidecar: &mut Sidecar, platform_key: &str, version: &str) 
 /// the recorded etag no longer describes the binary on disk, and a stale match
 /// would make a later `latest` resolve silently reuse the wrong build.
 pub fn clear_record_for_version(platform: &Platform, version: &str) -> Result<()> {
-    let mut sidecar = load_sidecar();
+    clear_record_for_version_in(&paths::versions_dir()?, platform, version)
+}
+
+pub(crate) fn clear_record_for_version_in(
+    versions_dir: &Path,
+    platform: &Platform,
+    version: &str,
+) -> Result<()> {
+    let _lock = FileLock::acquire(&versions_dir.join(".locks/master-sidecar.lock"))?;
+    let path = sidecar_path_in(versions_dir);
+    let mut sidecar = load_sidecar_from(&path);
+    pause_after_sidecar_load_for_test();
     if clear_version_from(&mut sidecar, platform.builds_path(), version) {
-        let json = serde_json::to_vec_pretty(&sidecar)?;
-        std::fs::write(sidecar_path()?, json)?;
+        write_sidecar_atomically(&path, &sidecar)?;
     }
     Ok(())
 }
 
-/// Persist the master state for this platform, merging into any existing
-/// sidecar so other platforms' records are preserved.
-pub fn record(platform: &Platform, head: &HeadInfo, version: &str) -> Result<()> {
-    let mut sidecar = load_sidecar();
-    sidecar.builds.insert(
-        platform.builds_path().to_string(),
-        MasterRecord {
-            etag: head.etag.clone(),
-            last_modified: head.last_modified.clone(),
-            version: version.to_string(),
-        },
-    );
-    let path = sidecar_path()?;
-    let json = serde_json::to_vec_pretty(&sidecar)?;
-    std::fs::write(&path, json)?;
+/// Commit a staged binary while keeping a matching master record safe across
+/// process interruption. The old record is invalidated before the binary swap;
+/// after that point an interruption can only cause a later redundant download.
+pub(crate) fn commit_install_in<F>(
+    versions_dir: &Path,
+    platform: &Platform,
+    version: &str,
+    new_head: Option<&HeadInfo>,
+    commit_binary: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let _lock = FileLock::acquire(&versions_dir.join(".locks/master-sidecar.lock"))?;
+    let path = sidecar_path_in(versions_dir);
+    let mut sidecar = load_sidecar_from(&path);
+    pause_after_sidecar_load_for_test();
+
+    if clear_version_from(&mut sidecar, platform.builds_path(), version) {
+        write_sidecar_atomically(&path, &sidecar)?;
+    }
+
+    pause_before_binary_commit_for_test();
+    commit_binary()?;
+
+    if let Some(head) = new_head {
+        sidecar.builds.insert(
+            platform.builds_path().to_string(),
+            MasterRecord {
+                etag: head.etag.clone(),
+                last_modified: head.last_modified.clone(),
+                version: version.to_string(),
+            },
+        );
+        // The binary is already safely committed. Failure to restore the
+        // optional cache record only forces a later download.
+        let _ = write_sidecar_atomically(&path, &sidecar);
+    }
+
     Ok(())
 }
+
+fn write_sidecar_atomically(path: &Path, sidecar: &Sidecar) -> Result<()> {
+    let json = serde_json::to_vec_pretty(sidecar)?;
+    let parent = path.parent().expect("sidecar path has a parent");
+    let temp_path = parent.join(format!(
+        ".master-builds-{}.tmp",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let result = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+#[cfg(test)]
+fn pause_after_sidecar_load_for_test() {
+    let (Ok(marker), Ok(release)) = (
+        std::env::var("CHCTL_TEST_SIDECAR_LOCKED"),
+        std::env::var("CHCTL_TEST_SIDECAR_RELEASE"),
+    ) else {
+        return;
+    };
+    std::fs::write(marker, b"locked").expect("write sidecar lock marker");
+    let release = PathBuf::from(release);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !release.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting to release sidecar lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(not(test))]
+fn pause_after_sidecar_load_for_test() {}
+
+#[cfg(test)]
+fn pause_before_binary_commit_for_test() {
+    let (Ok(marker), Ok(release)) = (
+        std::env::var("CHCTL_TEST_BINARY_COMMIT_PAUSED"),
+        std::env::var("CHCTL_TEST_BINARY_COMMIT_RELEASE"),
+    ) else {
+        return;
+    };
+    std::fs::write(marker, b"paused").expect("write binary commit marker");
+    let release = PathBuf::from(release);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !release.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting to commit binary"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(not(test))]
+fn pause_before_binary_commit_for_test() {}
 
 /// HEAD the master URL and pull the change-detection headers.
 /// Best-effort: returns `None` on any network/build error, so callers fall
@@ -173,7 +289,7 @@ fn should_reuse(
 /// version to reuse (download can be skipped). Otherwise `None`.
 ///
 /// `head` is the result of [`head_info`]; pass it through so the same HEAD
-/// result drives both the reuse check and the post-download [`record`].
+/// result drives both the reuse check and the post-download master record.
 pub fn reuse_if_unchanged(platform: &Platform, head: Option<&HeadInfo>) -> Option<String> {
     let record = load_record(platform)?;
     let binary_exists = paths::binary_path(&record.version)

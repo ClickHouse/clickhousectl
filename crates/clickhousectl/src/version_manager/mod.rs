@@ -1,6 +1,7 @@
 pub mod download;
 pub mod install;
 pub mod list;
+mod lock;
 pub mod master;
 pub(crate) mod network;
 pub mod platform;
