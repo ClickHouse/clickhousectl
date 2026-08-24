@@ -108,7 +108,9 @@ CONTEXT FOR AGENTS:
      from installed versions. Use `local list` to find exact installed versions.
   Named mode always uses the managed server's recorded version. --version is direct-only, and
   named and direct selectors cannot be combined.
-  --query and --queries-file execute SQL inline or from a file.
+  Repeat --query to execute multiple inline queries. --queries-file accepts multiple paths after
+  one flag and can also be repeated. Inline queries and query files cannot be combined, matching
+  the native client.
   Additional clickhouse-client args can be passed after --.
   Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
     )]
@@ -134,13 +136,13 @@ CONTEXT FOR AGENTS:
         )]
         port: Option<u16>,
 
-        /// Execute a SQL query
-        #[arg(long, short)]
-        query: Option<String>,
+        /// Execute a SQL query; repeat for multiple queries
+        #[arg(long, short, conflicts_with = "queries_file")]
+        query: Vec<String>,
 
-        /// Execute queries from a SQL file
-        #[arg(long)]
-        queries_file: Option<String>,
+        /// Execute queries from SQL files; accepts multiple paths or repeated flags
+        #[arg(long, num_args = 1.., conflicts_with = "query")]
+        queries_file: Vec<String>,
 
         /// Additional arguments to pass to clickhouse-client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -723,6 +725,119 @@ mod tests {
         assert!(help.contains("does not change the default"), "{help}");
         assert!(
             help.contains("Named mode always uses the managed server's recorded version"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn clickhouse_client_queries_preserve_empty_values_repeats_and_order() {
+        let LocalCommands::Client {
+            query,
+            queries_file,
+            args,
+            ..
+        } = local_command(&["client"])
+        else {
+            panic!("expected local client command");
+        };
+        assert!(query.is_empty());
+        assert!(queries_file.is_empty());
+        assert!(args.is_empty());
+
+        let LocalCommands::Client {
+            query,
+            queries_file,
+            args,
+            ..
+        } = local_command(&[
+            "client",
+            "--query",
+            "SELECT 1",
+            "-q",
+            "",
+            "--query",
+            "SELECT 3",
+            "--",
+            "--format",
+            "JSONEachRow",
+        ])
+        else {
+            panic!("expected local client command");
+        };
+        assert_eq!(query, ["SELECT 1", "", "SELECT 3"]);
+        assert!(queries_file.is_empty());
+        assert_eq!(args, ["--format", "JSONEachRow"]);
+    }
+
+    #[test]
+    fn clickhouse_client_query_files_preserve_empty_values_repeats_and_order() {
+        let LocalCommands::Client {
+            query,
+            queries_file,
+            args,
+            ..
+        } = local_command(&[
+            "client",
+            "--queries-file",
+            "schema.sql",
+            "seed.sql",
+            "--queries-file",
+            "",
+            "verify.sql",
+            "--",
+            "--echo",
+        ])
+        else {
+            panic!("expected local client command");
+        };
+        assert!(query.is_empty());
+        assert_eq!(queries_file, ["schema.sql", "seed.sql", "", "verify.sql"]);
+        assert_eq!(args, ["--echo"]);
+    }
+
+    #[test]
+    fn clickhouse_client_rejects_combined_query_sources_in_either_order() {
+        for args in [
+            &[
+                "client",
+                "--query",
+                "SELECT 1",
+                "--queries-file",
+                "queries.sql",
+            ][..],
+            &[
+                "client",
+                "--queries-file",
+                "queries.sql",
+                "--query",
+                "SELECT 1",
+            ][..],
+        ] {
+            let error = try_local_command(args)
+                .err()
+                .expect("query sources should conflict");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            let message = error.to_string();
+            assert!(message.contains("--query"), "{message}");
+            assert!(message.contains("--queries-file"), "{message}");
+            assert!(message.contains("cannot be used with"), "{message}");
+        }
+    }
+
+    #[test]
+    fn clickhouse_client_query_help_documents_native_multiplicity_and_exclusion() {
+        let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
+            .err()
+            .expect("help should exit through clap")
+            .to_string();
+
+        assert!(help.contains("repeat for multiple queries"), "{help}");
+        assert!(
+            help.contains("accepts multiple paths or repeated flags"),
+            "{help}"
+        );
+        assert!(
+            help.contains("Inline queries and query files cannot be combined"),
             "{help}"
         );
     }

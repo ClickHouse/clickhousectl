@@ -222,10 +222,13 @@ postgres/
 clickhousectl local client                           # Connects to "default" server
 clickhousectl local client --name dev                # Connects to "dev" server
 clickhousectl local client --query "SHOW DATABASES"  # Run a query
-clickhousectl local client --queries-file schema.sql # Run queries from a file
+clickhousectl local client --query "SELECT 1" --query "SELECT 2"  # Run queries in order
+clickhousectl local client --queries-file schema.sql seed.sql      # Run query files in order
 clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
 clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an exact installed client binary
 ```
+
+`--query` can be repeated. `--queries-file` accepts multiple paths after one flag and can also be repeated. Their values are forwarded in order. The native client does not allow inline queries and query files in the same invocation, so `local client` rejects that combination as a usage error instead of reordering it. Arguments after `--` are forwarded after these generated query arguments.
 
 Named connections and direct connections select the client binary differently. A named connection uses the version recorded in the managed server's metadata, regardless of the global default. A direct connection (`--host`, `--port`, or both) uses the exact installed version passed with `--version`; if that flag is omitted, it uses the version selected by `local use`.
 

@@ -1,4 +1,4 @@
-//! End-to-end coverage for local client selectors (issues #466 and #469).
+//! End-to-end coverage for local client selectors and query inputs (issues #466, #469, and #470).
 
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
@@ -79,6 +79,147 @@ fn assert_client(output: Output, version: &str, expected_args: &[&str]) {
     let mut expected = vec![format!("binary={version}")];
     expected.extend(expected_args.iter().map(|arg| (*arg).to_string()));
     assert_eq!(lines, expected);
+}
+
+#[test]
+fn clickhouse_client_preserves_native_query_argv_across_supported_versions() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path(), VERSION_A);
+    install_fake_clickhouse(home.path(), VERSION_B);
+
+    let cases = [
+        (
+            &[][..],
+            &["client", "--host", "db.example", "--port", "9000"][..],
+        ),
+        (
+            &["--query", "SELECT 1"][..],
+            &[
+                "client",
+                "--host",
+                "db.example",
+                "--port",
+                "9000",
+                "--query",
+                "SELECT 1",
+            ][..],
+        ),
+        (
+            &[
+                "--query",
+                "SELECT 1",
+                "-q",
+                "",
+                "--query",
+                "SELECT 3",
+                "--",
+                "--format",
+                "JSONEachRow",
+            ][..],
+            &[
+                "client",
+                "--host",
+                "db.example",
+                "--port",
+                "9000",
+                "--query",
+                "SELECT 1",
+                "--query",
+                "",
+                "--query",
+                "SELECT 3",
+                "--format",
+                "JSONEachRow",
+            ][..],
+        ),
+        (
+            &["--queries-file", "schema.sql"][..],
+            &[
+                "client",
+                "--host",
+                "db.example",
+                "--port",
+                "9000",
+                "--queries-file",
+                "schema.sql",
+            ][..],
+        ),
+        (
+            &[
+                "--queries-file",
+                "schema.sql",
+                "seed.sql",
+                "--queries-file",
+                "",
+                "verify.sql",
+                "--",
+                "--echo",
+            ][..],
+            &[
+                "client",
+                "--host",
+                "db.example",
+                "--port",
+                "9000",
+                "--queries-file",
+                "schema.sql",
+                "seed.sql",
+                "",
+                "verify.sql",
+                "--echo",
+            ][..],
+        ),
+    ];
+
+    for version in [VERSION_A, VERSION_B] {
+        for (input, expected) in cases {
+            let mut args = vec![
+                "local",
+                "client",
+                "--host",
+                "db.example",
+                "--version",
+                version,
+            ];
+            args.extend_from_slice(input);
+            assert_client(run(project.path(), home.path(), &args), version, expected);
+        }
+    }
+}
+
+#[test]
+fn combined_clickhouse_client_query_sources_are_usage_errors_before_exec() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let cases = [
+        &[
+            "local",
+            "client",
+            "--query",
+            "SELECT 1",
+            "--queries-file",
+            "queries.sql",
+        ][..],
+        &[
+            "local",
+            "client",
+            "--queries-file",
+            "queries.sql",
+            "--query",
+            "SELECT 1",
+        ][..],
+    ];
+
+    for args in cases {
+        let output = run(project.path(), home.path(), args);
+        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
+        assert!(output.stdout.is_empty(), "child must not run: {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--query"), "stderr: {stderr}");
+        assert!(stderr.contains("--queries-file"), "stderr: {stderr}");
+        assert!(stderr.contains("cannot be used with"), "stderr: {stderr}");
+    }
 }
 
 #[test]

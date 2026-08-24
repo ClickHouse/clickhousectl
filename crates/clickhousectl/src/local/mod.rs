@@ -257,8 +257,8 @@ fn run_client(
     version: Option<String>,
     host: Option<String>,
     port: Option<u16>,
-    query: Option<String>,
-    queries_file: Option<String>,
+    query: Vec<String>,
+    queries_file: Vec<String>,
     args: Vec<String>,
 ) -> Result<()> {
     // If --host or --port is set, connect directly (bypass local server lookup).
@@ -298,12 +298,12 @@ fn run_client(
         .arg("--port")
         .arg(tcp_port.to_string());
 
-    if let Some(q) = &query {
-        cmd.arg("--query").arg(q);
+    for query in query {
+        cmd.arg("--query").arg(query);
     }
 
-    if let Some(f) = &queries_file {
-        cmd.arg("--queries-file").arg(f);
+    if !queries_file.is_empty() {
+        cmd.arg("--queries-file").args(queries_file);
     }
 
     cmd.args(&args);
