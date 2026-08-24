@@ -160,6 +160,8 @@ async fn first_run_writes_marker_prints_notice_sends_nothing() {
     // Second run: the notice appears exactly once, ever.
     let output = sandbox.run(&["local", "list"]);
     assert!(!stderr_of(&output).contains("anonymous usage data"));
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "local list");
 }
 
 #[tokio::test]
