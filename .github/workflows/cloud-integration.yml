@@ -254,10 +254,18 @@ jobs:
               needs.plan.outputs.organization == 'true' }}
         run: cargo test -p clickhouse-cloud-api --test integration_org_test -- --ignored --nocapture
 
+      - name: Build CLI for ClickPipe Postgres CDC integration test
+        if: >-
+          ${{ !cancelled() &&
+              needs.plan.outputs.clickpipes == 'true' }}
+        run: cargo build -p clickhousectl
+
       - name: Run ClickPipe Postgres CDC integration test
         if: >-
           ${{ !cancelled() &&
               needs.plan.outputs.clickpipes == 'true' }}
+        env:
+          CLICKHOUSECTL_TEST_BINARY: ${{ github.workspace }}/target/debug/clickhousectl
         run: cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cdc_test -- --ignored --nocapture
 
       # ClickPipe create smoke tests run against a long-lived ClickHouse Cloud
