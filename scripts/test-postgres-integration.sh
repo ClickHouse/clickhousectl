@@ -13,6 +13,7 @@
 # If no argument is given, falls back to $CLICKHOUSECTL or the debug build
 # at target/debug/clickhousectl relative to the repo root.
 set -u
+export DO_NOT_TRACK=1
 
 CTL="${1:-${CLICKHOUSECTL:-}}"
 if [[ -z "$CTL" ]]; then
