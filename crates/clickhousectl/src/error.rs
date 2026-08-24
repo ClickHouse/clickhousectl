@@ -94,6 +94,18 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
+    #[error("Failed to execute ClickHouse: {0}")]
+    PortInUse(String),
+
+    #[error("Failed to execute ClickHouse: {0}")]
+    StartupExit(String),
+
+    #[error("Failed to execute ClickHouse: {0}")]
+    StartupTimeout(String),
+
+    #[error("Docker error: {0}")]
+    DockerStartupTimeout(String),
+
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.
     #[error("child process exited with code {0}")]
@@ -168,6 +180,9 @@ pub enum Error {
         primary: Box<Error>,
         cleanup: String,
     },
+
+    #[error("Docker error: {0}")]
+    DockerDownload(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -238,5 +253,28 @@ mod tests {
         assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
         assert_eq!(Error::Cancelled.exit_code(), 3);
         assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
+    }
+
+    #[test]
+    fn typed_local_boundaries_preserve_human_error_text() {
+        for error in [
+            Error::PortInUse("HTTP port 8123 is already in use".into()),
+            Error::StartupExit("server exited".into()),
+            Error::StartupTimeout("server timed out".into()),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Failed to execute ClickHouse: ")
+            );
+        }
+        assert_eq!(
+            Error::DockerStartupTimeout("postgres timed out".into()).to_string(),
+            "Docker error: postgres timed out"
+        );
+        assert_eq!(
+            Error::DockerDownload("pull failed".into()).to_string(),
+            "Docker error: pull failed"
+        );
     }
 }

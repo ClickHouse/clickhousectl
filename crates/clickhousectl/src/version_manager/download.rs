@@ -38,15 +38,23 @@ pub async fn download_from_source(
     source: &DownloadSource,
     platform: &Platform,
     dest_path: &Path,
+    structured_output: bool,
 ) -> Result<()> {
     let url = source.url(platform);
-    download_url(&url, dest_path).await
+    download_url(&url, dest_path, structured_output).await
 }
 
 /// Downloads a file from a URL to the specified path, with progress bar
-pub async fn download_url(url: &str, dest_path: &Path) -> Result<()> {
+pub async fn download_url(url: &str, dest_path: &Path, structured_output: bool) -> Result<()> {
     let client = OperationClient::download(url)?;
-    download_url_with(&client, url, dest_path, RetryPolicy::INSTALLER).await
+    download_url_with(
+        &client,
+        url,
+        dest_path,
+        RetryPolicy::INSTALLER,
+        structured_output,
+    )
+    .await
 }
 
 async fn download_url_with(
@@ -54,9 +62,10 @@ async fn download_url_with(
     url: &str,
     dest_path: &Path,
     policy: RetryPolicy,
+    structured_output: bool,
 ) -> Result<()> {
     for attempt in 1..=policy.max_attempts {
-        match download_once(client, url, dest_path).await {
+        match download_once(client, url, dest_path, structured_output).await {
             Ok(()) => return Ok(()),
             Err(Error::VersionNetwork(failure)) if failure.is_retryable() => {
                 if attempt == policy.max_attempts {
@@ -73,7 +82,12 @@ async fn download_url_with(
     unreachable!("download retry policy always has at least one attempt")
 }
 
-async fn download_once(client: &OperationClient, url: &str, dest_path: &Path) -> Result<()> {
+async fn download_once(
+    client: &OperationClient,
+    url: &str,
+    dest_path: &Path,
+    structured_output: bool,
+) -> Result<()> {
     let response = client.get(url, NetworkStage::Download).await?;
     if !response.status().is_success() {
         return Err(NetworkFailure::from_response(NetworkStage::Download, url, &response).into());
@@ -81,7 +95,11 @@ async fn download_once(client: &OperationClient, url: &str, dest_path: &Path) ->
 
     let total_size = response.content_length().unwrap_or(0);
 
-    let pb = ProgressBar::new(total_size);
+    let pb = if structured_output {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(total_size)
+    };
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
@@ -170,6 +188,7 @@ mod tests {
             &url,
             &destination,
             test_policy(2, Duration::ZERO),
+            false,
         )
         .await
         .unwrap_err();
@@ -203,6 +222,7 @@ mod tests {
             &server.uri(),
             &temp.path().join("clickhouse"),
             test_policy(3, Duration::ZERO),
+            false,
         )
         .await
         .unwrap_err();
@@ -234,6 +254,7 @@ mod tests {
             &server.uri(),
             &temp.path().join("clickhouse"),
             test_policy(3, Duration::ZERO),
+            false,
         )
         .await
         .unwrap_err();
@@ -285,6 +306,7 @@ mod tests {
             &server.uri(),
             &destination,
             test_policy(2, max_delay),
+            false,
         )
         .await
         .unwrap();

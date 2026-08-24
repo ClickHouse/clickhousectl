@@ -105,6 +105,7 @@ fn docker_setup_guidance() -> String {
 enum PullProgressMode {
     Interactive,
     Collapsed,
+    Silent,
 }
 
 fn pull_progress_mode(
@@ -112,7 +113,9 @@ fn pull_progress_mode(
     stderr_is_terminal: bool,
     structured_output: bool,
 ) -> PullProgressMode {
-    if stdout_is_terminal && stderr_is_terminal && !structured_output {
+    if structured_output {
+        PullProgressMode::Silent
+    } else if stdout_is_terminal && stderr_is_terminal {
         PullProgressMode::Interactive
     } else {
         PullProgressMode::Collapsed
@@ -138,6 +141,7 @@ impl PullReporter {
                 let _ = write!(output, "Pulling {}...", self.image);
                 let _ = output.flush();
             }
+            PullProgressMode::Silent => {}
         }
     }
 
@@ -174,6 +178,7 @@ impl PullReporter {
             PullProgressMode::Collapsed => {
                 let _ = writeln!(output, " done");
             }
+            PullProgressMode::Silent => {}
         }
     }
 
@@ -185,12 +190,13 @@ impl PullReporter {
             PullProgressMode::Collapsed => {
                 let _ = writeln!(output, " failed");
             }
+            PullProgressMode::Silent => {}
         }
     }
 }
 
 /// Pull `postgres:<tag>`, keeping full progress for interactive terminals and
-/// collapsing it to one bounded summary line for redirected or structured output.
+/// collapsing it for redirected human output and suppressing it for JSON output.
 pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> Result<()> {
     use bollard::query_parameters::CreateImageOptionsBuilder;
     let from = format!("postgres:{}", tag);
@@ -212,7 +218,7 @@ pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> 
             Ok(info) => info,
             Err(error) => {
                 reporter.fail(&mut stderr.lock());
-                return Err(Error::DockerError(error.to_string()));
+                return Err(Error::DockerDownload(error.to_string()));
             }
         };
         reporter.event(&info, &mut stderr.lock());
@@ -974,7 +980,11 @@ mod tests {
         );
         assert_eq!(
             pull_progress_mode(true, true, true),
-            PullProgressMode::Collapsed
+            PullProgressMode::Silent
+        );
+        assert_eq!(
+            pull_progress_mode(false, false, true),
+            PullProgressMode::Silent
         );
     }
 
@@ -1070,5 +1080,15 @@ mod tests {
                 format!("/work/{basename}"),
             ]
         );
+    }
+
+    #[test]
+    fn structured_pull_progress_is_silent() {
+        let mut output = Vec::new();
+        let reporter = PullReporter::new("postgres:18".to_string(), PullProgressMode::Silent);
+        reporter.start(&mut output);
+        reporter.event(&CreateImageInfo::default(), &mut output);
+        reporter.fail(&mut output);
+        assert!(output.is_empty());
     }
 }

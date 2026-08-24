@@ -171,11 +171,12 @@ async fn start(
             if server::is_server_running(&key) {
                 return Err(Error::ServerAlreadyRunning(user_name));
             }
-            if port.is_some()
-                || user.is_some()
-                || password.is_some()
-                || database.is_some()
-                || has_extra_env
+            if !json
+                && (port.is_some()
+                    || user.is_some()
+                    || password.is_some()
+                    || database.is_some()
+                    || has_extra_env)
             {
                 eprintln!(
                     "Note: postgres:{major} '{}' already exists; resuming with stored settings. \

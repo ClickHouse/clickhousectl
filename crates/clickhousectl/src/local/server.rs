@@ -471,7 +471,7 @@ pub async fn check_spawn_health(
     tokio::time::sleep(SPAWN_HEALTH_DELAY).await;
     if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
         let _ = mark_server_stopped(name, child.id());
-        return Err(Error::Exec(format!(
+        return Err(Error::StartupExit(format!(
             "Server '{}' exited immediately after starting ({}). See server log: {}",
             name,
             status,
@@ -530,7 +530,7 @@ pub async fn wait_for_server_ready(
     loop {
         if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
             let _ = mark_server_stopped(name, child.id());
-            return Err(Error::Exec(format!(
+            return Err(Error::StartupExit(format!(
                 "Server '{}' exited before becoming ready on HTTP port {} and TCP port {} ({}). \
                  See server log: {}",
                 name,
@@ -569,7 +569,7 @@ pub async fn wait_for_server_ready(
                 Ok(()) => " and was stopped".to_string(),
                 Err(error) => format!("; failed to stop PID {}: {}", pid, error),
             };
-            return Err(Error::Exec(format!(
+            return Err(Error::StartupTimeout(format!(
                 "Server '{}' did not become ready on HTTP port {} and TCP port {} within {} seconds{}. \
                  See server log: {}",
                 name,
@@ -608,13 +608,18 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
             ));
         }
         Some(p) if is_port_available(p) => p,
-        Some(p) => return Err(Error::Exec(format!("HTTP port {} is already in use", p))),
+        Some(p) => {
+            return Err(Error::PortInUse(format!(
+                "HTTP port {} is already in use",
+                p
+            )));
+        }
         None => {
             if is_port_available(DEFAULT_HTTP_PORT) {
                 DEFAULT_HTTP_PORT
             } else {
                 find_free_port(DEFAULT_HTTP_PORT + 1)
-                    .ok_or_else(|| Error::Exec("Could not find a free HTTP port".into()))?
+                    .ok_or_else(|| Error::PortInUse("Could not find a free HTTP port".into()))?
             }
         }
     };
@@ -626,13 +631,18 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
             ));
         }
         Some(p) if is_port_available(p) => p,
-        Some(p) => return Err(Error::Exec(format!("TCP port {} is already in use", p))),
+        Some(p) => {
+            return Err(Error::PortInUse(format!(
+                "TCP port {} is already in use",
+                p
+            )));
+        }
         None => {
             if is_port_available(DEFAULT_TCP_PORT) {
                 DEFAULT_TCP_PORT
             } else {
                 find_free_port(DEFAULT_TCP_PORT + 1)
-                    .ok_or_else(|| Error::Exec("Could not find a free TCP port".into()))?
+                    .ok_or_else(|| Error::PortInUse("Could not find a free TCP port".into()))?
             }
         }
     };
@@ -824,11 +834,12 @@ mod tests {
             Duration::from_secs(1),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-        assert!(error.contains("did not become ready"));
-        assert!(error.contains("server.log"));
+        assert!(matches!(&error, Error::StartupTimeout(_)));
+        let message = error.to_string();
+        assert!(message.contains("did not become ready"));
+        assert!(message.contains("server.log"));
         assert!(!is_process_alive(pid));
     }
 
@@ -838,9 +849,11 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let http_error = resolve_ports(Some(port), None).unwrap_err();
+        assert!(matches!(&http_error, Error::PortInUse(_)));
         assert!(http_error.to_string().contains("HTTP port"));
 
         let tcp_error = resolve_ports(None, Some(port)).unwrap_err();
+        assert!(matches!(&tcp_error, Error::PortInUse(_)));
         assert!(tcp_error.to_string().contains("TCP port"));
     }
 

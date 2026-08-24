@@ -3,9 +3,143 @@
 //! Each type supports both JSON serialization (via serde) and human-readable
 //! display (via `fmt::Display`). The `--json` flag switches between the two.
 
+use crate::error::Error;
 use serde::Serialize;
 use std::fmt;
+use std::io::Write;
 use tabled::{Table, Tabled, settings::Style};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalErrorCode {
+    ServerNotFound,
+    ServerNotRunning,
+    ServerRunning,
+    InvalidVersion,
+    VersionUnavailable,
+    PortInUse,
+    StartupExit,
+    StartupTimeout,
+    DownloadFailed,
+    IoError,
+    LocalError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalErrorOutput {
+    pub error: LocalErrorBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalErrorBody {
+    pub code: LocalErrorCode,
+    pub message: String,
+    pub command: &'static str,
+}
+
+impl LocalErrorOutput {
+    pub fn from_error(error: &Error) -> Self {
+        let (code, message, command) = match error {
+            Error::ServerNotFound(_) => (
+                LocalErrorCode::ServerNotFound,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerNotRunning(_) => (
+                LocalErrorCode::ServerNotRunning,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerAlreadyRunning(_)
+            | Error::ServerRunningCannotRemove(_)
+            | Error::VersionInUse { .. } => (
+                LocalErrorCode::ServerRunning,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::InvalidVersion(_) => (
+                LocalErrorCode::InvalidVersion,
+                error.to_string(),
+                "clickhousectl local list --remote",
+            ),
+            Error::VersionNotFound(_)
+            | Error::NoVersionsInstalled
+            | Error::NoDefaultVersion
+            | Error::DirectClientVersionRequired
+            | Error::ClientVersionNotInstalled(_)
+            | Error::StaleClientDefault(_)
+            | Error::NoMatchingVersion(_)
+            | Error::ExactVersionUnavailable { .. }
+            | Error::UnknownVersionChannel(_) => (
+                LocalErrorCode::VersionUnavailable,
+                error.to_string(),
+                "clickhousectl local list --remote",
+            ),
+            Error::PortInUse(message) => (
+                LocalErrorCode::PortInUse,
+                message.clone(),
+                "clickhousectl local server start --help",
+            ),
+            Error::StartupExit(_) => (
+                LocalErrorCode::StartupExit,
+                "Server exited before startup completed".to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::StartupTimeout(_) | Error::DockerStartupTimeout(_) => (
+                LocalErrorCode::StartupTimeout,
+                "Server did not become ready before the startup timeout".to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::Download(_)
+            | Error::DockerDownload(_)
+            | Error::Http(_)
+            | Error::VersionNetwork(_)
+            | Error::VersionFallback { .. }
+            | Error::VersionNetworkRetryExhausted { .. }
+            | Error::Extract(_)
+            | Error::ExtractArchive { .. } => (
+                LocalErrorCode::DownloadFailed,
+                "Download failed".to_string(),
+                "clickhousectl local install --help",
+            ),
+            Error::Io(_) | Error::CreateDir { .. } => (
+                LocalErrorCode::IoError,
+                "Local filesystem operation failed".to_string(),
+                "clickhousectl local --help",
+            ),
+            Error::PostgresValidation(_) => (
+                LocalErrorCode::LocalError,
+                "Postgres validation failed".to_string(),
+                "clickhousectl local postgres start --help",
+            ),
+            Error::PostgresRuntime(_) | Error::PostgresStartupRollback { .. } => (
+                LocalErrorCode::LocalError,
+                "Postgres operation failed".to_string(),
+                "clickhousectl local postgres --help",
+            ),
+            _ => (
+                LocalErrorCode::LocalError,
+                "Local command failed".to_string(),
+                "clickhousectl local --help",
+            ),
+        };
+
+        Self {
+            error: LocalErrorBody {
+                code,
+                message,
+                command,
+            },
+        }
+    }
+}
+
+/// Write one machine-readable local runtime error to stderr.
+pub fn print_error(error: &Error) {
+    let output = LocalErrorOutput::from_error(error);
+    let json = serde_json::to_string_pretty(&output).expect("local error output must serialize");
+    let _ = writeln!(std::io::stderr(), "{json}");
+}
 
 // ── list (installed) ────────────────────────────────────────────────────────
 
@@ -580,6 +714,97 @@ pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_runtime_errors_have_bounded_codes_and_safe_commands() {
+        let cases = [
+            (
+                Error::ServerNotFound("default".into()),
+                LocalErrorCode::ServerNotFound,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerNotRunning("default".into()),
+                LocalErrorCode::ServerNotRunning,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerAlreadyRunning("default".into()),
+                LocalErrorCode::ServerRunning,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::InvalidVersion("invalid version".into()),
+                LocalErrorCode::InvalidVersion,
+                "clickhousectl local list --remote",
+            ),
+            (
+                Error::VersionNotFound("25.12.9.61".into()),
+                LocalErrorCode::VersionUnavailable,
+                "clickhousectl local list --remote",
+            ),
+            (
+                Error::PortInUse("HTTP port 8123 is already in use".into()),
+                LocalErrorCode::PortInUse,
+                "clickhousectl local server start --help",
+            ),
+            (
+                Error::StartupExit("raw startup diagnostics".into()),
+                LocalErrorCode::StartupExit,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::StartupTimeout("raw timeout diagnostics".into()),
+                LocalErrorCode::StartupTimeout,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::Download("raw download diagnostics".into()),
+                LocalErrorCode::DownloadFailed,
+                "clickhousectl local install --help",
+            ),
+            (
+                Error::Io(std::io::Error::other("raw I/O diagnostics")),
+                LocalErrorCode::IoError,
+                "clickhousectl local --help",
+            ),
+            (
+                Error::Exec("raw fallback diagnostics".into()),
+                LocalErrorCode::LocalError,
+                "clickhousectl local --help",
+            ),
+        ];
+
+        for (error, code, command) in cases {
+            let output = LocalErrorOutput::from_error(&error);
+            assert_eq!(output.error.code, code);
+            assert_eq!(output.error.command, command);
+            assert!(!output.error.command.contains(['\n', '\r']));
+        }
+    }
+
+    #[test]
+    fn opaque_errors_do_not_expose_raw_diagnostics() {
+        for error in [
+            Error::StartupExit("/secret/path/server.log".into()),
+            Error::StartupTimeout("password=hunter2".into()),
+            Error::Download("https://user:secret@example.com".into()),
+            Error::DockerDownload("registry password=secret".into()),
+            Error::PostgresValidation("password=hunter2".into()),
+            Error::PostgresRuntime("SELECT * FROM private.customer_data".into()),
+            Error::PostgresStartupRollback {
+                primary: Box::new(Error::PostgresRuntime("password=hunter2".into())),
+                cleanup: "/secret/path".into(),
+            },
+            Error::Io(std::io::Error::other("/secret/path")),
+            Error::Exec("SELECT * FROM private.customer_data".into()),
+        ] {
+            let serialized = serde_json::to_string(&LocalErrorOutput::from_error(&error)).unwrap();
+            assert!(!serialized.contains("secret"), "{serialized}");
+            assert!(!serialized.contains("SELECT"), "{serialized}");
+            assert!(!serialized.contains("customer_data"), "{serialized}");
+        }
+    }
 
     // ── JSON serialization tests ────────────────────────────────────────
 

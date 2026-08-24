@@ -25,6 +25,7 @@ fn invalid_local_versions_fail_as_clap_usage_errors() {
     ] {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let output = Command::new(clickhousectl_binary())
+            .env_clear()
             .env("DO_NOT_TRACK", "1")
             .env("HOME", tempdir.path())
             .args(args)

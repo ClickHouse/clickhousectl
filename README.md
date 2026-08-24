@@ -916,6 +916,36 @@ clickhousectl cloud --json service get <service-id>
 
 `clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: Prometheus commands emit text, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
+When a dispatched `local` command fails in explicit `--json` or detected-agent mode, stdout is empty and stderr contains exactly one JSON object:
+
+```json
+{
+  "error": {
+    "code": "server_not_found",
+    "message": "Server 'default' not found",
+    "command": "clickhousectl local server list"
+  }
+}
+```
+
+`code` is a stable, bounded value. `command` is fixed CLI guidance and never contains user input. Opaque download, filesystem, startup, and fallback diagnostics are not copied into the JSON message.
+
+| Local runtime code     | Meaning                                      |
+| ---------------------- | -------------------------------------------- |
+| `server_not_found`     | The selected local server does not exist     |
+| `server_not_running`   | The selected local server is stopped         |
+| `server_running`       | A running server blocks the requested action |
+| `invalid_version`      | The supplied version syntax is invalid       |
+| `version_unavailable`  | The required version is not available        |
+| `port_in_use`          | A selected local port is unavailable         |
+| `startup_exit`         | The server exited during startup             |
+| `startup_timeout`      | The server did not become ready in time      |
+| `download_failed`      | A local binary or image download failed      |
+| `io_error`             | A local filesystem operation failed          |
+| `local_error`          | Bounded fallback for other local failures    |
+
+Human-mode runtime errors retain concise `Error: ...` stderr output. Clap usage errors retain clap's own output and exit code. Native child handoffs, including `local client` and foreground servers, retain the child's stdout, stderr, and exit status without adding an envelope. The local envelope does not add raw errors or any new fields to telemetry.
+
 ### Exit codes
 
 Usage errors and cancelled actions use distinct exit codes.

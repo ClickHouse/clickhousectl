@@ -75,7 +75,7 @@ fn spawn_fake_docker(socket_path: &Path, pull_response: String) -> JoinHandle<()
     })
 }
 
-fn run_install(tag: &str, pull_response: &str) -> Output {
+fn run_install(tag: &str, pull_response: &str, json: bool) -> Output {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let socket_path = tempdir.path().join("docker.sock");
     let daemon = spawn_fake_docker(&socket_path, pull_response.to_string());
@@ -86,7 +86,12 @@ fn run_install(tag: &str, pull_response: &str) -> Output {
         .env("DO_NOT_TRACK", "1")
         .env("HOME", tempdir.path())
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
-        .args(["local", "install", &format!("postgres@{tag}"), "--force"])
+        .arg("local");
+    if json {
+        command.arg("--json");
+    }
+    command
+        .args(["install", &format!("postgres@{tag}"), "--force"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().expect("run clickhousectl");
@@ -121,6 +126,7 @@ fn non_tty_pull_collapses_repeated_layer_events() {
             "{\"status\":\"Pull complete\",\"id\":\"layer-a\"}\n",
             "{\"status\":\"Pull complete\",\"id\":\"layer-b\"}\n"
         ),
+        false,
     );
 
     assert!(
@@ -139,6 +145,7 @@ fn non_tty_pull_reports_failure_once_and_preserves_diagnostics() {
     let output = run_install(
         "18-missing",
         "{\"errorDetail\":{\"message\":\"manifest for postgres:18-missing not found\"}}\n",
+        false,
     );
 
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -154,5 +161,29 @@ fn non_tty_pull_reports_failure_once_and_preserves_diagnostics() {
     assert!(
         !stderr.contains("Pulling fs layer"),
         "progress leaked: {stderr}"
+    );
+}
+
+#[test]
+fn structured_pull_failure_is_one_redacted_error_object() {
+    let output = run_install(
+        "18-secret",
+        "{\"errorDetail\":{\"message\":\"registry password=hunter2\"}}\n",
+        true,
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        concat!(
+            "{\n",
+            "  \"error\": {\n",
+            "    \"code\": \"download_failed\",\n",
+            "    \"message\": \"Download failed\",\n",
+            "    \"command\": \"clickhousectl local install --help\"\n",
+            "  }\n",
+            "}\n"
+        )
     );
 }

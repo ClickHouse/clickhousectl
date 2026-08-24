@@ -135,8 +135,18 @@ fn failed_start_points_to_captured_server_log() {
     let output = run_start(project.path(), home.path(), unused_port(), unused_port());
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("exited"), "stderr: {stderr}");
-    assert!(stderr.contains("server.log"), "stderr: {stderr}");
+    assert_eq!(
+        stderr,
+        concat!(
+            "{\n",
+            "  \"error\": {\n",
+            "    \"code\": \"startup_exit\",\n",
+            "    \"message\": \"Server exited before startup completed\",\n",
+            "    \"command\": \"clickhousectl local server list\"\n",
+            "  }\n",
+            "}\n"
+        )
+    );
 
     let log = project
         .path()
