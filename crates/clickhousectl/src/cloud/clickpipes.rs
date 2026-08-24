@@ -667,7 +667,11 @@ pub struct PostgresCreateArgs {
     pub host: String,
 
     /// PostgreSQL port
-    #[arg(long, default_value = "5432")]
+    #[arg(
+        long,
+        default_value = "5432",
+        value_parser = clap::value_parser!(u16).range(1..=65535),
+    )]
     pub port: u16,
 
     /// Source database name
@@ -683,7 +687,7 @@ pub struct PostgresCreateArgs {
     pub password: String,
 
     /// Table mappings as schema.table:target_table (repeatable)
-    #[arg(long = "table-mapping")]
+    #[arg(long = "table-mapping", required = true)]
     pub table_mappings: Vec<String>,
 
     /// Postgres type
@@ -711,7 +715,7 @@ pub struct PostgresCreateArgs {
     pub auth: String,
 
     /// IAM role ARN
-    #[arg(long)]
+    #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
     pub iam_role: Option<String>,
 
     /// TLS hostname
@@ -1797,13 +1801,56 @@ async fn clickpipe_create_postgres(
     args: &PostgresCreateArgs,
     json: bool,
 ) -> CloudResult<()> {
+    let request = build_postgres_request(args)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+fn build_postgres_request(
+    args: &PostgresCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource,
         ClickPipePostgresPipeSettings, ClickPipePostgresPipeTableMapping, PLAIN,
     };
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    if args.port == 0 {
+        return Err(CloudError::new("--port must be between 1 and 65535"));
+    }
+    if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
+        return Err(CloudError::new("--auth IAM_ROLE requires --iam-role"));
+    }
+    if args.replication_slot_name.is_some() && args.replication_mode != "cdc_only" {
+        return Err(CloudError::new(
+            "--replication-slot-name is only valid with --replication-mode cdc_only",
+        ));
+    }
+    if args.table_mappings.is_empty() {
+        return Err(CloudError::new("at least one --table-mapping is required"));
+    }
+
     let mappings = parse_db_table_mappings(&args.table_mappings)?;
+    for (source_schema_name, source_table, target_table) in &mappings {
+        if source_schema_name.is_empty() {
+            return Err(CloudError::new(
+                "PostgreSQL table mapping source schema must not be empty",
+            ));
+        }
+        if source_table.is_empty() {
+            return Err(CloudError::new(
+                "PostgreSQL table mapping source table must not be empty",
+            ));
+        }
+        if target_table.is_empty() {
+            return Err(CloudError::new(
+                "PostgreSQL table mapping target table must not be empty",
+            ));
+        }
+    }
 
     let ca_certificate = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
@@ -1846,7 +1893,7 @@ async fn clickpipe_create_postgres(
         table_mappings,
     };
 
-    let request = ClickPipePostRequest {
+    Ok(ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             postgres: Some(source),
@@ -1854,13 +1901,7 @@ async fn clickpipe_create_postgres(
         },
         destination: build_destination("default", "", vec![]),
         ..Default::default()
-    };
-
-    let clickpipe = client
-        .create_clickpipe(&org_id, &args.service_id, &request)
-        .await?;
-    print_created(&clickpipe, json)?;
-    Ok(())
+    })
 }
 
 async fn clickpipe_create_mysql(
@@ -2262,6 +2303,16 @@ mod tests {
         );
     }
 
+    fn parse_error(args: &[&str]) -> clap::Error {
+        Cli::try_parse_from(
+            ["clickhousectl", "cloud", "clickpipe"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+        .err()
+        .expect("expected ClickPipe parse failure")
+    }
+
     fn assert_write(args: &[&str], expected: bool) {
         assert_eq!(
             parse_cloud_command(args).is_write_command(),
@@ -2394,7 +2445,7 @@ mod tests {
     }
 
     fn assert_postgres_value(flag: &str, value: &str) {
-        parse_clickpipe(&[
+        let mut args = vec![
             "create",
             "postgres",
             "svc-1",
@@ -2408,9 +2459,14 @@ mod tests {
             "user",
             "--password",
             "password",
-            flag,
-            value,
-        ]);
+            "--table-mapping",
+            "public.events:events",
+        ];
+        args.extend([flag, value]);
+        if flag == "--auth" && value == "IAM_ROLE" {
+            args.extend(["--iam-role", "arn:role"]);
+        }
+        parse_clickpipe(&args);
     }
 
     fn assert_mysql_value(flag: &str, value: &str) {
@@ -3199,7 +3255,7 @@ mod tests {
             "--postgres-type",
             "neon",
             "--replication-mode",
-            "snapshot",
+            "cdc_only",
             "--auth",
             "IAM_ROLE",
             "--iam-role",
@@ -3227,7 +3283,7 @@ mod tests {
         assert_eq!(args.password, "password");
         assert_eq!(args.table_mappings, ["public.one:one", "public.two:two"]);
         assert_eq!(args.postgres_type, "neon");
-        assert_eq!(args.replication_mode, "snapshot");
+        assert_eq!(args.replication_mode, "cdc_only");
         assert_eq!(args.auth, "IAM_ROLE");
         assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
         assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
@@ -3252,12 +3308,14 @@ mod tests {
             "user",
             "--password",
             "password",
+            "--table-mapping",
+            "public.events:events",
         ])
         else {
             panic!("expected postgres create");
         };
         assert_eq!(args.port, 5432);
-        assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings, ["public.events:events"]);
         assert_eq!(args.postgres_type, "postgres");
         assert_eq!(args.replication_mode, "cdc");
         assert_eq!(args.auth, "basic");
@@ -3267,6 +3325,57 @@ mod tests {
         assert_eq!(args.publication_name, None);
         assert_eq!(args.replication_slot_name, None);
         assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn postgres_clap_validates_port_mappings_and_iam_role() {
+        let base = [
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "public.events:events",
+        ];
+
+        for port in ["1", "65535"] {
+            let mut args = base.to_vec();
+            args.extend(["--port", port]);
+            parse_clickpipe(&args);
+        }
+
+        for port in ["0", "65536"] {
+            let mut args = base.to_vec();
+            args.extend(["--port", port]);
+            let error = parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(error.to_string().contains("--port"));
+        }
+
+        let error = parse_error(&base[..base.len() - 2]);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--table-mapping"));
+
+        let mut iam_role = base.to_vec();
+        iam_role.extend(["--auth", "IAM_ROLE"]);
+        let error = parse_error(&iam_role);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--iam-role"));
     }
 
     #[test]
@@ -3803,6 +3912,8 @@ mod tests {
             "user",
             "--password",
             "password",
+            "--table-mapping",
+            "public.events:events",
         ];
         for flag in ["--postgres-type", "--replication-mode", "--auth"] {
             let mut args = postgres_base.to_vec();
@@ -4001,6 +4112,217 @@ mod tests {
         };
         let source = build_kinesis_source(&args).unwrap();
         assert_eq!(source.timestamp, Some(1_750_000_000));
+    }
+
+    fn postgres_args() -> PostgresCreateArgs {
+        PostgresCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            host: "postgres.example".into(),
+            port: 5432,
+            pg_database: "source-db".into(),
+            username: "user".into(),
+            password: "password".into(),
+            table_mappings: vec!["public.events:events".into()],
+            postgres_type: "postgres".into(),
+            replication_mode: "cdc".into(),
+            auth: "basic".into(),
+            iam_role: None,
+            tls_host: None,
+            ca_certificate: None,
+            publication_name: None,
+            replication_slot_name: None,
+            org_id: None,
+        }
+    }
+
+    #[test]
+    fn build_postgres_request_supports_minimal_input() {
+        let request = build_postgres_request(&postgres_args()).unwrap();
+        assert_eq!(request.name, "pipe-1");
+        assert!(request.field_mappings.is_empty());
+        assert_eq!(request.scaling, None);
+        assert_eq!(request.settings, None);
+        assert!(!request.source.validate_samples);
+        assert_eq!(request.source.bigquery, None);
+        assert_eq!(request.source.kafka, None);
+        assert_eq!(request.source.kinesis, None);
+        assert_eq!(request.source.mongodb, None);
+        assert_eq!(request.source.mysql, None);
+        assert_eq!(request.source.object_storage, None);
+        assert_eq!(request.source.pubsub, None);
+
+        let source = request
+            .source
+            .postgres
+            .as_ref()
+            .expect("PostgreSQL source is populated");
+        assert_eq!(
+            source.r#type.as_ref().map(ToString::to_string).as_deref(),
+            Some("postgres")
+        );
+        assert_eq!(source.authentication.to_string(), "basic");
+        assert_eq!(source.credentials.username, "user");
+        assert_eq!(source.credentials.password, "password");
+        assert_eq!(source.host, "postgres.example");
+        assert_eq!(source.port, 5432);
+        assert_eq!(source.database, "source-db");
+        assert!(!source.disable_tls);
+        assert!(!source.skip_cert_verification);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.tls_host, None);
+        assert_eq!(source.ca_certificate, None);
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc");
+        assert_eq!(source.settings.publication_name, None);
+        assert_eq!(source.settings.replication_slot_name, None);
+        assert_eq!(source.table_mappings.len(), 1);
+        let mapping = &source.table_mappings[0];
+        assert_eq!(mapping.source_schema_name, "public");
+        assert_eq!(mapping.source_table, "events");
+        assert_eq!(mapping.target_table, "events");
+
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert!(request.destination.columns.is_empty());
+        assert_eq!(request.destination.managed_table, None);
+        assert_eq!(request.destination.table_definition, None);
+    }
+
+    #[test]
+    fn build_postgres_request_supports_maximal_input_and_certificate_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_certificate = directory.path().join("ca.pem");
+        std::fs::write(&ca_certificate, "POSTGRES_CA").unwrap();
+
+        let args = PostgresCreateArgs {
+            name: "maximal-pipe".into(),
+            host: "source.example".into(),
+            port: 65535,
+            pg_database: "production".into(),
+            username: "max-user".into(),
+            password: "max-password".into(),
+            table_mappings: vec![
+                "public.events:events_local".into(),
+                "audit.entries:audit_entries".into(),
+            ],
+            postgres_type: "rdspostgres".into(),
+            replication_mode: "cdc_only".into(),
+            auth: "IAM_ROLE".into(),
+            iam_role: Some("arn:aws:iam::123456789012:role/clickpipe".into()),
+            tls_host: Some("certificate.example".into()),
+            ca_certificate: Some(ca_certificate.to_string_lossy().into_owned()),
+            publication_name: Some("clickpipe_publication".into()),
+            replication_slot_name: Some("clickpipe_slot".into()),
+            org_id: Some("org-1".into()),
+            ..postgres_args()
+        };
+
+        let request = build_postgres_request(&args).unwrap();
+        assert_eq!(request.name, "maximal-pipe");
+        let source = request
+            .source
+            .postgres
+            .expect("PostgreSQL source is populated");
+        assert_eq!(
+            source.r#type.map(|value| value.to_string()).as_deref(),
+            Some("rdspostgres")
+        );
+        assert_eq!(source.authentication.to_string(), "IAM_ROLE");
+        assert_eq!(source.credentials.username, "max-user");
+        assert_eq!(source.credentials.password, "max-password");
+        assert_eq!(source.host, "source.example");
+        assert_eq!(source.port, 65535);
+        assert_eq!(source.database, "production");
+        assert_eq!(
+            source.iam_role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/clickpipe")
+        );
+        assert_eq!(source.tls_host.as_deref(), Some("certificate.example"));
+        assert_eq!(source.ca_certificate.as_deref(), Some("POSTGRES_CA"));
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc_only");
+        assert_eq!(
+            source.settings.publication_name.as_deref(),
+            Some("clickpipe_publication")
+        );
+        assert_eq!(
+            source.settings.replication_slot_name.as_deref(),
+            Some("clickpipe_slot")
+        );
+        assert_eq!(source.table_mappings.len(), 2);
+        assert_eq!(source.table_mappings[0].source_schema_name, "public");
+        assert_eq!(source.table_mappings[0].source_table, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events_local");
+        assert_eq!(source.table_mappings[1].source_schema_name, "audit");
+        assert_eq!(source.table_mappings[1].source_table, "entries");
+        assert_eq!(source.table_mappings[1].target_table, "audit_entries");
+        assert_eq!(request.destination.database, "default");
+    }
+
+    #[test]
+    fn build_postgres_request_preserves_basic_auth_replication_modes() {
+        for mode in REPLICATION_MODES {
+            let mut args = postgres_args();
+            args.replication_mode = (*mode).into();
+            if *mode == "cdc_only" {
+                args.publication_name = Some("publication".into());
+                args.replication_slot_name = Some("slot".into());
+            }
+
+            let request = build_postgres_request(&args).unwrap();
+            let source = request
+                .source
+                .postgres
+                .expect("PostgreSQL source is populated");
+            assert_eq!(source.authentication.to_string(), "basic");
+            assert_eq!(source.iam_role, None);
+            assert_eq!(source.settings.replication_mode.to_string(), *mode);
+        }
+    }
+
+    #[test]
+    fn build_postgres_request_rejects_invalid_inputs() {
+        let mut args = postgres_args();
+        args.port = 0;
+        assert_eq!(
+            build_postgres_request(&args).unwrap_err().to_string(),
+            "--port must be between 1 and 65535"
+        );
+
+        let mut args = postgres_args();
+        args.table_mappings.clear();
+        assert_eq!(
+            build_postgres_request(&args).unwrap_err().to_string(),
+            "at least one --table-mapping is required"
+        );
+
+        for (mapping, diagnostic) in [
+            (".events:events", "source schema must not be empty"),
+            ("public.:events", "source table must not be empty"),
+            ("public.events:", "target table must not be empty"),
+        ] {
+            let mut args = postgres_args();
+            args.table_mappings = vec![mapping.into()];
+            assert!(
+                build_postgres_request(&args)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(diagnostic)
+            );
+        }
+
+        let mut args = postgres_args();
+        args.auth = "IAM_ROLE".into();
+        assert_eq!(
+            build_postgres_request(&args).unwrap_err().to_string(),
+            "--auth IAM_ROLE requires --iam-role"
+        );
+
+        let mut args = postgres_args();
+        args.replication_slot_name = Some("slot".into());
+        assert_eq!(
+            build_postgres_request(&args).unwrap_err().to_string(),
+            "--replication-slot-name is only valid with --replication-mode cdc_only"
+        );
     }
 
     #[test]
