@@ -2,6 +2,7 @@ pub mod download;
 pub mod install;
 pub mod list;
 pub mod master;
+pub(crate) mod network;
 pub mod platform;
 pub mod resolve;
 pub mod spec;

@@ -1,10 +1,14 @@
 use crate::error::{Error, Result};
 use crate::version_manager::list::{
-    Channel, VersionEntry, list_available_versions, list_installed_versions,
+    Channel, VersionEntry, list_available_versions_with, list_installed_versions,
 };
+use crate::version_manager::network::{NetworkFailure, NetworkStage, OperationClient};
 use crate::version_manager::platform::{DownloadSource, Platform, builds_probe_url};
 use crate::version_manager::spec::VersionSpec;
 use serde::Deserialize;
+
+const GITHUB_RELEASES_URL: &str =
+    "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
 
 /// Result of resolving a version spec — contains everything needed to download
 #[derive(Debug, Clone)]
@@ -58,12 +62,32 @@ fn find_local_match(spec: &VersionSpec, installed: &[String]) -> Option<String> 
 
 /// Resolve a VersionSpec into a concrete download source
 pub async fn resolve(spec: &VersionSpec, platform: &Platform) -> Result<ResolvedVersion> {
+    if matches!(spec, VersionSpec::Latest) {
+        return resolve_latest(platform).await;
+    }
+
+    let (stage, initial_url) = match spec {
+        VersionSpec::Channel(_) | VersionSpec::Exact(_) => {
+            (NetworkStage::GithubLookup, GITHUB_RELEASES_URL.to_string())
+        }
+        VersionSpec::Major(major) => (
+            NetworkStage::BuildProbe,
+            builds_probe_url(&format!("{}.1", major), platform),
+        ),
+        VersionSpec::Minor(major, minor) => (
+            NetworkStage::BuildProbe,
+            builds_probe_url(&format!("{}.{}", major, minor), platform),
+        ),
+        VersionSpec::Latest => unreachable!(),
+    };
+    let client = OperationClient::metadata(stage, &initial_url)?;
+
     match spec {
-        VersionSpec::Latest => resolve_latest(platform).await,
-        VersionSpec::Channel(channel) => resolve_channel(*channel, platform).await,
-        VersionSpec::Major(major) => resolve_major(*major, platform).await,
-        VersionSpec::Minor(major, minor) => resolve_minor(*major, *minor, platform).await,
-        VersionSpec::Exact(version) => resolve_exact(version, platform).await,
+        VersionSpec::Latest => unreachable!(),
+        VersionSpec::Channel(channel) => resolve_channel(*channel, platform, &client).await,
+        VersionSpec::Major(major) => resolve_major(*major, platform, &client).await,
+        VersionSpec::Minor(major, minor) => resolve_minor(*major, *minor, platform, &client).await,
+        VersionSpec::Exact(version) => resolve_exact(version, platform, &client).await,
     }
 }
 
@@ -81,8 +105,12 @@ async fn resolve_latest(_platform: &Platform) -> Result<ResolvedVersion> {
 }
 
 /// `install stable` / `install lts` — GH API to find minor, then builds
-async fn resolve_channel(channel: Channel, platform: &Platform) -> Result<ResolvedVersion> {
-    let available = list_available_versions().await?;
+async fn resolve_channel(
+    channel: Channel,
+    platform: &Platform,
+    client: &OperationClient,
+) -> Result<ResolvedVersion> {
+    let available = list_available_versions_with(client, GITHUB_RELEASES_URL).await?;
     let entry = available
         .iter()
         .find(|e| e.channel == channel)
@@ -92,7 +120,10 @@ async fn resolve_channel(channel: Channel, platform: &Platform) -> Result<Resolv
     let minor = extract_minor(&entry.version)?;
 
     // Try builds first
-    if probe_builds(&minor, platform).await {
+    if matches!(
+        probe_builds(client, &builds_probe_url(&minor, platform)).await,
+        Ok(ProbeOutcome::Available)
+    ) {
         return Ok(ResolvedVersion {
             source: DownloadSource::Builds {
                 version_path: minor.clone(),
@@ -109,20 +140,23 @@ async fn resolve_channel(channel: Channel, platform: &Platform) -> Result<Resolv
 }
 
 /// `install 25` — probe builds for highest 25.x minor
-async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersion> {
+async fn resolve_major(
+    major: u32,
+    platform: &Platform,
+    client: &OperationClient,
+) -> Result<ResolvedVersion> {
     // Probe builds.clickhouse.com for all possible minors in this major (1..12)
     let mut highest_available: Option<u32> = None;
-    let client = crate::http::client_builder()
-        .build()
-        .map_err(|e| Error::Download(e.to_string()))?;
+    let mut first_probe_failure = None;
 
     for minor in 1..=12 {
         let url = builds_probe_url(&format!("{}.{}", major, minor), platform);
-        match client.head(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
-                highest_available = Some(minor);
+        match probe_builds(client, &url).await {
+            Ok(ProbeOutcome::Available) => highest_available = Some(minor),
+            Ok(ProbeOutcome::Unavailable(_)) => {}
+            Err(error) => {
+                first_probe_failure.get_or_insert(error);
             }
-            _ => {}
         }
     }
 
@@ -142,49 +176,82 @@ async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersio
     // Fallback: try GH matching-refs API for each minor, highest first
     for minor in (1..=12).rev() {
         let prefix = format!("{}.{}", major, minor);
-        if let Ok(entry) = find_version_by_refs(&prefix).await {
-            return Ok(fallback_source(&entry.version, entry.channel, platform));
+        let url = version_refs_url(&prefix);
+        match find_version_by_refs(client, &prefix, &url).await {
+            Ok(entry) => return Ok(fallback_source(&entry.version, entry.channel, platform)),
+            Err(Error::NoMatchingVersion(_)) => {}
+            Err(error) => return Err(preserve_probe_failure(first_probe_failure, error)),
         }
     }
 
-    Err(Error::NoMatchingVersion(major.to_string()))
+    Err(preserve_probe_failure(
+        first_probe_failure,
+        Error::NoMatchingVersion(major.to_string()),
+    ))
 }
 
 /// `install 25.12` — try builds, fallback to packages/GH
-async fn resolve_minor(major: u32, minor: u32, platform: &Platform) -> Result<ResolvedVersion> {
+async fn resolve_minor(
+    major: u32,
+    minor: u32,
+    platform: &Platform,
+    client: &OperationClient,
+) -> Result<ResolvedVersion> {
     let version_path = format!("{}.{}", major, minor);
+    let build_url = builds_probe_url(&version_path, platform);
+    let refs_url = version_refs_url(&version_path);
+    resolve_minor_from_urls(client, &version_path, platform, &build_url, &refs_url).await
+}
 
+async fn resolve_minor_from_urls(
+    client: &OperationClient,
+    version_path: &str,
+    platform: &Platform,
+    build_url: &str,
+    refs_url: &str,
+) -> Result<ResolvedVersion> {
     // Try builds first
-    if probe_builds(&version_path, platform).await {
-        return Ok(ResolvedVersion {
-            source: DownloadSource::Builds {
-                version_path: version_path.clone(),
-            },
-            display_version: version_path,
-            exact_version_known: false,
-            exact_version: None,
-            channel: None,
-        });
-    }
+    let probe_failure = match probe_builds(client, build_url).await {
+        Ok(ProbeOutcome::Available) => {
+            return Ok(ResolvedVersion {
+                source: DownloadSource::Builds {
+                    version_path: version_path.to_string(),
+                },
+                display_version: version_path.to_string(),
+                exact_version_known: false,
+                exact_version: None,
+                channel: None,
+            });
+        }
+        Ok(ProbeOutcome::Unavailable(_)) => None,
+        Err(error) => Some(error),
+    };
 
     // Fallback: targeted GH API call to find exact version for this minor
-    let entry = find_version_by_refs(&version_path).await?;
+    let entry = find_version_by_refs(client, version_path, refs_url)
+        .await
+        .map_err(|error| preserve_probe_failure(probe_failure, error))?;
 
     Ok(fallback_source(&entry.version, entry.channel, platform))
 }
 
 /// `install 25.12.9.61` — exact version, needs channel from GH API
-async fn resolve_exact(version: &str, platform: &Platform) -> Result<ResolvedVersion> {
+async fn resolve_exact(
+    version: &str,
+    platform: &Platform,
+    client: &OperationClient,
+) -> Result<ResolvedVersion> {
     // Use matching-refs to find the exact tag and its channel.
     // For "25.12.9.61", search refs matching "v25.12.9.61" — should return the exact tag.
     // Fail fast if the lookup fails: a wrong channel produces a broken download URL,
     // and silently guessing Stable could fetch the wrong artifact.
-    match find_exact_channel(version).await {
+    match find_exact_channel(client, version).await {
         Ok(channel) => Ok(fallback_source(version, channel, platform)),
         Err(Error::NoMatchingVersion(_)) => {
             let series = extract_minor(version)?;
             // The exact miss is definitive; fetching a retry hint is best-effort.
-            let available = find_version_by_refs(&series).await.ok();
+            let url = version_refs_url(&series);
+            let available = find_version_by_refs(client, &series, &url).await.ok();
 
             Err(exact_version_no_match(version, &series, available.as_ref()))
         }
@@ -204,21 +271,22 @@ fn exact_version_no_match(version: &str, series: &str, available: Option<&Versio
 }
 
 /// Look up the channel for an exact version via GitHub's matching-refs API
-async fn find_exact_channel(version: &str) -> Result<Channel> {
+async fn find_exact_channel(client: &OperationClient, version: &str) -> Result<Channel> {
     let url = format!(
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}-",
         version
     );
-    let client = crate::http::client_builder().build()?;
+    let response = client.get(&url, NetworkStage::GithubLookup).await?;
+    if !response.status().is_success() {
+        return Err(
+            NetworkFailure::from_response(NetworkStage::GithubLookup, &url, &response).into(),
+        );
+    }
 
-    let response = client
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
-
-    let refs: Vec<GitRef> = response.json().await?;
+    let refs: Vec<GitRef> = response
+        .json()
+        .await
+        .map_err(|error| NetworkFailure::from_request(NetworkStage::GithubLookup, &url, &error))?;
     parse_exact_channel(&refs, version)
 }
 
@@ -277,17 +345,34 @@ fn fallback_source(version: &str, channel: Channel, platform: &Platform) -> Reso
     }
 }
 
-/// Probe builds.clickhouse.com with a HEAD request to check if a version exists
-async fn probe_builds(version_path: &str, platform: &Platform) -> bool {
-    let url = builds_probe_url(version_path, platform);
-    let client = match crate::http::client_builder().build() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeMiss {
+    Forbidden,
+    NotFound,
+}
 
-    match client.head(&url).send().await {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    Available,
+    Unavailable(ProbeMiss),
+}
+
+/// Probe builds.clickhouse.com with a HEAD request to check if a version exists.
+/// Only 403/404 mean that fallback is expected; outages remain errors.
+async fn probe_builds(
+    client: &OperationClient,
+    url: &str,
+) -> std::result::Result<ProbeOutcome, NetworkFailure> {
+    let response = client.head(url, NetworkStage::BuildProbe).await?;
+    match response.status().as_u16() {
+        _ if response.status().is_success() => Ok(ProbeOutcome::Available),
+        403 => Ok(ProbeOutcome::Unavailable(ProbeMiss::Forbidden)),
+        404 => Ok(ProbeOutcome::Unavailable(ProbeMiss::NotFound)),
+        _ => Err(NetworkFailure::from_response(
+            NetworkStage::BuildProbe,
+            url,
+            &response,
+        )),
     }
 }
 
@@ -300,22 +385,40 @@ struct GitRef {
 /// Find the latest release version matching a prefix using GitHub's matching-refs API.
 /// This is a single targeted API call that works regardless of how old the version is.
 /// prefix should be like "25.2" or "24.8" — we search for tags matching `v{prefix}.`
-async fn find_version_by_refs(prefix: &str) -> Result<VersionEntry> {
-    let url = format!(
+fn version_refs_url(prefix: &str) -> String {
+    format!(
         "https://api.github.com/repos/ClickHouse/ClickHouse/git/matching-refs/tags/v{}.",
         prefix
-    );
-    let client = crate::http::client_builder().build()?;
+    )
+}
 
-    let response = client
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
+async fn find_version_by_refs(
+    client: &OperationClient,
+    prefix: &str,
+    url: &str,
+) -> Result<VersionEntry> {
+    let response = client.get(url, NetworkStage::GithubLookup).await?;
+    if !response.status().is_success() {
+        return Err(
+            NetworkFailure::from_response(NetworkStage::GithubLookup, url, &response).into(),
+        );
+    }
 
-    let refs: Vec<GitRef> = response.json().await?;
+    let refs: Vec<GitRef> = response
+        .json()
+        .await
+        .map_err(|error| NetworkFailure::from_request(NetworkStage::GithubLookup, url, &error))?;
     parse_version_refs(&refs, prefix)
+}
+
+fn preserve_probe_failure(probe: Option<NetworkFailure>, fallback: Error) -> Error {
+    match probe {
+        Some(probe) => Error::VersionFallback {
+            probe,
+            fallback: Box::new(fallback),
+        },
+        None => fallback,
+    }
 }
 
 /// Parse a list of git refs into the best matching VersionEntry.
@@ -374,11 +477,141 @@ fn extract_minor(version: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version_manager::network::{NetworkCategory, Timeouts};
     use crate::version_manager::platform::Os;
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_ref(name: &str) -> GitRef {
         GitRef {
             ref_name: name.to_string(),
+        }
+    }
+
+    fn test_client() -> OperationClient {
+        OperationClient::with_timeouts(Timeouts::new(
+            Duration::from_millis(100),
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        ))
+        .unwrap()
+    }
+
+    fn macos_platform() -> Platform {
+        Platform {
+            os: Os::MacOS,
+            arch: crate::version_manager::platform::Arch::Aarch64,
+        }
+    }
+
+    #[tokio::test]
+    async fn build_probe_distinguishes_403_and_404_as_expected_misses() {
+        for (status, expected) in [(403, ProbeMiss::Forbidden), (404, ProbeMiss::NotFound)] {
+            let server = MockServer::start().await;
+            Mock::given(method("HEAD"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+
+            let outcome = probe_builds(&test_client(), &server.uri()).await.unwrap();
+            assert_eq!(outcome, ProbeOutcome::Unavailable(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn build_probe_classifies_429_and_5xx_as_failures() {
+        for (status, expected) in [
+            (429, NetworkCategory::RateLimited),
+            (503, NetworkCategory::Server),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("HEAD"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
+
+            let error = probe_builds(&test_client(), &server.uri())
+                .await
+                .unwrap_err();
+            assert_eq!(error.stage, NetworkStage::BuildProbe);
+            assert_eq!(error.category, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn expected_probe_miss_falls_back_to_github() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/build"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/refs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"ref": "refs/tags/v25.12.9.61-stable"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let resolved = resolve_minor_from_urls(
+            &test_client(),
+            "25.12",
+            &macos_platform(),
+            &format!("{}/build", server.uri()),
+            &format!("{}/refs", server.uri()),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            resolved.source,
+            DownloadSource::GitHub {
+                ref version,
+                channel: Channel::Stable,
+            } if version == "25.12.9.61"
+        ));
+    }
+
+    #[tokio::test]
+    async fn fallback_failure_preserves_original_probe_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/build"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/refs"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+
+        let error = resolve_minor_from_urls(
+            &test_client(),
+            "25.12",
+            &macos_platform(),
+            &format!("{}/build", server.uri()),
+            &format!("{}/refs", server.uri()),
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            Error::VersionFallback { probe, fallback } => {
+                assert_eq!(probe.stage, NetworkStage::BuildProbe);
+                assert_eq!(probe.category, NetworkCategory::Server);
+                assert!(matches!(
+                    *fallback,
+                    Error::VersionNetwork(NetworkFailure {
+                        stage: NetworkStage::GithubLookup,
+                        category: NetworkCategory::RateLimited,
+                        ..
+                    })
+                ));
+            }
+            other => panic!("expected preserved fallback error, got {other:?}"),
         }
     }
 
