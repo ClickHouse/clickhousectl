@@ -195,11 +195,20 @@ CONTEXT FOR AGENTS:
   Manage named local server instances. Project-scoped `server list` and `server stop-all`
   include both ClickHouse processes and Docker-backed Postgres containers; other commands
   here manage ClickHouse.
-  Project-scoped lookup uses only the canonical current directory; parent `.clickhouse`
-  directories are not searched.
+  Project-scoped commands use exactly the canonical current working directory; parent
+  `.clickhouse` directories are not searched.
+  Use an explicit name for a predictable lifecycle:
+    clickhousectl local server start dev
+    clickhousectl local server stop dev
+    clickhousectl local server remove dev
+  If `server start` generates a name, retain the returned `name` and pass it to `stop` and `remove`.
+  Without a name, `stop` prefers an existing \"default\", then the sole known ClickHouse server;
+  none is a successful no-op, while multiple non-default servers require a name or `stop-all`.
+  Without a name, `remove` only removes an existing \"default\"; it never infers a custom server.
+  For project cleanup, use `clickhousectl local server stop-all`; it stops every running
+  ClickHouse and Postgres server in this project without deleting data.
   Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start test`.
   Related: `clickhousectl local client` to connect to a running server.")]
     Server {
         #[command(subcommand)]
@@ -230,6 +239,7 @@ CONTEXT FOR AGENTS:
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Without a name, the first server is called \"default\"; if \"default\" is already running,
   a random name is generated (e.g., \"bold-crane\").
+  If a name is generated, retain the returned `name` and pass it to `server stop` and `server remove`.
   Pass the name positionally to give a server a stable identity (e.g., `server start dev`).
   The older `--name dev` form remains accepted, but cannot be combined with a positional name.
   Use --version (-v) to run a specific ClickHouse version without changing the default.
@@ -355,6 +365,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Stops all running ClickHouse and Postgres server instances in this project.
+  Use this project-scoped command for project cleanup instead of guessing server names.
   ClickHouse processes receive SIGTERM first, then SIGKILL if they don't exit.
   Postgres containers are stopped but retained for a subsequent start.
   With --global, stops ClickHouse servers only; global Postgres discovery is not supported.
@@ -580,6 +591,16 @@ mod tests {
             panic!("expected local command");
         };
         Ok(local.command)
+    }
+
+    fn local_help(args: &[&str]) -> String {
+        let mut argv = vec!["clickhousectl", "local"];
+        argv.extend_from_slice(args);
+        argv.push("--help");
+        Cli::try_parse_from(argv)
+            .err()
+            .expect("help should exit through clap")
+            .to_string()
     }
 
     fn client_selectors(
@@ -1133,6 +1154,92 @@ mod tests {
             "{help}"
         );
         assert!(!help.contains(r#"\"default\""#), "{help}");
+    }
+
+    #[test]
+    fn server_help_renders_exact_cwd_scope() {
+        let help = local_help(&["server"]);
+
+        assert!(
+            help.contains(
+                "Project-scoped commands use exactly the canonical current working directory; parent\n  `.clickhouse` directories are not searched."
+            ),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn server_help_renders_canonical_named_lifecycle() {
+        let help = local_help(&["server"]);
+
+        let start = help
+            .find("clickhousectl local server start dev")
+            .expect("start example");
+        let stop = help
+            .find("clickhousectl local server stop dev")
+            .expect("stop example");
+        let remove = help
+            .find("clickhousectl local server remove dev")
+            .expect("remove example");
+        assert!(start < stop && stop < remove, "{help}");
+    }
+
+    #[test]
+    fn server_lifecycle_help_renders_current_omission_and_cleanup_workflow() {
+        let help = local_help(&["server"]);
+        assert!(
+            help.contains(
+                "`stop` prefers an existing \"default\", then the sole known ClickHouse server"
+            ),
+            "{help}"
+        );
+        assert!(
+            help.contains(
+                "`remove` only removes an existing \"default\"; it never infers a custom server"
+            ),
+            "{help}"
+        );
+        assert!(
+            help.contains("retain the returned `name` and pass it to `stop` and `remove`"),
+            "{help}"
+        );
+        assert!(
+            help.contains("For project cleanup, use `clickhousectl local server stop-all`"),
+            "{help}"
+        );
+
+        let stop_help = local_help(&["server", "stop"]);
+        assert!(
+            stop_help
+                .contains("Without a name, stops \"default\" when it exists, otherwise the sole"),
+            "{stop_help}"
+        );
+        assert!(
+            stop_help.contains("With no ClickHouse servers this is a successful no-op"),
+            "{stop_help}"
+        );
+
+        let remove_help = local_help(&["server", "remove"]);
+        assert!(
+            remove_help.contains(
+                "Without a name, removes \"default\" only when it exists. It never guesses a custom server"
+            ),
+            "{remove_help}"
+        );
+
+        let start_help = local_help(&["server", "start"]);
+        assert!(
+            start_help.contains(
+                "retain the returned `name` and pass it to `server stop` and `server remove`"
+            ),
+            "{start_help}"
+        );
+
+        let stop_all_help = local_help(&["server", "stop-all"]);
+        assert!(
+            stop_all_help.contains("Use this project-scoped command for project cleanup"),
+            "{stop_all_help}"
+        );
     }
 
     #[test]

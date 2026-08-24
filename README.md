@@ -179,6 +179,13 @@ clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this 
 
 `local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with the running server names. Stop the server first, or pass `--force` to stop the running server(s) and then remove the version.
 
+The two local removal commands delete different state:
+
+| Command | Removes | Keeps |
+| --- | --- | --- |
+| `clickhousectl local remove <exact-version>` | The globally installed ClickHouse binary in `~/.clickhouse/versions/` | Project-local server data |
+| `clickhousectl local server remove <name>` | A stopped server's data and metadata in the current project's `.clickhouse/servers/` | Globally installed ClickHouse versions |
+
 #### ClickHouse binary storage
 
 ClickHouse binaries are stored in a global repository, so they can be used by multiple projects without duplicating storage. Binaries are stored in `~/.clickhouse/`:
@@ -267,7 +274,7 @@ clickhousectl local server stop-all --global              # Stop all ClickHouse 
 
 # Remove a stopped server and its data
 clickhousectl local server remove                         # Remove "default" only when it exists
-clickhousectl local server remove test                    # Remove by name
+clickhousectl local server remove dev                     # Remove by name
 
 # Write connection env vars to .env file
 clickhousectl local server dotenv                        # From "default" server → .env
@@ -284,7 +291,7 @@ An omitted `server remove` is deliberately more conservative: it removes only an
 
 Project-scoped `server list`, `stop`, and `remove` use `.clickhouse` under the canonical current directory only. They do not search parent directories, including when the current directory is reached through a symlink or has its own nested `.clickhouse`. Lookup and state errors print that canonical project directory, direct you to change to the intended project directory for stopped servers, and suggest `clickhousectl local server list --global` for finding running servers across projects.
 
-**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
+**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly. If a name is generated, retain the returned name for later `stop` and `remove` commands.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 
