@@ -89,7 +89,70 @@ All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOU
 
 The managed-Postgres CDC test fetches its private CA, writes it to a temporary file, and exercises failed CLI creation without `--ca-certificate` followed by successful snapshot and CDC with the flag. The mandatory CI fixtures do not currently include a PostgreSQL source with a publicly trusted certificate, so successful creation without an uploaded CA remains untested.
 
-Applying `run-cloud-integration` to an eligible PR selects suites from that PR's merge-base-to-head diff; known changes without a live suite finish without entering the environment-bearing job, while unknown API source or test paths select all suites. Changes to the classifier, its tests, or the workflow also select all suites through an independent workflow guard. Manual `Cloud Integration` dispatches accept `scope=all`, `service`, `postgres`, `organization`, or `clickpipes`. The focused scopes run only their corresponding suite; `clickpipes` runs Postgres CDC plus the fixture-gated smoke test, while `all` runs all four mandatory suites plus that optional smoke test. Because stacked-PR diffs exclude inherited changes, manually run `scope=all` against the top stack branch for full-stack validation.
+Applying `run-cloud-integration` to an eligible PR selects suites from that PR's merge-base-to-head diff; known changes without a live suite finish without entering the environment-bearing job, while unknown API source or test paths select all suites. Changes to the classifier, its tests, or either decision workflow also select all suites through an independent workflow guard. Manual `Cloud Integration` dispatches accept `scope=all`, `service`, `postgres`, `organization`, or `clickpipes`. The focused scopes run only their corresponding suite; `clickpipes` runs Postgres CDC plus the fixture-gated smoke test, while `all` runs all four mandatory suites plus that optional smoke test. Because stacked-PR diffs exclude inherited changes, manually run `scope=all` against the top stack branch for full-stack validation.
+
+### Cloud integration merge decision
+
+`Cloud integration decision` is the stable required check for the current PR head.
+The trusted controller runs from the default branch, checks out only its own
+revision, and never executes PR code. It accepts exactly one of these outcomes:
+
+- The secretless planner and selected live suites succeeded for the current SHA.
+- The planner succeeded for the current SHA and skipped the environment-bearing
+  job because it selected no suites.
+- A maintainer recorded an explicit one-shot override for the current SHA.
+
+Opening a PR or pushing a new head creates a pending decision. To request live
+testing, remove and reapply `run-cloud-integration`; leaving the label attached
+does not make later pushes inherit the result. A failed planner or live job
+fails the decision. Runs from unrelated labels, stale heads, forks, Dependabot,
+scheduled events, or manual dispatches never automatically pass it. Fork PRs
+need a same-repository mirror run or a maintainer override and never receive the
+Cloud environment.
+
+Only repository `maintain` and `admin` roles can override. The same maintainer
+must first add an audit comment containing the exact current SHA and a reason or
+link to the covering stack run, then apply `skip-cloud-integration`:
+
+```bash
+sha=$(gh pr view PR_NUMBER --json headRefOid --jq .headRefOid)
+gh pr comment PR_NUMBER --body "/skip-cloud-integration $sha REASON_OR_RUN_URL"
+gh pr edit PR_NUMBER --add-label skip-cloud-integration
+```
+
+The resulting check records the actor, SHA, UTC timestamp, reason, and comment
+URL. An unauthorized actor, missing reason, different SHA, or unrelated label
+cannot pass. The label remains attached after use. After any push, remove it,
+add a new comment containing the new SHA, and reapply it. If a live run fails
+after an override, a subsequent override is required to waive that failure.
+
+#### Stacked PR policy
+
+The selected policy is to validate the combined snapshot once at the top and
+use explicit SHA-bound overrides on lower PRs. Run manual `scope=all` against
+the exact top branch SHA. Before overriding a lower PR, verify its current head
+is an ancestor of that successful top SHA, and put the successful Actions run
+URL in the lower PR's override comment. Repeat the comment and label action for
+every lower head; a top-stack run never silently creates lower-head decisions.
+The top PR still needs an affected label run or an override linking the manual
+run at that same top SHA. A changed lower head requires a new covering top run
+and a new override.
+
+#### Branch protection rollout
+
+Do not require the decision until `.github/workflows/cloud-integration-decision.yml`
+is on the default branch. After it merges, add the context without replacing
+other required checks:
+
+```bash
+gh api --method POST \
+  repos/ClickHouse/clickhousectl/branches/main/protection/required_status_checks/contexts \
+  -f 'contexts[]=Cloud integration decision'
+```
+
+Verify that `Cloud integration decision` appears in the returned context list.
+This is a one-time post-merge repository setting; it must not be applied from
+the controller's own PR.
 
 `spec_coverage_test` sends the checked-in sources and snapshot through the
 private `clickhouse-openapi-analyzer` crate. The analyzer recursively traverses

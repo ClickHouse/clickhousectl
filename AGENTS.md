@@ -189,6 +189,7 @@ Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason t
 - `tests/clickpipes/` — ClickPipes E2E suite, including external cloud services. Only Postgres CDC (uses ClickHouse & Postgres inside ClickHouse Cloud and the built `clickhousectl` binary for ClickPipe creation) is run in CI. Tests for third party services must be executed manually. CI also optionally runs `clickpipe_smoke_test` against a long-lived service when the `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID` repo variable is set (see `.github/workflows/cloud-integration.yml`); the step is skipped when the variable is unset.
 - `spec_coverage_test.rs`: runs the shared analyzer against the vendored OpenAPI snapshot and requires an actionable-drift-free report.
 - Labeled internal PRs classify the exact base-to-head diff with `scripts/classify-cloud-integration.py` and run only affected `service`, `postgres`, `organization`, and `clickpipes` suites. New or renamed API source/test files must be added to its explicit mappings; unknown paths fail closed to all suites. Scheduled runs still select all suites, while manual runs use the requested scope.
+- `Cloud integration decision` is the exact-head merge gate. Its trusted default-branch controller never executes PR code; it accepts a successful selected run, a successful no-suite plan, or a maintainer-only SHA-bound override. See `crates/clickhouse-cloud-api/README.md` for the override, stacked-PR, and branch-protection procedures.
 
 ### clickhousectl CLI
 
