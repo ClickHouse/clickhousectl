@@ -10,6 +10,7 @@
 //!
 //!  * `clickhousectl.engine=postgres`
 //!  * `clickhousectl.name=<server-name>`
+//!  * `clickhousectl.major=<postgres-major-version>`
 //!  * `clickhousectl.project=<canonical project cwd>`
 //!  * `created_by=clickhousectl_<crate-version>`
 
@@ -38,15 +39,66 @@ pub fn pg_container_name(user_name: &str, major: &str) -> String {
 
 /// Connect to the local Docker daemon and verify it's reachable.
 pub async fn connect() -> Result<Docker> {
-    let docker = Docker::connect_with_local_defaults().map_err(|e| {
-        Error::DockerNotAvailable(format!("could not initialize docker client: {e}"))
-    })?;
-    docker.ping().await.map_err(|e| {
-        Error::DockerNotAvailable(format!(
-            "Docker daemon is not reachable ({e}). Install Docker Desktop or start the daemon."
-        ))
-    })?;
+    let docker = Docker::connect_with_defaults().map_err(docker_constructor_error)?;
+    docker.ping().await.map_err(docker_ping_error)?;
     Ok(docker)
+}
+
+fn docker_constructor_error(error: bollard::errors::Error) -> Error {
+    let message = match &error {
+        bollard::errors::Error::SocketNotFoundError(path) => {
+            format!("Docker socket was not found at '{path}'.")
+        }
+        bollard::errors::Error::UnsupportedURISchemeError { uri } => {
+            format!("DOCKER_HOST uses an unsupported URI scheme: '{uri}'.")
+        }
+        _ => format!("Could not initialize the Docker client: {error}."),
+    };
+    docker_unavailable(message)
+}
+
+fn docker_ping_error(error: bollard::errors::Error) -> Error {
+    let detail = error.to_string();
+    let message = if detail.to_ascii_lowercase().contains("permission denied") {
+        format!("Permission denied while contacting the Docker daemon: {detail}.")
+    } else {
+        format!("Docker daemon is not responding at the selected endpoint: {detail}.")
+    };
+    docker_unavailable(message)
+}
+
+fn docker_unavailable(message: String) -> Error {
+    Error::DockerNotAvailable(format!("{message}\n{}", docker_setup_guidance()))
+}
+
+fn docker_setup_guidance() -> String {
+    let runtime = match std::env::consts::OS {
+        "macos" => "Start Docker Desktop and wait until it reports that Docker is running.",
+        "windows" => "Start Docker Desktop and wait until it reports that Docker is running.",
+        "linux" => {
+            "Start Docker Engine (for example, `sudo systemctl start docker`) or Docker Desktop."
+        }
+        _ => "Install and start Docker for this platform.",
+    };
+    let permissions = if cfg!(unix) {
+        "\n  - Ensure your user has permission to access the selected Docker socket."
+    } else {
+        ""
+    };
+    let rootless = if cfg!(target_os = "linux") {
+        "\n  - For rootless Docker, set `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock`."
+    } else {
+        ""
+    };
+    let docker_host = if std::env::var_os("DOCKER_HOST").is_some() {
+        "`DOCKER_HOST` is set; verify that it points to a reachable Docker endpoint, or unset it to use the platform default."
+    } else {
+        "`DOCKER_HOST` is unset; set it to the selected context's endpoint when the platform default is not in use."
+    };
+
+    format!(
+        "Docker setup guidance:\n  - {runtime}{permissions}{rootless}\n  - Docker CLI contexts are not read automatically; get the endpoint with `docker context inspect` and set `DOCKER_HOST` when using a non-default context.\n  - {docker_host}"
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

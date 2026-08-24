@@ -1,0 +1,24 @@
+Manage local Postgres instances (Docker-backed)
+
+Usage: clickhousectl local postgres [OPTIONS] <COMMAND>
+
+Commands:
+  start     Start a Postgres container
+  stop      Stop a running Postgres container by name
+  stop-all  Stop all running Postgres containers in this project
+  remove    Remove a stopped Postgres server and its data directory
+  client    Connect to a running Postgres instance with psql
+  dotenv    Write Postgres connection env vars to a .env file
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --json  Output as JSON
+  -h, --help  Print help
+
+CONTEXT FOR AGENTS:
+  Manage named Postgres server instances backed by Docker. Each instance is keyed on
+  (name, major version) and runs as a `postgres:<tag>` container with data bind-mounted
+  at .clickhouse/servers/<name>-pg<major>/data/.
+  Typical: `clickhousectl local postgres start` (starts "default" on port 5432).
+  `local server list` shows ClickHouse + Postgres entries together.
+  Requires Docker to be installed and running.

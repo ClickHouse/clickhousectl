@@ -1,0 +1,32 @@
+Start a Postgres container
+
+Usage: clickhousectl local postgres start [OPTIONS]
+
+Options:
+      --json                 Output as JSON
+      --name <NAME>          Server name (default: "default", or random if default is already running)
+  -v, --version <VERSION>    Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing
+      --port <PORT>          Host TCP port. If omitted, uses 5432 or auto-selects when occupied; an explicit port must be free
+      --user <USER>          POSTGRES_USER (default: postgres)
+      --password <PASSWORD>  POSTGRES_PASSWORD (default: random 24-char alphanumeric)
+      --database <DATABASE>  POSTGRES_DB (default: postgres)
+  -e, --env <KEY=VALUE>      Extra env vars for the container, repeatable: -e KEY=VALUE. The first POSTGRES_PASSWORD overrides --password; --user, --database, and managed PGDATA take precedence
+  -h, --help                 Print help
+
+CONTEXT FOR AGENTS:
+  Starts a named Postgres server backed by a Docker container.
+  Without --name, the first server is called "default"; if "default" is running,
+  a random name is generated (e.g. "bold-crane").
+  --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
+  Defaults to 18. Image is pulled if not already present locally.
+  If --port is omitted, port 5432 is used when available and a free port is auto-selected
+  when 5432 is occupied. If --port is set, that exact port must be free or start fails.
+  Data persists at .clickhouse/servers/<name>-pg<major>/data/ and is bind-mounted into the container.
+  A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
+  The first `-e POSTGRES_PASSWORD=...` overrides --password. --user, --database, and
+  managed PGDATA take precedence over same-named `-e` variables.
+  Start reports success only after PostgreSQL accepts connections, waiting up to 30 seconds.
+  Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
+  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
+  `created_by=clickhousectl_<version>` for safe discovery.
+  Requires Docker to be installed and running.

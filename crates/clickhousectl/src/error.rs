@@ -156,6 +156,12 @@ pub enum Error {
     #[allow(clippy::enum_variant_names)]
     DockerError(String),
 
+    #[error("Postgres validation failed: {0}")]
+    PostgresValidation(String),
+
+    #[error("Postgres operation failed: {0}")]
+    PostgresRuntime(String),
+
     #[error("{primary}\nPostgres startup rollback diagnostics: {cleanup}")]
     PostgresStartupRollback {
         #[source]

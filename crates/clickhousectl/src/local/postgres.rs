@@ -48,8 +48,8 @@ pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-')))
     });
     if tag.len() > 128 || !valid_suffix {
-        return Err(Error::Exec(format!(
-            "postgres version '{}' is not supported. Use a valid 17 or 18 image tag \
+        return Err(Error::PostgresValidation(format!(
+            "Postgres version '{}' is not supported. Use a valid 17 or 18 image tag \
              (for example: 17, 17-alpine, 18.1, 18-bookworm).",
             tag
         )));
@@ -140,8 +140,8 @@ async fn start(
                 _ => {
                     let versions: Vec<String> =
                         existing.iter().map(|i| i.version.clone()).collect();
-                    return Err(Error::Exec(format!(
-                        "multiple postgres instances named '{}' ({}); pass --version to select one",
+                    return Err(Error::PostgresRuntime(format!(
+                        "multiple Postgres instances named '{}' ({}); pass --version to select one",
                         user_name,
                         versions.join(", ")
                     )));
@@ -187,7 +187,7 @@ async fn start(
         }
         // Metadata orphaned — container removed externally. Force explicit
         // cleanup to avoid silently re-initing against potentially-stale data.
-        return Err(Error::Exec(format!(
+        return Err(Error::PostgresRuntime(format!(
             "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
              Run `clickhousectl local postgres remove {}` to clear the data dir \
              and start fresh.",
@@ -421,8 +421,8 @@ fn resolve_pg_target(user_name: &str, version: Option<&str>) -> Result<server::S
         1 => Ok(instances.into_iter().next().unwrap()),
         _ => {
             let versions: Vec<String> = instances.iter().map(|i| i.version.clone()).collect();
-            Err(Error::Exec(format!(
-                "multiple postgres instances named '{}' ({}); pass --version to select one",
+            Err(Error::PostgresRuntime(format!(
+                "multiple Postgres instances named '{}' ({}); pass --version to select one",
                 user_name,
                 versions.join(", ")
             )))
@@ -602,13 +602,13 @@ async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) ->
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
     if let Some(p) = explicit {
         if p == 0 {
-            return Err(Error::Exec(
+            return Err(Error::PostgresValidation(
                 "--port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_err() {
-            return Err(Error::Exec(format!(
-                "Postgres port {p} is already in use; choose a free --port or omit the flag to auto-select"
+            return Err(Error::PostgresValidation(format!(
+                "explicit Postgres port {p} is already in use; choose a free --port or omit the flag to auto-select"
             )));
         }
         return Ok(p);
@@ -621,7 +621,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(p);
         }
     }
-    Err(Error::Exec(
+    Err(Error::PostgresRuntime(
         "could not find a free TCP port for Postgres".into(),
     ))
 }
@@ -664,13 +664,13 @@ fn validate_extra_env(extra_env: Vec<String>) -> Result<(Vec<String>, Option<Str
 
     for (index, entry) in extra_env.into_iter().enumerate() {
         let Some((key, value)) = entry.split_once('=') else {
-            return Err(Error::Exec(format!(
+            return Err(Error::PostgresValidation(format!(
                 "invalid container environment variable #{}: expected KEY=VALUE",
                 index + 1
             )));
         };
         if key.is_empty() {
-            return Err(Error::Exec(format!(
+            return Err(Error::PostgresValidation(format!(
                 "invalid container environment variable #{}: KEY must not be empty",
                 index + 1
             )));
@@ -902,7 +902,9 @@ fn exec_host_psql(
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
-    Err(Error::Exec(err.to_string()))
+    Err(Error::PostgresRuntime(format!(
+        "could not execute psql: {err}"
+    )))
 }
 
 fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
@@ -1354,7 +1356,7 @@ mod tests {
     #[test]
     fn resolve_port_rejects_zero() {
         let err = resolve_port(Some(0)).unwrap_err();
-        assert!(matches!(err, Error::Exec(msg) if msg.contains("--port 0")));
+        assert!(matches!(err, Error::PostgresValidation(msg) if msg.contains("--port 0")));
     }
 
     #[test]
@@ -1373,7 +1375,7 @@ mod tests {
 
         let err = resolve_port(Some(port)).unwrap_err();
         assert!(
-            matches!(err, Error::Exec(msg) if msg.contains(&port.to_string()) && msg.contains("already in use"))
+            matches!(err, Error::PostgresValidation(msg) if msg.contains(&port.to_string()) && msg.contains("already in use"))
         );
     }
 
@@ -1442,7 +1444,9 @@ mod tests {
     fn extra_env_requires_key_value_entries() {
         for env in [vec!["NO_EQUALS".to_string()], vec!["=value".to_string()]] {
             let err = validate_extra_env(env).unwrap_err();
-            assert!(matches!(err, Error::Exec(msg) if msg.contains("environment variable")));
+            assert!(
+                matches!(err, Error::PostgresValidation(msg) if msg.contains("environment variable"))
+            );
         }
     }
 

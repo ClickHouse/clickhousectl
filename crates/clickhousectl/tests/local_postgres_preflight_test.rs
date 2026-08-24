@@ -154,6 +154,10 @@ fn run_invalid_start(args: &[&str], expected_error: &str) -> Output {
         stderr.contains(expected_error),
         "expected '{expected_error}' in stderr: {stderr}"
     );
+    assert!(
+        !stderr.contains("Failed to execute ClickHouse"),
+        "Postgres validation was reported as a ClickHouse execution failure: {stderr}"
+    );
     assert_eq!(requests, 0, "invalid start contacted Docker");
     assert!(
         !tempdir.path().join(".clickhouse/servers").exists(),
@@ -187,11 +191,26 @@ fn write_stopped_postgres_metadata(project: &Path, port: u16) {
 fn invalid_definition_options_make_zero_docker_requests() {
     for (args, expected_error) in [
         (vec!["--name", "../invalid"], "Invalid server name"),
-        (vec!["--version", "16"], "not supported"),
-        (vec!["--version", "18garbage"], "not supported"),
-        (vec!["--port", "0"], "--port 0 is not allowed"),
-        (vec!["-e", "NO_EQUALS"], "expected KEY=VALUE"),
-        (vec!["-e", "=value"], "KEY must not be empty"),
+        (
+            vec!["--version", "16"],
+            "Postgres validation failed: Postgres version '16' is not supported",
+        ),
+        (
+            vec!["--version", "18garbage"],
+            "Postgres validation failed: Postgres version '18garbage' is not supported",
+        ),
+        (
+            vec!["--port", "0"],
+            "Postgres validation failed: --port 0 is not allowed",
+        ),
+        (
+            vec!["-e", "NO_EQUALS"],
+            "Postgres validation failed: invalid container environment variable #1: expected KEY=VALUE",
+        ),
+        (
+            vec!["-e", "=value"],
+            "Postgres validation failed: invalid container environment variable #1: KEY must not be empty",
+        ),
     ] {
         run_invalid_start(&args, expected_error);
     }

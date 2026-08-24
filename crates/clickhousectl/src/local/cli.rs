@@ -416,15 +416,16 @@ CONTEXT FOR AGENTS:
   a random name is generated (e.g. \"bold-crane\").
   --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
   Defaults to 18. Image is pulled if not already present locally.
-  --port defaults to 5432; if omitted and taken, a free port is auto-assigned.
-  An explicitly requested port must be available and is never changed.
-  Data persists at .clickhouse/servers/<name>/data/ and is bind-mounted into the container.
+  If --port is omitted, port 5432 is used when available and a free port is auto-selected
+  when 5432 is occupied. If --port is set, that exact port must be free or start fails.
+  Data persists at .clickhouse/servers/<name>-pg<major>/data/ and is bind-mounted into the container.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
   The first `-e POSTGRES_PASSWORD=...` overrides --password. --user, --database, and
   managed PGDATA take precedence over same-named `-e` variables.
   Start reports success only after PostgreSQL accepts connections, waiting up to 30 seconds.
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
-  `clickhousectl.project=<cwd>`, `created_by=clickhousectl_<version>` for safe discovery.
+  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
+  `created_by=clickhousectl_<version>` for safe discovery.
   Requires Docker to be installed and running.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
@@ -435,7 +436,7 @@ CONTEXT FOR AGENTS:
         #[arg(long, short = 'v')]
         version: Option<String>,
 
-        /// Host TCP port (default: 5432, auto-assigns a free port if in use)
+        /// Host TCP port. If omitted, uses 5432 or auto-selects when occupied; an explicit port must be free.
         #[arg(long)]
         port: Option<u16>,
 
