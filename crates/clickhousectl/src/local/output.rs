@@ -29,6 +29,12 @@ pub enum LocalErrorCode {
     LocalError,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalClientMode {
+    Managed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LocalErrorOutput {
     pub error: LocalErrorBody,
@@ -39,6 +45,8 @@ pub struct LocalErrorBody {
     pub code: LocalErrorCode,
     pub message: String,
     pub command: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<LocalClientMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
 }
@@ -53,6 +61,20 @@ impl LocalErrorOutput {
             output.error.message =
                 Error::project_server_scope_message(&output.error.message, project);
             output.error.command = "clickhousectl local server list --global";
+            output.error.project = Some(project.clone());
+            return output;
+        }
+
+        if let Error::ManagedClientScope {
+            message,
+            project,
+            source,
+        } = error
+        {
+            let mut output = Self::from_error(source);
+            output.error.message = message.clone();
+            output.error.command = "clickhousectl local server list";
+            output.error.mode = Some(LocalClientMode::Managed);
             output.error.project = Some(project.clone());
             return output;
         }
@@ -170,6 +192,7 @@ impl LocalErrorOutput {
                 code,
                 message,
                 command,
+                mode: None,
                 project: None,
             },
         }
@@ -939,6 +962,19 @@ mod tests {
         assert!(!output.error.message.contains("/secret/raw/path"));
         assert!(!output.error.message.contains("filesystem diagnostics"));
         assert!(!output.error.message.contains("IO error:"));
+    }
+
+    #[test]
+    fn managed_client_errors_preserve_codes_mode_and_project() {
+        let output = LocalErrorOutput::from_error(
+            &Error::ServerNotRunning("dev".into()).with_managed_client_scope("/tmp/project".into()),
+        );
+
+        assert_eq!(output.error.code, LocalErrorCode::ServerNotRunning);
+        assert_eq!(output.error.mode, Some(LocalClientMode::Managed));
+        assert_eq!(output.error.project.as_deref(), Some("/tmp/project"));
+        assert_eq!(output.error.command, "clickhousectl local server list");
+        assert!(output.error.message.contains("Managed local client"));
     }
 
     #[test]

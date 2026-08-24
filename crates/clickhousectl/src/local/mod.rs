@@ -264,28 +264,46 @@ fn run_client(
 ) -> Result<()> {
     // If --host or --port is set, connect directly (bypass local server lookup).
     // Otherwise, look up the named server for port and version.
-    let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
+    let (resolved_host, tcp_port, version, managed_project) = if host.is_some() || port.is_some() {
         let h = host.unwrap_or_else(|| "localhost".to_string());
         let p = port.unwrap_or(9000);
         let v = resolve_direct_client_version(version.as_deref())?;
-        (h, p, v)
+        (h, p, v, None)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
-        server::recover_current_project_servers()?;
+        let project = canonical_project_dir()?;
+        server::recover_current_project_servers()
+            .map_err(|error| error.with_managed_client_scope(project.clone()))?;
         let lock = server::ServerLock::acquire(server_name)?;
         let info = lock
-            .load_info()?
-            .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
-        if !lock.is_running()? {
-            return Err(Error::ServerNotRunning(server_name.to_string()));
+            .load_info()
+            .map_err(|error| error.with_managed_client_scope(project.clone()))?
+            .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))
+            .map_err(|error| error.with_managed_client_scope(project.clone()))?;
+        if !lock
+            .is_running()
+            .map_err(|error| error.with_managed_client_scope(project.clone()))?
+        {
+            return Err(
+                Error::ServerNotRunning(server_name.to_string()).with_managed_client_scope(project)
+            );
         }
-        ("localhost".to_string(), info.tcp_port, info.version)
+        (
+            "localhost".to_string(),
+            info.tcp_port,
+            info.version,
+            Some(project),
+        )
     };
 
     let binary = paths::binary_path(&version)?;
 
     if !binary.exists() {
-        return Err(Error::VersionNotFound(version));
+        let error = Error::VersionNotFound(version);
+        return Err(match managed_project {
+            Some(project) => error.with_managed_client_scope(project),
+            None => error,
+        });
     }
 
     let mut cmd = Command::new(&binary);

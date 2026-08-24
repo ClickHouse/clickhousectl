@@ -199,6 +199,14 @@ pub enum Error {
         source: Box<Error>,
     },
 
+    #[error("{message}")]
+    ManagedClientScope {
+        message: String,
+        project: String,
+        #[source]
+        source: Box<Error>,
+    },
+
     #[error("{0}")]
     Cloud(String),
 
@@ -299,15 +307,62 @@ impl Error {
 
     pub(crate) fn project_server_scope_message(message: &str, project: &str) -> String {
         format!(
-            "{}\nProject directory used for lookup: {project:?}\n\
-             Only this exact directory's `.clickhouse` is searched; parent `.clickhouse` \
-             directories are not searched.\n\
+            "{}\n{}\n\
              Run `clickhousectl local server list --global` to find running servers. For stopped \
              servers, change to the intended project directory and run \
              `clickhousectl local server list`.",
-            message
+            message,
+            project_lookup_scope(project)
         )
     }
+
+    pub fn with_managed_client_scope(self, project: String) -> Self {
+        let recovery = match &self {
+            Error::ServerNotFound(_) => {
+                "Run `clickhousectl local server list`; if the server belongs to a parent \
+                 project, return to that project root. Start it with `clickhousectl local server \
+                 start [name]`, or use direct mode with `clickhousectl local client --host \
+                 localhost`."
+            }
+            Error::ServerNotRunning(_) => {
+                "Run `clickhousectl local server list`, then `clickhousectl local server start \
+                 [name]`; or use direct mode with `clickhousectl local client --host localhost`."
+            }
+            Error::VersionNotFound(_) => {
+                "Run `clickhousectl local server list` to inspect the selected server. Restore its \
+                 recorded binary with `clickhousectl local install <version>`, or use direct mode \
+                 with `clickhousectl local client --host localhost --version \
+                 <installed-version>`."
+            }
+            Error::ServerMetadataRead { .. }
+            | Error::ServerMetadataPermission { .. }
+            | Error::ServerMetadataParse { .. }
+            | Error::ServerMetadataWrite { .. } => {
+                "Run `clickhousectl local server list` to inspect the selected server, or use \
+                 direct mode with `clickhousectl local client --host localhost`."
+            }
+            _ => return self,
+        };
+
+        let message = format!(
+            "Managed local client: {}\n{}\n{recovery}",
+            self,
+            project_lookup_scope(&project)
+        );
+        Error::ManagedClientScope {
+            message,
+            project,
+            source: Box::new(self),
+        }
+    }
+}
+
+fn project_lookup_scope(project: &str) -> String {
+    format!(
+        "Project directory used for lookup: {project:?}\n\
+         Only this exact directory's `.clickhouse` is searched; parent `.clickhouse` directories \
+         are not searched."
+    )
 }
 
 #[cfg(test)]
@@ -405,6 +460,28 @@ mod tests {
             } if project == "/tmp/project"
                 && matches!(source.as_ref(), Error::Io(source) if source.to_string() == "read failed")
         ));
+    }
+
+    #[test]
+    fn managed_client_scope_wraps_only_selected_managed_state_errors() {
+        let project = "/tmp/project".to_string();
+        let error =
+            Error::VersionNotFound("25.12.9.61".into()).with_managed_client_scope(project.clone());
+
+        assert!(matches!(
+            error,
+            Error::ManagedClientScope {
+                ref project,
+                ref source,
+                ..
+            } if project == "/tmp/project" && matches!(source.as_ref(), Error::VersionNotFound(_))
+        ));
+        assert_eq!(
+            Error::ClientVersionNotInstalled("25.12.9.61".into())
+                .with_managed_client_scope(project)
+                .to_string(),
+            "ClickHouse client version 25.12.9.61 is not installed. Run `clickhousectl local install 25.12.9.61`, or choose an exact version from `clickhousectl local list`."
+        );
     }
 
     #[test]
