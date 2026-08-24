@@ -41,7 +41,8 @@ CONTEXT FOR AGENTS:
     /// Set the default version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
+  Sets the default ClickHouse version used by direct `clickhousectl local client` connections
+  when --version is omitted, and by `clickhousectl local server`.
   Accepts version specs: \"latest\" (recommended), \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
   Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
@@ -93,28 +94,44 @@ CONTEXT FOR AGENTS:
     Init,
 
     /// Connect to a running ClickHouse server with clickhouse-client
-    #[command(after_help = "\
+    #[command(
+        group(clap::ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
+        after_help = "\
 CONTEXT FOR AGENTS:
-  Two connection modes:
+  Connection and local binary selection are separate:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
      locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
   2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
      to localhost (for example, `local client --port 9000`); a missing port defaults to 9000.
-  Named and direct selectors cannot be combined.
+     Pass --version with a direct connection to select an exact installed client binary without
+     changing the default. Otherwise direct mode uses the configured default; it never guesses
+     from installed versions. Use `local list` to find exact installed versions.
+  Named mode always uses the managed server's recorded version. --version is direct-only, and
+  named and direct selectors cannot be combined.
   --query and --queries-file execute SQL inline or from a file.
   Additional clickhouse-client args can be passed after --.
-  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers.")]
+  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
+    )]
     Client {
         /// Server name to connect to (default: "default")
-        #[arg(long, short, conflicts_with_all = ["host", "port"])]
+        #[arg(long, short, conflicts_with_all = ["host", "port", "version"])]
         name: Option<String>,
 
+        /// Exact installed ClickHouse version for a direct connection; does not change the default
+        #[arg(long, short = 'v', requires = "direct")]
+        version: Option<String>,
+
         /// Host to connect to (bypasses local server lookup)
-        #[arg(long)]
+        #[arg(long, group = "direct")]
         host: Option<String>,
 
         /// TCP port to connect to (bypasses local server lookup if set)
-        #[arg(long, short, value_parser = clap::value_parser!(u16).range(1..))]
+        #[arg(
+            long,
+            short,
+            value_parser = clap::value_parser!(u16).range(1..),
+            group = "direct"
+        )]
         port: Option<u16>,
 
         /// Execute a SQL query
@@ -628,6 +645,86 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn clickhouse_direct_client_version_selector_matrix() {
+        let cases = [
+            (
+                &["--host", "db.example", "--version", "25.12.9.61"][..],
+                "25.12.9.61",
+            ),
+            (&["--port", "9000", "-v", "26.1.2.3"][..], "26.1.2.3"),
+            (
+                &[
+                    "--version",
+                    "26.2.3.4",
+                    "--host",
+                    "db.example",
+                    "--port",
+                    "9440",
+                ][..],
+                "26.2.3.4",
+            ),
+        ];
+
+        for (selectors, expected_version) in cases {
+            let mut args = vec!["client"];
+            args.extend_from_slice(selectors);
+            let LocalCommands::Client { version, .. } = local_command(&args) else {
+                panic!("expected local client command");
+            };
+            assert_eq!(
+                version.as_deref(),
+                Some(expected_version),
+                "selectors: {selectors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn clickhouse_client_version_requires_direct_connection() {
+        for selectors in [
+            &["--version", "25.12.9.61"][..],
+            &["--name", "dev", "--version", "25.12.9.61"][..],
+            &["--version", "25.12.9.61", "--name", "dev"][..],
+        ] {
+            let mut args = vec!["client"];
+            args.extend_from_slice(selectors);
+            let error = try_local_command(&args)
+                .err()
+                .expect("binary version should require direct mode");
+            assert!(
+                matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::MissingRequiredArgument
+                        | clap::error::ErrorKind::ArgumentConflict
+                ),
+                "selectors: {selectors:?}\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn clickhouse_client_help_separates_connection_and_binary_selection() {
+        let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
+            .err()
+            .expect("help should exit through clap")
+            .to_string();
+
+        assert!(
+            help.contains("Connection and local binary selection are separate"),
+            "{help}"
+        );
+        assert!(
+            help.contains("Exact installed ClickHouse version"),
+            "{help}"
+        );
+        assert!(help.contains("does not change the default"), "{help}");
+        assert!(
+            help.contains("Named mode always uses the managed server's recorded version"),
+            "{help}"
+        );
     }
 
     #[test]
