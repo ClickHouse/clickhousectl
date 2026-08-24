@@ -38,12 +38,13 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         }
         LocalCommands::Client {
             name,
+            version,
             host,
             port,
             query,
             queries_file,
             args,
-        } => run_client(name, host, port, query, queries_file, args),
+        } => run_client(name, version, host, port, query, queries_file, args),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
@@ -253,6 +254,7 @@ fn which(json: bool) -> Result<()> {
 
 fn run_client(
     name: Option<String>,
+    version: Option<String>,
     host: Option<String>,
     port: Option<u16>,
     query: Option<String>,
@@ -264,7 +266,7 @@ fn run_client(
     let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
         let h = host.unwrap_or_else(|| "localhost".to_string());
         let p = port.unwrap_or(9000);
-        let v = version_manager::get_default_version()?;
+        let v = resolve_direct_client_version(version.as_deref())?;
         (h, p, v)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
@@ -311,6 +313,24 @@ fn run_client(
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
+}
+
+fn resolve_direct_client_version(version: Option<&str>) -> Result<String> {
+    if let Some(version) = version {
+        let installed = version_manager::list_installed_versions()?;
+        return installed
+            .iter()
+            .any(|installed| installed == version)
+            .then(|| version.to_string())
+            .ok_or_else(|| Error::ClientVersionNotInstalled(version.to_string()));
+    }
+
+    match version_manager::get_default_version() {
+        Ok(version) => Ok(version),
+        Err(Error::NoDefaultVersion) => Err(Error::DirectClientVersionRequired),
+        Err(Error::VersionNotFound(version)) => Err(Error::StaleClientDefault(version)),
+        Err(error) => Err(error),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

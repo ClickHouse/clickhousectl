@@ -224,7 +224,12 @@ clickhousectl local client --name dev                # Connects to "dev" server
 clickhousectl local client --query "SHOW DATABASES"  # Run a query
 clickhousectl local client --queries-file schema.sql # Run queries from a file
 clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
+clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an exact installed client binary
 ```
+
+Named connections and direct connections select the client binary differently. A named connection uses the version recorded in the managed server's metadata, regardless of the global default. A direct connection (`--host`, `--port`, or both) uses the exact installed version passed with `--version`; if that flag is omitted, it uses the version selected by `local use`.
+
+Direct connections never infer a binary from the contents of `~/.clickhouse/versions`. With no valid default, omitting `--version` fails whether zero, one, or multiple versions are installed. Use `local list` to find an exact installed version, then pass it with `--version` or select it globally with `local use`. A missing explicit version and a default that points to a removed version both fail with repair instructions. Direct `--version` selection neither installs a binary nor changes the default.
 
 ### Creating and managing ClickHouse servers
 

@@ -22,6 +22,21 @@ pub enum Error {
     #[error("No default version set. Run: clickhousectl local use <version>")]
     NoDefaultVersion,
 
+    #[error(
+        "No ClickHouse client version selected for the direct connection. Pass `--version <installed-version>`, or set a default with `clickhousectl local use <version>` (see `clickhousectl local list`)."
+    )]
+    DirectClientVersionRequired,
+
+    #[error(
+        "ClickHouse client version {0} is not installed. Run `clickhousectl local install {0}`, or choose an exact version from `clickhousectl local list`."
+    )]
+    ClientVersionNotInstalled(String),
+
+    #[error(
+        "Default ClickHouse version {0} is not installed. Repair it with `clickhousectl local use <version>`, or pass `--version <installed-version>` for this direct connection."
+    )]
+    StaleClientDefault(String),
+
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 
