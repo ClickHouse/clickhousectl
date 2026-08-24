@@ -194,8 +194,8 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     // Recover orphaned servers so we detect a running process even when its
     // metadata file is missing, then refuse to pull the binary out from under
     // a server running on this version.
-    server::recover_current_project_servers();
-    let in_use: Vec<String> = server::list_running_servers()
+    server::recover_current_project_servers()?;
+    let in_use: Vec<String> = server::list_running_servers()?
         .into_iter()
         .filter(|i| i.version == version)
         .map(|i| i.name)
@@ -271,19 +271,15 @@ fn run_client(
         (h, p, v)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
-        let entries = server::list_all_servers();
-        let entry = entries
-            .iter()
-            .find(|e| e.name == server_name)
+        server::recover_current_project_servers()?;
+        let lock = server::ServerLock::acquire(server_name)?;
+        let info = lock
+            .load_info()?
             .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
-        if !entry.running {
+        if !lock.is_running()? {
             return Err(Error::ServerNotRunning(server_name.to_string()));
         }
-        let info = entry
-            .info
-            .as_ref()
-            .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
-        ("localhost".to_string(), info.tcp_port, info.version.clone())
+        ("localhost".to_string(), info.tcp_port, info.version)
     };
 
     let binary = paths::binary_path(&version)?;
@@ -351,12 +347,12 @@ async fn start_server(
 
     // Recover any orphaned servers so name resolution and collision checks
     // see processes that lost their metadata files.
-    server::recover_current_project_servers();
+    server::recover_current_project_servers()?;
 
     // Resolve server name and check for collisions before any downloads
     let server_name = server::resolve_name(name.as_deref())?;
 
-    if name.is_some() && server::is_server_running(&server_name) {
+    if name.is_some() && server::is_server_running(&server_name)? {
         return Err(Error::ServerAlreadyRunning(server_name));
     }
 
@@ -395,7 +391,7 @@ async fn start_server(
     }
 
     // Show running server count
-    let running = server::running_server_count();
+    let running = server::running_server_count()?;
     if !json && running > 0 {
         eprintln!(
             "Note: {} server{} already running (use `clickhousectl local server list` to see them)",
@@ -441,6 +437,10 @@ async fn start_server(
     let mut cmd = Command::new(&binary);
     cmd.arg("server");
 
+    let server_lock = server::ServerLock::acquire(&server_name)?;
+    if server_lock.is_running()? {
+        return Err(Error::ServerAlreadyRunning(server_name));
+    }
     server::ensure_server_data_dir(&server_name)?;
     let data_dir = server::server_data_dir(&server_name);
 
@@ -487,7 +487,12 @@ async fn start_server(
             engine: server::Engine::Clickhouse,
             container_id: None,
         };
-        server::save_server_info(&info)?;
+        if let Err(error) = server_lock.save_info(&info) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        drop(server_lock);
 
         if no_wait {
             server::check_spawn_health(&mut child, &server_name, &log_path).await?;
@@ -527,7 +532,12 @@ async fn start_server(
             engine: server::Engine::Clickhouse,
             container_id: None,
         };
-        server::save_server_info(&info)?;
+        if let Err(error) = server_lock.save_info(&info) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        drop(server_lock);
 
         eprintln!(
             "Server '{}' running (PID: {}, HTTP: {}, TCP: {})",
@@ -565,18 +575,14 @@ fn dotenv_server(
     json: bool,
 ) -> Result<()> {
     let server_name = name.unwrap_or("default");
-    let entries = server::list_all_servers();
-    let entry = entries
-        .iter()
-        .find(|e| e.name == server_name)
+    server::recover_current_project_servers()?;
+    let lock = server::ServerLock::acquire(server_name)?;
+    let info = lock
+        .load_info()?
         .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
-    if !entry.running {
+    if !lock.is_running()? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
-    let info = entry
-        .info
-        .as_ref()
-        .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
 
     // Only write vars we actually know from server metadata.
     // User, password, and database are only included when explicitly provided.
@@ -770,7 +776,7 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
 fn stop_server_local(name: Option<String>, json: bool) -> Result<()> {
     let name = match name {
         Some(name) => name,
-        None => match select_omitted_stop_name(&server::list_clickhouse_server_names())? {
+        None => match select_omitted_stop_name(&server::list_clickhouse_server_names()?)? {
             Some(name) => name,
             None => {
                 output::print_output(&output::ServerStopNoopOutput::no_servers(), json);
@@ -782,17 +788,15 @@ fn stop_server_local(name: Option<String>, json: bool) -> Result<()> {
 
     // Explicit names do not enumerate first, so recover orphaned processes
     // before checking the selected identity.
-    server::recover_current_project_servers();
+    server::recover_current_project_servers()?;
+    let lock = server::ServerLock::acquire(&name)?;
 
-    match classify_stop(
-        server::is_server_running(&name),
-        server::server_data_dir(&name).exists(),
-    ) {
+    match classify_stop(lock.is_running()?, server::server_data_dir(&name).exists()) {
         StopOutcome::Stop => {
             if !json {
                 println!("Stopping server '{}'...", name);
             }
-            server::kill_server(&name)?;
+            lock.kill()?;
             let out = output::ServerStopOutput {
                 name,
                 already_stopped: false,
@@ -830,7 +834,7 @@ fn remove_server_local(name: Option<String>, json: bool) -> Result<()> {
         Some(name) => name,
         None if server::server_data_dir("default").exists() => "default".to_string(),
         None => {
-            let has_custom = server::list_clickhouse_server_names()
+            let has_custom = server::list_clickhouse_server_names()?
                 .iter()
                 .any(|name| name != "default");
             return Err(if has_custom {
@@ -844,9 +848,10 @@ fn remove_server_local(name: Option<String>, json: bool) -> Result<()> {
 
     // Recover orphaned servers so we correctly detect a running process even
     // when its metadata file is missing.
-    server::recover_current_project_servers();
+    server::recover_current_project_servers()?;
+    let lock = server::ServerLock::acquire(&name)?;
 
-    if server::is_server_running(&name) {
+    if lock.is_running()? {
         return Err(Error::ServerRunningCannotRemove(name));
     }
     let data_dir = server::server_data_dir(&name);
@@ -856,7 +861,7 @@ fn remove_server_local(name: Option<String>, json: bool) -> Result<()> {
     // Remove the whole server directory (parent of data/).
     let server_dir = data_dir.parent().unwrap();
     std::fs::remove_dir_all(server_dir)?;
-    server::remove_server_info(&name);
+    lock.remove_info()?;
     let out = output::ServerRemoveOutput { name };
     output::print_output(&out, json);
     Ok(())
@@ -883,7 +888,7 @@ fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
 }
 
 fn list_servers_local(json: bool) -> Result<()> {
-    let entries = server::list_all_servers();
+    let entries = server::list_all_servers()?;
     let running_count = entries.iter().filter(|e| e.running).count();
     let total = entries.len();
 
@@ -1026,7 +1031,7 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
 }
 
 fn stop_all_servers_local(json: bool) -> Result<()> {
-    let servers = server::list_running_servers();
+    let servers = server::list_running_servers()?;
     let out = stop_servers(&servers, json, server::kill_server);
     if json {
         output::print_output(&out, json);

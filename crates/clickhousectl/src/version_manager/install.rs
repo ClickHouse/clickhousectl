@@ -195,7 +195,7 @@ pub async fn install_resolved(
     if !structured_output
         && is_master
         && replaced_existing
-        && version_in_use_by_running_server(&exact_version)
+        && version_in_use_by_running_server(&exact_version)?
     {
         eprintln!(
             "Note: running servers keep using the previous {} build until restarted",
@@ -329,11 +329,11 @@ pub async fn ensure_installed(
 /// Whether a running managed server (in the current project) was started from
 /// this version. Recovers orphans first (like `local remove`) so a server that
 /// lost its metadata file is still counted.
-fn version_in_use_by_running_server(version: &str) -> bool {
-    crate::local::server::recover_current_project_servers();
-    crate::local::server::list_running_servers()
+fn version_in_use_by_running_server(version: &str) -> Result<bool> {
+    crate::local::server::recover_current_project_servers()?;
+    Ok(crate::local::server::list_running_servers()?
         .iter()
-        .any(|s| s.version == version)
+        .any(|s| s.version == version))
 }
 
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`

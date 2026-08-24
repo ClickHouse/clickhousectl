@@ -133,6 +133,42 @@ pub enum Error {
     ServerNotFound(String),
 
     #[error(
+        "Could not read metadata for server '{name}' at .clickhouse/servers/{name}.json: {source}. Check that the file is readable and retry."
+    )]
+    ServerMetadataRead {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "Permission denied accessing metadata for server '{name}' at .clickhouse/servers/{name}.json. Restore access to the file and its parent directory, then retry."
+    )]
+    ServerMetadataPermission {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "Metadata for server '{name}' at .clickhouse/servers/{name}.json is invalid: {source}. Repair or remove the metadata file, then retry."
+    )]
+    ServerMetadataParse {
+        name: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(
+        "Could not update metadata for server '{name}' at .clickhouse/servers/{name}.json: {source}. Check write access to .clickhouse/servers and retry."
+    )]
+    ServerMetadataWrite {
+        name: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "No server name was provided and multiple non-default ClickHouse servers exist. Pass a name or run `clickhousectl local server stop-all`; use `clickhousectl local server list` to see available servers."
     )]
     ServerNameRequiredForStop,

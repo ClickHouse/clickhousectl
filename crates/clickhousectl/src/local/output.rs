@@ -15,6 +15,10 @@ pub enum LocalErrorCode {
     ServerNotFound,
     ServerNotRunning,
     ServerRunning,
+    ServerMetadataRead,
+    ServerMetadataPermission,
+    ServerMetadataInvalid,
+    ServerMetadataWrite,
     InvalidVersion,
     VersionUnavailable,
     PortInUse,
@@ -57,6 +61,26 @@ impl LocalErrorOutput {
             | Error::ServerRunningCannotRemove(_)
             | Error::VersionInUse { .. } => (
                 LocalErrorCode::ServerRunning,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerMetadataRead { .. } => (
+                LocalErrorCode::ServerMetadataRead,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerMetadataPermission { .. } => (
+                LocalErrorCode::ServerMetadataPermission,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerMetadataParse { .. } => (
+                LocalErrorCode::ServerMetadataInvalid,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerMetadataWrite { .. } => (
+                LocalErrorCode::ServerMetadataWrite,
                 error.to_string(),
                 "clickhousectl local server list",
             ),
@@ -770,6 +794,38 @@ mod tests {
             (
                 Error::ServerAlreadyRunning("default".into()),
                 LocalErrorCode::ServerRunning,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerMetadataRead {
+                    name: "default".into(),
+                    source: std::io::Error::other("read failed"),
+                },
+                LocalErrorCode::ServerMetadataRead,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerMetadataPermission {
+                    name: "default".into(),
+                    source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                },
+                LocalErrorCode::ServerMetadataPermission,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerMetadataParse {
+                    name: "default".into(),
+                    source: serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+                },
+                LocalErrorCode::ServerMetadataInvalid,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerMetadataWrite {
+                    name: "default".into(),
+                    source: std::io::Error::other("write failed"),
+                },
+                LocalErrorCode::ServerMetadataWrite,
                 "clickhousectl local server list",
             ),
             (
