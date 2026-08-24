@@ -2,11 +2,42 @@ use crate::error::{Error, Result};
 use crate::paths;
 use crate::version_manager::download::download_from_source;
 use crate::version_manager::list::list_installed_versions;
+use crate::version_manager::lock::FileLock;
 use crate::version_manager::master;
 use crate::version_manager::platform::{DownloadSource, Platform};
 use crate::version_manager::resolve::{ResolvedVersion, resolve, try_resolve_local};
 use crate::version_manager::spec::VersionSpec;
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+struct StagingDir {
+    path: PathBuf,
+}
+
+impl StagingDir {
+    fn create(versions_dir: &Path) -> Result<Self> {
+        let staging_root = versions_dir.join(".staging");
+        std::fs::create_dir_all(&staging_root)?;
+        loop {
+            let path = staging_root.join(uuid::Uuid::new_v4().simple().to_string());
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 /// Install a version spec, trying installed versions first before any remote call.
 /// An installed match is a successful no-op regardless of whether the spec is
@@ -50,6 +81,7 @@ pub async fn install_resolved(
     force: bool,
 ) -> Result<String> {
     paths::ensure_dirs()?;
+    let versions_dir = paths::versions_dir()?;
 
     // The floating `latest`/master build has no version upfront and a stable
     // URL whose content moves. Use the HTTP etag to skip the ~153MB download
@@ -73,8 +105,8 @@ pub async fn install_resolved(
 
     // If we know the exact version upfront, check if already installed
     if let Some(ref version) = resolved.exact_version {
-        let version_dir = paths::version_dir(version)?;
-        if version_dir.exists() && !force {
+        let binary = paths::binary_path(version)?;
+        if binary.exists() && !force {
             return Err(Error::VersionAlreadyInstalled(version.to_string()));
         }
     }
@@ -98,12 +130,10 @@ pub async fn install_resolved(
         }
     }
 
-    // Download to a temp directory first
-    let temp_dir = paths::versions_dir()?.join(".download-temp");
-    if temp_dir.exists() {
-        std::fs::remove_dir_all(&temp_dir)?;
-    }
-    std::fs::create_dir_all(&temp_dir)?;
+    // Keep every download isolated. A killed process may leave its own staging
+    // directory behind, but no later invocation reuses or removes it.
+    let staging = StagingDir::create(&versions_dir)?;
+    let temp_dir = staging.path();
 
     let binary_path = temp_dir.join("clickhouse");
 
@@ -113,7 +143,7 @@ pub async fn install_resolved(
         let tarball_path = temp_dir.join("clickhouse.tgz");
         download_from_source(&resolved.source, platform, &tarball_path).await?;
         eprintln!("Extracting...");
-        extract_tarball_auto(&tarball_path, &temp_dir)?;
+        extract_tarball_auto(&tarball_path, temp_dir)?;
     } else {
         download_from_source(&resolved.source, platform, &binary_path).await?;
     }
@@ -131,24 +161,15 @@ pub async fn install_resolved(
         detect_binary_version(&binary_path)?
     };
 
-    // Check if this exact version is already installed (post-detection check for builds source).
-    // Skipped for master: a master build's version string is shared across commits, so an
-    // existing dir doesn't mean the content matches — we got here because the etag changed
-    // (or there was no record), so overwrite the existing binary in place and adopt the dir
-    // as the master install (the record write below re-points the master record at it).
-    let version_dir = paths::version_dir(&exact_version)?;
-    if version_dir.exists() && !force && !is_master {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        return Err(Error::VersionAlreadyInstalled(exact_version));
-    }
-
-    // Move to final location
-    let replaced_existing = version_dir.exists();
-    if replaced_existing {
-        std::fs::remove_dir_all(&version_dir)?;
-    }
-    std::fs::create_dir_all(&version_dir)?;
-    std::fs::rename(&binary_path, version_dir.join("clickhouse"))?;
+    let replaced_existing = commit_staged_binary(
+        &versions_dir,
+        &binary_path,
+        &exact_version,
+        force,
+        is_master,
+        platform,
+        master_head.as_ref(),
+    )?;
 
     // Replacing a build on disk never affects already-running servers (they keep
     // executing the old binary) — just say so, so the swap isn't silent.
@@ -157,24 +178,6 @@ pub async fn install_resolved(
             "Note: running servers keep using the previous {} build until restarted",
             exact_version
         );
-    }
-
-    // Clean up temp dir
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
-    // Record the master etag so a later `latest` resolve can skip the download
-    // when master is unchanged. Best-effort: a sidecar write failure must not
-    // fail an otherwise-successful install.
-    if is_master {
-        if let Some(head) = &master_head {
-            let _ = master::record(platform, head, &exact_version);
-        }
-    } else {
-        // A non-master install just wrote versions/<exact_version>/. If the
-        // sidecar recorded that dir as the installed master build, the record
-        // is now stale and would make a later `latest` resolve reuse this
-        // binary as if it were master. Best-effort, like `record`.
-        let _ = master::clear_record_for_version(platform, &exact_version);
     }
 
     let channel_suffix = match resolved.channel {
@@ -186,14 +189,83 @@ pub async fn install_resolved(
     Ok(exact_version)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn commit_staged_binary(
+    versions_dir: &Path,
+    staged_binary: &Path,
+    exact_version: &str,
+    force: bool,
+    is_master: bool,
+    platform: &Platform,
+    master_head: Option<&master::HeadInfo>,
+) -> Result<bool> {
+    let lock_path = versions_dir
+        .join(".locks")
+        .join(format!("version-{exact_version}.lock"));
+    let _lock = FileLock::acquire(&lock_path)?;
+    pause_after_target_lock_for_test();
+
+    let version_dir = versions_dir.join(exact_version);
+    let target_binary = version_dir.join("clickhouse");
+    if target_binary.exists() && !force && !is_master {
+        return Err(Error::VersionAlreadyInstalled(exact_version.to_string()));
+    }
+
+    let replaced_existing = target_binary.exists();
+    let new_head = if is_master { master_head } else { None };
+    master::commit_install_in(versions_dir, platform, exact_version, new_head, || {
+        if version_dir.exists() {
+            // Both paths are under versions_dir, so rename atomically replaces
+            // an old complete binary without exposing staged contents.
+            std::fs::rename(staged_binary, &target_binary)?;
+        } else {
+            // Rename a complete directory into place for a first install;
+            // interruption cannot leave an empty target version behind.
+            let commit_dir = staged_binary
+                .parent()
+                .expect("staged binary has a parent")
+                .join("install");
+            std::fs::create_dir(&commit_dir)?;
+            std::fs::rename(staged_binary, commit_dir.join("clickhouse"))?;
+            std::fs::rename(commit_dir, &version_dir)?;
+        }
+        Ok(())
+    })?;
+
+    Ok(replaced_existing)
+}
+
+#[cfg(test)]
+fn pause_after_target_lock_for_test() {
+    let (Ok(marker), Ok(release)) = (
+        std::env::var("CHCTL_TEST_TARGET_LOCKED"),
+        std::env::var("CHCTL_TEST_TARGET_RELEASE"),
+    ) else {
+        return;
+    };
+    std::fs::write(marker, b"locked").expect("write target lock marker");
+    let release = PathBuf::from(release);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !release.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting to release target lock"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(not(test))]
+fn pause_after_target_lock_for_test() {}
+
 /// Like `install_resolved`, but returns the existing version instead of erroring
 /// when already installed. Intended for cases like `server start --version` where
 /// the goal is "make sure this version is available" rather than "install this".
 pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -> Result<String> {
     // If we know the exact version upfront, return it if already installed
     if let Some(ref version) = resolved.exact_version {
-        let version_dir = paths::version_dir(version)?;
-        if version_dir.exists() {
+        let binary = paths::binary_path(version)?;
+        if binary.exists() {
             return Ok(version.clone());
         }
     }
@@ -314,6 +386,315 @@ fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version_manager::platform::{Arch, Os};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const COMMIT_HELPER: &str = "version_manager::install::tests::commit_install_subprocess";
+
+    struct ChildInstall<'a> {
+        versions_dir: &'a Path,
+        version: &'a str,
+        contents: &'a str,
+        etag: &'a str,
+        platform: &'a str,
+        ready: &'a Path,
+        target_pause: Option<(&'a Path, &'a Path)>,
+        sidecar_pause: Option<(&'a Path, &'a Path)>,
+        binary_pause: Option<(&'a Path, &'a Path)>,
+    }
+
+    fn spawn_install(config: ChildInstall<'_>) -> Child {
+        let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
+        command
+            .args(["--exact", COMMIT_HELPER, "--nocapture"])
+            .env("CHCTL_TEST_COMMIT_ROOT", config.versions_dir)
+            .env("CHCTL_TEST_COMMIT_VERSION", config.version)
+            .env("CHCTL_TEST_COMMIT_CONTENTS", config.contents)
+            .env("CHCTL_TEST_COMMIT_ETAG", config.etag)
+            .env("CHCTL_TEST_COMMIT_PLATFORM", config.platform)
+            .env("CHCTL_TEST_COMMIT_READY", config.ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some((marker, release)) = config.target_pause {
+            command
+                .env("CHCTL_TEST_TARGET_LOCKED", marker)
+                .env("CHCTL_TEST_TARGET_RELEASE", release);
+        }
+        if let Some((marker, release)) = config.sidecar_pause {
+            command
+                .env("CHCTL_TEST_SIDECAR_LOCKED", marker)
+                .env("CHCTL_TEST_SIDECAR_RELEASE", release);
+        }
+        if let Some((marker, release)) = config.binary_pause {
+            command
+                .env("CHCTL_TEST_BINARY_COMMIT_PAUSED", marker)
+                .env("CHCTL_TEST_BINARY_COMMIT_RELEASE", release);
+        }
+        command.spawn().expect("spawn install helper")
+    }
+
+    fn wait_for_path(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !path.exists() {
+            assert!(Instant::now() < deadline, "timed out waiting for {path:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_success(child: &mut Child) {
+        let status = child.wait().expect("wait for install helper");
+        assert!(status.success(), "install helper failed with {status}");
+    }
+
+    fn test_platform(name: &str) -> Platform {
+        match name {
+            "amd64" => Platform {
+                os: Os::Linux,
+                arch: Arch::X86_64,
+            },
+            "macos-aarch64" => Platform {
+                os: Os::MacOS,
+                arch: Arch::Aarch64,
+            },
+            other => panic!("unknown test platform {other}"),
+        }
+    }
+
+    fn sidecar(versions_dir: &Path) -> serde_json::Value {
+        let bytes =
+            std::fs::read(versions_dir.join(".master-builds.json")).expect("read master sidecar");
+        serde_json::from_slice(&bytes).expect("parse master sidecar")
+    }
+
+    #[test]
+    fn commit_install_subprocess() {
+        let Ok(versions_dir) = std::env::var("CHCTL_TEST_COMMIT_ROOT") else {
+            return;
+        };
+        let versions_dir = PathBuf::from(versions_dir);
+        std::fs::create_dir_all(&versions_dir).unwrap();
+        let version = std::env::var("CHCTL_TEST_COMMIT_VERSION").unwrap();
+        let contents = std::env::var("CHCTL_TEST_COMMIT_CONTENTS").unwrap();
+        let etag = std::env::var("CHCTL_TEST_COMMIT_ETAG").unwrap();
+        let platform = test_platform(&std::env::var("CHCTL_TEST_COMMIT_PLATFORM").unwrap());
+        let staging = StagingDir::create(&versions_dir).unwrap();
+        let binary = staging.path().join("clickhouse");
+        std::fs::write(&binary, contents).unwrap();
+        std::fs::write(
+            std::env::var("CHCTL_TEST_COMMIT_READY").unwrap(),
+            staging.path().to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        commit_staged_binary(
+            &versions_dir,
+            &binary,
+            &version,
+            true,
+            true,
+            &platform,
+            Some(&master::HeadInfo {
+                etag,
+                last_modified: None,
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn same_version_processes_commit_binary_and_sidecar_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        std::fs::create_dir(&versions).unwrap();
+        let ready_a = temp.path().join("ready-a");
+        let ready_b = temp.path().join("ready-b");
+        let locked_a = temp.path().join("locked-a");
+        let release_a = temp.path().join("release-a");
+        let mut first = spawn_install(ChildInstall {
+            versions_dir: &versions,
+            version: "26.8.1.1",
+            contents: "first-complete-binary",
+            etag: "first-etag",
+            platform: "amd64",
+            ready: &ready_a,
+            target_pause: Some((&locked_a, &release_a)),
+            sidecar_pause: None,
+            binary_pause: None,
+        });
+        wait_for_path(&locked_a);
+
+        let mut second = spawn_install(ChildInstall {
+            versions_dir: &versions,
+            version: "26.8.1.1",
+            contents: "second-complete-binary",
+            etag: "second-etag",
+            platform: "amd64",
+            ready: &ready_b,
+            target_pause: None,
+            sidecar_pause: None,
+            binary_pause: None,
+        });
+        wait_for_path(&ready_b);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(second.try_wait().unwrap().is_none());
+        assert_ne!(
+            std::fs::read_to_string(&ready_a).unwrap(),
+            std::fs::read_to_string(&ready_b).unwrap()
+        );
+
+        std::fs::write(&release_a, b"release").unwrap();
+        wait_success(&mut first);
+        wait_success(&mut second);
+
+        assert_eq!(
+            std::fs::read_to_string(versions.join("26.8.1.1/clickhouse")).unwrap(),
+            "second-complete-binary"
+        );
+        let sidecar = sidecar(&versions);
+        assert_eq!(sidecar["builds"]["amd64"]["etag"], "second-etag");
+        assert_eq!(sidecar["builds"]["amd64"]["version"], "26.8.1.1");
+    }
+
+    #[test]
+    fn different_version_processes_preserve_binaries_and_sidecar_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        std::fs::create_dir(&versions).unwrap();
+        let ready_a = temp.path().join("ready-a");
+        let ready_b = temp.path().join("ready-b");
+        let locked_a = temp.path().join("sidecar-locked-a");
+        let release_a = temp.path().join("sidecar-release-a");
+        let mut first = spawn_install(ChildInstall {
+            versions_dir: &versions,
+            version: "26.8.1.1",
+            contents: "linux-binary",
+            etag: "linux-etag",
+            platform: "amd64",
+            ready: &ready_a,
+            target_pause: None,
+            sidecar_pause: Some((&locked_a, &release_a)),
+            binary_pause: None,
+        });
+        wait_for_path(&locked_a);
+
+        let mut second = spawn_install(ChildInstall {
+            versions_dir: &versions,
+            version: "26.8.2.2",
+            contents: "macos-binary",
+            etag: "macos-etag",
+            platform: "macos-aarch64",
+            ready: &ready_b,
+            target_pause: None,
+            sidecar_pause: None,
+            binary_pause: None,
+        });
+        wait_for_path(&ready_b);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(second.try_wait().unwrap().is_none());
+
+        std::fs::write(&release_a, b"release").unwrap();
+        wait_success(&mut first);
+        wait_success(&mut second);
+
+        assert_eq!(
+            std::fs::read_to_string(versions.join("26.8.1.1/clickhouse")).unwrap(),
+            "linux-binary"
+        );
+        assert_eq!(
+            std::fs::read_to_string(versions.join("26.8.2.2/clickhouse")).unwrap(),
+            "macos-binary"
+        );
+        let sidecar = sidecar(&versions);
+        assert_eq!(sidecar["builds"]["amd64"]["etag"], "linux-etag");
+        assert_eq!(sidecar["builds"]["macos-aarch64"]["etag"], "macos-etag");
+    }
+
+    #[test]
+    fn interrupted_install_keeps_valid_binary_and_sidecar() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let version = "26.8.1.1";
+        std::fs::create_dir_all(versions.join(version)).unwrap();
+        std::fs::write(versions.join(version).join("clickhouse"), b"valid-binary").unwrap();
+        std::fs::write(
+            versions.join(".master-builds.json"),
+            format!(r#"{{"builds":{{"amd64":{{"etag":"valid-etag","version":"{version}"}}}}}}"#),
+        )
+        .unwrap();
+
+        let ready = temp.path().join("ready");
+        let locked = temp.path().join("binary-commit-paused");
+        let release = temp.path().join("never-release");
+        let mut child = spawn_install(ChildInstall {
+            versions_dir: &versions,
+            version,
+            contents: "partial-replacement",
+            etag: "partial-etag",
+            platform: "amd64",
+            ready: &ready,
+            target_pause: None,
+            sidecar_pause: None,
+            binary_pause: Some((&locked, &release)),
+        });
+        wait_for_path(&locked);
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        let abandoned_staging = PathBuf::from(std::fs::read_to_string(&ready).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(versions.join(version).join("clickhouse")).unwrap(),
+            "valid-binary"
+        );
+        assert_eq!(
+            std::fs::read_to_string(abandoned_staging.join("clickhouse")).unwrap(),
+            "partial-replacement"
+        );
+        let sidecar = sidecar(&versions);
+        assert!(sidecar["builds"].get("amd64").is_none());
+    }
+
+    #[test]
+    fn stale_staging_is_ignored_during_atomic_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let stale = versions.join(".staging/stale-install");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("clickhouse"), b"stale-binary").unwrap();
+        let version = "26.8.1.1";
+        std::fs::create_dir(versions.join(version)).unwrap();
+        std::fs::write(versions.join(version).join("clickhouse"), b"old-binary").unwrap();
+
+        let staging = StagingDir::create(&versions).unwrap();
+        let staged_binary = staging.path().join("clickhouse");
+        std::fs::write(&staged_binary, b"new-complete-binary").unwrap();
+        let platform = test_platform("amd64");
+        commit_staged_binary(
+            &versions,
+            &staged_binary,
+            version,
+            true,
+            true,
+            &platform,
+            Some(&master::HeadInfo {
+                etag: "new-etag".to_string(),
+                last_modified: None,
+            }),
+        )
+        .unwrap();
+        drop(staging);
+
+        assert_eq!(
+            std::fs::read_to_string(stale.join("clickhouse")).unwrap(),
+            "stale-binary"
+        );
+        assert_eq!(
+            std::fs::read_to_string(versions.join(version).join("clickhouse")).unwrap(),
+            "new-complete-binary"
+        );
+        let sidecar = sidecar(&versions);
+        assert_eq!(sidecar["builds"]["amd64"]["etag"], "new-etag");
+        assert_eq!(sidecar["builds"]["amd64"]["version"], version);
+    }
 
     #[test]
     fn test_parse_version_output_client() {
