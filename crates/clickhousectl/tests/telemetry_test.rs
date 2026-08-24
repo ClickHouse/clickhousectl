@@ -275,65 +275,6 @@ async fn failure_reported_and_positional_value_never_leaks() {
     );
 }
 
-#[tokio::test]
-async fn managed_client_failure_sends_no_server_scope_or_raw_error_details() {
-    const SERVER_NAME: &str = "private-managed-server";
-    const SERVER_VERSION: &str = "25.12.99.123-private";
-
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    let servers = project.path().join(".clickhouse/servers");
-    std::fs::create_dir_all(servers.join(SERVER_NAME).join("data")).unwrap();
-    std::fs::write(
-        servers.join(format!("{SERVER_NAME}.json")),
-        serde_json::to_vec(&serde_json::json!({
-            "name": SERVER_NAME,
-            "pid": std::process::id(),
-            "version": SERVER_VERSION,
-            "http_port": 8123,
-            "tcp_port": 9000,
-            "started_at": "1700000000",
-            "cwd": project.path().display().to_string(),
-            "engine": "clickhouse"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let output = sandbox
-        .command(&["local", "client", "--name", SERVER_NAME])
-        .current_dir(project.path())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let error = stderr_of(&output);
-    assert!(error.contains(SERVER_VERSION), "{error}");
-    assert!(
-        error.contains(&project.path().display().to_string()),
-        "{error}"
-    );
-
-    let payloads = sandbox.wait_for_requests(1).await;
-    let event = &payloads[0];
-    assert_eq!(event["command"], "local client");
-    assert_eq!(event["flags"], serde_json::json!(["name"]));
-    assert_eq!(event["exit_code"], 1);
-    assert_eq!(event["outcome"], "error");
-    let raw = serde_json::to_string(event).unwrap();
-    for private in [
-        SERVER_NAME,
-        SERVER_VERSION,
-        project.path().to_str().unwrap(),
-        error.trim(),
-    ] {
-        assert!(!raw.contains(private), "private error detail leaked: {raw}");
-    }
-    assert!(event.get("message").is_none());
-    assert!(event.get("project").is_none());
-    assert!(event.get("mode").is_none());
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {

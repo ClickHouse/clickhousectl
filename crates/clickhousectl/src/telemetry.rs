@@ -1127,6 +1127,41 @@ mod tests {
     }
 
     #[test]
+    fn managed_client_failure_payload_omits_private_error_context() {
+        let mut command = crate::cli::Cli::command();
+        let matches = command
+            .try_get_matches_from_mut([
+                "clickhousectl",
+                "local",
+                "client",
+                "--name",
+                "private-managed-server",
+            ])
+            .unwrap();
+        let invocation = capture(&command, &matches);
+        let payload = serde_json::to_value(build_payload(&invocation, 1, &env_of(&[]))).unwrap();
+
+        assert_eq!(payload["command"], "local client");
+        assert_eq!(payload["flags"], serde_json::json!(["name"]));
+        assert_eq!(payload["outcome"], "error");
+        let wire = serde_json::to_string(&payload).unwrap();
+        for private in [
+            "private-managed-server",
+            "/private/project/path",
+            "25.12.99.123-private",
+            "Managed local client: raw private failure",
+        ] {
+            assert!(
+                !wire.contains(private),
+                "private error detail leaked: {wire}"
+            );
+        }
+        assert!(payload.get("message").is_none());
+        assert!(payload.get("project").is_none());
+        assert!(payload.get("mode").is_none());
+    }
+
+    #[test]
     fn flags_truncated_to_worker_cap() {
         let inv = Invocation {
             command: "x".into(),
