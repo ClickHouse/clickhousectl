@@ -54,6 +54,21 @@ pub enum Error {
     #[error("Download failed: {0}")]
     Download(String),
 
+    #[error("{0}")]
+    VersionNetwork(#[from] crate::version_manager::network::NetworkFailure),
+
+    #[error("{fallback}; initial probe failure: {probe}")]
+    VersionFallback {
+        probe: crate::version_manager::network::NetworkFailure,
+        fallback: Box<Error>,
+    },
+
+    #[error("{failure} after {attempts} attempts")]
+    VersionNetworkRetryExhausted {
+        failure: crate::version_manager::network::NetworkFailure,
+        attempts: usize,
+    },
+
     #[error("No matching version found for: {0}")]
     NoMatchingVersion(String),
 

@@ -1,5 +1,6 @@
 use crate::error::{Error, Result};
 use crate::paths;
+use crate::version_manager::network::{NetworkFailure, NetworkStage, OperationClient};
 use chrono::Datelike;
 use serde::Deserialize;
 use std::fmt;
@@ -69,18 +70,20 @@ pub struct VersionEntry {
     pub channel: Channel,
 }
 
-/// Fetches available versions from GitHub releases
-pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
-    let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = crate::http::client_builder().build()?;
-
-    let response = client
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
-    let releases: Vec<GitHubRelease> = response.json().await?;
+pub(crate) async fn list_available_versions_with(
+    client: &OperationClient,
+    url: &str,
+) -> Result<Vec<VersionEntry>> {
+    let response = client.get(url, NetworkStage::VersionList).await?;
+    if !response.status().is_success() {
+        return Err(
+            NetworkFailure::from_response(NetworkStage::VersionList, url, &response).into(),
+        );
+    }
+    let releases: Vec<GitHubRelease> = response
+        .json()
+        .await
+        .map_err(|error| NetworkFailure::from_request(NetworkStage::VersionList, url, &error))?;
 
     let mut versions = Vec::new();
     for release in releases {
@@ -112,9 +115,8 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
     use crate::version_manager::platform::{Platform, builds_probe_url};
 
     let platform = Platform::detect()?;
-    let client = crate::http::client_builder()
-        .build()
-        .map_err(|e| Error::Download(e.to_string()))?;
+    let first_url = builds_probe_url("20.1", &platform);
+    let client = OperationClient::metadata(NetworkStage::BuildsList, &first_url)?;
 
     let current_year = chrono::Utc::now().year() as u32;
     // ClickHouse uses YY.MM versioning — scan from current year down to 20 (2020)
@@ -127,11 +129,20 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
         for mm in (1..=12).rev() {
             let version_path = format!("{}.{}", yy, mm);
             let url = builds_probe_url(&version_path, &platform);
-            match client.head(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
+            match client.head(&url, NetworkStage::BuildsList).await {
+                Ok(response) if response.status().is_success() => {
                     available.push(version_path);
                 }
-                _ => {}
+                Ok(response) if matches!(response.status().as_u16(), 403 | 404) => {}
+                Ok(response) => {
+                    return Err(NetworkFailure::from_response(
+                        NetworkStage::BuildsList,
+                        &url,
+                        &response,
+                    )
+                    .into());
+                }
+                Err(error) => return Err(error.into()),
             }
         }
     }
