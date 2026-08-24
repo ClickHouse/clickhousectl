@@ -31,6 +31,11 @@ fn write_server_metadata(project: &Path, pid: u32) -> PathBuf {
     metadata
 }
 
+fn create_stopped_server(project: &Path, name: &str) {
+    std::fs::create_dir_all(project.join(".clickhouse/servers").join(name).join("data"))
+        .expect("create stopped server data dir");
+}
+
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
@@ -94,6 +99,80 @@ impl Drop for ProcessGuard {
                 libc::kill(self.pid as i32, libc::SIGKILL);
             }
         }
+    }
+}
+
+#[test]
+fn stop_and_remove_accept_name_forms_omission_and_trailing_json() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let cases = [
+        (
+            "stop-positional",
+            ["local", "server", "stop", "stop-positional", "--json"].as_slice(),
+        ),
+        (
+            "stop-flag",
+            ["local", "server", "stop", "--name", "stop-flag", "--json"].as_slice(),
+        ),
+        ("default", ["local", "server", "stop", "--json"].as_slice()),
+        (
+            "remove-positional",
+            ["local", "server", "remove", "remove-positional", "--json"].as_slice(),
+        ),
+        (
+            "remove-flag",
+            [
+                "local",
+                "server",
+                "remove",
+                "--name",
+                "remove-flag",
+                "--json",
+            ]
+            .as_slice(),
+        ),
+        (
+            "default",
+            ["local", "server", "remove", "--json"].as_slice(),
+        ),
+    ];
+
+    for (name, args) in cases {
+        create_stopped_server(project.path(), name);
+        let output = run(project.path(), home.path(), args);
+        assert!(
+            output.status.success(),
+            "args: {args:?}\nstderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: Value = serde_json::from_slice(&output.stdout).expect("parse command JSON");
+        assert_eq!(body["name"], name, "args: {args:?}");
+    }
+}
+
+#[test]
+fn stop_and_remove_reject_positional_and_name_flag_together() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+
+    for command in ["stop", "remove"] {
+        let output = run(
+            project.path(),
+            home.path(),
+            &[
+                "local",
+                "server",
+                command,
+                "positional",
+                "--name",
+                "flagged",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("cannot be used with"), "{stderr}");
+        assert!(stderr.contains("--name <NAME>"), "{stderr}");
     }
 }
 
