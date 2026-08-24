@@ -416,10 +416,10 @@ CONTEXT FOR AGENTS:
   For queries that may exceed Query API timeouts, `clickhousectl local use latest`
   puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
   to the service instead.
-  SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
-  on a TTY, TabSeparated when piped. --json selects JSONEachRow and cannot be
-  combined with --format; an explicit --format takes precedence over agent
-  auto-JSON."
+  SQL input: --query and --queries-file are mutually exclusive; omit both to
+  read stdin. Default format: PrettyCompact on a TTY, TabSeparated when piped.
+  --json selects JSONEachRow and cannot be combined with --format; an explicit
+  --format takes precedence over agent auto-JSON."
     )]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
@@ -431,7 +431,7 @@ CONTEXT FOR AGENTS:
         id: Option<String>,
 
         /// Execute a SQL query
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
         /// Execute queries from a SQL file (use "-" for stdin)
@@ -3191,8 +3191,6 @@ mod tests {
             "analytics",
             "--query",
             "SELECT 1",
-            "--queries-file",
-            "queries.sql",
             "--database",
             "default",
             "--format",
@@ -3218,11 +3216,70 @@ mod tests {
         assert_eq!(name.as_deref(), Some("analytics"));
         assert!(id.is_none());
         assert_eq!(query.as_deref(), Some("SELECT 1"));
-        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
+        assert!(queries_file.is_none());
         assert_eq!(database.as_deref(), Some("default"));
         assert_eq!(format.as_deref(), Some("CSV"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert!(no_auto_enable);
+    }
+
+    #[test]
+    fn parses_service_query_file_input() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--queries-file",
+            "queries.sql",
+        ]);
+        let ServiceCommands::Query {
+            query,
+            queries_file,
+            ..
+        } = command
+        else {
+            panic!("expected service query");
+        };
+
+        assert!(query.is_none());
+        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
+    }
+
+    #[test]
+    fn rejects_service_query_with_both_input_sources() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--query",
+            "SELECT 1",
+            "--queries-file",
+            "queries.sql",
+        ])
+        .err()
+        .expect("service query with both input sources should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(error.to_string().contains("--query"));
+        assert!(error.to_string().contains("--queries-file"));
+    }
+
+    #[test]
+    fn service_query_help_describes_input_source_conflict() {
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(help.contains("--query and --queries-file are mutually exclusive"));
+        assert!(help.contains("omit both to\n  read stdin"));
     }
 
     #[test]
