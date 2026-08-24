@@ -161,7 +161,9 @@ async fn resolve_major(
         }
     }
 
-    if let Some(minor) = highest_available {
+    if first_probe_failure.is_none()
+        && let Some(minor) = highest_available
+    {
         let version_path = format!("{}.{}", major, minor);
         return Ok(ResolvedVersion {
             source: DownloadSource::Builds {
