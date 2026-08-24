@@ -841,6 +841,312 @@ async fn read_pg_env_for_dotenv(container_id: &str) -> (String, String, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{ErrorKind, Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread::{self, JoinHandle};
+
+    struct FakeDockerState {
+        container_running: bool,
+        ready_on_probe: Option<usize>,
+        probes: AtomicUsize,
+        saw_probe_args: AtomicBool,
+    }
+
+    struct FakeDocker {
+        client: bollard::Docker,
+        state: Arc<FakeDockerState>,
+        stop: Arc<AtomicBool>,
+        daemon: Option<JoinHandle<()>>,
+        _tempdir: tempfile::TempDir,
+    }
+
+    impl FakeDocker {
+        fn spawn(container_running: bool, ready_on_probe: Option<usize>) -> Self {
+            let tempdir = tempfile::tempdir().expect("create fake Docker tempdir");
+            let socket_path = tempdir.path().join("docker.sock");
+            let listener = UnixListener::bind(&socket_path).expect("bind fake Docker socket");
+            listener
+                .set_nonblocking(true)
+                .expect("make fake Docker socket nonblocking");
+
+            let state = Arc::new(FakeDockerState {
+                container_running,
+                ready_on_probe,
+                probes: AtomicUsize::new(0),
+                saw_probe_args: AtomicBool::new(false),
+            });
+            let stop = Arc::new(AtomicBool::new(false));
+            let daemon_state = Arc::clone(&state);
+            let daemon_stop = Arc::clone(&stop);
+            let daemon = thread::spawn(move || {
+                while !daemon_stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_nonblocking(true)
+                                .expect("make fake Docker connection nonblocking");
+                            if let Some(request) = read_docker_request(&mut stream) {
+                                stream
+                                    .set_nonblocking(false)
+                                    .expect("make fake Docker response blocking");
+                                respond_to_docker_request(&mut stream, &request, &daemon_state);
+                            }
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept fake Docker connection: {error}"),
+                    }
+                }
+            });
+            let client = bollard::Docker::connect_with_unix(
+                socket_path.to_str().expect("UTF-8 socket path"),
+                2,
+                &bollard::API_DEFAULT_VERSION,
+            )
+            .expect("connect fake Docker client");
+
+            Self {
+                client,
+                state,
+                stop,
+                daemon: Some(daemon),
+                _tempdir: tempdir,
+            }
+        }
+
+        fn probes(&self) -> usize {
+            self.state.probes.load(Ordering::SeqCst)
+        }
+
+        fn finish(mut self) {
+            self.stop_daemon();
+        }
+
+        fn stop_daemon(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(daemon) = self.daemon.take() {
+                let joined = daemon.join();
+                if !thread::panicking() {
+                    joined.expect("join fake Docker daemon");
+                }
+            }
+        }
+    }
+
+    impl Drop for FakeDocker {
+        fn drop(&mut self) {
+            self.stop_daemon();
+        }
+    }
+
+    fn read_docker_request(stream: &mut UnixStream) -> Option<String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut request = Vec::new();
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            if !read_docker_bytes(stream, &mut request, deadline) {
+                return None;
+            }
+        }
+
+        let header_end = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("Docker header terminator")
+            + 4;
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0);
+        while request.len() - header_end < content_length {
+            if !read_docker_bytes(stream, &mut request, deadline) {
+                return None;
+            }
+        }
+        Some(String::from_utf8(request).expect("Docker request is UTF-8"))
+    }
+
+    fn read_docker_bytes(
+        stream: &mut UnixStream,
+        request: &mut Vec<u8>,
+        deadline: std::time::Instant,
+    ) -> bool {
+        let mut buffer = [0_u8; 1024];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => return false,
+                Ok(bytes) => {
+                    request.extend_from_slice(&buffer[..bytes]);
+                    return true;
+                }
+                Err(error)
+                    if error.kind() == ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return false,
+                Err(error) => panic!("read Docker request: {error}"),
+            }
+        }
+    }
+
+    fn write_docker_response(stream: &mut UnixStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        if let Err(error) = stream.write_all(response.as_bytes())
+            && error.kind() != ErrorKind::BrokenPipe
+        {
+            panic!("write fake Docker response: {error}");
+        }
+    }
+
+    fn respond_to_docker_request(stream: &mut UnixStream, request: &str, state: &FakeDockerState) {
+        let request_line = request.lines().next().expect("Docker request line");
+        if request_line.starts_with("GET ") && request_line.contains("/containers/test/logs?") {
+            write_docker_response(stream, "database system is starting up\n");
+        } else if request_line.starts_with("GET ")
+            && request_line.contains("/containers/test/json ")
+        {
+            if state.container_running {
+                write_docker_response(
+                    stream,
+                    r#"{"State":{"Status":"running","Running":true,"ExitCode":0}}"#,
+                );
+            } else {
+                write_docker_response(
+                    stream,
+                    r#"{"State":{"Status":"exited","Running":false,"ExitCode":7}}"#,
+                );
+            }
+        } else if request_line.starts_with("POST ")
+            && request_line.contains("/containers/test/exec ")
+        {
+            let probe = state.probes.fetch_add(1, Ordering::SeqCst) + 1;
+            state.saw_probe_args.store(
+                request.contains("pg_isready")
+                    && request.contains("127.0.0.1")
+                    && request.contains("test-user")
+                    && request.contains("test-db")
+                    && request.contains(r#""-t","1""#),
+                Ordering::SeqCst,
+            );
+            write_docker_response(stream, &format!(r#"{{"Id":"probe-{probe}"}}"#));
+        } else if request_line.starts_with("POST ") && request_line.contains("/exec/probe-") {
+            assert!(
+                request.contains(r#""Detach":true"#),
+                "readiness probe was not detached: {request}"
+            );
+            write_docker_response(stream, "");
+        } else if request_line.starts_with("GET ") && request_line.contains("/exec/probe-") {
+            let probe = request_line
+                .split("/exec/probe-")
+                .nth(1)
+                .and_then(|tail| tail.split('/').next())
+                .and_then(|probe| probe.parse::<usize>().ok())
+                .expect("probe number");
+            let exit_code = if state.ready_on_probe.is_some_and(|ready| probe >= ready) {
+                0
+            } else {
+                1
+            };
+            write_docker_response(
+                stream,
+                &format!(r#"{{"Running":false,"ExitCode":{exit_code}}}"#),
+            );
+        } else {
+            panic!("unexpected fake Docker request: {request_line}");
+        }
+    }
+
+    #[tokio::test]
+    async fn running_container_is_not_postgres_readiness() {
+        let docker = FakeDocker::spawn(true, None);
+
+        assert!(
+            !docker::postgres_is_ready(&docker.client, "test", "test-user", "test-db")
+                .await
+                .unwrap()
+        );
+        assert_eq!(docker.probes(), 1);
+        assert!(docker.state.saw_probe_args.load(Ordering::SeqCst));
+        docker.finish();
+    }
+
+    #[tokio::test]
+    async fn postgres_readiness_waits_for_delayed_success() {
+        let docker = FakeDocker::spawn(true, Some(3));
+
+        wait_for_postgres_ready(
+            &docker.client,
+            "test",
+            "delayed",
+            "test-user",
+            "test-db",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(docker.probes(), 3);
+        docker.finish();
+    }
+
+    #[tokio::test]
+    async fn postgres_readiness_reports_immediate_container_exit_with_logs() {
+        let docker = FakeDocker::spawn(false, None);
+
+        let error = wait_for_postgres_ready(
+            &docker.client,
+            "test",
+            "crashed",
+            "test-user",
+            "test-db",
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("exited before PostgreSQL became ready"));
+        assert!(error.contains("exit code 7"));
+        assert!(error.contains("database system is starting up"));
+        assert_eq!(docker.probes(), 0);
+        docker.finish();
+    }
+
+    #[tokio::test]
+    async fn postgres_readiness_timeout_is_bounded_and_includes_logs() {
+        let docker = FakeDocker::spawn(true, None);
+        let started = std::time::Instant::now();
+
+        let error = wait_for_postgres_ready(
+            &docker.client,
+            "test",
+            "stuck",
+            "test-user",
+            "test-db",
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.contains("did not become ready within 1 seconds"));
+        assert!(error.contains("database system is starting up"));
+        assert!(docker.probes() >= 2);
+        docker.finish();
+    }
 
     #[test]
     fn resolve_port_rejects_zero() {
