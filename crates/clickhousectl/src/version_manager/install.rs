@@ -17,13 +17,13 @@ struct StagingDir {
 impl StagingDir {
     fn create(versions_dir: &Path) -> Result<Self> {
         let staging_root = versions_dir.join(".staging");
-        std::fs::create_dir_all(&staging_root)?;
+        paths::create_dir_all(&staging_root)?;
         loop {
             let path = staging_root.join(uuid::Uuid::new_v4().simple().to_string());
             match std::fs::create_dir(&path) {
                 Ok(()) => return Ok(Self { path }),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error.into()),
+                Err(source) => return Err(Error::CreateDir { path, source }),
             }
         }
     }
@@ -225,7 +225,10 @@ fn commit_staged_binary(
                 .parent()
                 .expect("staged binary has a parent")
                 .join("install");
-            std::fs::create_dir(&commit_dir)?;
+            std::fs::create_dir(&commit_dir).map_err(|source| Error::CreateDir {
+                path: commit_dir.clone(),
+                source,
+            })?;
             std::fs::rename(staged_binary, commit_dir.join("clickhouse"))?;
             std::fs::rename(commit_dir, &version_dir)?;
         }
@@ -343,50 +346,51 @@ fn parse_version_output(output: &str) -> Result<String> {
 /// Handles both packages.clickhouse.com layout (usr/bin/clickhouse inside subdir)
 /// and GitHub releases layout (same structure).
 fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Path) -> Result<()> {
-    let status = std::process::Command::new("tar")
-        .args(["xzf", &tarball_path.to_string_lossy()])
-        .current_dir(dest_dir)
-        .status()
-        .map_err(|e| Error::Extract(format!("Failed to run tar: {}", e)))?;
-
-    if !status.success() {
-        let _ = std::fs::remove_file(tarball_path);
-        return Err(Error::Extract("tar extraction failed".to_string()));
-    }
-
     let final_binary = dest_dir.join("clickhouse");
+    let extraction_error = |source| Error::ExtractArchive {
+        archive: tarball_path.to_path_buf(),
+        destination: final_binary.clone(),
+        source,
+    };
+    let archive_file = std::fs::File::open(tarball_path).map_err(extraction_error)?;
+    let decoder = flate2::read::GzDecoder::new(archive_file);
+    let mut archive = tar::Archive::new(decoder);
 
-    // Search extracted directories for the binary
-    for entry in std::fs::read_dir(dest_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let candidate = path.join("usr/bin/clickhouse");
-            if candidate.exists() {
-                std::fs::rename(&candidate, &final_binary)?;
-                let _ = std::fs::remove_file(tarball_path);
-                let _ = std::fs::remove_dir_all(&path);
-                return Ok(());
-            }
+    for entry in archive.entries().map_err(extraction_error)? {
+        let mut entry = entry.map_err(extraction_error)?;
+        if !entry.header().entry_type().is_file() {
+            continue;
         }
-    }
+        let path = entry.path().map_err(extraction_error)?;
+        if path.as_ref() != Path::new("clickhouse")
+            && path.as_ref() != Path::new("./clickhouse")
+            && !path.as_ref().ends_with(Path::new("usr/bin/clickhouse"))
+        {
+            continue;
+        }
 
-    // Binary might already be at top level
-    if final_binary.exists() {
+        let mut output = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&final_binary)
+            .map_err(extraction_error)?;
+        std::io::copy(&mut entry, &mut output).map_err(extraction_error)?;
         let _ = std::fs::remove_file(tarball_path);
         return Ok(());
     }
 
-    let _ = std::fs::remove_file(tarball_path);
-    Err(Error::Extract(
-        "Could not find clickhouse binary in extracted tarball".to_string(),
-    ))
+    Err(Error::Extract(format!(
+        "Archive {} did not contain the expected clickhouse or usr/bin/clickhouse binary",
+        tarball_path.display()
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::version_manager::platform::{Arch, Os};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use std::process::{Child, Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -465,6 +469,20 @@ mod tests {
         let bytes =
             std::fs::read(versions_dir.join(".master-builds.json")).expect("read master sidecar");
         serde_json::from_slice(&bytes).expect("parse master sidecar")
+    }
+
+    fn write_tarball(path: &Path, entry_path: &str, contents: &[u8]) {
+        let file = std::fs::File::create(path).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, entry_path, contents)
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
     }
 
     #[test]
@@ -694,6 +712,80 @@ mod tests {
         let sidecar = sidecar(&versions);
         assert_eq!(sidecar["builds"]["amd64"]["etag"], "new-etag");
         assert_eq!(sidecar["builds"]["amd64"]["version"], version);
+    }
+
+    #[test]
+    fn extracts_packaged_binary_in_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let tarball = temp.path().join("clickhouse.tgz");
+        write_tarball(
+            &tarball,
+            "clickhouse-common-static/usr/bin/clickhouse",
+            b"clickhouse-binary",
+        );
+
+        extract_tarball_auto(&tarball, temp.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read(temp.path().join("clickhouse")).unwrap(),
+            b"clickhouse-binary"
+        );
+        assert!(!tarball.exists());
+    }
+
+    #[test]
+    fn extracts_top_level_binary_in_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let tarball = temp.path().join("clickhouse.tgz");
+        write_tarball(&tarball, "./clickhouse", b"clickhouse-binary");
+
+        extract_tarball_auto(&tarball, temp.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read(temp.path().join("clickhouse")).unwrap(),
+            b"clickhouse-binary"
+        );
+    }
+
+    #[test]
+    fn malformed_archive_error_preserves_archive_destination_and_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let tarball = temp.path().join("malformed.tgz");
+        std::fs::write(&tarball, b"not a gzip archive").unwrap();
+        let destination = temp.path().join("clickhouse");
+
+        let error = extract_tarball_auto(&tarball, temp.path()).unwrap_err();
+        let Error::ExtractArchive {
+            archive,
+            destination: error_destination,
+            source,
+        } = &error
+        else {
+            panic!("expected contextual archive error: {error}");
+        };
+
+        assert_eq!(archive, &tarball);
+        assert_eq!(error_destination, &destination);
+        assert!(error.to_string().contains(&tarball.display().to_string()));
+        assert!(
+            error
+                .to_string()
+                .contains(&destination.display().to_string())
+        );
+        assert!(error.to_string().contains(&source.to_string()));
+    }
+
+    #[test]
+    fn missing_binary_error_names_archive_and_expected_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let tarball = temp.path().join("missing-clickhouse.tgz");
+        write_tarball(&tarball, "package/README.md", b"no binary");
+
+        let error = extract_tarball_auto(&tarball, temp.path()).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains(&tarball.display().to_string()));
+        assert!(message.contains("clickhouse or usr/bin/clickhouse"));
     }
 
     #[test]

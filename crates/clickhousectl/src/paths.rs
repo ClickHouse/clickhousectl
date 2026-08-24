@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Returns the base directory for ClickHouse CLI (~/.clickhouse/)
 pub fn base_dir() -> Result<PathBuf> {
@@ -40,8 +40,14 @@ pub fn configs_dir() -> Result<PathBuf> {
 /// Ensures all necessary directories exist
 pub fn ensure_dirs() -> Result<()> {
     let versions = versions_dir()?;
-    std::fs::create_dir_all(&versions).map_err(|_| Error::CreateDir(versions))?;
-    Ok(())
+    create_dir_all(&versions)
+}
+
+pub(crate) fn create_dir_all(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(|source| Error::CreateDir {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Returns the user-local PATH-style bin directory (~/.local/bin/)
@@ -58,4 +64,50 @@ pub fn global_bin_dir() -> Result<PathBuf> {
 /// Returns the path to the global `clickhouse` symlink (~/.local/bin/clickhouse)
 pub fn global_clickhouse_symlink() -> Result<PathBuf> {
     Ok(global_bin_dir()?.join("clickhouse"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_directory_error_preserves_not_a_directory_path_and_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("not-a-directory");
+        std::fs::write(&file, b"file").unwrap();
+        let requested = file.join("versions");
+
+        let error = create_dir_all(&requested).unwrap_err();
+        let Error::CreateDir { path, source } = &error else {
+            panic!("expected create directory error: {error}");
+        };
+
+        assert_eq!(path, &requested);
+        assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+        assert!(error.to_string().contains(&requested.display().to_string()));
+        assert!(error.to_string().contains(&source.to_string()));
+    }
+
+    #[test]
+    fn create_directory_error_preserves_permission_denied_cause() {
+        let path = PathBuf::from("/restricted/.clickhouse/versions");
+        let error = Error::CreateDir {
+            path: path.clone(),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        };
+        let Error::CreateDir {
+            source: permission_error,
+            ..
+        } = &error
+        else {
+            unreachable!();
+        };
+
+        assert_eq!(
+            permission_error.kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert!(error.to_string().contains(&permission_error.to_string()));
+    }
 }
