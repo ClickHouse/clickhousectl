@@ -73,20 +73,24 @@ fn assert_success(output: &std::process::Output) {
     );
 }
 
-fn clear_agent_env(command: &mut Command) {
-    for name in [
-        "AGENT",
-        "AI_AGENT",
-        "OPENCODE",
-        "OPENCODE_PID",
-        "OPENCODE_BIN_PATH",
-        "OPENCODE_SERVER",
-        "OPENCODE_APP_INFO",
-        "OPENCODE_MODES",
-        "OPENCODE_CLIENT",
-    ] {
-        command.env_remove(name);
-    }
+fn clear_inherited_env(command: &mut Command) {
+    command.env_clear();
+}
+
+#[test]
+fn clear_inherited_env_removes_agent_credentials_home_and_path() {
+    let mut command = Command::new(clickhousectl_binary());
+    command.envs([
+        ("CLAUDECODE", "1"),
+        ("CLICKHOUSE_CLOUD_API_KEY", "ambient-key"),
+        ("CLICKHOUSE_CLOUD_API_SECRET", "ambient-secret"),
+        ("HOME", "/ambient/home"),
+        ("PATH", "/ambient/bin"),
+    ]);
+
+    clear_inherited_env(&mut command);
+
+    assert!(command.get_envs().next().is_none());
 }
 
 /// Run the clickhousectl binary against the mock, returning the JSON body
@@ -1120,7 +1124,11 @@ async fn start_mock_usage_entities_api() -> MockServer {
     mock
 }
 
-fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
+fn invoke_org_usage(
+    mock: &MockServer,
+    json: bool,
+    ambient_env: &[(&str, &str)],
+) -> std::process::Output {
     let dir = tempfile::tempdir().unwrap();
     let url = mock.uri();
     let mut args = vec!["cloud", "--url", &url];
@@ -1138,7 +1146,8 @@ fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
         "2025-01-31",
     ]);
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    command.envs(ambient_env.iter().copied());
+    clear_inherited_env(&mut command);
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
@@ -1153,7 +1162,7 @@ fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
 #[tokio::test]
 async fn org_usage_marks_uuid_only_entities_as_unknown_in_human_output() {
     let mock = start_mock_usage_entities_api().await;
-    let output = invoke_org_usage(&mock, false);
+    let output = invoke_org_usage(&mock, false, &[]);
     assert_success(&output);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1162,9 +1171,33 @@ async fn org_usage_marks_uuid_only_entities_as_unknown_in_human_output() {
 }
 
 #[tokio::test]
+async fn org_usage_human_output_ignores_ambient_agent_markers() {
+    let mock = start_mock_usage_entities_api().await;
+    let expected = invoke_org_usage(&mock, false, &[]);
+    let output = invoke_org_usage(
+        &mock,
+        false,
+        &[
+            ("CLAUDECODE", "1"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CODEX_THREAD_ID", "test-thread"),
+            ("GEMINI_CLI", "1"),
+        ],
+    );
+    assert_success(&expected);
+    assert_success(&output);
+
+    assert_eq!(output.stdout, expected.stdout);
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee (unknown)")
+    );
+}
+
+#[tokio::test]
 async fn org_usage_json_keeps_uuid_only_entities_faithful_to_the_api() {
     let mock = start_mock_usage_entities_api().await;
-    let output = invoke_org_usage(&mock, true);
+    let output = invoke_org_usage(&mock, true, &[]);
     assert_success(&output);
 
     let usage: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -2424,7 +2457,7 @@ async fn invoke_oauth_service_query_response(
     args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     if agent {
         command.env("AGENT", "opencode");
     }
@@ -2537,12 +2570,15 @@ async fn service_query_rejects_json_with_an_explicit_format_before_network_acces
     ];
 
     for args in cases {
+        let dir = tempfile::tempdir().unwrap();
         let mut command = Command::new(clickhousectl_binary());
-        clear_agent_env(&mut command);
+        clear_inherited_env(&mut command);
         let output = command
             .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path().join("home"))
             .env("CLICKHOUSE_CLOUD_API_KEY", "unused-key")
             .env("CLICKHOUSE_CLOUD_API_SECRET", "unused-secret")
+            .current_dir(dir.path())
             .args(args)
             .output()
             .expect("failed to spawn clickhousectl");
