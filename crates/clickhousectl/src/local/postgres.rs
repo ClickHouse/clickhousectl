@@ -904,7 +904,7 @@ mod tests {
             let client = bollard::Docker::connect_with_unix(
                 socket_path.to_str().expect("UTF-8 socket path"),
                 2,
-                &bollard::API_DEFAULT_VERSION,
+                bollard::API_DEFAULT_VERSION,
             )
             .expect("connect fake Docker client");
 
