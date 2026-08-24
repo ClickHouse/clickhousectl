@@ -450,6 +450,11 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         org_id: Option<String>,
 
+        /// Replace this service's stale stored Query API key using its exact
+        /// saved ownership metadata (API key auth only)
+        #[arg(long, conflicts_with = "no_auto_enable")]
+        repair_query_key: bool,
+
         /// Fail instead of auto-provisioning when the authenticated API key
         /// cannot use the query endpoint and no key is stored locally (API
         /// key auth only; with OAuth this flag has no effect)
@@ -540,7 +545,9 @@ impl ServiceCommands {
             ServiceCommands::List { .. } => false,
             ServiceCommands::Get { .. } => false,
             ServiceCommands::Prometheus { .. } => false,
-            ServiceCommands::Query { .. } => false,
+            ServiceCommands::Query {
+                repair_query_key, ..
+            } => *repair_query_key,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
@@ -777,6 +784,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             database,
             format,
             org_id,
+            repair_query_key,
             no_auto_enable,
         } => {
             let options = ServiceQueryOptions {
@@ -788,6 +796,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 format,
                 json,
                 org_id,
+                repair_query_key,
                 no_auto_enable,
             };
             service_query(client, options).await
@@ -1706,6 +1715,7 @@ struct ServiceQueryOptions {
     format: Option<String>,
     json: bool,
     org_id: Option<String>,
+    repair_query_key: bool,
     no_auto_enable: bool,
 }
 
@@ -1775,6 +1785,22 @@ fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
             message,
         } if !message.starts_with("SQL error ")
     )
+}
+
+fn stale_stored_query_key_error(
+    error: &clickhouse_cloud_api::Error,
+    service_id: &str,
+    org_id: &str,
+) -> Option<CloudError> {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403,
+            message,
+        } if !message.starts_with("SQL error ") => Some(CloudError::new(format!(
+            "the stored Query API key for service {service_id} was rejected and may be stale: {message}\n\nNo credentials were changed. Repair only this service credential by rerunning the query with `--repair-query-key`, for example:\n  clickhousectl cloud service query --id {service_id} --org-id {org_id} --repair-query-key --query \"SELECT 1\""
+        ))),
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1889,19 +1915,59 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             convert_query_error(client, error, &service_name, &service_id, &org_id)
         })?
     } else {
-        let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
-            run_basic_service_query(
-                client.api(),
-                &service_id,
-                &key.key_id,
-                &key.key_secret,
-                &sql,
-                options.database.as_deref(),
-                &format,
-                &service_name,
-                false,
-            )
-            .await
+        let stored_key = if options.repair_query_key {
+            eprintln!("Repairing stored Query API key for service '{service_name}'...");
+            Some((
+                crate::cloud::service_query::repair_service_query_setup(
+                    client,
+                    &org_id,
+                    &service_id,
+                    &service_name,
+                )
+                .await?,
+                true,
+            ))
+        } else {
+            credentials::get_service_query_key(&service_id).map(|key| (key, false))
+        };
+        let result = if let Some((key, repaired)) = stored_key {
+            let result = if repaired {
+                run_newly_provisioned_service_query(
+                    client.api(),
+                    &service_id,
+                    &key.key_id,
+                    &key.key_secret,
+                    &sql,
+                    options.database.as_deref(),
+                    &format,
+                    &service_name,
+                    QUERY_ENDPOINT_READINESS,
+                )
+                .await
+            } else {
+                run_basic_service_query(
+                    client.api(),
+                    &service_id,
+                    &key.key_id,
+                    &key.key_secret,
+                    &sql,
+                    options.database.as_deref(),
+                    &format,
+                    &service_name,
+                    false,
+                )
+                .await
+            };
+            match result {
+                Err(error) if !repaired => {
+                    if let Some(stale) = stale_stored_query_key_error(&error, &service_id, &org_id)
+                    {
+                        return Err(stale);
+                    }
+                    Err(error)
+                }
+                other => other,
+            }
         } else {
             let (key_id, key_secret) = client
                 .basic_auth_credentials()
@@ -3268,6 +3334,7 @@ mod tests {
             database,
             format,
             org_id,
+            repair_query_key,
             no_auto_enable,
         } = command
         else {
@@ -3280,6 +3347,7 @@ mod tests {
         assert!(database.is_none());
         assert!(format.is_none());
         assert!(org_id.is_none());
+        assert!(!repair_query_key);
         assert!(!no_auto_enable);
 
         let command = parse_service(&[
@@ -3307,6 +3375,7 @@ mod tests {
             database,
             format,
             org_id,
+            repair_query_key,
             no_auto_enable,
         } = command
         else {
@@ -3320,7 +3389,52 @@ mod tests {
         assert_eq!(database.as_deref(), Some("default"));
         assert_eq!(format.as_deref(), Some("CSV"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert!(!repair_query_key);
         assert!(no_auto_enable);
+    }
+
+    #[test]
+    fn parses_service_query_repair() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--repair-query-key",
+        ]);
+        let ServiceCommands::Query {
+            repair_query_key,
+            no_auto_enable,
+            ..
+        } = command
+        else {
+            panic!("expected service query");
+        };
+
+        assert!(repair_query_key);
+        assert!(!no_auto_enable);
+    }
+
+    #[test]
+    fn rejects_service_query_repair_with_no_auto_enable() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--repair-query-key",
+            "--no-auto-enable",
+        ])
+        .err()
+        .expect("repair and no-auto-enable should conflict");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert!(error.to_string().contains("--repair-query-key"));
+        assert!(error.to_string().contains("--no-auto-enable"));
     }
 
     #[test]
@@ -3637,6 +3751,20 @@ mod tests {
                 "SELECT 1",
             ],
             false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query",
+                "--id",
+                "svc-1",
+                "--query",
+                "SELECT 1",
+                "--repair-query-key",
+            ],
+            true,
         );
         assert_write(
             &["clickhousectl", "cloud", "service", "create", "--name", "s"],
