@@ -769,6 +769,16 @@ mod tests {
     }
 
     #[test]
+    fn resolve_port_auto_selects_when_default_is_bound() {
+        // If another process already owns 5432, leaving this as None still
+        // exercises the same occupied-default path.
+        let _listener = std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)).ok();
+
+        let port = resolve_port(None).unwrap();
+        assert_ne!(port, DEFAULT_PG_PORT);
+    }
+
+    #[test]
     fn validate_pg_tag_accepts_supported_majors() {
         for tag in [
             "17",
