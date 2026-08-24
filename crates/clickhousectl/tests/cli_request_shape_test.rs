@@ -3299,6 +3299,309 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
 // orphaned key in the org.
 
 const QUERY_TEST_KEY_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const QUERY_TEST_OLD_KEY_UUID: &str = "99999999-8888-7777-6666-555555555555";
+
+fn write_query_repair_credentials(root: &Path, include_ownership: bool) -> Vec<u8> {
+    let credentials_dir = root.join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    let mut stale_key = serde_json::json!({
+        "key_id": "stale-key-id",
+        "key_secret": "stale-key-secret",
+        "endpoint_id": "ep-1",
+        "service_name": "demo",
+        "created_at": "2026-05-11T12:00:00Z",
+    });
+    if include_ownership {
+        stale_key["organization_id"] = Value::String("org-1".to_string());
+        stale_key["api_key_id"] = Value::String(QUERY_TEST_OLD_KEY_UUID.to_string());
+    }
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+        "api_key": "project-key",
+        "api_secret": "project-secret",
+        "service_query_keys": {
+            QUERY_TEST_SERVICE_ID: stale_key,
+            "other-service": {
+                "organization_id": "org-1",
+                "api_key_id": "other-api-key-uuid",
+                "key_id": "other-key-id",
+                "key_secret": "other-key-secret",
+                "endpoint_id": "other-ep",
+                "service_name": "other",
+                "created_at": "2026-05-10T12:00:00Z",
+            }
+        }
+    }))
+    .unwrap();
+    std::fs::write(credentials_dir.join("credentials.json"), &bytes).unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn stale_stored_query_key_guidance_never_repairs_or_provisions_unrequested() {
+    for status in [401, 403] {
+        let control = start_mock_control_plane_with_service().await;
+        let query_host = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_string(r#"{"error":"Unauthorized"}"#),
+            )
+            .expect(1)
+            .mount(&query_host)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = write_query_repair_credentials(dir.path(), true);
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        let output = command
+            .env("DO_NOT_TRACK", "1")
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+            .current_dir(dir.path())
+            .args([
+                "cloud",
+                "--url",
+                &control.uri(),
+                "service",
+                "query",
+                "--id",
+                QUERY_TEST_SERVICE_ID,
+                "--org-id",
+                "org-1",
+                "--query",
+                "SELECT 1",
+            ])
+            .output()
+            .expect("failed to spawn clickhousectl");
+
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("stored Query API key"), "{stderr}");
+        assert!(stderr.contains("--repair-query-key"), "{stderr}");
+        assert!(stderr.contains("No credentials were changed"), "{stderr}");
+        assert_eq!(
+            std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+            original,
+            "a stale-key error must leave the credentials file byte-for-byte unchanged",
+        );
+        assert!(
+            control
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method == wiremock::http::Method::GET),
+            "a stale query must not silently provision or repair",
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_query_repair_replaces_only_the_exact_owned_key_and_binding() {
+    let control = start_mock_control_plane_with_service().await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "roles": ["sql_console_read_only"],
+                "openApiKeys": ["unrelated-endpoint-key", QUERY_TEST_OLD_KEY_UUID],
+                "allowedOrigins": "https://example.com",
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "replacement-key-id",
+                "keySecret": "replacement-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_OLD_KEY_UUID}"
+        )))
+        // The issue's stale-key case is an externally deleted management key.
+        // Its exact endpoint binding still needs replacement, while a repeated
+        // delete of that owned key is safely idempotent.
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "NOT_FOUND",
+            "requestId": "stub-old-key-delete",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let query_host = MockServer::start().await;
+    let replacement_auth = format!(
+        "Basic {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "replacement-key-id:replacement-key-secret",
+        )
+    );
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", replacement_auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_query_repair_credentials(dir.path(), true);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--repair-query-key",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+
+    let requests = control.received_requests().await.unwrap();
+    let endpoint_upsert = requests
+        .iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
+        })
+        .expect("repair did not replace the endpoint binding");
+    let upsert: Value = serde_json::from_slice(&endpoint_upsert.body).unwrap();
+    assert_eq!(
+        upsert["openApiKeys"],
+        serde_json::json!(["unrelated-endpoint-key", QUERY_TEST_KEY_UUID]),
+    );
+    assert_eq!(
+        upsert["roles"],
+        serde_json::json!(["sql_console_read_only"])
+    );
+    assert_eq!(upsert["allowedOrigins"], "https://example.com");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::DELETE)
+            .map(|request| request.url.path())
+            .collect::<Vec<_>>(),
+        [format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_OLD_KEY_UUID}"
+        )],
+    );
+
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["api_key"], "project-key");
+    assert_eq!(stored["api_secret"], "project-secret");
+    assert_eq!(
+        stored["service_query_keys"]["other-service"]["api_key_id"],
+        "other-api-key-uuid",
+    );
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["organization_id"], "org-1");
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
+    assert_eq!(repaired["key_secret"], "replacement-key-secret");
+    assert_eq!(stored["service_query_keys"].as_object().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn service_query_repair_refuses_legacy_records_without_ownership_metadata() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let original = write_query_repair_credentials(dir.path(), false);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--repair-query-key",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("predates exact management API key IDs"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("refusing unsafe repair"), "{stderr}");
+    assert_eq!(
+        std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+        original,
+    );
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+    assert!(
+        control
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "legacy repair must fail before any control-plane mutation",
+    );
+}
 
 async fn provision_while_project_auth_changes(auth_args: &[&str]) -> tempfile::TempDir {
     let control = start_mock_control_plane_with_service().await;
