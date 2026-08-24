@@ -26,14 +26,23 @@ pub(crate) fn pg_major_from_tag(tag: &str) -> String {
     tag.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
-/// Accept Postgres image tags whose major version is 17 or 18 — anything
-/// else is unsupported for now. Examples that pass: `17`, `17.0`, `17-alpine`,
-/// `18-bookworm`, `18.1-alpine3.20`. Examples that fail: `latest`, `16`, `19`.
+/// Accept syntactically valid Docker image tags for Postgres 17 and 18. The
+/// major must be the complete first component, followed by an optional `.` or
+/// `-` suffix. Examples that pass: `17`, `17.0`, `17-alpine`, `18-bookworm`,
+/// `18.1-alpine3.20`. Examples that fail: `latest`, `16`, `19`, `18garbage`.
 pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
-    let major: String = tag.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !matches!(major.as_str(), "17" | "18") {
+    let suffix = tag.strip_prefix("17").or_else(|| tag.strip_prefix("18"));
+    let valid_suffix = suffix.is_some_and(|suffix| {
+        suffix.is_empty()
+            || (matches!(suffix.as_bytes().first(), Some(b'.' | b'-'))
+                && suffix.len() > 1
+                && suffix[1..]
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-')))
+    });
+    if tag.len() > 128 || !valid_suffix {
         return Err(Error::Exec(format!(
-            "postgres version '{}' is not supported. Use a 17 or 18 image tag \
+            "postgres version '{}' is not supported. Use a valid 17 or 18 image tag \
              (for example: 17, 17-alpine, 18.1, 18-bookworm).",
             tag
         )));
@@ -83,15 +92,19 @@ async fn start(
     extra_env: Vec<String>,
     json: bool,
 ) -> Result<()> {
+    let has_extra_env = !extra_env.is_empty();
+    let StartPreflight {
+        host_port,
+        extra_env,
+        password_from_env,
+    } = preflight_start_options(name.as_deref(), version.as_deref(), port, extra_env)?;
+
     server::recover_current_project_servers();
 
     // User-facing name (no version suffix). Defaults to "default" when no
     // postgres "default" is currently running.
     let user_name = match name.as_deref() {
-        Some(n) => {
-            server::validate_server_name(n)?;
-            n.to_string()
-        }
+        Some(n) => n.to_string(),
         None => default_pg_name(),
     };
 
@@ -101,10 +114,7 @@ async fn start(
     // instances, we ask them to disambiguate. Only when zero exist do we
     // default to DEFAULT_PG_TAG.
     let (tag, major) = match version.as_deref() {
-        Some(v) => {
-            validate_pg_tag(v)?;
-            (v.to_string(), pg_major_from_tag(v))
-        }
+        Some(v) => (v.to_string(), pg_major_from_tag(v)),
         None => {
             let existing = server::find_pg_instances(&user_name);
             match existing.len() {
@@ -158,7 +168,7 @@ async fn start(
                 || user.is_some()
                 || password.is_some()
                 || database.is_some()
-                || !extra_env.is_empty()
+                || has_extra_env
             {
                 eprintln!(
                     "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
@@ -183,8 +193,6 @@ async fn start(
         docker::pull_image(&docker, tag, json).await?;
     }
 
-    let host_port = resolve_port(port)?;
-
     server::ensure_pg_data_dir(&user_name, &major)?;
     let data_dir = server::pg_data_dir(&user_name, &major);
 
@@ -195,10 +203,6 @@ async fn start(
     let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
     let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
 
-    let password_from_env = extra_env
-        .iter()
-        .find_map(|kv| kv.strip_prefix("POSTGRES_PASSWORD="))
-        .map(|s| s.to_string());
     let password = password_from_env
         .or(password)
         .unwrap_or_else(generate_password);
@@ -373,6 +377,11 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
                 "--port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
+        if std::net::TcpListener::bind(("127.0.0.1", p)).is_err() {
+            return Err(Error::Exec(format!(
+                "Postgres port {p} is already in use; choose a free --port or omit the flag to auto-select"
+            )));
+        }
         return Ok(p);
     }
     if std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)).is_ok() {
@@ -386,6 +395,70 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
     Err(Error::Exec(
         "could not find a free TCP port for Postgres".into(),
     ))
+}
+
+struct StartPreflight {
+    host_port: u16,
+    extra_env: Vec<String>,
+    password_from_env: Option<String>,
+}
+
+fn preflight_start_options(
+    name: Option<&str>,
+    version: Option<&str>,
+    port: Option<u16>,
+    extra_env: Vec<String>,
+) -> Result<StartPreflight> {
+    if let Some(name) = name {
+        server::validate_server_name(name)?;
+    }
+    if let Some(version) = version {
+        validate_pg_tag(version)?;
+    }
+
+    let (extra_env, password_from_env) = validate_extra_env(extra_env)?;
+    let host_port = resolve_port(port)?;
+    Ok(StartPreflight {
+        host_port,
+        extra_env,
+        password_from_env,
+    })
+}
+
+/// Normalize variables managed by the Postgres definition so Docker receives
+/// each reserved key once. The first `-e POSTGRES_PASSWORD=...` wins, matching
+/// the previously advertised and implemented override behavior. Dedicated
+/// options/defaults own POSTGRES_USER and POSTGRES_DB; PGDATA is always fixed.
+fn validate_extra_env(extra_env: Vec<String>) -> Result<(Vec<String>, Option<String>)> {
+    let mut normalized = Vec::with_capacity(extra_env.len());
+    let mut password_from_env = None;
+
+    for (index, entry) in extra_env.into_iter().enumerate() {
+        let Some((key, value)) = entry.split_once('=') else {
+            return Err(Error::Exec(format!(
+                "invalid container environment variable #{}: expected KEY=VALUE",
+                index + 1
+            )));
+        };
+        if key.is_empty() {
+            return Err(Error::Exec(format!(
+                "invalid container environment variable #{}: KEY must not be empty",
+                index + 1
+            )));
+        }
+
+        match key {
+            "POSTGRES_PASSWORD" => {
+                if password_from_env.is_none() {
+                    password_from_env = Some(value.to_string());
+                }
+            }
+            "POSTGRES_USER" | "POSTGRES_DB" | "PGDATA" => {}
+            _ => normalized.push(entry),
+        }
+    }
+
+    Ok((normalized, password_from_env))
 }
 
 fn generate_password() -> String {
@@ -677,8 +750,22 @@ mod tests {
 
     #[test]
     fn resolve_port_passes_through_explicit_value() {
-        // Use a port unlikely to be bound; we just want the passthrough path.
-        assert_eq!(resolve_port(Some(54321)).unwrap(), 54321);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        assert_eq!(resolve_port(Some(port)).unwrap(), port);
+    }
+
+    #[test]
+    fn resolve_port_rejects_bound_explicit_value() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let err = resolve_port(Some(port)).unwrap_err();
+        assert!(
+            matches!(err, Error::Exec(msg) if msg.contains(&port.to_string()) && msg.contains("already in use"))
+        );
     }
 
     #[test]
@@ -709,6 +796,12 @@ mod tests {
             "19",
             "14-alpine",
             "alpine",
+            "18garbage",
+            "17beta",
+            "18/invalid",
+            "18-invalid/tag",
+            "18-",
+            "18.",
             "",
         ] {
             assert!(
@@ -717,6 +810,41 @@ mod tests {
                 tag
             );
         }
+    }
+
+    #[test]
+    fn validate_pg_tag_rejects_tags_over_docker_limit() {
+        let tag = format!("18-{}", "a".repeat(126));
+        assert_eq!(tag.len(), 129);
+        assert!(validate_pg_tag(&tag).is_err());
+    }
+
+    #[test]
+    fn extra_env_requires_key_value_entries() {
+        for env in [vec!["NO_EQUALS".to_string()], vec!["=value".to_string()]] {
+            let err = validate_extra_env(env).unwrap_err();
+            assert!(matches!(err, Error::Exec(msg) if msg.contains("environment variable")));
+        }
+    }
+
+    #[test]
+    fn extra_env_normalizes_reserved_variable_precedence() {
+        let (extra_env, password) = validate_extra_env(vec![
+            "CUSTOM=first=value".to_string(),
+            "POSTGRES_USER=from-env".to_string(),
+            "POSTGRES_PASSWORD=first".to_string(),
+            "POSTGRES_PASSWORD=second".to_string(),
+            "POSTGRES_DB=from-env".to_string(),
+            "PGDATA=/tmp/pgdata".to_string(),
+            "OTHER=".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            extra_env,
+            vec!["CUSTOM=first=value".to_string(), "OTHER=".to_string()]
+        );
+        assert_eq!(password.as_deref(), Some("first"));
     }
 
     #[test]

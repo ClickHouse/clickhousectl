@@ -398,9 +398,12 @@ CONTEXT FOR AGENTS:
   a random name is generated (e.g. \"bold-crane\").
   --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
   Defaults to 18. Image is pulled if not already present locally.
-  --port defaults to 5432; if taken, a free port is auto-assigned.
+  --port defaults to 5432; if omitted and taken, a free port is auto-assigned.
+  An explicitly requested port must be available and is never changed.
   Data persists at .clickhouse/servers/<name>/data/ and is bind-mounted into the container.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
+  The first `-e POSTGRES_PASSWORD=...` overrides --password. --user, --database, and
+  managed PGDATA take precedence over same-named `-e` variables.
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
   `clickhousectl.project=<cwd>`, `created_by=clickhousectl_<version>` for safe discovery.
   Requires Docker to be installed and running.")]
@@ -429,7 +432,7 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         database: Option<String>,
 
-        /// Extra env vars for the container, repeatable: -e KEY=VALUE
+        /// Extra env vars for the container, repeatable: -e KEY=VALUE. The first POSTGRES_PASSWORD overrides --password; --user, --database, and managed PGDATA take precedence.
         #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
         env: Vec<String>,
     },
@@ -1388,6 +1391,55 @@ mod tests {
             panic!("expected postgres remove");
         };
         assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn postgres_start_parses_definition_options() {
+        let LocalCommands::Postgres {
+            command:
+                PostgresCommands::Start {
+                    name,
+                    version,
+                    port,
+                    user,
+                    password,
+                    database,
+                    env,
+                },
+        } = local_command(&[
+            "postgres",
+            "start",
+            "--name",
+            "analytics",
+            "-v",
+            "17-alpine",
+            "--port",
+            "5544",
+            "--user",
+            "app",
+            "--password",
+            "secret",
+            "--database",
+            "warehouse",
+            "-e",
+            "POSTGRES_INITDB_ARGS=--data-checksums",
+            "--env",
+            "CUSTOM=one=two",
+        ])
+        else {
+            panic!("expected postgres start");
+        };
+
+        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(version.as_deref(), Some("17-alpine"));
+        assert_eq!(port, Some(5544));
+        assert_eq!(user.as_deref(), Some("app"));
+        assert_eq!(password.as_deref(), Some("secret"));
+        assert_eq!(database.as_deref(), Some("warehouse"));
+        assert_eq!(
+            env,
+            ["POSTGRES_INITDB_ARGS=--data-checksums", "CUSTOM=one=two"]
+        );
     }
 
     #[test]
