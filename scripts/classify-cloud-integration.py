@@ -138,9 +138,12 @@ API_SOURCE_PREFIX = "crates/clickhouse-cloud-api/src/"
 API_TEST_PREFIX = "crates/clickhouse-cloud-api/tests/"
 API_CRATE_PREFIX = "crates/clickhouse-cloud-api/"
 ALWAYS_ALL_PATHS = {
+    ".github/workflows/cloud-integration-decision.yml",
     ".github/workflows/cloud-integration.yml",
     "Cargo.lock",
+    "scripts/cloud-integration-decision.py",
     "scripts/classify-cloud-integration.py",
+    "scripts/tests/test_cloud_integration_decision.py",
     "scripts/tests/test_classify_cloud_integration.py",
 }
 RUST_CONFIG_PATHS = {

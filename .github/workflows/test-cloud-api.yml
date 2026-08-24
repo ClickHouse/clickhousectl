@@ -7,11 +7,13 @@ on:
       - "crates/clickhouse-cloud-api/**"
       - "crates/clickhouse-openapi-analyzer/**"
       - "scripts/check-openapi-drift.py"
+      - "scripts/cloud-integration-decision.py"
       - "scripts/classify-cloud-integration.py"
       - "scripts/tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/test-cloud-api.yml"
+      - ".github/workflows/cloud-integration-decision.yml"
 
 permissions:
   contents: read

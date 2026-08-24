@@ -1,0 +1,39 @@
+name: Cloud Integration Decision Controller
+
+on: # zizmor: ignore[dangerous-triggers] trusted metadata only; never checks out PR code
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+  workflow_run:
+    workflows: [Cloud Integration]
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  decide:
+    name: Record Cloud integration decision
+    if: >-
+      github.event_name == 'workflow_run' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'skip-cloud-integration'
+    runs-on: ubuntu-latest
+    steps:
+      # The controller executes only the revision containing this trusted workflow.
+      # It never checks out the pull request head or runs pull request code.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/cloud-integration-decision.py
+          sparse-checkout-cone-mode: false
+
+      - name: Evaluate event and publish exact-SHA check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/cloud-integration-decision.py
