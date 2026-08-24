@@ -2350,6 +2350,63 @@ fn postgres_args_minimal() -> Vec<String> {
     .collect()
 }
 
+async fn invoke_postgres_create_api_error(message: &str) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org/services/svc-id/clickpipes"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": message,
+            "requestId": "stub-postgres-create-error",
+        })))
+        .mount(&mock)
+        .await;
+
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    invoke_cli_with_cloud_credentials(&mock, &arg_refs)
+}
+
+#[tokio::test]
+async fn postgres_unknown_authority_error_preserves_detail_and_names_ca_flag() {
+    let api_error = "BAD_REQUEST: failed to establish connection: tls: failed to verify certificate: x509: certificate signed by unknown authority";
+    let output = invoke_postgres_create_api_error(api_error).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: {api_error}\n\nHint: Provide the PostgreSQL source's PEM CA bundle with --ca-certificate <path>.\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn postgres_hostname_mismatch_error_preserves_detail_and_names_tls_host_flag() {
+    let api_error = "BAD_REQUEST: failed to establish connection: tls: failed to verify certificate: x509: certificate is valid for pg.example.com, not db.example.com";
+    let output = invoke_postgres_create_api_error(api_error).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: {api_error}\n\nHint: Set --tls-host <hostname> to a DNS name covered by the PostgreSQL source certificate (it defaults to --host).\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn postgres_unrelated_connection_error_has_no_tls_hint() {
+    let api_error = "BAD_REQUEST: failed to establish connection: connection refused";
+    let output = invoke_postgres_create_api_error(api_error).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("Error: {api_error}\n")
+    );
+}
+
 #[tokio::test]
 async fn postgres_invalid_inputs_fail_before_cloud_api_dispatch() {
     let without_org = || {
