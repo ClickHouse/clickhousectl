@@ -772,13 +772,23 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
-# From PostgreSQL (CDC)
+# From PostgreSQL (CDC) with a publicly trusted TLS certificate
+# TLS and certificate verification are enabled by default. The certificate
+# hostname defaults to --host.
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
+
+# From PostgreSQL with a private or self-signed certificate
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-private-pg-pipe \
+  --host db.private.example.com --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --ca-certificate ./postgres-ca.pem \
+  --table-mapping "public.users:public_users"
 
 # From MySQL (CDC)
 # --server-id sets the replication server ID (useful when multiple pipes read
@@ -804,6 +814,15 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --staging-path gs://bucket/staging \
   --table-mapping "dataset.table:target_table"
 ```
+
+Before creating a PostgreSQL CDC ClickPipe:
+
+- Make the source reachable from ClickPipes and allow the [ClickPipes static IPs](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips) for your service region.
+- Enable logical replication on PostgreSQL.
+- Create a publication that includes every source table passed with `--table-mapping`.
+- Grant the ClickPipes user schema `USAGE`, table `SELECT`, and replication privileges.
+
+See the [PostgreSQL ClickPipes setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres) for provider-specific prerequisites or the [generic PostgreSQL source setup](https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic) for self-hosted and other providers. `--ca-certificate` is needed only when the source certificate is signed by a private CA or is self-signed. Use `--tls-host` when the hostname in that certificate differs from `--host`.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
