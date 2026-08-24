@@ -328,6 +328,10 @@ pub enum ClickPipeCreateCommands {
     Kinesis(KinesisCreateArgs),
 
     /// Create a ClickPipe from PostgreSQL
+    #[command(
+        long_about = "Create a ClickPipe from PostgreSQL.\n\nTLS and certificate verification are enabled by default. Omit --ca-certificate when the source certificate has a publicly trusted chain. For a private or self-signed source certificate, pass its PEM CA bundle with --ca-certificate. Certificate hostname verification uses --host unless --tls-host is provided.",
+        after_long_help = "PostgreSQL ClickPipes setup:\n  https://clickhouse.com/docs/integrations/clickpipes/postgres\nGeneric PostgreSQL source setup:\n  https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic\nClickPipes networking and static IPs:\n  https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips"
+    )]
     Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
@@ -718,11 +722,11 @@ pub struct PostgresCreateArgs {
     #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
     pub iam_role: Option<String>,
 
-    /// TLS hostname
+    /// Certificate hostname to verify (defaults to --host)
     #[arg(long)]
     pub tls_host: Option<String>,
 
-    /// Path to CA certificate file
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
     #[arg(long)]
     pub ca_certificate: Option<String>,
 
@@ -2319,6 +2323,39 @@ mod tests {
             expected,
             "wrong classification for: {}",
             args.join(" ")
+        );
+    }
+
+    #[test]
+    fn postgres_create_help_explains_tls_defaults_and_prerequisites() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "postgres",
+            "--help",
+        ])
+        .err()
+        .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+
+        let help = error.to_string();
+        for expected in [
+            "TLS and certificate verification are enabled by default",
+            "Omit --ca-certificate when the source certificate has a publicly trusted chain",
+            "private or self-signed source certificate",
+            "Certificate hostname to verify (defaults to --host)",
+            "https://clickhouse.com/docs/integrations/clickpipes/postgres",
+            "https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic",
+            "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips",
+        ] {
+            assert!(help.contains(expected), "missing {expected:?} in help:\n{help}");
+        }
+        assert!(!help.contains("--disable-tls"), "unexpected TLS bypass flag");
+        assert!(
+            !help.contains("--skip-cert-verification"),
+            "unexpected certificate bypass flag"
         );
     }
 
