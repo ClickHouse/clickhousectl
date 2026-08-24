@@ -316,6 +316,66 @@ pub async fn is_container_running(docker: &Docker, id: &str) -> bool {
     }
 }
 
+/// Run the official image's `pg_isready` over container-local TCP without
+/// attaching the probe to the CLI's standard streams.
+pub async fn postgres_is_ready(
+    docker: &Docker,
+    id: &str,
+    user: &str,
+    database: &str,
+) -> Result<bool> {
+    use bollard::exec::{StartExecOptions, StartExecResults};
+    use bollard::models::ExecConfig;
+
+    let exec = docker
+        .create_exec(
+            id,
+            ExecConfig {
+                attach_stdout: Some(false),
+                attach_stderr: Some(false),
+                attach_stdin: Some(false),
+                tty: Some(false),
+                cmd: Some(vec![
+                    "pg_isready".into(),
+                    "-h".into(),
+                    "127.0.0.1".into(),
+                    "-U".into(),
+                    user.into(),
+                    "-d".into(),
+                    database.into(),
+                    "-t".into(),
+                    "1".into(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| Error::DockerError(format!("could not create pg_isready probe: {e}")))?;
+
+    let started = docker
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .map_err(|e| Error::DockerError(format!("could not start pg_isready probe: {e}")))?;
+    debug_assert!(matches!(started, StartExecResults::Detached));
+
+    loop {
+        let state = docker
+            .inspect_exec(&exec.id)
+            .await
+            .map_err(|e| Error::DockerError(format!("could not inspect pg_isready probe: {e}")))?;
+        if state.running == Some(false) {
+            return Ok(state.exit_code == Some(0));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
     use bollard::query_parameters::StopContainerOptionsBuilder;
     docker

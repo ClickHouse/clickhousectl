@@ -11,6 +11,7 @@ use crate::local::output;
 use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::process::Command;
+use std::time::Duration;
 
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
@@ -18,6 +19,9 @@ const DEFAULT_DATABASE: &str = "postgres";
 /// Default image tag when `--version` is not given. Within the supported
 /// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
+const POSTGRES_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const POSTGRES_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const POSTGRES_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Extract the major-version digits from a Postgres image tag. `17-alpine` →
 /// `"17"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
@@ -239,18 +243,20 @@ async fn start(
     };
     server::save_server_info(&info)?;
 
-    let healthy = wait_running(&docker, &container_id, 30).await;
-    if !healthy {
-        let logs = docker::container_logs_tail(&docker, &container_id, 50)
-            .await
-            .unwrap_or_default();
+    if let Err(error) = wait_for_postgres_ready(
+        &docker,
+        &container_id,
+        &user_name,
+        &user,
+        &database,
+        POSTGRES_STARTUP_TIMEOUT,
+    )
+    .await
+    {
         let _ = docker::stop_container(&docker, &container_id).await;
         let _ = docker::remove_container(&docker, &container_id).await;
         server::remove_server_info(&key);
-        return Err(Error::DockerError(format!(
-            "Postgres container '{}' did not start.\n--- container logs ---\n{}",
-            user_name, logs
-        )));
+        return Err(error);
     }
 
     let out = output::PostgresStartOutput {
@@ -320,18 +326,20 @@ async fn resume_existing(docker: &bollard::Docker, prior: ServerInfo, json: bool
 
     docker::start_existing_blocking(&container_id)?;
 
-    let healthy = wait_running(docker, &container_id, 30).await;
-    if !healthy {
-        let logs = docker::container_logs_tail(docker, &container_id, 50)
-            .await
-            .unwrap_or_default();
-        return Err(Error::DockerError(format!(
-            "Postgres container '{}' did not resume.\n--- container logs ---\n{}",
-            display_name, logs
-        )));
-    }
-
     let (user, password, database) = read_pg_env(docker, &container_id).await;
+    if let Err(error) = wait_for_postgres_ready(
+        docker,
+        &container_id,
+        &display_name,
+        &user,
+        &database,
+        POSTGRES_STARTUP_TIMEOUT,
+    )
+    .await
+    {
+        let _ = docker::stop_container(docker, &container_id).await;
+        return Err(error);
+    }
 
     let info = ServerInfo {
         started_at: server::now_timestamp(),
@@ -364,14 +372,102 @@ pub(crate) fn user_name_from_key(key: &str) -> &str {
     key
 }
 
-async fn wait_running(docker: &bollard::Docker, id: &str, attempts: usize) -> bool {
-    for _ in 0..attempts {
-        if docker::is_container_running(docker, id).await {
-            return true;
+async fn wait_for_postgres_ready(
+    docker: &bollard::Docker,
+    id: &str,
+    display_name: &str,
+    user: &str,
+    database: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_probe_error = None;
+
+    loop {
+        let inspect = docker
+            .inspect_container(id, None)
+            .await
+            .map_err(|error| {
+                Error::DockerError(format!(
+                    "could not inspect container '{display_name}' while waiting for PostgreSQL readiness: {error}"
+                ))
+            })?;
+        let state = inspect.state.unwrap_or_default();
+        if state.running != Some(true) {
+            let status = state
+                .status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "stopped".to_string());
+            let exit_code = state
+                .exit_code
+                .map(|code| format!(", exit code {code}"))
+                .unwrap_or_default();
+            let engine_error = state
+                .error
+                .filter(|error| !error.is_empty())
+                .map(|error| format!(", Docker reported: {error}"))
+                .unwrap_or_default();
+            return Err(readiness_error(
+                docker,
+                id,
+                format!(
+                    "Postgres container '{display_name}' exited before PostgreSQL became ready \
+                     (state: {status}{exit_code}{engine_error})"
+                ),
+            )
+            .await);
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(
+            remaining.min(POSTGRES_READINESS_PROBE_TIMEOUT),
+            docker::postgres_is_ready(docker, id, user, database),
+        )
+        .await
+        {
+            Ok(Ok(true)) => return Ok(()),
+            Ok(Ok(false)) => last_probe_error = None,
+            Ok(Err(error)) => last_probe_error = Some(error.to_string()),
+            Err(_) => last_probe_error = Some("pg_isready probe timed out".to_string()),
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        tokio::time::sleep(remaining.min(POSTGRES_READINESS_POLL_INTERVAL)).await;
     }
-    false
+
+    let probe_context = last_probe_error
+        .map(|error| format!(" Last probe error: {error}."))
+        .unwrap_or_default();
+    Err(readiness_error(
+        docker,
+        id,
+        format!(
+            "Postgres container '{display_name}' did not become ready within {} seconds.{probe_context}",
+            timeout.as_secs()
+        ),
+    )
+    .await)
+}
+
+async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) -> Error {
+    let logs = match docker::container_logs_tail(docker, id, 50).await {
+        Ok(logs) if logs.trim().is_empty() => format!(
+            "No container logs were available. Run `docker logs {id}` for current diagnostics."
+        ),
+        Ok(logs) => logs,
+        Err(error) => format!(
+            "Could not read container logs ({error}). Run `docker logs {id}` for diagnostics."
+        ),
+    };
+    Error::DockerError(format!(
+        "{message}\n--- container logs (last 50 lines) ---\n{logs}"
+    ))
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
