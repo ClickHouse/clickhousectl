@@ -1,7 +1,16 @@
+//! Managed-Postgres CDC E2E. Resource setup, state polling, and cleanup use the
+//! API client, while both ClickPipe creation attempts run the built CLI binary.
+//!
+//! The managed Postgres fixture has a private CA. Mandatory CI has no
+//! publicly-trusted PostgreSQL fixture, so successful creation without an
+//! uploaded CA remains a residual gap.
+
 #[path = "../common/mod.rs"]
 mod common;
 mod support;
 
+use std::path::PathBuf;
+use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -19,16 +28,24 @@ const POST_SEED_ROW_COUNT: i64 = 8;
 
 const DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_CDC_LAG_TIMEOUT_SECS: u64 = 300;
+const CLICKHOUSECTL_BINARY_ENV: &str = "CLICKHOUSECTL_TEST_BINARY";
+const PRIVATE_CA_API_ERROR: &str = "x509: certificate signed by unknown authority";
+const PRIVATE_CA_HINT: &str =
+    "Hint: Provide the PostgreSQL source's PEM CA bundle with --ca-certificate <path>.";
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
-async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
+async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
     // rustls 0.23 requires a default CryptoProvider be installed before any
     // ClientConfig is constructed. install_default returns an Err if one was
     // already set by another test in the same process, which is harmless here.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let ctx = TestContext::from_env()?;
+    let clickhousectl = clickhousectl_binary()?;
+    let cli_workspace = tempfile::tempdir()?;
+    let cli_home = cli_workspace.path().join("home");
+    std::fs::create_dir(&cli_home)?;
     let clickpipe_ready_timeout = duration_from_env_or(
         "CLICKHOUSE_CLOUD_TEST_TIMEOUT_CLICKPIPE_READY_SECS",
         DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS,
@@ -42,7 +59,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
     let mut cleanup = CleanupRegistry::default();
 
     let test_result = async {
-        log_run_header("cloud_clickpipe_postgres_cdc", &ctx);
+        log_run_header("cloud_clickpipe_postgres_cli_cdc", &ctx);
         let mut failures = FailureRecorder::default();
 
         // ── Preflight ───────────────────────────────────────────────
@@ -252,81 +269,98 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
 
         let pg_ca_pem = client
             .postgres_service_certs_get(&ctx.org_id, &postgres_id)
-            .await
-            .ok();
+            .await?;
+        if pg_ca_pem.trim().is_empty() {
+            return Err("postgres CA endpoint returned an empty bundle".into());
+        }
+        let pg_ca_path = cli_workspace.path().join("postgres-ca.pem");
+        std::fs::write(&pg_ca_path, pg_ca_pem.as_bytes())?;
         let pg_client = connect_postgres(
             &pg_hostname,
             pg_port,
             &pg_database,
             &pg_username,
             &pg_password,
-            pg_ca_pem.as_deref(),
+            Some(&pg_ca_pem),
         )
         .await?;
         configure_pg_for_cdc(&pg_client).await?;
 
-        // ── Create ClickPipe ────────────────────────────────────────
+        // ── Create ClickPipe through the real CLI ───────────────────
 
         log_phase("Create ClickPipe");
 
-        let pipe_request = ClickPipePostRequest {
-            name: format!("cdc-{}", ctx.run_id),
-            destination: ClickPipeMutateDestination {
-                // Postgres is a "database pipe" — only `database` is valid at
-                // the top level. The per-mapping `targetTable` carries the
-                // destination table name.
-                database: "default".to_string(),
-                ..Default::default()
-            },
-            source: ClickPipePostSource {
-                postgres: Some(ClickPipeMutatePostgresSource {
-                    authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
-                    ca_certificate: pg_ca_pem.clone(),
-                    credentials: PLAIN {
-                        username: pg_username.clone(),
-                        password: pg_password.clone(),
-                    },
-                    database: pg_database.clone(),
-                    host: pg_hostname.clone(),
-                    port: pg_port as i64,
-                    settings: ClickPipePostgresPipeSettings {
-                        // `cdc` does snapshot + ongoing replication. The API
-                        // manages the replication slot itself in this mode and
-                        // rejects an explicit replicationSlotName.
-                        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
-                        publication_name: Some(PUBLICATION.to_string()),
-                        // The API rejects 0 for numeric fields ("Value must be >= 1");
-                        // the Default impl gives every i64 a 0, so we set sensible
-                        // values explicitly. (Same issue exists in the CLI's
-                        // clickpipe create postgres handler — track separately.)
-                        sync_interval_seconds: Some(60),
-                        pull_batch_size: Some(100_000),
-                        initial_load_parallelism: Some(4),
-                        snapshot_num_rows_per_partition: Some(100_000),
-                        snapshot_number_of_parallel_tables: Some(4),
-                        ..Default::default()
-                    },
-                    table_mappings: vec![ClickPipePostgresPipeTableMapping {
-                        source_schema_name: SOURCE_SCHEMA.to_string(),
-                        source_table: SOURCE_TABLE.to_string(),
-                        target_table: TARGET_TABLE.to_string(),
-                        table_engine:
-                            ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
-                        ..Default::default()
-                    }],
-                    r#type: Some(ClickPipeMutatePostgresSourceType::Postgres),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
+        let run_cli_create = |name: &str,
+                              ca_path: Option<&std::path::Path>|
+         -> TestResult<std::process::Output> {
+            let mut command = Command::new(&clickhousectl);
+            command
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", &cli_home)
+                .current_dir(cli_workspace.path())
+                .arg("cloud");
+            if let Some(base_url) = std::env::var("CLICKHOUSE_CLOUD_API_BASE_URL")
+                .ok()
+                .filter(|value| !value.is_empty())
+            {
+                command.args(["--url", &base_url]);
+            }
+            command
+                .arg("--json")
+                .args(["clickpipe", "create", "postgres"])
+                .arg(&clickhouse_id)
+                .args(["--name", name])
+                .args(["--host", &pg_hostname])
+                .arg("--port")
+                .arg(pg_port.to_string())
+                .args(["--pg-database", &pg_database])
+                .args(["--username", &pg_username])
+                .args(["--password", &pg_password])
+                .args([
+                    "--table-mapping",
+                    &format!("{SOURCE_SCHEMA}.{SOURCE_TABLE}:{TARGET_TABLE}"),
+                ])
+                .args(["--publication-name", PUBLICATION])
+                .args(["--org-id", &ctx.org_id]);
+            if let Some(path) = ca_path {
+                command.arg("--ca-certificate").arg(path);
+            }
+            Ok(command.output()?)
         };
 
-        let pipe = client
-            .click_pipe_create(&ctx.org_id, &clickhouse_id, &pipe_request)
-            .await?
-            .result
-            .ok_or("clickpipe create returned no result")?;
+        let without_ca = run_cli_create(&format!("private-ca-check-{}", ctx.run_id), None)?;
+        if without_ca.status.code() != Some(1) {
+            return Err(format!(
+                "clickhousectl without --ca-certificate exited {:?}, expected 1",
+                without_ca.status.code()
+            )
+            .into());
+        }
+        let without_ca_stderr = String::from_utf8_lossy(&without_ca.stderr);
+        if !without_ca_stderr.contains(PRIVATE_CA_API_ERROR) {
+            return Err(format!(
+                "private-CA failure did not preserve API detail `{PRIVATE_CA_API_ERROR}`: {without_ca_stderr}"
+            )
+            .into());
+        }
+        if !without_ca_stderr.contains(PRIVATE_CA_HINT) {
+            return Err(format!(
+                "private-CA failure did not include the CA flag guidance: {without_ca_stderr}"
+            )
+            .into());
+        }
+
+        let with_ca = run_cli_create(&format!("cdc-{}", ctx.run_id), Some(&pg_ca_path))?;
+        if !with_ca.status.success() {
+            return Err(format!(
+                "clickhousectl with --ca-certificate exited {:?}: {}",
+                with_ca.status.code(),
+                String::from_utf8_lossy(&with_ca.stderr)
+            )
+            .into());
+        }
+        let pipe: ClickPipe = serde_json::from_slice(&with_ca.stdout)
+            .map_err(|error| format!("clickhousectl returned invalid ClickPipe JSON: {error}"))?;
         let clickpipe_id = clickpipe_id(&pipe)?;
         cleanup.register_clickpipe(clickhouse_id.clone(), clickpipe_id.clone());
         eprintln!("  provisioned clickpipe id <redacted>");
@@ -470,6 +504,23 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
 
 fn log_step(message: &str) {
     eprintln!("  step: {message}");
+}
+
+fn clickhousectl_binary() -> TestResult<PathBuf> {
+    let configured = std::env::var_os(CLICKHOUSECTL_BINARY_ENV).ok_or_else(|| {
+        format!(
+            "{CLICKHOUSECTL_BINARY_ENV} must point to a built clickhousectl binary; run `cargo build -p clickhousectl` first"
+        )
+    })?;
+    let binary = std::fs::canonicalize(configured)?;
+    if !binary.is_file() {
+        return Err(format!(
+            "{CLICKHOUSECTL_BINARY_ENV} does not point to a file: {}",
+            binary.display()
+        )
+        .into());
+    }
+    Ok(binary)
 }
 
 fn duration_from_env_or(name: &str, default_secs: u64) -> TestResult<Duration> {
