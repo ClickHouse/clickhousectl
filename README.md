@@ -323,6 +323,7 @@ clickhousectl local postgres start
 clickhousectl local postgres start --name dev --version 17 --port 5433
 clickhousectl local postgres start --user app --database myapp  # Generates a random password
 clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
+clickhousectl local postgres start --password flag-value -e POSTGRES_PASSWORD=env-value
 
 # List everything (ClickHouse + Postgres are merged in `server list`)
 clickhousectl local server list
@@ -344,6 +345,8 @@ clickhousectl local postgres remove dev
 ```
 
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.
+
+When `--port` is omitted, `start` uses port 5432 or selects the next available port. An explicit `--port` must be available and is never changed. Container variables use `KEY=VALUE` syntax. The first `-e POSTGRES_PASSWORD=...` takes precedence over `--password`, preserving the existing environment override. The dedicated `--user` and `--database` options (or their defaults) take precedence over `-e POSTGRES_USER=...` and `-e POSTGRES_DB=...`; clickhousectl also owns `PGDATA` so the managed data directory cannot be redirected.
 
 `local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
 
