@@ -10,6 +10,8 @@ use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
 use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
+use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -202,6 +204,8 @@ async fn start(
         docker::pull_image(&docker, tag, json).await?;
     }
 
+    let instance_dir = server::servers_dir_join(&key);
+    let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
     server::ensure_pg_data_dir(&user_name, &major)?;
     let data_dir = server::pg_data_dir(&user_name, &major);
 
@@ -229,7 +233,7 @@ async fn start(
         extra_env,
     };
 
-    let container_id = docker::run_postgres(&docker, opts).await?;
+    let container_id = docker::create_postgres(&docker, opts).await?;
 
     let info = ServerInfo {
         name: key.clone(),
@@ -242,23 +246,27 @@ async fn start(
         engine: Engine::Postgres,
         container_id: Some(container_id.clone()),
     };
-    server::save_server_info(&info)?;
 
-    if let Err(error) = wait_for_postgres_ready(
-        &docker,
-        &container_id,
-        &user_name,
-        &user,
-        &database,
-        POSTGRES_STARTUP_TIMEOUT,
-    )
-    .await
-    {
-        let _ = docker::stop_container(&docker, &container_id).await;
-        let _ = docker::remove_container(&docker, &container_id).await;
-        server::remove_server_info(&key);
-        return Err(error);
-    }
+    let rollback = FreshStartRollback {
+        container_id: container_id.clone(),
+        metadata_path: server::server_meta_path_for_recovery(&key),
+        instance_dir,
+        remove_fresh_data_on_failure,
+    };
+    finish_fresh_start(&docker, rollback, async {
+        docker::start_container(&docker, &container_id).await?;
+        server::save_server_info(&info)?;
+        wait_for_postgres_ready(
+            &docker,
+            &container_id,
+            &user_name,
+            &user,
+            &database,
+            POSTGRES_STARTUP_TIMEOUT,
+        )
+        .await
+    })
+    .await?;
 
     let out = output::PostgresStartOutput {
         name: user_name,
@@ -271,6 +279,110 @@ async fn start(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+struct FreshStartRollback {
+    container_id: String,
+    metadata_path: PathBuf,
+    instance_dir: PathBuf,
+    remove_fresh_data_on_failure: bool,
+}
+
+/// A fresh attempt owns an absent or empty instance directory, including one
+/// containing only an empty `data/` created by an earlier pre-container step.
+/// Any pre-existing data has uncertain ownership and is retained on failure.
+fn fresh_instance_dir_is_disposable(path: &Path) -> bool {
+    let mut entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
+    };
+    let entry = match entries.next() {
+        None => return true,
+        Some(Ok(entry)) => entry,
+        Some(Err(_)) => return false,
+    };
+    if entries.next().is_some()
+        || entry.file_name() != "data"
+        || !entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+    {
+        return false;
+    }
+    match std::fs::read_dir(entry.path()) {
+        Ok(mut data_entries) => data_entries.next().is_none(),
+        Err(_) => false,
+    }
+}
+
+async fn finish_fresh_start<F>(
+    docker: &bollard::Docker,
+    rollback: FreshStartRollback,
+    startup: F,
+) -> Result<()>
+where
+    F: Future<Output = Result<()>>,
+{
+    let primary = match startup.await {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+
+    let cleanup = rollback_fresh_start(docker, &rollback).await;
+    if cleanup.is_empty() {
+        Err(primary)
+    } else {
+        Err(Error::PostgresStartupRollback {
+            primary: Box::new(primary),
+            cleanup: cleanup.join("; "),
+        })
+    }
+}
+
+async fn rollback_fresh_start(
+    docker: &bollard::Docker,
+    rollback: &FreshStartRollback,
+) -> Vec<String> {
+    let mut diagnostics = Vec::new();
+    let container_removed = match docker::remove_container(docker, &rollback.container_id).await {
+        Ok(()) => true,
+        Err(error) => {
+            diagnostics.push(format!(
+                "failed to remove container '{}': {error}",
+                rollback.container_id
+            ));
+            false
+        }
+    };
+
+    if let Err(error) = std::fs::remove_file(&rollback.metadata_path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        diagnostics.push(format!(
+            "failed to remove metadata '{}': {error}",
+            rollback.metadata_path.display()
+        ));
+    }
+
+    if rollback.remove_fresh_data_on_failure && container_removed {
+        if let Err(error) = docker::remove_host_dir_blocking(&rollback.instance_dir) {
+            diagnostics.push(format!(
+                "failed to remove fresh Postgres data '{}': {error}",
+                rollback.instance_dir.display()
+            ));
+        }
+    } else {
+        let reason = if container_removed {
+            "it contained data before this start attempt"
+        } else {
+            "the container could not be removed"
+        };
+        diagnostics.push(format!(
+            "retained Postgres data '{}' because {reason}",
+            rollback.instance_dir.display()
+        ));
+    }
+
+    diagnostics
 }
 
 /// Default user-facing name when `--name` is omitted: `"default"` if no
@@ -868,6 +980,7 @@ mod tests {
         container_running: bool,
         ready_on_probe: Option<usize>,
         probes: AtomicUsize,
+        removes: AtomicUsize,
         saw_probe_args: AtomicBool,
         stall_logs: AtomicBool,
     }
@@ -893,6 +1006,7 @@ mod tests {
                 container_running,
                 ready_on_probe,
                 probes: AtomicUsize::new(0),
+                removes: AtomicUsize::new(0),
                 saw_probe_args: AtomicBool::new(false),
                 stall_logs: AtomicBool::new(false),
             });
@@ -938,6 +1052,10 @@ mod tests {
 
         fn probes(&self) -> usize {
             self.state.probes.load(Ordering::SeqCst)
+        }
+
+        fn removes(&self) -> usize {
+            self.state.removes.load(Ordering::SeqCst)
         }
 
         fn stall_logs(&self) {
@@ -1089,6 +1207,10 @@ mod tests {
                 stream,
                 &format!(r#"{{"Running":false,"ExitCode":{exit_code}}}"#),
             );
+        } else if request_line.starts_with("DELETE ") && request_line.contains("/containers/test?")
+        {
+            state.removes.fetch_add(1, Ordering::SeqCst);
+            write_docker_response(stream, "");
         } else {
             panic!("unexpected fake Docker request: {request_line}");
         }
@@ -1171,6 +1293,45 @@ mod tests {
         assert!(error.contains("did not become ready within 1 seconds"));
         assert!(error.contains("database system is starting up"));
         assert!(docker.probes() >= 2);
+        docker.finish();
+    }
+
+    #[tokio::test]
+    async fn fresh_initialization_timeout_removes_container_metadata_and_pgdata() {
+        let docker = FakeDocker::spawn(true, None);
+        let tempdir = tempfile::tempdir().expect("create rollback tempdir");
+        let instance_dir = tempdir.path().join("stuck-pg18");
+        let data_dir = instance_dir.join("data");
+        let metadata_path = tempdir.path().join("stuck-pg18.json");
+        std::fs::create_dir_all(&data_dir).expect("create partial PGDATA");
+        std::fs::write(data_dir.join("PG_VERSION"), "18").expect("write partial PGDATA");
+        std::fs::write(&metadata_path, "partial metadata").expect("write metadata");
+
+        let error = finish_fresh_start(
+            &docker.client,
+            FreshStartRollback {
+                container_id: "test".to_string(),
+                metadata_path: metadata_path.clone(),
+                instance_dir: instance_dir.clone(),
+                remove_fresh_data_on_failure: true,
+            },
+            wait_for_postgres_ready(
+                &docker.client,
+                "test",
+                "stuck",
+                "test-user",
+                "test-db",
+                Duration::from_millis(150),
+            ),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("did not become ready"));
+        assert_eq!(docker.removes(), 1);
+        assert!(!metadata_path.exists());
+        assert!(!instance_dir.exists());
         docker.finish();
     }
 
@@ -1310,5 +1471,22 @@ mod tests {
         let p = generate_password();
         assert_eq!(p.len(), 24);
         assert!(p.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn fresh_data_cleanup_ownership_is_conservative() {
+        let tempdir = tempfile::tempdir().expect("create policy tempdir");
+        let instance_dir = tempdir.path().join("policy-pg18");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        std::fs::create_dir(&instance_dir).expect("create empty instance dir");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        let data_dir = instance_dir.join("data");
+        std::fs::create_dir(&data_dir).expect("create empty data dir");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        std::fs::write(data_dir.join("PG_VERSION"), "existing").expect("write existing PGDATA");
+        assert!(!fresh_instance_dir_is_disposable(&instance_dir));
     }
 }

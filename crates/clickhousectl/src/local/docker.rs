@@ -197,10 +197,13 @@ pub struct PostgresRunOpts<'a> {
     pub extra_env: Vec<String>,
 }
 
-/// Create + start a Postgres container; return its ID.
-pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<String> {
+/// Create a Postgres container without starting it; return its ID.
+///
+/// Keeping creation separate gives the caller an ID to remove if any later
+/// startup step fails.
+pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<String> {
     use bollard::models::{ContainerCreateBody, HostConfig, PortBinding};
-    use bollard::query_parameters::{CreateContainerOptionsBuilder, StartContainerOptions};
+    use bollard::query_parameters::CreateContainerOptionsBuilder;
 
     let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     port_bindings.insert(
@@ -261,12 +264,16 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
 
+    Ok(created.id)
+}
+
+pub async fn start_container(docker: &Docker, id: &str) -> Result<()> {
+    use bollard::query_parameters::StartContainerOptions;
     docker
-        .start_container(&created.id, None::<StartContainerOptions>)
+        .start_container(id, None::<StartContainerOptions>)
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
-
-    Ok(created.id)
+    Ok(())
 }
 
 /// If a container with our managed name (`clickhousectl-pg-<name>-<major>`)
