@@ -40,7 +40,10 @@ pub struct LocalErrorBody {
 impl LocalErrorOutput {
     pub fn from_error(error: &Error) -> Self {
         let (code, message, command) = match error {
-            Error::ServerNotFound(_) => (
+            Error::ServerNotFound(_)
+            | Error::ServerNameRequiredForStop
+            | Error::DefaultServerNotFoundForRemove
+            | Error::ServerNameRequiredForRemove => (
                 LocalErrorCode::ServerNotFound,
                 error.to_string(),
                 "clickhousectl local server list",
@@ -612,6 +615,27 @@ impl fmt::Display for ServerStopOutput {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerStopNoopOutput {
+    pub stopped: bool,
+    pub reason: &'static str,
+}
+
+impl ServerStopNoopOutput {
+    pub fn no_servers() -> Self {
+        Self {
+            stopped: false,
+            reason: "no_servers",
+        }
+    }
+}
+
+impl fmt::Display for ServerStopNoopOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "No ClickHouse servers to stop")
+    }
+}
+
 // ── server stop-all ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -720,6 +744,21 @@ mod tests {
         let cases = [
             (
                 Error::ServerNotFound("default".into()),
+                LocalErrorCode::ServerNotFound,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerNameRequiredForStop,
+                LocalErrorCode::ServerNotFound,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::DefaultServerNotFoundForRemove,
+                LocalErrorCode::ServerNotFound,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerNameRequiredForRemove,
                 LocalErrorCode::ServerNotFound,
                 "clickhousectl local server list",
             ),

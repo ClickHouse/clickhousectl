@@ -78,14 +78,14 @@ fn explicit_json_writes_exact_server_not_found_error_to_stderr() {
     let output = run(
         project.path(),
         home.path(),
-        &["local", "--json", "server", "stop"],
+        &["local", "--json", "server", "stop", "missing"],
     );
 
     assert_structured_error(
         &output,
         &expected_error(
             "server_not_found",
-            "Server 'default' not found",
+            "Server 'missing' not found",
             "clickhousectl local server list",
         ),
     );
@@ -139,7 +139,7 @@ fn agent_mode_writes_the_same_structured_error_without_json_flag() {
     let home = tempfile::tempdir().expect("create home tempdir");
     let output = command(project.path(), home.path())
         .env("AGENT", "opencode")
-        .args(["local", "server", "stop"])
+        .args(["local", "server", "stop", "missing"])
         .output()
         .expect("run clickhousectl");
 
@@ -147,7 +147,7 @@ fn agent_mode_writes_the_same_structured_error_without_json_flag() {
         &output,
         &expected_error(
             "server_not_found",
-            "Server 'default' not found",
+            "Server 'missing' not found",
             "clickhousectl local server list",
         ),
     );
@@ -157,11 +157,15 @@ fn agent_mode_writes_the_same_structured_error_without_json_flag() {
 fn human_mode_keeps_concise_error_text() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
-    let output = run(project.path(), home.path(), &["local", "server", "stop"]);
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "server", "stop", "missing"],
+    );
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
-    assert_eq!(output.stderr, b"Error: Server 'default' not found\n");
+    assert_eq!(output.stderr, b"Error: Server 'missing' not found\n");
 }
 
 #[test]

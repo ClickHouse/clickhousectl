@@ -741,46 +741,12 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             global,
             project,
         } => {
-            let name = name.or(name_flag).unwrap_or_else(|| "default".to_string());
+            let name = name.or(name_flag);
             if global {
+                let name = name.unwrap_or_else(|| "default".to_string());
                 stop_server_global(&name, project.as_deref(), json)
             } else {
-                server::validate_server_name(&name)?;
-
-                // Recover orphaned servers so we can stop processes
-                // that lost their metadata files.
-                server::recover_current_project_servers();
-
-                match classify_stop(
-                    server::is_server_running(&name),
-                    server::server_data_dir(&name).exists(),
-                ) {
-                    StopOutcome::Stop => {
-                        if !json {
-                            println!("Stopping server '{}'...", name);
-                        }
-                        server::kill_server(&name)?;
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: false,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    StopOutcome::AlreadyStopped => {
-                        // Server exists on disk but isn't running. `stop` is
-                        // idempotent: this is the desired end state, so succeed
-                        // instead of erroring.
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: true,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    // No such server in this project — surface the typo.
-                    StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
-                }
+                stop_server_local(name, json)
             }
         }
         ServerCommands::StopAll { global } => {
@@ -797,30 +763,103 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             password,
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
-        ServerCommands::Remove { name, name_flag } => {
-            let name = name.or(name_flag).unwrap_or_else(|| "default".to_string());
-            server::validate_server_name(&name)?;
+        ServerCommands::Remove { name, name_flag } => remove_server_local(name.or(name_flag), json),
+    }
+}
 
-            // Recover orphaned servers so we correctly detect a running
-            // process even when its metadata file is missing.
-            server::recover_current_project_servers();
+fn stop_server_local(name: Option<String>, json: bool) -> Result<()> {
+    let name = match name {
+        Some(name) => name,
+        None => match select_omitted_stop_name(&server::list_clickhouse_server_names())? {
+            Some(name) => name,
+            None => {
+                output::print_output(&output::ServerStopNoopOutput::no_servers(), json);
+                return Ok(());
+            }
+        },
+    };
+    server::validate_server_name(&name)?;
 
-            if server::is_server_running(&name) {
-                return Err(Error::ServerRunningCannotRemove(name));
+    // Explicit names do not enumerate first, so recover orphaned processes
+    // before checking the selected identity.
+    server::recover_current_project_servers();
+
+    match classify_stop(
+        server::is_server_running(&name),
+        server::server_data_dir(&name).exists(),
+    ) {
+        StopOutcome::Stop => {
+            if !json {
+                println!("Stopping server '{}'...", name);
             }
-            let data_dir = server::server_data_dir(&name);
-            if !data_dir.exists() {
-                return Err(Error::ServerNotFound(name));
-            }
-            // Remove the whole server directory (parent of data/)
-            let server_dir = data_dir.parent().unwrap();
-            std::fs::remove_dir_all(server_dir)?;
-            server::remove_server_info(&name);
-            let out = output::ServerRemoveOutput { name };
+            server::kill_server(&name)?;
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: false,
+            };
             output::print_output(&out, json);
             Ok(())
         }
+        StopOutcome::AlreadyStopped => {
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: true,
+            };
+            output::print_output(&out, json);
+            Ok(())
+        }
+        // An explicit unknown name remains an error so typos surface. An
+        // omitted name only reaches this branch if state changed after selection.
+        StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
     }
+}
+
+fn select_omitted_stop_name(names: &[String]) -> Result<Option<String>> {
+    if names.iter().any(|name| name == "default") {
+        return Ok(Some("default".to_string()));
+    }
+    match names {
+        [] => Ok(None),
+        [name] => Ok(Some(name.clone())),
+        _ => Err(Error::ServerNameRequiredForStop),
+    }
+}
+
+fn remove_server_local(name: Option<String>, json: bool) -> Result<()> {
+    let name = match name {
+        Some(name) => name,
+        None if server::server_data_dir("default").exists() => "default".to_string(),
+        None => {
+            let has_custom = server::list_clickhouse_server_names()
+                .iter()
+                .any(|name| name != "default");
+            return Err(if has_custom {
+                Error::ServerNameRequiredForRemove
+            } else {
+                Error::DefaultServerNotFoundForRemove
+            });
+        }
+    };
+    server::validate_server_name(&name)?;
+
+    // Recover orphaned servers so we correctly detect a running process even
+    // when its metadata file is missing.
+    server::recover_current_project_servers();
+
+    if server::is_server_running(&name) {
+        return Err(Error::ServerRunningCannotRemove(name));
+    }
+    let data_dir = server::server_data_dir(&name);
+    if !data_dir.exists() {
+        return Err(Error::ServerNotFound(name));
+    }
+    // Remove the whole server directory (parent of data/).
+    let server_dir = data_dir.parent().unwrap();
+    std::fs::remove_dir_all(server_dir)?;
+    server::remove_server_info(&name);
+    let out = output::ServerRemoveOutput { name };
+    output::print_output(&out, json);
+    Ok(())
 }
 
 /// What a project-scoped `server stop <name>` should do, given whether the
@@ -1131,6 +1170,23 @@ mod tests {
     #[test]
     fn classify_stop_unknown_name_is_not_found() {
         assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
+
+    #[test]
+    fn omitted_stop_selection_prefers_default_then_a_sole_server() {
+        assert_eq!(select_omitted_stop_name(&[]).unwrap(), None);
+        assert_eq!(
+            select_omitted_stop_name(&["dev".to_string()]).unwrap(),
+            Some("dev".to_string())
+        );
+        assert_eq!(
+            select_omitted_stop_name(&["analytics".to_string(), "default".to_string()]).unwrap(),
+            Some("default".to_string())
+        );
+        assert!(matches!(
+            select_omitted_stop_name(&["analytics".to_string(), "dev".to_string()]),
+            Err(Error::ServerNameRequiredForStop)
+        ));
     }
 
     #[test]

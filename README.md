@@ -258,7 +258,7 @@ clickhousectl local server list
 clickhousectl local server list --global                  # List running ClickHouse servers across all projects
 
 # Stop servers
-clickhousectl local server stop                           # Stop "default"
+clickhousectl local server stop                           # Stop "default", or the sole known ClickHouse server
 clickhousectl local server stop dev                       # Stop by name
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
@@ -266,7 +266,7 @@ clickhousectl local server stop-all                       # Stop all ClickHouse 
 clickhousectl local server stop-all --global              # Stop all ClickHouse servers system-wide
 
 # Remove a stopped server and its data
-clickhousectl local server remove                         # Remove "default"
+clickhousectl local server remove                         # Remove "default" only when it exists
 clickhousectl local server remove test                    # Remove by name
 
 # Write connection env vars to .env file
@@ -277,6 +277,10 @@ clickhousectl local server dotenv --local --user default --database mydb  # Incl
 ```
 
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
+
+When a project-scoped `server stop` omits the name, it selects an existing `default` server first. If there is no `default`, it selects the sole known ClickHouse server, whether running or stopped. With no ClickHouse servers it succeeds without doing anything. With multiple non-default ClickHouse servers it exits with guidance to pass a name or use `server stop-all`. An explicit unknown name remains an error so typos are not hidden.
+
+An omitted `server remove` is deliberately more conservative: it removes only an existing `default` server. It never infers a custom name, even when there is only one. If `default` does not exist, the command reports whether custom ClickHouse servers are available and directs you to `server list` before you pass a name explicitly.
 
 **Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 
@@ -922,7 +926,7 @@ When a dispatched `local` command fails in explicit `--json` or detected-agent m
 {
   "error": {
     "code": "server_not_found",
-    "message": "Server 'default' not found",
+    "message": "Server 'missing' not found",
     "command": "clickhousectl local server list"
   }
 }
@@ -932,7 +936,7 @@ When a dispatched `local` command fails in explicit `--json` or detected-agent m
 
 | Local runtime code     | Meaning                                      |
 | ---------------------- | -------------------------------------------- |
-| `server_not_found`     | The selected local server does not exist     |
+| `server_not_found`     | A server is absent or name selection is needed |
 | `server_not_running`   | The selected local server is stopped         |
 | `server_running`       | A running server blocks the requested action |
 | `invalid_version`      | The supplied version syntax is invalid       |

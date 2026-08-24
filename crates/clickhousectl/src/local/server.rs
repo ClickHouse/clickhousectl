@@ -3,6 +3,7 @@ use crate::init;
 use crate::local::discovery;
 use crate::local::docker;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -336,6 +337,42 @@ pub fn list_running_servers() -> Vec<ServerInfo> {
         .filter(|e| e.running)
         .filter_map(|e| e.info)
         .collect()
+}
+
+/// List known ClickHouse server identities, including stopped data directories
+/// retained from older versions that may not have metadata.
+pub fn list_clickhouse_server_names() -> Vec<String> {
+    let entries = list_all_servers();
+    let mut clickhouse_names = BTreeSet::new();
+    let mut postgres_keys = BTreeSet::new();
+
+    for entry in entries {
+        match entry.info.as_ref().map(|info| info.engine) {
+            Some(Engine::Postgres) => {
+                postgres_keys.insert(entry.name);
+            }
+            Some(Engine::Clickhouse) | None => {
+                clickhouse_names.insert(entry.name);
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(servers_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() || !path.join("data").is_dir() {
+                continue;
+            }
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !postgres_keys.contains(&name) {
+                clickhouse_names.insert(name);
+            }
+        }
+    }
+
+    clickhouse_names.into_iter().collect()
 }
 
 /// Check if a named server is currently running.

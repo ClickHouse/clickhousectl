@@ -132,6 +132,21 @@ pub enum Error {
     #[error("Server '{0}' not found")]
     ServerNotFound(String),
 
+    #[error(
+        "No server name was provided and multiple non-default ClickHouse servers exist. Pass a name or run `clickhousectl local server stop-all`; use `clickhousectl local server list` to see available servers."
+    )]
+    ServerNameRequiredForStop,
+
+    #[error(
+        "No removable 'default' ClickHouse server exists, and no custom ClickHouse servers are available. Run `clickhousectl local server list` to inspect local server state."
+    )]
+    DefaultServerNotFoundForRemove,
+
+    #[error(
+        "No removable 'default' ClickHouse server exists. Run `clickhousectl local server list`, then pass a custom server name explicitly with `clickhousectl local server remove <name>`."
+    )]
+    ServerNameRequiredForRemove,
+
     #[error("Server '{0}' is already running")]
     ServerAlreadyRunning(String),
 
