@@ -48,8 +48,12 @@ pub enum Error {
     #[error("Unsupported platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
 
-    #[error("Failed to create directory: {0}")]
-    CreateDir(PathBuf),
+    #[error("Failed to create directory {}: {source}", path.display())]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("Download failed: {0}")]
     Download(String),
@@ -97,6 +101,18 @@ pub enum Error {
 
     #[error("Extraction failed: {0}")]
     Extract(String),
+
+    #[error(
+        "Failed to extract archive {} to {}: {source}",
+        archive.display(),
+        destination.display()
+    )]
+    ExtractArchive {
+        archive: PathBuf,
+        destination: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("Server '{0}' is not running")]
     ServerNotRunning(String),
