@@ -58,18 +58,21 @@ fn build_service_query_key(
 }
 
 /// Ensure a query endpoint is provisioned for `service_id` and return the
-/// persisted key. If a key is already cached locally, returns it unchanged;
-/// otherwise creates the API key, binds it to the query endpoint (merging
+/// persisted key. Provisioning is serialized across processes in this project;
+/// after taking the lock, credentials are re-read so waiters reuse the winner's
+/// key. The winner creates the API key, binds it to the query endpoint (merging
 /// into any existing endpoint configuration) with read+write scope on this
-/// service, and saves it to `.clickhouse/credentials.json`.
+/// service, and atomically saves the merged credentials.
 pub async fn ensure_service_query_setup(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
     service_name: &str,
 ) -> CloudResult<ServiceQueryKey> {
-    if let Some(existing) = credentials::get_service_query_key(service_id) {
-        return Ok(existing);
+    let _lock = credentials::lock_service_query_provisioning()?;
+    let mut creds = credentials::try_load_credentials()?;
+    if let Some(existing) = creds.service_query_keys.get(service_id) {
+        return Ok(existing.clone());
     }
 
     let key_request = ApiKeyPostRequest {
@@ -128,14 +131,20 @@ pub async fn ensure_service_query_setup(
     // dangling UUID in the endpoint's `openApiKeys`.
     let stored = build_service_query_key(
         org_id,
-        api_key_uuid,
+        api_key_uuid.clone(),
         key_id,
         key_secret,
         endpoint.id,
         service_name,
         Utc::now(),
     );
-    credentials::set_service_query_key(service_id, stored.clone())?;
+    creds
+        .service_query_keys
+        .insert(service_id.to_string(), stored.clone());
+    if let Err(error) = credentials::save_credentials(&creds) {
+        discard_api_key(client, org_id, &api_key_uuid).await;
+        return Err(error);
+    }
 
     Ok(stored)
 }

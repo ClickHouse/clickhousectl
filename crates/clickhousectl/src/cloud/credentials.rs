@@ -1,8 +1,10 @@
 use crate::cloud::client::{CloudError, Result as CloudResult};
 use crate::init;
+use atomic_write_file::AtomicWriteFile;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -37,8 +39,36 @@ pub struct ServiceQueryKey {
     pub created_at: DateTime<Utc>,
 }
 
+/// Holds the project-wide provisioning lock until it is dropped.
+pub struct ServiceQueryProvisionLock {
+    _file: std::fs::File,
+}
+
 pub fn credentials_path() -> PathBuf {
     init::local_dir().join("credentials.json")
+}
+
+fn ensure_credentials_dir() -> CloudResult<PathBuf> {
+    let dir = init::local_dir();
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(".gitignore"), "*\n")?;
+    }
+    Ok(dir)
+}
+
+/// Serialize Query API provisioning across processes in this project.
+pub fn lock_service_query_provisioning() -> CloudResult<ServiceQueryProvisionLock> {
+    let path = ensure_credentials_dir()?.join("query-provision.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| CloudError::new(format!("failed to open {}: {error}", path.display())))?;
+    file.lock()
+        .map_err(|error| CloudError::new(format!("failed to lock {}: {error}", path.display())))?;
+    Ok(ServiceQueryProvisionLock { _file: file })
 }
 
 pub fn load_credentials() -> Option<Credentials> {
@@ -47,27 +77,44 @@ pub fn load_credentials() -> Option<Credentials> {
     serde_json::from_str(&data).ok()
 }
 
+/// Load credentials without treating read or parse failures as an empty file.
+pub fn try_load_credentials() -> CloudResult<Credentials> {
+    let path = credentials_path();
+    let data = match std::fs::read_to_string(&path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Credentials::default());
+        }
+        Err(error) => {
+            return Err(CloudError::new(format!(
+                "failed to read {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    serde_json::from_str(&data)
+        .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))
+}
+
 pub fn clear_credentials() {
     let path = credentials_path();
     let _ = std::fs::remove_file(path);
 }
 
 pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
-    let dir = init::local_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(".gitignore"), "*\n")?;
-    }
-
+    ensure_credentials_dir()?;
     let path = credentials_path();
     let json = serde_json::to_string_pretty(creds)?;
-    std::fs::write(&path, &json)?;
+    let mut file = AtomicWriteFile::open(&path)?;
+    file.write_all(json.as_bytes())?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
+
+    file.commit()?;
 
     Ok(())
 }
@@ -78,26 +125,8 @@ pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
 }
 
 pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
-    let path = credentials_path();
-    let data = match std::fs::read_to_string(&path) {
-        Ok(data) => data,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(CloudError::new(format!(
-                "failed to read {}: {error}",
-                path.display()
-            )));
-        }
-    };
-    let creds: Credentials = serde_json::from_str(&data)
-        .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))?;
+    let creds = try_load_credentials()?;
     Ok(creds.service_query_keys.get(service_id).cloned())
-}
-
-pub fn set_service_query_key(service_id: &str, key: ServiceQueryKey) -> CloudResult<()> {
-    let mut creds = load_credentials().unwrap_or_default();
-    creds.service_query_keys.insert(service_id.to_string(), key);
-    save_credentials(&creds)
 }
 
 pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
