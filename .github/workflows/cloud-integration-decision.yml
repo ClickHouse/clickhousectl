@@ -2,7 +2,7 @@ name: Cloud Integration Decision Controller
 
 on: # zizmor: ignore[dangerous-triggers] trusted metadata only; never checks out PR code
   pull_request_target:
-    types: [opened, reopened, synchronize, labeled]
+    types: [opened, synchronize, labeled]
   workflow_run:
     workflows: [Cloud Integration]
     types: [completed]

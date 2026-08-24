@@ -131,7 +131,7 @@ class CloudIntegrationDecisionTests(unittest.TestCase):
         )
 
     def test_new_and_updated_heads_are_pending_on_the_exact_sha(self):
-        for action in ("opened", "reopened", "synchronize"):
+        for action in ("opened", "synchronize"):
             with self.subTest(action=action):
                 result = self.decide(
                     "pull_request_target",
@@ -142,6 +142,10 @@ class CloudIntegrationDecisionTests(unittest.TestCase):
                 self.assertIsNone(result.conclusion)
                 self.assertIn(SHA, result.summary)
                 self.assertIn("run-cloud-integration", result.summary)
+
+    def test_reopening_does_not_replace_a_same_sha_decision_with_pending(self):
+        result = self.decide("pull_request_target", pull_event("reopened"))
+        self.assertIsNone(result)
 
     def test_stale_pull_event_does_not_touch_the_new_head(self):
         result = self.decide(

@@ -291,7 +291,7 @@ def decide_pull_request_target(
     pull = current_pull(client, number, sha)
     if pull is None:
         return None
-    if action in {"opened", "reopened", "synchronize"}:
+    if action in {"opened", "synchronize"}:
         return pending_decision(pull)
     if action != "labeled" or nested(event, "label", "name") != OVERRIDE_LABEL:
         return None
