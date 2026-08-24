@@ -664,7 +664,7 @@ impl ClickHouseQuery {
     async fn count_rows(&self, table: &str) -> TestResult<i64> {
         let body = self
             .run_query(&format!(
-                "SELECT count() FROM default.{table} FINAL FORMAT TabSeparated"
+                "SELECT count() FROM default.{table} FORMAT TabSeparated"
             ))
             .await?;
         Ok(body.trim().parse::<i64>()?)
