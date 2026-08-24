@@ -1534,6 +1534,8 @@ async fn postgres_cdc_omits_publication_name_and_slot_when_not_passed() {
     .await;
 
     let settings = &body["source"]["postgres"]["settings"];
+    assert_eq!(body["source"]["postgres"]["authentication"], "basic");
+    assert_eq!(settings["replicationMode"], "cdc");
     assert!(
         settings.get("publicationName").is_none(),
         "publicationName leaked into wire body: {settings}",
@@ -2349,6 +2351,118 @@ fn postgres_args_minimal() -> Vec<String> {
 }
 
 #[tokio::test]
+async fn postgres_invalid_inputs_fail_before_cloud_api_dispatch() {
+    let without_org = || {
+        let mut args = postgres_args_minimal();
+        args.truncate(args.len() - 2);
+        args
+    };
+
+    let mut invalid_port = without_org();
+    let port = invalid_port.iter().position(|arg| arg == "--port").unwrap() + 1;
+    invalid_port[port] = "0".into();
+
+    let mut missing_mapping = without_org();
+    let mapping = missing_mapping
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .unwrap();
+    missing_mapping.drain(mapping..=mapping + 1);
+
+    let mut empty_schema = without_org();
+    let mapping = empty_schema
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .unwrap()
+        + 1;
+    empty_schema[mapping] = ".t:target".into();
+
+    let mut empty_source_table = without_org();
+    let mapping = empty_source_table
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .unwrap()
+        + 1;
+    empty_source_table[mapping] = "public.:target".into();
+
+    let mut empty_target_table = without_org();
+    let mapping = empty_target_table
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .unwrap()
+        + 1;
+    empty_target_table[mapping] = "public.t:".into();
+
+    let mut missing_iam_role = without_org();
+    missing_iam_role.extend(["--auth".into(), "IAM_ROLE".into()]);
+
+    let mut slot_with_cdc = without_org();
+    slot_with_cdc.extend(["--replication-slot-name".into(), "slot".into()]);
+
+    let cases = [
+        ("zero port", invalid_port, 2, vec!["--port", "1..=65535"]),
+        (
+            "missing mapping",
+            missing_mapping,
+            2,
+            vec!["--table-mapping", "required"],
+        ),
+        (
+            "empty source schema",
+            empty_schema,
+            1,
+            vec!["PostgreSQL table mapping source schema must not be empty"],
+        ),
+        (
+            "empty source table",
+            empty_source_table,
+            1,
+            vec!["PostgreSQL table mapping source table must not be empty"],
+        ),
+        (
+            "empty target table",
+            empty_target_table,
+            1,
+            vec!["PostgreSQL table mapping target table must not be empty"],
+        ),
+        (
+            "IAM role auth without role",
+            missing_iam_role,
+            2,
+            vec!["--iam-role", "required"],
+        ),
+        (
+            "slot with cdc",
+            slot_with_cdc,
+            1,
+            vec!["--replication-slot-name is only valid with --replication-mode cdc_only"],
+        ),
+    ];
+
+    for (name, args, exit_code, diagnostics) in cases {
+        let mock = MockServer::start().await;
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(exit_code),
+            "wrong exit code for {name}; stderr: {stderr}"
+        );
+        for diagnostic in diagnostics {
+            assert!(
+                stderr.contains(diagnostic),
+                "missing diagnostic {diagnostic:?} for {name}; stderr: {stderr}"
+            );
+        }
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "{name} dispatched a Cloud API request"
+        );
+    }
+}
+
+#[tokio::test]
 async fn postgres_publication_name_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
@@ -2366,6 +2480,8 @@ async fn postgres_publication_name_serializes_when_provided() {
 async fn postgres_replication_slot_name_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
+    let mode = args.iter().position(|arg| arg == "cdc").unwrap();
+    args[mode] = "cdc_only".into();
     args.push("--replication-slot-name".into());
     args.push("my_slot".into());
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -2443,6 +2559,7 @@ async fn postgres_replication_mode_snapshot_serializes() {
         body["source"]["postgres"]["settings"]["replicationMode"],
         "snapshot",
     );
+    assert_eq!(body["source"]["postgres"]["authentication"], "basic");
 }
 
 #[tokio::test]
@@ -2462,6 +2579,15 @@ async fn postgres_replication_mode_cdc_only_serializes() {
     assert_eq!(
         body["source"]["postgres"]["settings"]["replicationMode"],
         "cdc_only",
+    );
+    assert_eq!(body["source"]["postgres"]["authentication"], "basic");
+    assert_eq!(
+        body["source"]["postgres"]["settings"]["publicationName"],
+        "p"
+    );
+    assert_eq!(
+        body["source"]["postgres"]["settings"]["replicationSlotName"],
+        "s"
     );
 }
 
