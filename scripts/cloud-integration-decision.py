@@ -76,13 +76,12 @@ class GitHubClient:
     def get_pull(self, number: int) -> dict[str, Any]:
         return self._request("GET", f"/repos/{self.repository}/pulls/{number}")
 
-    def get_permission(self, username: str) -> str:
+    def get_permission(self, username: str) -> dict[str, Any]:
         quoted_username = urllib.parse.quote(username, safe="")
-        response = self._request(
+        return self._request(
             "GET",
             f"/repos/{self.repository}/collaborators/{quoted_username}/permission",
         )
-        return response.get("permission", "")
 
     def list_comments(self, number: int) -> list[dict[str, Any]]:
         return self._paginate(
@@ -268,6 +267,15 @@ def quote_reason(reason: str) -> str:
     return "\n".join(f"> {line}" if line else ">" for line in reason.splitlines())
 
 
+def maintainer_permission(permission: dict[str, Any]) -> bool:
+    role = permission.get("permission")
+    explicit = nested(permission, "user", "permissions")
+    return role in MAINTAINER_PERMISSIONS or (
+        isinstance(explicit, dict)
+        and (explicit.get("admin") is True or explicit.get("maintain") is True)
+    )
+
+
 def decide_pull_request_target(
     event: dict[str, Any], client: GitHubClient, timestamp: str
 ) -> Decision | None:
@@ -298,12 +306,13 @@ def decide_pull_request_target(
             pull.get("html_url", ""),
         )
     permission = client.get_permission(actor)
-    if permission not in MAINTAINER_PERMISSIONS:
+    if not maintainer_permission(permission):
+        role = permission.get("permission")
         return completed(
             sha,
             "failure",
             "Cloud integration override rejected",
-            f"`@{actor}` has `{permission or 'unknown'}` repository permission; "
+            f"`@{actor}` has `{role or 'unknown'}` repository permission; "
             "only `maintain` or `admin` may override. Remove the override label.",
             pull.get("html_url", ""),
         )

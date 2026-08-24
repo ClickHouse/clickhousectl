@@ -78,14 +78,14 @@ class FakeClient:
         self,
         *,
         current_pull=None,
-        permission="maintain",
+        permission=None,
         comments=None,
         run_jobs=None,
         commit_pulls=None,
         head_pulls=None,
     ):
         self.pull = current_pull or pull()
-        self.permission = permission
+        self.permission = permission or {"permission": "maintain"}
         self.comments = comments or []
         self.run_jobs = run_jobs if run_jobs is not None else jobs()
         self.commit_pulls = commit_pulls or []
@@ -185,7 +185,7 @@ class CloudIntegrationDecisionTests(unittest.TestCase):
         self.assertIn(comment_url, result.summary)
 
     def test_write_permission_cannot_override(self):
-        client = FakeClient(permission="write")
+        client = FakeClient(permission={"permission": "write"})
         result = self.decide(
             "pull_request_target",
             pull_event("labeled", label=decision.OVERRIDE_LABEL),
@@ -193,6 +193,27 @@ class CloudIntegrationDecisionTests(unittest.TestCase):
         )
         self.assertEqual(result.conclusion, "failure")
         self.assertIn("only `maintain` or `admin`", result.summary)
+
+    def test_legacy_write_role_with_explicit_maintain_permission_can_override(self):
+        client = FakeClient(
+            permission={
+                "permission": "write",
+                "user": {"permissions": {"admin": False, "maintain": True}},
+            },
+            comments=[
+                {
+                    "user": {"login": "maintainer"},
+                    "body": f"{decision.OVERRIDE_COMMAND} {SHA} reviewed exception",
+                    "html_url": "https://github.test/comment",
+                }
+            ],
+        )
+        result = self.decide(
+            "pull_request_target",
+            pull_event("labeled", label=decision.OVERRIDE_LABEL),
+            client,
+        )
+        self.assertEqual(result.conclusion, "success")
 
     def test_override_requires_same_actor_exact_sha_and_reason(self):
         cases = {
