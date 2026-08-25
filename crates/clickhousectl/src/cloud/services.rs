@@ -450,11 +450,6 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Replace this service's stale stored Query API key using its exact
-        /// saved ownership metadata (API key auth only)
-        #[arg(long, conflicts_with = "no_auto_enable")]
-        repair_query_key: bool,
-
         /// Fail instead of auto-provisioning when the authenticated API key
         /// cannot use the query endpoint and no key is stored locally (API
         /// key auth only; with OAuth this flag has no effect)
@@ -545,9 +540,7 @@ impl ServiceCommands {
             ServiceCommands::List { .. } => false,
             ServiceCommands::Get { .. } => false,
             ServiceCommands::Prometheus { .. } => false,
-            ServiceCommands::Query {
-                repair_query_key, ..
-            } => *repair_query_key,
+            ServiceCommands::Query { .. } => false,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
@@ -784,7 +777,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             database,
             format,
             org_id,
-            repair_query_key,
             no_auto_enable,
         } => {
             let options = ServiceQueryOptions {
@@ -796,7 +788,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 format,
                 json,
                 org_id,
-                repair_query_key,
                 no_auto_enable,
             };
             service_query(client, options).await
@@ -1715,7 +1706,6 @@ struct ServiceQueryOptions {
     format: Option<String>,
     json: bool,
     org_id: Option<String>,
-    repair_query_key: bool,
     no_auto_enable: bool,
 }
 
@@ -1732,6 +1722,15 @@ const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness 
     max_delay: std::time::Duration::from_secs(5),
 };
 
+fn query_readiness_timeout_error(
+    readiness_timeout: std::time::Duration,
+) -> clickhouse_cloud_api::Error {
+    clickhouse_cloud_api::Error::Api {
+        status: 408,
+        message: format!("Query API endpoint did not become ready within {readiness_timeout:?}"),
+    }
+}
+
 async fn run_query_attempt_before_deadline<T>(
     deadline: tokio::time::Instant,
     readiness_timeout: std::time::Duration,
@@ -1740,19 +1739,12 @@ async fn run_query_attempt_before_deadline<T>(
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     tokio::time::timeout(remaining, attempt)
         .await
-        .unwrap_or_else(|_| {
-            Err(clickhouse_cloud_api::Error::Api {
-                status: 408,
-                message: format!(
-                    "Query API endpoint did not become ready within {readiness_timeout:?}"
-                ),
-            })
-        })
+        .unwrap_or_else(|_| Err(query_readiness_timeout_error(readiness_timeout)))
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_basic_service_query(
-    client: &clickhouse_cloud_api::Client,
+    client: &CloudClient,
     service_id: &str,
     key_id: &str,
     key_secret: &str,
@@ -1762,7 +1754,11 @@ async fn run_basic_service_query(
     service_name: &str,
     confirmed_idle: bool,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let run = |wake| client.run_query(service_id, key_id, key_secret, sql, database, format, wake);
+    let run = |wake| {
+        client
+            .api()
+            .run_query(service_id, key_id, key_secret, sql, database, format, wake)
+    };
     if confirmed_idle {
         eprint_waking_service(service_name);
         return run(true).await;
@@ -1787,63 +1783,29 @@ fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
     )
 }
 
-fn stale_stored_query_key_error(
-    error: &clickhouse_cloud_api::Error,
-    service_id: &str,
-    org_id: &str,
-) -> Option<CloudError> {
-    match error {
-        clickhouse_cloud_api::Error::Api {
-            status: 401 | 403,
-            message,
-        } if !message.starts_with("SQL error ") => Some(CloudError::new(format!(
-            "the stored Query API key for service {service_id} was rejected and may be stale: {message}\n\nNo credentials were changed. Repair only this service credential by rerunning the query with `--repair-query-key`, for example:\n  clickhousectl cloud service query --id {service_id} --org-id {org_id} --repair-query-key --query \"SELECT 1\""
-        ))),
-        _ => None,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_newly_provisioned_service_query(
-    client: &clickhouse_cloud_api::Client,
-    service_id: &str,
-    key_id: &str,
-    key_secret: &str,
-    sql: &str,
-    database: Option<&str>,
-    format: &str,
-    service_name: &str,
+async fn wait_for_query_endpoint_readiness<T, F, Fut>(
     readiness: QueryEndpointReadiness,
-) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+    mut probe: F,
+) -> Result<bool, clickhouse_cloud_api::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+{
     let deadline = tokio::time::Instant::now() + readiness.timeout;
     let mut delay = readiness.initial_delay;
     let mut waiting = false;
 
-    let confirmed_idle = loop {
-        let error = match run_query_attempt_before_deadline(
-            deadline,
-            readiness.timeout,
-            client.run_query(
-                service_id,
-                key_id,
-                key_secret,
-                "SELECT 1",
-                None,
-                "TabSeparated",
-                false,
-            ),
-        )
-        .await
-        {
-            Ok(_) => break false,
-            Err(clickhouse_cloud_api::Error::ServiceIdle) => break true,
-            Err(error) if query_requires_provisioning(&error) => error,
+    loop {
+        match run_query_attempt_before_deadline(deadline, readiness.timeout, probe()).await {
+            Ok(_) => return Ok(false),
+            Err(clickhouse_cloud_api::Error::ServiceIdle) => return Ok(true),
+            Err(error) if query_requires_provisioning(&error) => {}
             Err(error) => return Err(error),
-        };
+        }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(error);
+            return Err(query_readiness_timeout_error(readiness.timeout));
         }
         if !waiting {
             eprintln!("Waiting for the Query API endpoint to become ready...");
@@ -1851,19 +1813,90 @@ async fn run_newly_provisioned_service_query(
         }
         tokio::time::sleep(delay.min(remaining)).await;
         delay = (delay * 2).min(readiness.max_delay);
-    };
+    }
+}
 
-    run_basic_service_query(
-        client,
-        service_id,
-        key_id,
-        key_secret,
-        sql,
-        database,
-        format,
-        service_name,
-        confirmed_idle,
+fn stored_query_key_was_rejected(error: &clickhouse_cloud_api::Error) -> bool {
+    matches!(
+        error,
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403,
+            message,
+        } if !message.starts_with("SQL error ")
     )
+}
+
+fn retire_stale_stored_query_key(
+    _provision_lock: &credentials::ServiceQueryProvisionLock,
+    error: &clickhouse_cloud_api::Error,
+    service_id: &str,
+    key: &credentials::ServiceQueryKey,
+) -> Option<CloudError> {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403,
+            message,
+        } if !message.starts_with("SQL error ") => {
+            let recovery = match credentials::remove_service_query_key_if_matches(service_id, key) {
+                Ok(true) => format!(
+                    "The rejected local credential was removed from `service_query_keys.{service_id}`. Rerun the same `clickhousectl cloud service query` command; it will try your active API key and automatically provision and store a replacement if needed. If you used `--no-auto-enable`, omit it to allow provisioning."
+                ),
+                Ok(false) => "The local credential changed while the query was running, so the current record was left untouched. Rerun the same `clickhousectl cloud service query` command to use the current credential.".to_string(),
+                Err(cleanup_error) => format!(
+                    "Automatic recovery could not safely remove the rejected local credential: {cleanup_error}\n\nNo local credentials were changed. After fixing the reported credential-store error, clear saved API credentials with:\n  clickhousectl cloud auth logout --api-keys\nThen restore API key auth (for example, with `clickhousectl cloud auth login --api-key <api-key> --api-secret <api-secret>`) and rerun the query."
+                ),
+            };
+            Some(CloudError::new(format!(
+                "the stored Query API key for service {service_id} was rejected and may be stale: {message}\n\n{recovery}"
+            )))
+        }
+        _ => None,
+    }
+}
+
+async fn probe_service_query_readiness(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+) -> Result<bool, clickhouse_cloud_api::Error> {
+    match client
+        .api()
+        .run_query(
+            service_id,
+            key_id,
+            key_secret,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
+        )
+        .await
+    {
+        Ok(_) => Ok(false),
+        Err(clickhouse_cloud_api::Error::ServiceIdle) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+async fn wait_for_service_query_readiness(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    readiness: QueryEndpointReadiness,
+) -> Result<bool, clickhouse_cloud_api::Error> {
+    wait_for_query_endpoint_readiness(readiness, || {
+        client.api().run_query(
+            service_id,
+            key_id,
+            key_secret,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
+        )
+    })
     .await
 }
 
@@ -1915,63 +1948,65 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             convert_query_error(client, error, &service_name, &service_id, &org_id)
         })?
     } else {
-        let stored_key = if options.repair_query_key {
-            let expected_stale =
-                credentials::try_get_service_query_key(&service_id)?.ok_or_else(|| {
-                    CloudError::new(format!(
-                        "no stored query key exists for service {service_id}; refusing to provision one under --repair-query-key"
-                    ))
-                })?;
-            eprintln!("Repairing stored Query API key for service '{service_name}'...");
-            Some((
-                crate::cloud::service_query::repair_service_query_setup(
-                    client,
-                    &org_id,
-                    &service_id,
-                    &service_name,
-                    expected_stale,
-                )
-                .await?,
-                true,
-            ))
-        } else {
-            credentials::get_service_query_key(&service_id).map(|key| (key, false))
-        };
-        let result = if let Some((key, repaired)) = stored_key {
-            let result = if repaired {
-                run_newly_provisioned_service_query(
-                    client.api(),
-                    &service_id,
-                    &key.key_id,
-                    &key.key_secret,
-                    &sql,
-                    options.database.as_deref(),
-                    &format,
-                    &service_name,
-                    QUERY_ENDPOINT_READINESS,
-                )
-                .await
-            } else {
-                run_basic_service_query(
-                    client.api(),
-                    &service_id,
-                    &key.key_id,
-                    &key.key_secret,
-                    &sql,
-                    options.database.as_deref(),
-                    &format,
-                    &service_name,
-                    false,
-                )
-                .await
-            };
+        let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
+            let result = run_basic_service_query(
+                client,
+                &service_id,
+                &key.key_id,
+                &key.key_secret,
+                &sql,
+                options.database.as_deref(),
+                &format,
+                &service_name,
+                false,
+            )
+            .await;
             match result {
-                Err(error) if !repaired => {
-                    if let Some(stale) = stale_stored_query_key_error(&error, &service_id, &org_id)
+                Err(error) if stored_query_key_was_rejected(&error) => {
+                    // Provisioning persists its key before endpoint readiness
+                    // converges. Wait for that process, then retry so a
+                    // transient rejection cannot retire its winning key.
+                    let provision_lock = credentials::lock_service_query_provisioning()?;
+                    let confirmed_idle = match probe_service_query_readiness(
+                        client,
+                        &service_id,
+                        &key.key_id,
+                        &key.key_secret,
+                    )
+                    .await
                     {
-                        return Err(stale);
-                    }
-                    Err(error)
+                        Ok(confirmed_idle) => confirmed_idle,
+                        Err(retry_error) => {
+                            if let Some(stale) = retire_stale_stored_query_key(
+                                &provision_lock,
+                                &retry_error,
+                                &service_id,
+                                &key,
+                            ) {
+                                return Err(stale);
+                            }
+                            return Err(convert_query_error(
+                                client,
+                                retry_error,
+                                &service_name,
+                                &service_id,
+                                &org_id,
+                            ));
+                        }
+                    };
+                    drop(provision_lock);
+                    run_basic_service_query(
+                        client,
+                        &service_id,
+                        &key.key_id,
+                        &key.key_secret,
+                        &sql,
+                        options.database.as_deref(),
+                        &format,
+                        &service_name,
+                        confirmed_idle,
+                    )
+                    .await
                 }
                 other => other,
             }
@@ -1980,7 +2015,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 .basic_auth_credentials()
                 .ok_or_else(|| CloudError::new("API key credentials are unavailable"))?;
             match run_basic_service_query(
-                client.api(),
+                client,
                 &service_id,
                 key_id,
                 key_secret,
@@ -2002,25 +2037,40 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
                     );
-                    let key = crate::cloud::service_query::ensure_service_query_setup(
+                    let (key, provision_lock) =
+                        crate::cloud::service_query::ensure_service_query_setup(
+                            client,
+                            &org_id,
+                            &service_id,
+                            &service_name,
+                        )
+                        .await?;
+                    let readiness = wait_for_service_query_readiness(
                         client,
-                        &org_id,
-                        &service_id,
-                        &service_name,
-                    )
-                    .await?;
-                    run_newly_provisioned_service_query(
-                        client.api(),
                         &service_id,
                         &key.key_id,
                         &key.key_secret,
-                        &sql,
-                        options.database.as_deref(),
-                        &format,
-                        &service_name,
                         QUERY_ENDPOINT_READINESS,
                     )
-                    .await
+                    .await;
+                    match readiness {
+                        Ok(confirmed_idle) => {
+                            drop(provision_lock);
+                            run_basic_service_query(
+                                client,
+                                &service_id,
+                                &key.key_id,
+                                &key.key_secret,
+                                &sql,
+                                options.database.as_deref(),
+                                &format,
+                                &service_name,
+                                confirmed_idle,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 other => other,
             }
@@ -3341,7 +3391,6 @@ mod tests {
             database,
             format,
             org_id,
-            repair_query_key,
             no_auto_enable,
         } = command
         else {
@@ -3354,7 +3403,6 @@ mod tests {
         assert!(database.is_none());
         assert!(format.is_none());
         assert!(org_id.is_none());
-        assert!(!repair_query_key);
         assert!(!no_auto_enable);
 
         let command = parse_service(&[
@@ -3382,7 +3430,6 @@ mod tests {
             database,
             format,
             org_id,
-            repair_query_key,
             no_auto_enable,
         } = command
         else {
@@ -3396,52 +3443,7 @@ mod tests {
         assert_eq!(database.as_deref(), Some("default"));
         assert_eq!(format.as_deref(), Some("CSV"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
-        assert!(!repair_query_key);
         assert!(no_auto_enable);
-    }
-
-    #[test]
-    fn parses_service_query_repair() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "query",
-            "--id",
-            "svc-1",
-            "--repair-query-key",
-        ]);
-        let ServiceCommands::Query {
-            repair_query_key,
-            no_auto_enable,
-            ..
-        } = command
-        else {
-            panic!("expected service query");
-        };
-
-        assert!(repair_query_key);
-        assert!(!no_auto_enable);
-    }
-
-    #[test]
-    fn rejects_service_query_repair_with_no_auto_enable() {
-        let error = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "query",
-            "--id",
-            "svc-1",
-            "--repair-query-key",
-            "--no-auto-enable",
-        ])
-        .err()
-        .expect("repair and no-auto-enable should conflict");
-
-        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
-        assert!(error.to_string().contains("--repair-query-key"));
-        assert!(error.to_string().contains("--no-auto-enable"));
     }
 
     #[test]
@@ -3501,6 +3503,7 @@ mod tests {
         let help = error.to_string();
         assert!(help.contains("--query and --queries-file are mutually exclusive"));
         assert!(help.contains("omit both to\n  read stdin"));
+        assert!(!help.contains("--repair-query-key"));
     }
 
     #[test]
@@ -3758,20 +3761,6 @@ mod tests {
                 "SELECT 1",
             ],
             false,
-        );
-        assert_write(
-            &[
-                "clickhousectl",
-                "cloud",
-                "service",
-                "query",
-                "--id",
-                "svc-1",
-                "--query",
-                "SELECT 1",
-                "--repair-query-key",
-            ],
-            true,
         );
         assert_write(
             &["clickhousectl", "cloud", "service", "create", "--name", "s"],
@@ -4065,13 +4054,67 @@ mod tests {
         .await
         .expect("stalled attempt exceeded the test guard");
 
-        assert!(matches!(
-            result,
-            Err(clickhouse_cloud_api::Error::Api {
-                status: 408,
-                ref message,
-            }) if message == "Query API endpoint did not become ready within 5ms"
-        ));
+        assert_query_readiness_timeout(result, readiness_timeout);
+    }
+
+    #[tokio::test]
+    async fn query_readiness_deadline_classifies_completed_retryable_probes_as_timeout() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let readiness = QueryEndpointReadiness {
+            timeout: std::time::Duration::from_millis(50),
+            initial_delay: std::time::Duration::ZERO,
+            max_delay: std::time::Duration::ZERO,
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_probe = Arc::clone(&attempts);
+        let result = wait_for_query_endpoint_readiness(readiness, move || {
+            let attempt = attempts_for_probe.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 2 {
+                    // A non-yielding completed probe can cross the deadline before
+                    // the loop checks the remaining overall readiness budget.
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err::<(), _>(clickhouse_cloud_api::Error::Api {
+                    status: [401, 403, 404][attempt.min(2)],
+                    message: "endpoint not ready".into(),
+                })
+            }
+        })
+        .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_query_readiness_timeout(result, readiness.timeout);
+    }
+
+    fn assert_query_readiness_timeout<T>(
+        result: Result<T, clickhouse_cloud_api::Error>,
+        readiness_timeout: std::time::Duration,
+    ) {
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("readiness should time out"),
+        };
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let converted = client.convert_error(error);
+
+        assert_eq!(
+            converted.kind,
+            crate::cloud::client::CloudErrorKind::Generic
+        );
+        assert_eq!(
+            converted.message,
+            format!("Query API endpoint did not become ready within {readiness_timeout:?}")
+        );
     }
 
     #[tokio::test]
@@ -4116,13 +4159,25 @@ mod tests {
             .expect(3)
             .mount(&query_host)
             .await;
-        let client = clickhouse_cloud_api::Client::new("key-id", "key-secret")
-            .with_query_host(query_host.uri());
+        let client = CloudClient::new(
+            Some("control-key"),
+            Some("control-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap()
+        .with_query_host_for_tests(query_host.uri());
         let started = tokio::time::Instant::now();
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            run_newly_provisioned_service_query(
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let confirmed_idle = wait_for_service_query_readiness(
+                &client,
+                "service-1",
+                "key-id",
+                "key-secret",
+                readiness,
+            )
+            .await?;
+            run_basic_service_query(
                 &client,
                 "service-1",
                 "key-id",
@@ -4131,9 +4186,10 @@ mod tests {
                 None,
                 "TabSeparated",
                 "demo",
-                readiness,
-            ),
-        )
+                confirmed_idle,
+            )
+            .await
+        })
         .await
         .expect("wake and user query exceeded the test guard");
 

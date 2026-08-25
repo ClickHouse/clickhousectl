@@ -754,6 +754,7 @@ fn finalize_inner(invocation: &Invocation, exit_code: i32, defer_first_run_notic
     match decide(&path, invocation, exit_code, &real_env_lookup) {
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
+        Action::Debug(_) if defer_first_run_notice => {}
         Action::Debug(json) => {
             use std::io::Write;
             // Not `eprintln!`, which panics on a closed stderr — see

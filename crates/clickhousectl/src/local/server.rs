@@ -171,11 +171,23 @@ pub fn ensure_server_data_dir(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ensure the data directory for a Postgres instance exists.
-pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<()> {
+/// Ensure the data directory for a Postgres instance exists. Returns whether
+/// this call created the instance directory, for transactional startup cleanup.
+pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<bool> {
     ensure_servers_dir()?;
-    std::fs::create_dir_all(pg_data_dir(name, major))?;
-    Ok(())
+    let instance_dir = servers_dir().join(pg_instance_key(name, major));
+    let created = match std::fs::create_dir(&instance_dir) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error.into()),
+    };
+    if let Err(error) = std::fs::create_dir_all(instance_dir.join("data")) {
+        if created {
+            let _ = std::fs::remove_dir(&instance_dir);
+        }
+        return Err(error.into());
+    }
+    Ok(created)
 }
 
 struct FileLock {
