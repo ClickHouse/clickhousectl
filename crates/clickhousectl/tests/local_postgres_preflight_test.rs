@@ -66,6 +66,9 @@ impl FakeDocker {
             while !daemon_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("make Docker connection blocking");
                         let Some(request) = read_request(&mut stream) else {
                             continue;
                         };
