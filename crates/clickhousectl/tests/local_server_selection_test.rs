@@ -1,9 +1,15 @@
 //! Isolated subprocess coverage for omitted ClickHouse server selection (#473).
 
 use serde_json::Value;
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 const VERSION: &str = "25.12.9.61";
 
@@ -20,6 +26,102 @@ fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("run clickhousectl")
+}
+
+fn run_with_docker(project: &Path, home: &Path, socket: &Path, args: &[&str]) -> Output {
+    Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("DOCKER_HOST", format!("unix://{}", socket.display()))
+        .current_dir(project)
+        .args(args)
+        .output()
+        .expect("run clickhousectl with fake Docker")
+}
+
+fn read_docker_request(stream: &mut UnixStream) -> String {
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let bytes = stream.read(&mut buffer).expect("read Docker request");
+        assert!(bytes > 0, "Docker request ended before its headers");
+        request.extend_from_slice(&buffer[..bytes]);
+    }
+    String::from_utf8(request).expect("Docker request is UTF-8")
+}
+
+fn write_docker_response(stream: &mut UnixStream, status: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("write fake Docker response");
+}
+
+fn spawn_failing_postgres_docker(socket: &Path, shutdown: Arc<AtomicBool>) -> JoinHandle<()> {
+    let listener = UnixListener::bind(socket).expect("bind fake Docker socket");
+    listener
+        .set_nonblocking(true)
+        .expect("make fake Docker socket nonblocking");
+    thread::spawn(move || {
+        while !shutdown.load(Ordering::Relaxed) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("accept Docker request: {error}"),
+            };
+            stream
+                .set_nonblocking(false)
+                .expect("make Docker connection blocking");
+            let request = read_docker_request(&mut stream);
+            let request_line = request.lines().next().unwrap_or_default();
+            match request_line {
+                line if line.starts_with("GET /_ping ") => {
+                    write_docker_response(&mut stream, "200 OK", "OK")
+                }
+                line if line.starts_with("GET /containers/json?") => {
+                    write_docker_response(&mut stream, "200 OK", "[]")
+                }
+                line if line.starts_with("GET /images/postgres:18/json ") => {
+                    write_docker_response(&mut stream, "200 OK", "{}")
+                }
+                line if line.starts_with("GET /containers/clickhousectl-pg-") => {
+                    write_docker_response(
+                        &mut stream,
+                        "404 Not Found",
+                        r#"{"message":"No such container"}"#,
+                    )
+                }
+                line if line.starts_with("POST /containers/create?") => write_docker_response(
+                    &mut stream,
+                    "201 Created",
+                    r#"{"Id":"failed-container","Warnings":[]}"#,
+                ),
+                line if line.starts_with("POST /containers/failed-container/start ") => {
+                    write_docker_response(&mut stream, "204 No Content", "")
+                }
+                line if line.starts_with("GET /containers/failed-container/json ") => {
+                    write_docker_response(&mut stream, "200 OK", r#"{"State":{"Running":false}}"#)
+                }
+                line if line.starts_with("GET /containers/failed-container/logs?") => {
+                    write_docker_response(&mut stream, "200 OK", "")
+                }
+                line if line.starts_with("POST /containers/failed-container/stop?") => {
+                    write_docker_response(&mut stream, "204 No Content", "")
+                }
+                line if line.starts_with("DELETE /containers/failed-container?") => {
+                    write_docker_response(&mut stream, "204 No Content", "")
+                }
+                _ => panic!("unexpected Docker request: {request_line}"),
+            }
+        }
+    })
 }
 
 fn create_stopped_server(project: &Path, name: &str) {
@@ -165,6 +267,72 @@ fn omitted_stop_is_a_clear_successful_noop_with_no_servers() {
     assert!(human.status.success());
     assert_eq!(human.stdout, b"No ClickHouse servers to stop\n");
     assert!(human.stderr.is_empty());
+}
+
+#[test]
+fn failed_fresh_postgres_start_does_not_affect_omitted_clickhouse_selection() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let docker = tempfile::tempdir().expect("create Docker tempdir");
+    let socket = docker.path().join("docker.sock");
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let daemon = spawn_failing_postgres_docker(&socket, Arc::clone(&shutdown));
+    create_stopped_server(project.path(), "dev");
+
+    let port = unused_port();
+    let failed = run_with_docker(
+        project.path(),
+        home.path(),
+        &socket,
+        &[
+            "local", "--json", "postgres", "start", "--name", "failed", "--port", &port,
+        ],
+    );
+    let failed_dir = project.path().join(".clickhouse/servers/failed-pg18");
+    let failed_metadata = project.path().join(".clickhouse/servers/failed-pg18.json");
+
+    let existing_dir = project.path().join(".clickhouse/servers/existing-pg18");
+    let existing_data = existing_dir.join("data/sentinel");
+    std::fs::create_dir_all(existing_data.parent().unwrap())
+        .expect("create existing Postgres data");
+    std::fs::write(&existing_data, "keep me").expect("write existing Postgres data");
+    let existing_failed = run_with_docker(
+        project.path(),
+        home.path(),
+        &socket,
+        &[
+            "local", "--json", "postgres", "start", "--name", "existing", "--port", &port,
+        ],
+    );
+    let existing_metadata = project
+        .path()
+        .join(".clickhouse/servers/existing-pg18.json");
+
+    let stop = run_with_docker(
+        project.path(),
+        home.path(),
+        &socket,
+        &["local", "--json", "server", "stop"],
+    );
+    shutdown.store(true, Ordering::Relaxed);
+    daemon.join().expect("fake Docker daemon");
+
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(!failed_dir.exists());
+    assert!(!failed_metadata.exists());
+    assert_eq!(existing_failed.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(existing_data).unwrap(), "keep me");
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(existing_metadata).unwrap()).unwrap();
+    assert_eq!(metadata["engine"], "postgres");
+    assert!(
+        stop.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let body: Value = serde_json::from_slice(&stop.stdout).unwrap();
+    assert_eq!(body["name"], "dev");
+    assert_eq!(body["already_stopped"], true);
 }
 
 #[test]
