@@ -2454,7 +2454,7 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
         args.extend_from_slice(selector);
 
         let mut command = Command::new(clickhousectl_binary());
-        clear_agent_env(&mut command);
+        clear_inherited_env(&mut command);
         command
             .env("DO_NOT_TRACK", "1")
             .env("HOME", &home_dir)
