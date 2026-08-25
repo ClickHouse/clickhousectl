@@ -355,6 +355,7 @@ fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Pa
     let archive_file = std::fs::File::open(tarball_path).map_err(extraction_error)?;
     let decoder = flate2::read::GzDecoder::new(archive_file);
     let mut archive = tar::Archive::new(decoder);
+    let mut found_binary = false;
 
     for entry in archive.entries().map_err(extraction_error)? {
         let mut entry = entry.map_err(extraction_error)?;
@@ -375,14 +376,21 @@ fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Pa
             .open(&final_binary)
             .map_err(extraction_error)?;
         std::io::copy(&mut entry, &mut output).map_err(extraction_error)?;
-        let _ = std::fs::remove_file(tarball_path);
-        return Ok(());
+        found_binary = true;
+        break;
     }
 
-    Err(Error::Extract(format!(
-        "Archive {} did not contain the expected clickhouse or usr/bin/clickhouse binary",
-        tarball_path.display()
-    )))
+    if !found_binary {
+        return Err(Error::Extract(format!(
+            "Archive {} did not contain the expected clickhouse or usr/bin/clickhouse binary",
+            tarball_path.display()
+        )));
+    }
+
+    let mut decoder = archive.into_inner();
+    std::io::copy(&mut decoder, &mut std::io::sink()).map_err(extraction_error)?;
+    let _ = std::fs::remove_file(tarball_path);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -483,6 +491,35 @@ mod tests {
             .append_data(&mut header, entry_path, contents)
             .unwrap();
         archive.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn assert_invalid_gzip_is_not_committed(mutate: impl FnOnce(&Path)) {
+        let temp = tempfile::tempdir().unwrap();
+        let versions = temp.path().join("versions");
+        let staging = StagingDir::create(&versions).unwrap();
+        let staging_path = staging.path().to_path_buf();
+        let tarball = staging.path().join("clickhouse.tgz");
+        let version = "25.12.9.61";
+        write_tarball(&tarball, "./clickhouse", b"clickhouse-binary");
+        mutate(&tarball);
+
+        let result = extract_tarball_auto(&tarball, staging.path()).and_then(|()| {
+            commit_staged_binary(
+                &versions,
+                &staging.path().join("clickhouse"),
+                version,
+                false,
+                false,
+                &test_platform("amd64"),
+                None,
+            )
+            .map(|_| ())
+        });
+
+        assert!(matches!(result, Err(Error::ExtractArchive { .. })));
+        assert!(!versions.join(version).exists());
+        drop(staging);
+        assert!(!staging_path.exists());
     }
 
     #[test]
@@ -745,6 +782,27 @@ mod tests {
             std::fs::read(temp.path().join("clickhouse")).unwrap(),
             b"clickhouse-binary"
         );
+    }
+
+    #[test]
+    fn corrupted_gzip_crc_is_not_committed() {
+        assert_invalid_gzip_is_not_committed(|tarball| {
+            let mut bytes = std::fs::read(tarball).unwrap();
+            let crc_offset = bytes.len() - 8;
+            bytes[crc_offset] ^= 0xff;
+            std::fs::write(tarball, bytes).unwrap();
+        });
+    }
+
+    #[test]
+    fn truncated_gzip_trailer_is_not_committed() {
+        assert_invalid_gzip_is_not_committed(|tarball| {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(tarball)
+                .unwrap();
+            file.set_len(file.metadata().unwrap().len() - 4).unwrap();
+        });
     }
 
     #[test]
