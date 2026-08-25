@@ -923,7 +923,7 @@ pub fn start_existing_blocking(id: &str) -> Result<()> {
 /// timeout) and we return silently.
 pub fn recover_project_postgres_blocking(project_cwd: &str) -> Result<()> {
     use crate::local::server::{
-        Engine, ServerInfo, ensure_pg_data_dir, pg_instance_key, save_recovered_server_info,
+        Engine, ServerInfo, pg_instance_key, save_recovered_postgres_server_info,
     };
     let cwd_owned = project_cwd.to_string();
     block_on(async move {
@@ -937,7 +937,6 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) -> Result<()> {
         };
         for c in containers {
             let key = pg_instance_key(&c.user_name, &c.major);
-            ensure_pg_data_dir(&c.user_name, &c.major)?;
             let info = ServerInfo {
                 name: key,
                 pid: 0,
@@ -949,7 +948,7 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) -> Result<()> {
                 engine: Engine::Postgres,
                 container_id: Some(c.container_id.clone()),
             };
-            save_recovered_server_info(&info, false)?;
+            save_recovered_postgres_server_info(&info, &c.user_name, &c.major)?;
         }
         Ok(())
     })

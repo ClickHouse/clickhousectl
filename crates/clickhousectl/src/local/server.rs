@@ -959,9 +959,8 @@ pub fn recover_current_project_servers() -> Result<()> {
     Ok(())
 }
 
-/// Install recovered metadata without racing a normal lifecycle write. ClickHouse
-/// discovery may replace a stale stopped record; Postgres recovery only fills a
-/// genuinely absent record because stopped containers are still valid state.
+/// Install recovered ClickHouse metadata without racing a normal lifecycle write.
+/// Discovery may replace a stale stopped record.
 pub fn save_recovered_server_info(info: &ServerInfo, replace_stale: bool) -> Result<()> {
     let lock = ServerLock::acquire(&info.name)?;
     if let Some(existing) = lock.load_info()?
@@ -969,6 +968,21 @@ pub fn save_recovered_server_info(info: &ServerInfo, replace_stale: bool) -> Res
     {
         return Ok(());
     }
+    lock.save_info(info)
+}
+
+/// Install recovered Postgres metadata only when no lifecycle record exists.
+/// Keep the existence check, data-directory creation, and write under one lock.
+pub fn save_recovered_postgres_server_info(
+    info: &ServerInfo,
+    user_name: &str,
+    major: &str,
+) -> Result<()> {
+    let lock = ServerLock::acquire(&info.name)?;
+    if lock.load_info()?.is_some() {
+        return Ok(());
+    }
+    ensure_pg_data_dir(user_name, major)?;
     lock.save_info(info)
 }
 
@@ -1066,6 +1080,7 @@ mod tests {
     const ADVISORY_COUNT_HELPER: &str =
         "local::server::tests::advisory_count_ignores_unrelated_corrupt_metadata";
     const STRICT_LIST_HELPER: &str = "local::server::tests::strict_list_reports_corrupt_metadata";
+    const POSTGRES_RECOVERY_HELPER: &str = "local::server::tests::postgres_recovery_subprocess";
 
     fn test_info(name: &str, pid: u32, version: &str) -> ServerInfo {
         ServerInfo {
@@ -1078,6 +1093,20 @@ mod tests {
             cwd: "/tmp/project".to_string(),
             engine: Engine::Clickhouse,
             container_id: None,
+        }
+    }
+
+    fn test_postgres_info(version: &str) -> ServerInfo {
+        ServerInfo {
+            name: pg_instance_key("default", "17"),
+            pid: 0,
+            version: version.to_string(),
+            http_port: 0,
+            tcp_port: 5432,
+            started_at: "recovered".to_string(),
+            cwd: "/tmp/project".to_string(),
+            engine: Engine::Postgres,
+            container_id: Some("container-17".to_string()),
         }
     }
 
@@ -1192,6 +1221,72 @@ mod tests {
             }
             operation => panic!("unknown metadata test operation {operation}"),
         }
+    }
+
+    #[test]
+    fn postgres_recovery_subprocess() {
+        if enter_helper_project().is_none() {
+            return;
+        }
+        save_recovered_postgres_server_info(
+            &test_postgres_info("postgres:17-recovered"),
+            "default",
+            "17",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn postgres_recovery_skips_failing_data_path_when_metadata_exists() {
+        let project = tempfile::tempdir().unwrap();
+        let servers = project.path().join(".clickhouse/servers");
+        let key = pg_instance_key("default", "17");
+        let metadata = servers.join(format!("{key}.json"));
+        std::fs::create_dir_all(&servers).unwrap();
+        std::fs::write(
+            &metadata,
+            serde_json::to_vec_pretty(&test_postgres_info("postgres:17-existing")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(servers.join(&key), b"blocks data directory creation").unwrap();
+
+        let status = helper(POSTGRES_RECOVERY_HELPER, project.path())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "Postgres recovery helper failed with {status}"
+        );
+
+        let live: ServerInfo = serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
+        assert_eq!(live.version, "postgres:17-existing");
+    }
+
+    #[test]
+    fn postgres_recovery_creates_data_dir_and_metadata_when_absent() {
+        let project = tempfile::tempdir().unwrap();
+
+        let status = helper(POSTGRES_RECOVERY_HELPER, project.path())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "Postgres recovery helper failed with {status}"
+        );
+
+        assert!(
+            project
+                .path()
+                .join(".clickhouse/servers/default-pg17/data")
+                .is_dir()
+        );
+        let live: ServerInfo = serde_json::from_slice(
+            &std::fs::read(project.path().join(".clickhouse/servers/default-pg17.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(live.version, "postgres:17-recovered");
+        assert_eq!(live.engine, Engine::Postgres);
+        assert_eq!(live.container_id.as_deref(), Some("container-17"));
     }
 
     #[test]
