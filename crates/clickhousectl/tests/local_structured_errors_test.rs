@@ -134,6 +134,31 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
 }
 
 #[test]
+fn telemetry_debug_does_not_append_to_a_structured_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let state_path = home.path().join(".clickhouse/telemetry.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).expect("create telemetry directory");
+    std::fs::write(state_path, r#"{"disabled":false}"#).expect("enable telemetry");
+
+    let output = command(project.path(), home.path())
+        .env_remove("DO_NOT_TRACK")
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .args(["local", "--json", "server", "stop"])
+        .output()
+        .expect("run structured failure with telemetry debug");
+
+    assert_structured_error(
+        &output,
+        &expected_error(
+            "server_not_found",
+            "Server 'default' not found",
+            "clickhousectl local server list",
+        ),
+    );
+}
+
+#[test]
 fn agent_mode_writes_the_same_structured_error_without_json_flag() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
