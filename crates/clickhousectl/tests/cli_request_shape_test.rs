@@ -3427,7 +3427,7 @@ async fn invoke_service_query_repair_with_save_failure(
 
     let query_host = MockServer::start().await;
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let output = command
         .env("DO_NOT_TRACK", "1")
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
@@ -3876,7 +3876,7 @@ async fn concurrent_service_query_repairs_share_the_lock_winner() {
     for index in 0..PROCESS_COUNT {
         let stderr_path = dir.path().join(format!("repair-{index}.stderr"));
         let mut command = Command::new(clickhousectl_binary());
-        clear_agent_env(&mut command);
+        clear_inherited_env(&mut command);
         children.push(
             command
                 .env("DO_NOT_TRACK", "1")
