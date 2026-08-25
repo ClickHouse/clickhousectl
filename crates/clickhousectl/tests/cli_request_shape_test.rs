@@ -212,6 +212,28 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     .unwrap();
 }
 
+#[test]
+fn logout_does_not_report_success_when_credentials_removal_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&credentials_dir).unwrap();
+    std::fs::create_dir(credentials_dir.join("credentials.json")).unwrap();
+
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(dir.path())
+        .args(["cloud", "auth", "logout", "--api-keys"])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("API keys cleared"));
+    assert!(credentials_dir.join("credentials.json").is_dir());
+}
+
 // ── Backup configuration validation (issue #425) ────────────────────────────
 
 #[tokio::test]

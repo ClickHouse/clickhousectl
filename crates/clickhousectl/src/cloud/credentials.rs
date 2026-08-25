@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
@@ -113,8 +113,15 @@ pub fn clear_credentials() -> CloudResult<()> {
         return Ok(());
     }
     let _lock = lock_credentials_mutation()?;
-    let _ = std::fs::remove_file(path);
-    Ok(())
+    remove_credentials_file(&path)
+}
+
+fn remove_credentials_file(path: &Path) -> CloudResult<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn save_credentials(creds: &Credentials) -> CloudResult<()> {
@@ -177,6 +184,28 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_credentials_file_removes_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+        std::fs::write(&path, "credentials").unwrap();
+
+        remove_credentials_file(&path).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_credentials_file_tolerates_concurrent_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+        std::fs::write(&path, "credentials").unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        remove_credentials_file(&path).unwrap();
+        remove_credentials_file(&path).unwrap();
+    }
 
     #[test]
     fn legacy_credentials_round_trip() {
