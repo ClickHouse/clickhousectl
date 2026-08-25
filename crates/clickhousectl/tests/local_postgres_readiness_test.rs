@@ -337,7 +337,7 @@ fn respond(stream: &mut UnixStream, request: &str, state: &FakeDockerState) {
     }
 }
 
-fn run_start(project: &Path, docker: &FakeDocker, name: &str) -> Output {
+fn run_start(project: &Path, docker: &FakeDocker, name: &str, json: bool) -> Output {
     let mut command = Command::new(clickhousectl_binary());
     command
         .env_clear()
@@ -348,9 +348,9 @@ fn run_start(project: &Path, docker: &FakeDocker, name: &str) -> Output {
             format!("unix://{}", docker.socket_path.display()),
         )
         .current_dir(project)
+        .arg("local")
+        .args(json.then_some("--json"))
         .args([
-            "local",
-            "--json",
             "postgres",
             "start",
             "--name",
@@ -418,7 +418,7 @@ fn fresh_start_waits_for_delayed_postgres_readiness() {
         StartBehavior::DelayedReady { ready_on_probe: 2 },
     );
 
-    let output = run_start(project.path(), &docker, "fresh");
+    let output = run_start(project.path(), &docker, "fresh", true);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -440,7 +440,7 @@ fn resumed_start_waits_for_delayed_postgres_readiness() {
         StartBehavior::DelayedReady { ready_on_probe: 2 },
     );
 
-    let output = run_start(project.path(), &docker, "resume");
+    let output = run_start(project.path(), &docker, "resume", true);
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -457,7 +457,7 @@ fn immediate_container_exit_is_a_failed_start_with_logs() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let docker = FakeDocker::spawn(project.path(), "crashed", StartBehavior::ImmediateExit);
 
-    let output = run_start(project.path(), &docker, "crashed");
+    let output = run_start(project.path(), &docker, "crashed", false);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "start printed a success payload");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -494,7 +494,7 @@ fn create_success_start_failure_rolls_back_container_and_partial_pgdata() {
         },
     );
 
-    let output = run_start(project.path(), &docker, "start-failure");
+    let output = run_start(project.path(), &docker, "start-failure", false);
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "start printed a success payload");
     assert!(
@@ -527,7 +527,7 @@ fn metadata_failure_uses_the_same_fresh_start_rollback() {
         StartBehavior::DelayedReady { ready_on_probe: 1 },
     );
 
-    let output = run_start(project.path(), &docker, "metadata-failure");
+    let output = run_start(project.path(), &docker, "metadata-failure", false);
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("IO error"), "stderr: {stderr}");
@@ -552,7 +552,7 @@ fn failed_fresh_start_can_retry_from_clean_pgdata() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let docker = FakeDocker::spawn(project.path(), "retry", StartBehavior::FailOnceThenReady);
 
-    let first = run_start(project.path(), &docker, "retry");
+    let first = run_start(project.path(), &docker, "retry", true);
     assert_eq!(first.status.code(), Some(1));
     assert!(
         !project
@@ -562,7 +562,7 @@ fn failed_fresh_start_can_retry_from_clean_pgdata() {
         "first attempt retained partial PGDATA"
     );
 
-    let second = run_start(project.path(), &docker, "retry");
+    let second = run_start(project.path(), &docker, "retry", true);
     assert!(
         second.status.success(),
         "stderr: {}",
@@ -586,7 +586,7 @@ fn cleanup_failure_preserves_primary_error_and_retains_pgdata() {
         },
     );
 
-    let output = run_start(project.path(), &docker, "cleanup-failure");
+    let output = run_start(project.path(), &docker, "cleanup-failure", false);
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -632,7 +632,7 @@ fn fresh_failure_retains_data_that_predated_the_attempt() {
         },
     );
 
-    let output = run_start(project.path(), &docker, "preexisting");
+    let output = run_start(project.path(), &docker, "preexisting", false);
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -658,7 +658,7 @@ fn resume_failure_stops_container_without_removing_existing_data() {
     std::fs::write(&marker, "keep").expect("write existing PGDATA marker");
     let docker = FakeDocker::spawn(project.path(), "resume", StartBehavior::ImmediateExit);
 
-    let output = run_start(project.path(), &docker, "resume");
+    let output = run_start(project.path(), &docker, "resume", false);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("exited before PostgreSQL became ready")
