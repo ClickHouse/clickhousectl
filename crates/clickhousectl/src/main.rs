@@ -42,15 +42,15 @@ async fn main() {
     let mut cmd = Cli::command();
 
     // Single-exit invariant (#320): every invocation — bare, help, version,
-    // typo, dispatched command — falls through to the common tail below, so
-    // the first-run telemetry notice and subsequent events cover all of them.
+    // typo, dispatched command — falls through to the common telemetry tail
+    // below.
     // The sole intended exemption is the hidden `telemetry send` child inside
     // `run_parsed`; the `exec()` handoffs (`local client`, host psql) record
     // their event via `telemetry::finalize_before_exec` just before the
     // process image is replaced. Child-process exit codes are returned as
     // `Error::ChildExit` so they also flow through this tail. Do not add exit
     // paths.
-    let (exit_code, telemetry_invocation) = match cmd.try_get_matches_from_mut(argv.iter()) {
+    let outcome = match cmd.try_get_matches_from_mut(argv.iter()) {
         Ok(matches) => {
             #[cfg(feature = "telemetry")]
             let mut invocation = telemetry::capture(&cmd, &matches);
@@ -64,20 +64,21 @@ async fn main() {
             // a clap derive bug, not a user error.
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
-            let (exit_code, is_child_exit) = match validate_post_parse(&cli, &mut cmd) {
+            let run_result = match validate_post_parse(&cli, &mut cmd) {
                 Ok(()) => run_parsed(cli).await,
                 Err(e) => {
                     let _ = e.print();
-                    (e.exit_code(), false)
+                    (e.exit_code(), false, false)
                 }
             };
+            let (exit_code, is_child_exit, defer_telemetry_notice) = run_result;
             #[cfg(feature = "telemetry")]
             if is_child_exit {
                 invocation.mark_child_exit();
             }
             #[cfg(not(feature = "telemetry"))]
             let _ = is_child_exit;
-            (exit_code, invocation)
+            (exit_code, invocation, defer_telemetry_notice)
         }
         Err(e) => {
             // clap keeps its own formatting and colors; help/version print to
@@ -107,16 +108,20 @@ async fn main() {
             // clap's own exit codes: 0 for help/version, 2 for usage errors.
             // Dispatched commands reserve 3 for cancellation, so 2 remains
             // unambiguous to shell callers.
-            (e.exit_code(), invocation)
+            (e.exit_code(), invocation, false)
         }
     };
+    let (exit_code, telemetry_invocation, defer_telemetry_notice) = outcome;
 
     // Consent is evaluated here, after the command ran, so `telemetry disable`
     // silences its own event and `telemetry enable` sends one.
     #[cfg(feature = "telemetry")]
-    telemetry::finalize(telemetry_invocation, exit_code);
+    telemetry::finalize(telemetry_invocation, exit_code, defer_telemetry_notice);
     #[cfg(not(feature = "telemetry"))]
-    let () = telemetry_invocation;
+    {
+        let () = telemetry_invocation;
+        let _ = defer_telemetry_notice;
+    }
 
     std::process::exit(exit_code);
 }
@@ -144,11 +149,12 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
 }
 
 /// Run a successfully parsed invocation to completion and report the exit
-/// code for `main`'s single exit plus whether it came from a child process.
+/// code for `main`'s single exit, whether it came from a child process, and
+/// whether a structured error requires deferring the first-run telemetry notice.
 /// The hidden `telemetry send` child is the one deliberate early exit in the
 /// binary: it does exactly one POST — no update-cache refresh, no dispatch,
 /// and no telemetry hook of its own, so a send can never trigger another send.
-async fn run_parsed(cli: Cli) -> (i32, bool) {
+async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
     #[cfg(feature = "telemetry")]
     if matches!(
         cli.command,
@@ -187,8 +193,8 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
     }
 
-    let (exit_code, is_child_exit) = match result {
-        Ok(()) => (0, false),
+    let (exit_code, is_child_exit, defer_telemetry_notice) = match result {
+        Ok(()) => (0, false, false),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
             if !is_child_exit {
@@ -201,7 +207,11 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
                     let _ = writeln!(std::io::stderr(), "Error: {}", e);
                 }
             }
-            (e.exit_code(), is_child_exit)
+            (
+                e.exit_code(),
+                is_child_exit,
+                structured_local_errors && !is_child_exit,
+            )
         }
     };
 
@@ -211,7 +221,7 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
         update::print_cached_update_notice();
     }
 
-    (exit_code, is_child_exit)
+    (exit_code, is_child_exit, defer_telemetry_notice)
 }
 
 /// The explicit `--json` flag for a command, or `None` for commands that never

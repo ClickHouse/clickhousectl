@@ -92,6 +92,48 @@ fn explicit_json_writes_exact_server_not_found_error_to_stderr() {
 }
 
 #[test]
+fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let fresh_home_command = || {
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("HOME", home.path())
+            .current_dir(project.path());
+        command
+    };
+
+    let output = fresh_home_command()
+        .args(["local", "--json", "server", "stop"])
+        .output()
+        .expect("run structured failure");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("all stderr is exactly one JSON value");
+    assert_eq!(parsed["error"]["code"], "server_not_found");
+    assert!(
+        !home.path().join(".clickhouse/telemetry.json").exists(),
+        "structured output must leave first-run consent pending"
+    );
+
+    let output = fresh_home_command()
+        .args(["local", "server", "stop"])
+        .output()
+        .expect("run human failure");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
+    assert!(
+        stderr.contains("Error: Server 'default' not found"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("anonymous usage data"), "{stderr}");
+    assert!(home.path().join(".clickhouse/telemetry.json").exists());
+}
+
+#[test]
 fn agent_mode_writes_the_same_structured_error_without_json_flag() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
