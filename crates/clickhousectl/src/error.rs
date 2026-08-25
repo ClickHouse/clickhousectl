@@ -277,6 +277,18 @@ impl Error {
             return self;
         }
 
+        self.into_project_server_scope(project)
+    }
+
+    pub fn with_project_server_list_scope(self, project: String) -> Self {
+        if matches!(&self, Error::Io(_)) {
+            return self.into_project_server_scope(project);
+        }
+
+        self.with_project_server_scope(project)
+    }
+
+    fn into_project_server_scope(self, project: String) -> Self {
         let message = format!(
             "{}\nProject directory used for lookup: {project:?}\n\
              Only this exact directory's `.clickhouse` is searched; parent `.clickhouse` \
@@ -369,6 +381,26 @@ mod tests {
                 .to_string(),
             "Invalid server name '../private': must not contain path separators or '..'"
         );
+    }
+
+    #[test]
+    fn server_list_scopes_io_without_widening_other_project_commands() {
+        let project = "/tmp/project".to_string();
+        let unscoped = Error::Io(std::io::Error::other("read failed"))
+            .with_project_server_scope(project.clone());
+        assert!(matches!(unscoped, Error::Io(_)));
+
+        let scoped =
+            Error::Io(std::io::Error::other("read failed")).with_project_server_list_scope(project);
+        assert!(matches!(
+            scoped,
+            Error::ProjectServerScope {
+                ref project,
+                ref source,
+                ..
+            } if project == "/tmp/project"
+                && matches!(source.as_ref(), Error::Io(source) if source.to_string() == "read failed")
+        ));
     }
 
     #[test]

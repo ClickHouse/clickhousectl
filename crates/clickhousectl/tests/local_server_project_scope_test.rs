@@ -97,6 +97,13 @@ fn create_stopped_server(project: &Path, name: &str) {
     .expect("write stopped server metadata");
 }
 
+fn create_invalid_servers_directory(project: &Path) {
+    std::fs::create_dir_all(project.join(".clickhouse"))
+        .expect("create project metadata directory");
+    std::fs::write(project.join(".clickhouse/servers"), b"not a directory")
+        .expect("create invalid servers directory");
+}
+
 fn assert_scoped_json_error(output: &Output, code: &str, project: &Path) -> Value {
     assert_eq!(
         output.status.code(),
@@ -276,4 +283,40 @@ fn list_metadata_errors_identify_the_nested_project_scope() {
 
     let human = run(&nested, home.path(), &["local", "server", "list"]);
     assert_scoped_human_error(&human, &nested);
+}
+
+#[test]
+fn invalid_servers_directory_has_project_scope_in_json_mode() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    create_invalid_servers_directory(project.path());
+
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "server", "list"],
+    );
+    let body = assert_scoped_json_error(&output, "io_error", project.path());
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("IO error:"),
+        "{body}"
+    );
+}
+
+#[test]
+fn invalid_servers_directory_has_project_scope_in_human_mode() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    create_invalid_servers_directory(project.path());
+
+    let output = run(project.path(), home.path(), &["local", "server", "list"]);
+    assert_scoped_human_error(&output, project.path());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).starts_with("Error: IO error:"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

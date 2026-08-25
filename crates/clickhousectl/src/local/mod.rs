@@ -739,7 +739,8 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
                 list_servers_global(json)
             } else {
                 let project = canonical_project_dir()?;
-                list_servers_local(json).map_err(|error| error.with_project_server_scope(project))
+                list_servers_local(json)
+                    .map_err(|error| error.with_project_server_list_scope(project))
             }
         }
         ServerCommands::Stop {
