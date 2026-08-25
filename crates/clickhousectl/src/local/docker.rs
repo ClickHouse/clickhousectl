@@ -872,7 +872,7 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
 
     // If anything is left (e.g. the dir itself remained empty), clean up host-side.
     if host_path.exists() {
-        let _ = std::fs::remove_dir_all(host_path);
+        std::fs::remove_dir_all(host_path)?;
     }
     Ok(())
 }

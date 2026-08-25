@@ -162,7 +162,7 @@ pub enum Error {
     #[error("Postgres operation failed: {0}")]
     PostgresRuntime(String),
 
-    #[error("{primary}\nPostgres startup rollback diagnostics: {cleanup}")]
+    #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
     PostgresStartupRollback {
         #[source]
         primary: Box<Error>,

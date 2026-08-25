@@ -249,6 +249,7 @@ async fn start(
 
     let rollback = FreshStartRollback {
         container_id: container_id.clone(),
+        info: info.clone(),
         metadata_path: server::server_meta_path_for_recovery(&key),
         instance_dir,
         remove_fresh_data_on_failure,
@@ -283,6 +284,7 @@ async fn start(
 
 struct FreshStartRollback {
     container_id: String,
+    info: ServerInfo,
     metadata_path: PathBuf,
     instance_dir: PathBuf,
     remove_fresh_data_on_failure: bool,
@@ -354,21 +356,23 @@ async fn rollback_fresh_start(
         }
     };
 
-    if let Err(error) = std::fs::remove_file(&rollback.metadata_path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        diagnostics.push(format!(
-            "failed to remove metadata '{}': {error}",
-            rollback.metadata_path.display()
-        ));
-    }
-
-    if rollback.remove_fresh_data_on_failure && container_removed {
-        if let Err(error) = docker::remove_host_dir_blocking(&rollback.instance_dir) {
-            diagnostics.push(format!(
-                "failed to remove fresh Postgres data '{}': {error}",
-                rollback.instance_dir.display()
-            ));
+    let instance_removed = if rollback.remove_fresh_data_on_failure && container_removed {
+        match docker::remove_host_dir_blocking(&rollback.instance_dir) {
+            Ok(()) if !rollback.instance_dir.exists() => true,
+            Ok(()) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': path still exists",
+                    rollback.instance_dir.display()
+                ));
+                false
+            }
+            Err(error) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': {error}",
+                    rollback.instance_dir.display()
+                ));
+                false
+            }
         }
     } else {
         let reason = if container_removed {
@@ -380,6 +384,35 @@ async fn rollback_fresh_start(
             "retained Postgres data '{}' because {reason}",
             rollback.instance_dir.display()
         ));
+        false
+    };
+
+    if container_removed && instance_removed {
+        match std::fs::remove_file(&rollback.metadata_path) {
+            Ok(()) => return diagnostics,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return diagnostics,
+            Err(error) => diagnostics.push(format!(
+                "failed to remove metadata '{}': {error}",
+                rollback.metadata_path.display()
+            )),
+        }
+    } else {
+        let version = rollback
+            .info
+            .version
+            .strip_prefix("postgres:")
+            .unwrap_or(&rollback.info.version);
+        match server::save_server_info(&rollback.info) {
+            Ok(()) => diagnostics.push(format!(
+                "recovery metadata retained at '{}'; inspect the retained data, then run `clickhousectl local postgres remove {} --version {version}` when it is safe to clean up",
+                rollback.metadata_path.display(),
+                user_name_from_key(&rollback.info.name)
+            )),
+            Err(error) => diagnostics.push(format!(
+                "failed to preserve recovery metadata '{}': {error}",
+                rollback.metadata_path.display()
+            )),
+        }
     }
 
     diagnostics
@@ -744,7 +777,7 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     }
 
     if let Some(cid) = target.container_id.as_deref() {
-        let _ = docker::stop_and_remove_blocking(cid);
+        docker::stop_and_remove_blocking(cid)?;
     }
 
     // Postgres data dir lives at .clickhouse/servers/<key>/data/. Remove the
@@ -1313,6 +1346,17 @@ mod tests {
             &docker.client,
             FreshStartRollback {
                 container_id: "test".to_string(),
+                info: ServerInfo {
+                    name: "stuck-pg18".to_string(),
+                    pid: 0,
+                    version: "postgres:18".to_string(),
+                    http_port: 0,
+                    tcp_port: 5432,
+                    started_at: "test".to_string(),
+                    cwd: tempdir.path().display().to_string(),
+                    engine: Engine::Postgres,
+                    container_id: Some("test".to_string()),
+                },
                 metadata_path: metadata_path.clone(),
                 instance_dir: instance_dir.clone(),
                 remove_fresh_data_on_failure: true,
