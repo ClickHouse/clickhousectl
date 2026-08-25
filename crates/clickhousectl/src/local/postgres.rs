@@ -529,15 +529,17 @@ async fn wait_for_postgres_ready(
                 .filter(|error| !error.is_empty())
                 .map(|error| format!(", Docker reported: {error}"))
                 .unwrap_or_default();
-            return Err(readiness_error(
-                docker,
-                id,
-                format!(
-                    "Postgres container '{display_name}' exited before PostgreSQL became ready \
+            return Err(Error::DockerStartupExit(
+                readiness_diagnostics(
+                    docker,
+                    id,
+                    format!(
+                        "Postgres container '{display_name}' exited before PostgreSQL became ready \
                      (state: {status}{exit_code}{engine_error})"
-                ),
-            )
-            .await);
+                    ),
+                )
+                .await,
+            ));
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -566,18 +568,20 @@ async fn wait_for_postgres_ready(
     let probe_context = last_probe_error
         .map(|error| format!(" Last probe error: {error}."))
         .unwrap_or_default();
-    Err(readiness_error(
-        docker,
-        id,
-        format!(
-            "Postgres container '{display_name}' did not become ready within {} seconds.{probe_context}",
-            timeout.as_secs()
-        ),
-    )
-    .await)
+    Err(Error::DockerStartupTimeout(
+        readiness_diagnostics(
+            docker,
+            id,
+            format!(
+                "Postgres container '{display_name}' did not become ready within {} seconds.{probe_context}",
+                timeout.as_secs()
+            ),
+        )
+        .await,
+    ))
 }
 
-async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) -> Error {
+async fn readiness_diagnostics(docker: &bollard::Docker, id: &str, message: String) -> String {
     let logs = match tokio::time::timeout(
         POSTGRES_DIAGNOSTICS_TIMEOUT,
         docker::container_logs_tail(docker, id, 50),
@@ -595,9 +599,7 @@ async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) ->
             format!("Timed out reading container logs. Run `docker logs {id}` for diagnostics.")
         }
     };
-    Error::DockerError(format!(
-        "{message}\n--- container logs (last 50 lines) ---\n{logs}"
-    ))
+    format!("{message}\n--- container logs (last 50 lines) ---\n{logs}")
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
@@ -1265,12 +1267,14 @@ mod tests {
             Duration::from_secs(2),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-        assert!(error.contains("exited before PostgreSQL became ready"));
-        assert!(error.contains("exit code 7"));
-        assert!(error.contains("database system is starting up"));
+        let Error::DockerStartupExit(details) = error else {
+            panic!("expected DockerStartupExit")
+        };
+        assert!(details.contains("exited before PostgreSQL became ready"));
+        assert!(details.contains("exit code 7"));
+        assert!(details.contains("database system is starting up"));
         assert_eq!(docker.probes(), 0);
         docker.finish();
     }
@@ -1289,12 +1293,14 @@ mod tests {
             Duration::from_secs(1),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(error.contains("did not become ready within 1 seconds"));
-        assert!(error.contains("database system is starting up"));
+        let Error::DockerStartupTimeout(details) = error else {
+            panic!("expected DockerStartupTimeout")
+        };
+        assert!(details.contains("did not become ready within 1 seconds"));
+        assert!(details.contains("database system is starting up"));
         assert!(docker.probes() >= 2);
         docker.finish();
     }
@@ -1344,9 +1350,8 @@ mod tests {
         docker.stall_logs();
         let started = std::time::Instant::now();
 
-        let error = readiness_error(&docker.client, "test", "readiness failed".to_string())
-            .await
-            .to_string();
+        let error =
+            readiness_diagnostics(&docker.client, "test", "readiness failed".to_string()).await;
 
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(error.contains("Timed out reading container logs"));

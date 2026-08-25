@@ -104,6 +104,9 @@ pub enum Error {
     StartupTimeout(String),
 
     #[error("Docker error: {0}")]
+    DockerStartupExit(String),
+
+    #[error("Docker error: {0}")]
     DockerStartupTimeout(String),
 
     /// A child process whose status must be returned unchanged. This is
@@ -268,6 +271,10 @@ mod tests {
                     .starts_with("Failed to execute ClickHouse: ")
             );
         }
+        assert_eq!(
+            Error::DockerStartupExit("postgres exited".into()).to_string(),
+            "Docker error: postgres exited"
+        );
         assert_eq!(
             Error::DockerStartupTimeout("postgres timed out".into()).to_string(),
             "Docker error: postgres timed out"
