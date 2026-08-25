@@ -3575,7 +3575,7 @@ async fn stale_stored_query_key_guidance_never_repairs_or_provisions_unrequested
 }
 
 #[tokio::test]
-async fn service_query_repair_replaces_only_the_exact_owned_key_and_binding() {
+async fn service_query_repair_continues_when_old_key_cleanup_fails() {
     let control = start_mock_control_plane_with_service().await;
     let endpoint_path =
         format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
@@ -3622,12 +3622,9 @@ async fn service_query_repair_replaces_only_the_exact_owned_key_and_binding() {
         .and(path(format!(
             "/v1/organizations/org-1/keys/{QUERY_TEST_OLD_KEY_UUID}"
         )))
-        // The issue's stale-key case is an externally deleted management key.
-        // Its exact endpoint binding still needs replacement, while a repeated
-        // delete of that owned key is safely idempotent.
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "status": 404,
-            "error": "NOT_FOUND",
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "status": 500,
+            "error": "old key cleanup failed",
             "requestId": "stub-old-key-delete",
         })))
         .expect(1)
@@ -3678,8 +3675,27 @@ async fn service_query_repair_replaces_only_the_exact_owned_key_and_binding() {
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
     assert_eq!(output.stdout, b"1\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "Warning: the replacement query key was stored, but old API key {QUERY_TEST_OLD_KEY_UUID} in organization org-1 could not be deleted"
+        )),
+        "{stderr}",
+    );
+    assert!(stderr.contains("old key cleanup failed"), "{stderr}");
 
     let requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1,
+        "failed cleanup must not rotate the committed replacement key again",
+    );
     let endpoint_upsert = requests
         .iter()
         .find(|request| {
