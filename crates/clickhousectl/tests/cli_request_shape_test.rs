@@ -212,6 +212,86 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     .unwrap();
 }
 
+fn invoke_api_key_login(project_dir: &Path) -> std::process::Output {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project_dir.join("home"))
+        .current_dir(project_dir)
+        .args([
+            "cloud",
+            "auth",
+            "login",
+            "--api-key",
+            "new-key",
+            "--api-secret",
+            "new-secret",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[test]
+fn api_key_login_preserves_malformed_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    let credentials_path = credentials_dir.join("credentials.json");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    let original = b"{malformed credentials\n";
+    std::fs::write(&credentials_path, original).unwrap();
+
+    let output = invoke_api_key_login(dir.path());
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error: failed to parse ")
+            && stderr.contains(".clickhouse/credentials.json")
+    );
+    assert_eq!(std::fs::read(credentials_path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn api_key_login_preserves_unreadable_credentials() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    let credentials_path = credentials_dir.join("credentials.json");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    let original = br#"{"api_key":"old-key","api_secret":"old-secret"}"#;
+    std::fs::write(&credentials_path, original).unwrap();
+    std::fs::set_permissions(&credentials_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let output = invoke_api_key_login(dir.path());
+
+    std::fs::set_permissions(&credentials_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error: failed to read ")
+            && stderr.contains(".clickhouse/credentials.json")
+    );
+    assert_eq!(std::fs::read(credentials_path).unwrap(), original);
+}
+
+#[test]
+fn api_key_login_initializes_missing_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = invoke_api_key_login(dir.path());
+
+    assert_success(&output);
+    let credentials: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(credentials["api_key"], "new-key");
+    assert_eq!(credentials["api_secret"], "new-secret");
+}
+
 #[test]
 fn logout_does_not_report_success_when_credentials_removal_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -720,6 +800,96 @@ async fn service_query_key_removal_merges_changes_made_under_the_credentials_loc
     assert_eq!(stored["api_key"], "concurrent-key");
     assert_eq!(stored["api_secret"], "concurrent-secret");
     assert!(stored.get("service_query_keys").is_none());
+}
+
+#[tokio::test]
+async fn service_query_key_removal_preserves_credentials_corrupted_while_waiting_for_lock() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-key-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_service_query_key(dir.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
+    let credentials_dir = dir.path().join(".clickhouse");
+    let credentials_path = credentials_dir.join("credentials.json");
+    let credentials_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(credentials_dir.join("credentials.lock"))
+        .unwrap();
+    credentials_lock.lock().unwrap();
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let mut child = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "delete",
+            DELETE_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if mock.received_requests().await.unwrap().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("service deletion did not reach local credential cleanup");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "service-key removal did not wait for the credentials lock",
+    );
+
+    let corrupted = b"{corrupted while locked\n";
+    std::fs::write(&credentials_path, corrupted).unwrap();
+    credentials_lock.unlock().unwrap();
+    drop(credentials_lock);
+
+    let output = tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("Error: failed to parse ")
+            && stderr.contains(".clickhouse/credentials.json")
+    );
+    assert_eq!(std::fs::read(credentials_path).unwrap(), corrupted);
 }
 
 #[tokio::test]

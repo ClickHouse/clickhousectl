@@ -144,7 +144,7 @@ fn save_credentials(creds: &Credentials) -> CloudResult<()> {
 
 pub fn set_api_credentials(api_key: String, api_secret: String) -> CloudResult<()> {
     let _lock = lock_credentials_mutation()?;
-    let mut creds = load_credentials().unwrap_or_default();
+    let mut creds = try_load_credentials()?;
     creds.api_key = Some(api_key);
     creds.api_secret = Some(api_secret);
     save_credentials(&creds)
@@ -172,9 +172,7 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
         return Ok(());
     }
     let _lock = lock_credentials_mutation()?;
-    let Some(mut creds) = load_credentials() else {
-        return Ok(());
-    };
+    let mut creds = try_load_credentials()?;
     if creds.service_query_keys.remove(service_id).is_some() {
         save_credentials(&creds)?;
     }
