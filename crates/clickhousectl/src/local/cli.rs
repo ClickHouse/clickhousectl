@@ -315,14 +315,10 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Stops a ClickHouse server. Without a name, stops \"default\" when it exists, otherwise the sole
   known ClickHouse server. With no ClickHouse servers this is a successful no-op; with multiple
-  non-default servers, pass a name or use `server stop-all`. Pass names positionally (e.g.,
-  `server stop dev`). The older `--name dev` form remains accepted, but cannot be combined with
-  a positional name. Use `clickhousectl local server list` to find names.
-  Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
+  non-default servers, pass a positional name (e.g., `server stop dev`) or use `server stop-all`.
+  Use `clickhousectl local server list` to find names.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
-  Idempotent: a server that exists but is already stopped exits 0 (no error).
-  An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Server name; omitted selection prefers "default", then a sole known ClickHouse server
@@ -330,7 +326,12 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
-        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
         name_flag: Option<String>,
 
         /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
@@ -363,8 +364,7 @@ CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
   Without a name, removes \"default\" only when it exists. It never guesses a custom server;
-  use `server list`, then pass a custom name explicitly. The older `--name dev` form remains
-  accepted, but cannot be combined with a positional name.
+  use `server list`, then pass a custom name positionally.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Server name; when omitted, only an existing "default" is removed
@@ -372,7 +372,12 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
-        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
         name_flag: Option<String>,
     },
 
@@ -1366,6 +1371,19 @@ mod tests {
         .expect("name forms should conflict");
         assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         assert!(error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn server_teardown_help_hides_compatibility_name_flags() {
+        for command in ["stop", "remove"] {
+            let help = Cli::try_parse_from(["clickhousectl", "local", "server", command, "--help"])
+                .err()
+                .expect("help should exit through clap")
+                .to_string();
+
+            assert!(!help.contains("--name"), "{help}");
+            assert!(help.contains("Without a name"), "{help}");
+        }
     }
 
     #[test]
