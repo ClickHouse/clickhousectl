@@ -1930,6 +1930,12 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         })?
     } else {
         let stored_key = if options.repair_query_key {
+            let expected_stale =
+                credentials::try_get_service_query_key(&service_id)?.ok_or_else(|| {
+                    CloudError::new(format!(
+                        "no stored query key exists for service {service_id}; refusing to provision one under --repair-query-key"
+                    ))
+                })?;
             eprintln!("Repairing stored Query API key for service '{service_name}'...");
             Some((
                 crate::cloud::service_query::repair_service_query_setup(
@@ -1937,6 +1943,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     &org_id,
                     &service_id,
                     &service_name,
+                    expected_stale,
                 )
                 .await?,
                 true,

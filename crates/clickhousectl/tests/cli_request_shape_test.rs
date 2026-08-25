@@ -3726,6 +3726,253 @@ async fn service_query_repair_replaces_only_the_exact_owned_key_and_binding() {
 }
 
 #[tokio::test]
+async fn concurrent_service_query_repairs_share_the_lock_winner() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    const PROCESS_COUNT: usize = 2;
+    const SECOND_KEY_UUID: &str = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+
+    let control = start_mock_control_plane_with_service().await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    let endpoint_gets = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with({
+            let endpoint_gets = Arc::clone(&endpoint_gets);
+            move |_: &wiremock::Request| {
+                let bound_key = if endpoint_gets.fetch_add(1, Ordering::SeqCst) == 0 {
+                    QUERY_TEST_OLD_KEY_UUID
+                } else {
+                    QUERY_TEST_KEY_UUID
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {
+                        "id": "ep-1",
+                        "roles": ["sql_console_read_only"],
+                        "openApiKeys": ["unrelated-endpoint-key", bound_key],
+                        "allowedOrigins": "https://example.com",
+                    },
+                    "status": 200,
+                    "requestId": "stub-endpoint-get",
+                }))
+            }
+        })
+        .expect(1)
+        .mount(&control)
+        .await;
+    let key_creations = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with({
+            let key_creations = Arc::clone(&key_creations);
+            move |_: &wiremock::Request| {
+                let (api_key_id, key_id, key_secret) =
+                    if key_creations.fetch_add(1, Ordering::SeqCst) == 0 {
+                        (
+                            QUERY_TEST_KEY_UUID,
+                            "replacement-key-id",
+                            "replacement-key-secret",
+                        )
+                    } else {
+                        (SECOND_KEY_UUID, "second-key-id", "second-key-secret")
+                    };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {
+                        "key": { "id": api_key_id },
+                        "keyId": key_id,
+                        "keySecret": key_secret,
+                    },
+                    "status": 200,
+                    "requestId": "stub-key-create",
+                }))
+            }
+        })
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_OLD_KEY_UUID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-old-key-delete",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let query_host = MockServer::start().await;
+    let basic_auth = |credentials: &str| {
+        format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+        )
+    };
+    let winner_auth = basic_auth("replacement-key-id:replacement-key-secret");
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", winner_auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .expect(PROCESS_COUNT as u64)
+        .mount(&query_host)
+        .await;
+    let second_auth = basic_auth("second-key-id:second-key-secret");
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", second_auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+    write_query_repair_credentials(dir.path(), true);
+    let credentials_dir = dir.path().join(".clickhouse");
+    let provision_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(credentials_dir.join("query-provision.lock"))
+        .unwrap();
+    provision_lock.lock().unwrap();
+
+    let control_url = control.uri();
+    let query_host_url = query_host.uri();
+    let mut children = Vec::with_capacity(PROCESS_COUNT);
+    let mut stderr_paths = Vec::with_capacity(PROCESS_COUNT);
+    for index in 0..PROCESS_COUNT {
+        let stderr_path = dir.path().join(format!("repair-{index}.stderr"));
+        let mut command = Command::new(clickhousectl_binary());
+        clear_agent_env(&mut command);
+        children.push(
+            command
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", &home_dir)
+                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+                .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
+                .current_dir(dir.path())
+                .args([
+                    "cloud",
+                    "--url",
+                    control_url.as_str(),
+                    "service",
+                    "query",
+                    "--id",
+                    QUERY_TEST_SERVICE_ID,
+                    "--org-id",
+                    "org-1",
+                    "--repair-query-key",
+                    "--query",
+                    "SELECT 1",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::from(std::fs::File::create(&stderr_path).unwrap()))
+                .spawn()
+                .expect("failed to spawn concurrent repair"),
+        );
+        stderr_paths.push(stderr_path);
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if stderr_paths.iter().all(|path| {
+                std::fs::read_to_string(path)
+                    .is_ok_and(|stderr| stderr.contains("Repairing stored Query API key"))
+            }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("concurrent repairs did not snapshot the stale key");
+
+    provision_lock.unlock().unwrap();
+    drop(provision_lock);
+    let outputs = futures_util::future::join_all(
+        children
+            .into_iter()
+            .map(|child| tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())),
+    )
+    .await;
+    for (output, stderr_path) in outputs.into_iter().zip(&stderr_paths) {
+        let output = output.unwrap();
+        let stderr = std::fs::read_to_string(stderr_path).unwrap();
+        assert!(
+            output.status.success(),
+            "concurrent repair failed: {stderr}"
+        );
+        assert_eq!(output.stdout, b"1\n");
+    }
+
+    let control_requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1,
+        "only one caller may rotate the stale key",
+    );
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == endpoint_path
+            })
+            .count(),
+        1,
+        "only the winner may replace the endpoint binding",
+    );
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_OLD_KEY_UUID}"
+        )],
+        "the waiter must not delete the winning key",
+    );
+
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), PROCESS_COUNT);
+    assert!(query_requests.iter().all(|request| {
+        request
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            == Some(winner_auth.as_str())
+    }));
+    let stored: Value =
+        serde_json::from_slice(&std::fs::read(credentials_dir.join("credentials.json")).unwrap())
+            .unwrap();
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
+    assert_eq!(repaired["key_secret"], "replacement-key-secret");
+}
+
+#[tokio::test]
 async fn service_query_repair_refuses_legacy_records_without_ownership_metadata() {
     let control = start_mock_control_plane_with_service().await;
     let query_host = MockServer::start().await;
