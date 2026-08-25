@@ -2510,7 +2510,7 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
 
     let command = || {
         let mut command = Command::new(clickhousectl_binary());
-        clear_agent_env(&mut command);
+        clear_inherited_env(&mut command);
         command
             .env("DO_NOT_TRACK", "1")
             .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
@@ -2577,7 +2577,7 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
 async fn service_query_rejects_conflicting_sql_sources_before_network_access() {
     let control = MockServer::start().await;
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let output = command
         .env("DO_NOT_TRACK", "1")
         .args([
