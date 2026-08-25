@@ -30,6 +30,14 @@ fn metadata_path(project: &Path) -> PathBuf {
     project.join(".clickhouse/servers/default.json")
 }
 
+fn lock_directory(project: &Path) -> PathBuf {
+    project.join(".clickhouse/servers/.locks")
+}
+
+fn lock_path(project: &Path) -> PathBuf {
+    lock_directory(project).join("default.lock")
+}
+
 fn prepare_project(project: &Path) {
     std::fs::create_dir_all(project.join(".clickhouse/servers/default/data"))
         .expect("create server data directory");
@@ -68,6 +76,71 @@ fn assert_json_error(output: &Output, code: &str, message_fragment: &str) {
             .contains(message_fragment),
         "{body}"
     );
+}
+
+fn assert_lock_error(output: &Output, operation: &str, path: &Path) {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    let body: Value = serde_json::from_slice(&output.stderr).expect("parse structured lock error");
+    assert_eq!(body["error"]["code"], "server_lock");
+    assert_eq!(body["error"]["command"], "clickhousectl local server list");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains(operation), "{message}");
+    assert!(message.contains(&path.display().to_string()), "{message}");
+    assert!(message.contains("retry"), "{message}");
+    assert!(!message.contains("metadata"), "{message}");
+    assert!(!message.contains("default.json"), "{message}");
+}
+
+#[test]
+fn lock_directory_creation_failure_reports_the_lock_directory() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let locks = lock_directory(project.path());
+    std::fs::create_dir_all(locks.parent().unwrap()).expect("create servers directory");
+    std::fs::write(&locks, b"blocks lock directory creation").expect("block lock directory");
+
+    let json = run(project.path(), home.path(), true);
+    assert_lock_error(&json, "create server lifecycle lock directory", &locks);
+
+    let human = run(project.path(), home.path(), false);
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.starts_with("Error: Could not create server lifecycle lock directory"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&locks.display().to_string()), "{stderr}");
+    assert!(!stderr.contains("metadata"), "{stderr}");
+    assert!(!stderr.contains("default.json"), "{stderr}");
+}
+
+#[test]
+fn lock_file_open_failure_reports_the_lock_file() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let lock = lock_path(project.path());
+    std::fs::create_dir_all(&lock).expect("create directory at lock file path");
+
+    let json = run(project.path(), home.path(), true);
+    assert_lock_error(&json, "open server lifecycle lock file", &lock);
+
+    let human = run(project.path(), home.path(), false);
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.starts_with("Error: Could not open server lifecycle lock file"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&lock.display().to_string()), "{stderr}");
+    assert!(!stderr.contains("metadata"), "{stderr}");
+    assert!(!stderr.contains("default.json"), "{stderr}");
 }
 
 #[test]

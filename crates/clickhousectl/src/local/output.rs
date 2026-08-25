@@ -15,6 +15,7 @@ pub enum LocalErrorCode {
     ServerNotFound,
     ServerNotRunning,
     ServerRunning,
+    ServerLock,
     ServerMetadataRead,
     ServerMetadataPermission,
     ServerMetadataInvalid,
@@ -61,6 +62,11 @@ impl LocalErrorOutput {
             | Error::ServerRunningCannotRemove(_)
             | Error::VersionInUse { .. } => (
                 LocalErrorCode::ServerRunning,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerLock { .. } => (
+                LocalErrorCode::ServerLock,
                 error.to_string(),
                 "clickhousectl local server list",
             ),
@@ -794,6 +800,16 @@ mod tests {
             (
                 Error::ServerAlreadyRunning("default".into()),
                 LocalErrorCode::ServerRunning,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerLock {
+                    operation: "open server lifecycle lock file",
+                    path: ".clickhouse/servers/.locks/default.lock".into(),
+                    remediation: "Check lock access and retry.",
+                    source: std::io::Error::other("open failed"),
+                },
+                LocalErrorCode::ServerLock,
                 "clickhousectl local server list",
             ),
             (

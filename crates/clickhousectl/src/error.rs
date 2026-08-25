@@ -132,6 +132,15 @@ pub enum Error {
     #[error("Server '{0}' not found")]
     ServerNotFound(String),
 
+    #[error("Could not {operation} at {}: {source}. {remediation}", path.display())]
+    ServerLock {
+        operation: &'static str,
+        path: PathBuf,
+        remediation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
         "Could not read metadata for server '{name}' at .clickhouse/servers/{name}.json: {source}. Check that the file is readable and retry."
     )]

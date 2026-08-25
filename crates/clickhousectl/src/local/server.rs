@@ -183,9 +183,16 @@ struct FileLock {
 }
 
 impl FileLock {
-    fn acquire(path: &Path, name: &str) -> Result<Self> {
+    fn acquire(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| metadata_write_error(name, source))?;
+            std::fs::create_dir_all(parent).map_err(|source| {
+                server_lock_error(
+                    "create server lifecycle lock directory",
+                    parent,
+                    "Check write access to the parent directory and retry.",
+                    source,
+                )
+            })?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -193,7 +200,14 @@ impl FileLock {
             .write(true)
             .truncate(false)
             .open(path)
-            .map_err(|source| metadata_access_error(name, source))?;
+            .map_err(|source| {
+                server_lock_error(
+                    "open server lifecycle lock file",
+                    path,
+                    "Check read and write access to the lock file and its parent directory, then retry.",
+                    source,
+                )
+            })?;
 
         loop {
             // SAFETY: `file` owns this descriptor for the lifetime of the lock.
@@ -203,7 +217,12 @@ impl FileLock {
             }
             let source = std::io::Error::last_os_error();
             if source.kind() != std::io::ErrorKind::Interrupted {
-                return Err(metadata_access_error(name, source));
+                return Err(server_lock_error(
+                    "acquire server lifecycle lock",
+                    path,
+                    "Check that the lock file's filesystem supports advisory locks, then retry.",
+                    source,
+                ));
             }
         }
     }
@@ -228,6 +247,20 @@ impl Drop for TemporaryMetadata {
         if !self.committed {
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+fn server_lock_error(
+    operation: &'static str,
+    path: &Path,
+    remediation: &'static str,
+    source: std::io::Error,
+) -> Error {
+    Error::ServerLock {
+        operation,
+        path: path.to_path_buf(),
+        remediation,
+        source,
     }
 }
 
@@ -334,7 +367,7 @@ impl ServerLock {
         ensure_servers_dir()?;
         Ok(Self {
             name: name.to_string(),
-            _file: FileLock::acquire(&server_lock_path(name), name)?,
+            _file: FileLock::acquire(&server_lock_path(name))?,
         })
     }
 
@@ -1097,6 +1130,54 @@ mod tests {
     const STRICT_LIST_HELPER: &str = "local::server::tests::strict_list_reports_corrupt_metadata";
     const POSTGRES_RECOVERY_HELPER: &str = "local::server::tests::postgres_recovery_subprocess";
     const CLICKHOUSE_RECOVERY_HELPER: &str = "local::server::tests::clickhouse_recovery_subprocess";
+
+    #[test]
+    fn lock_directory_failure_preserves_operation_path_and_source() {
+        let project = tempfile::tempdir().unwrap();
+        let lock_directory = project.path().join(".clickhouse/servers/.locks");
+        std::fs::create_dir_all(lock_directory.parent().unwrap()).unwrap();
+        std::fs::write(&lock_directory, b"not a directory").unwrap();
+        let lock_path = lock_directory.join("default.lock");
+
+        let error = match FileLock::acquire(&lock_path) {
+            Ok(_) => panic!("lock acquisition unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(std::error::Error::source(&error).is_some());
+        assert_eq!(error.exit_code(), 1);
+        assert!(matches!(
+            error,
+            Error::ServerLock {
+                operation: "create server lifecycle lock directory",
+                path,
+                source,
+                ..
+            } if path == lock_directory
+                && source.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+    }
+
+    #[test]
+    fn flock_failure_context_identifies_the_lock_file() {
+        let path = PathBuf::from(".clickhouse/servers/.locks/default.lock");
+        let error = server_lock_error(
+            "acquire server lifecycle lock",
+            &path,
+            "Check that the lock file's filesystem supports advisory locks, then retry.",
+            std::io::Error::other("injected flock failure"),
+        );
+
+        assert!(std::error::Error::source(&error).is_some());
+        assert!(matches!(
+            error,
+            Error::ServerLock {
+                operation: "acquire server lifecycle lock",
+                path: error_path,
+                source,
+                ..
+            } if error_path == path && source.to_string() == "injected flock failure"
+        ));
+    }
 
     fn test_info(name: &str, pid: u32, version: &str) -> ServerInfo {
         ServerInfo {
