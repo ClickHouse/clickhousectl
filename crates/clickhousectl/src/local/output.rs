@@ -46,13 +46,12 @@ pub struct LocalErrorBody {
 impl LocalErrorOutput {
     pub fn from_error(error: &Error) -> Self {
         if let Error::ProjectServerScope {
-            message,
-            project,
-            source,
+            project, source, ..
         } = error
         {
             let mut output = Self::from_error(source);
-            output.error.message = message.clone();
+            output.error.message =
+                Error::project_server_scope_message(&output.error.message, project);
             output.error.command = "clickhousectl local server list --global";
             output.error.project = Some(project.clone());
             return output;
@@ -913,6 +912,33 @@ mod tests {
                 .message
                 .contains("parent `.clickhouse` directories are not searched")
         );
+    }
+
+    #[test]
+    fn project_scoped_io_errors_keep_structured_diagnostics_opaque() {
+        let output = LocalErrorOutput::from_error(
+            &Error::Io(std::io::Error::other(
+                "/secret/raw/path: filesystem diagnostics",
+            ))
+            .with_project_server_list_scope("/tmp/project".into()),
+        );
+
+        assert_eq!(output.error.code, LocalErrorCode::IoError);
+        assert_eq!(output.error.project.as_deref(), Some("/tmp/project"));
+        assert!(
+            output.error.message.starts_with(
+                "Local filesystem operation failed\nProject directory used for lookup:"
+            )
+        );
+        assert!(
+            output
+                .error
+                .message
+                .contains("parent `.clickhouse` directories are not searched")
+        );
+        assert!(!output.error.message.contains("/secret/raw/path"));
+        assert!(!output.error.message.contains("filesystem diagnostics"));
+        assert!(!output.error.message.contains("IO error:"));
     }
 
     #[test]

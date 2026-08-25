@@ -289,20 +289,24 @@ impl Error {
     }
 
     fn into_project_server_scope(self, project: String) -> Self {
-        let message = format!(
+        let message = Self::project_server_scope_message(&self.to_string(), &project);
+        Error::ProjectServerScope {
+            message,
+            project,
+            source: Box::new(self),
+        }
+    }
+
+    pub(crate) fn project_server_scope_message(message: &str, project: &str) -> String {
+        format!(
             "{}\nProject directory used for lookup: {project:?}\n\
              Only this exact directory's `.clickhouse` is searched; parent `.clickhouse` \
              directories are not searched.\n\
              Run `clickhousectl local server list --global` to find running servers. For stopped \
              servers, change to the intended project directory and run \
              `clickhousectl local server list`.",
-            self
-        );
-        Error::ProjectServerScope {
-            message,
-            project,
-            source: Box::new(self),
-        }
+            message
+        )
     }
 }
 

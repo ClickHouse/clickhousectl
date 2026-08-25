@@ -297,13 +297,14 @@ fn invalid_servers_directory_has_project_scope_in_json_mode() {
         &["local", "--json", "server", "list"],
     );
     let body = assert_scoped_json_error(&output, "io_error", project.path());
+    let message = body["error"]["message"].as_str().unwrap();
     assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .starts_with("IO error:"),
+        message.starts_with("Local filesystem operation failed\n"),
         "{body}"
     );
+    assert!(!message.contains("IO error:"), "{body}");
+    assert!(!message.contains("Not a directory"), "{body}");
+    assert!(!message.contains("os error"), "{body}");
 }
 
 #[test]
@@ -314,9 +315,7 @@ fn invalid_servers_directory_has_project_scope_in_human_mode() {
 
     let output = run(project.path(), home.path(), &["local", "server", "list"]);
     assert_scoped_human_error(&output, project.path());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).starts_with("Error: IO error:"),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("Error: IO error:"), "stderr: {stderr}");
+    assert!(stderr.contains("Not a directory"), "stderr: {stderr}");
 }
