@@ -423,7 +423,7 @@ CONTEXT FOR AGENTS:
      Defaults to \"default\".
   2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
      to 127.0.0.1; a missing port defaults to 5432.
-  Named and direct selectors cannot be combined.
+  Managed selectors (--name and --version) cannot be combined with direct selectors.
   If `psql` is on PATH on the host, it is execed directly. Otherwise, falls back to running
   `psql` inside the container via Docker exec (no host psql required).
   --query and --queries-file pass through to psql (-c / -f).
@@ -434,7 +434,7 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
-        #[arg(long, short = 'v')]
+        #[arg(long, short = 'v', conflicts_with_all = ["host", "port"])]
         version: Option<String>,
 
         /// Host to connect to (bypasses local server lookup)
@@ -572,6 +572,61 @@ mod tests {
                 assert_eq!(host.as_deref(), expected_host, "selectors: {selectors:?}");
                 assert_eq!(port, expected_port, "selectors: {selectors:?}");
             }
+        }
+    }
+
+    #[test]
+    fn postgres_client_version_accepts_managed_modes() {
+        let cases = [
+            (&["--version", "17"][..], None),
+            (&["--name", "dev", "--version", "17"][..], Some("dev")),
+            (&["--version", "17", "--name", "dev"][..], Some("dev")),
+        ];
+
+        for (selectors, expected_name) in cases {
+            let mut args = vec!["postgres", "client"];
+            args.extend_from_slice(selectors);
+            let LocalCommands::Postgres {
+                command:
+                    PostgresCommands::Client {
+                        name,
+                        version,
+                        host,
+                        port,
+                        ..
+                    },
+            } = local_command(&args)
+            else {
+                panic!("expected postgres client command");
+            };
+
+            assert_eq!(name.as_deref(), expected_name, "selectors: {selectors:?}");
+            assert_eq!(version.as_deref(), Some("17"), "selectors: {selectors:?}");
+            assert_eq!(host, None, "selectors: {selectors:?}");
+            assert_eq!(port, None, "selectors: {selectors:?}");
+        }
+    }
+
+    #[test]
+    fn postgres_client_version_rejects_direct_modes_in_either_order() {
+        let cases = [
+            &["--version", "17", "--host", "db.example"][..],
+            &["--host", "db.example", "--version", "17"][..],
+            &["--version", "17", "--port", "5432"][..],
+            &["--port", "5432", "--version", "17"][..],
+        ];
+
+        for selectors in cases {
+            let mut args = vec!["postgres", "client"];
+            args.extend_from_slice(selectors);
+            let error = try_local_command(&args)
+                .err()
+                .expect("managed and direct selectors should conflict");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "selectors: {selectors:?}"
+            );
         }
     }
 
