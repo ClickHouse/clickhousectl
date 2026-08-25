@@ -250,6 +250,7 @@ async fn start(
 
     let rollback = FreshStartRollback {
         container_id: container_id.clone(),
+        info: info.clone(),
         metadata_path: server::server_meta_path_for_recovery(&key),
         instance_dir,
         remove_fresh_data_on_failure,
@@ -284,6 +285,7 @@ async fn start(
 
 struct FreshStartRollback {
     container_id: String,
+    info: ServerInfo,
     metadata_path: PathBuf,
     instance_dir: PathBuf,
     remove_fresh_data_on_failure: bool,
@@ -355,21 +357,23 @@ async fn rollback_fresh_start(
         }
     };
 
-    if let Err(error) = std::fs::remove_file(&rollback.metadata_path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        diagnostics.push(format!(
-            "failed to remove metadata '{}': {error}",
-            rollback.metadata_path.display()
-        ));
-    }
-
-    if rollback.remove_fresh_data_on_failure && container_removed {
-        if let Err(error) = docker::remove_host_dir_blocking(&rollback.instance_dir) {
-            diagnostics.push(format!(
-                "failed to remove fresh Postgres data '{}': {error}",
-                rollback.instance_dir.display()
-            ));
+    let instance_removed = if rollback.remove_fresh_data_on_failure && container_removed {
+        match docker::remove_host_dir_blocking(&rollback.instance_dir) {
+            Ok(()) if !rollback.instance_dir.exists() => true,
+            Ok(()) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': path still exists",
+                    rollback.instance_dir.display()
+                ));
+                false
+            }
+            Err(error) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': {error}",
+                    rollback.instance_dir.display()
+                ));
+                false
+            }
         }
     } else {
         let reason = if container_removed {
@@ -381,6 +385,35 @@ async fn rollback_fresh_start(
             "retained Postgres data '{}' because {reason}",
             rollback.instance_dir.display()
         ));
+        false
+    };
+
+    if container_removed && instance_removed {
+        match std::fs::remove_file(&rollback.metadata_path) {
+            Ok(()) => return diagnostics,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return diagnostics,
+            Err(error) => diagnostics.push(format!(
+                "failed to remove metadata '{}': {error}",
+                rollback.metadata_path.display()
+            )),
+        }
+    } else {
+        let version = rollback
+            .info
+            .version
+            .strip_prefix("postgres:")
+            .unwrap_or(&rollback.info.version);
+        match server::save_server_info(&rollback.info) {
+            Ok(()) => diagnostics.push(format!(
+                "recovery metadata retained at '{}'; inspect the retained data, then run `clickhousectl local postgres remove {} --version {version}` when it is safe to clean up",
+                rollback.metadata_path.display(),
+                user_name_from_key(&rollback.info.name)
+            )),
+            Err(error) => diagnostics.push(format!(
+                "failed to preserve recovery metadata '{}': {error}",
+                rollback.metadata_path.display()
+            )),
+        }
     }
 
     diagnostics
@@ -529,15 +562,17 @@ async fn wait_for_postgres_ready(
                 .filter(|error| !error.is_empty())
                 .map(|error| format!(", Docker reported: {error}"))
                 .unwrap_or_default();
-            return Err(readiness_error(
-                docker,
-                id,
-                format!(
-                    "Postgres container '{display_name}' exited before PostgreSQL became ready \
+            return Err(Error::DockerStartupExit(
+                readiness_diagnostics(
+                    docker,
+                    id,
+                    format!(
+                        "Postgres container '{display_name}' exited before PostgreSQL became ready \
                      (state: {status}{exit_code}{engine_error})"
-                ),
-            )
-            .await);
+                    ),
+                )
+                .await,
+            ));
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -566,18 +601,20 @@ async fn wait_for_postgres_ready(
     let probe_context = last_probe_error
         .map(|error| format!(" Last probe error: {error}."))
         .unwrap_or_default();
-    Err(readiness_error(
-        docker,
-        id,
-        format!(
-            "Postgres container '{display_name}' did not become ready within {} seconds.{probe_context}",
-            timeout.as_secs()
-        ),
-    )
-    .await)
+    Err(Error::DockerStartupTimeout(
+        readiness_diagnostics(
+            docker,
+            id,
+            format!(
+                "Postgres container '{display_name}' did not become ready within {} seconds.{probe_context}",
+                timeout.as_secs()
+            ),
+        )
+        .await,
+    ))
 }
 
-async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) -> Error {
+async fn readiness_diagnostics(docker: &bollard::Docker, id: &str, message: String) -> String {
     let logs = match tokio::time::timeout(
         POSTGRES_DIAGNOSTICS_TIMEOUT,
         docker::container_logs_tail(docker, id, 50),
@@ -595,9 +632,7 @@ async fn readiness_error(docker: &bollard::Docker, id: &str, message: String) ->
             format!("Timed out reading container logs. Run `docker logs {id}` for diagnostics.")
         }
     };
-    Error::DockerError(format!(
-        "{message}\n--- container logs (last 50 lines) ---\n{logs}"
-    ))
+    format!("{message}\n--- container logs (last 50 lines) ---\n{logs}")
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
@@ -608,7 +643,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             ));
         }
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_err() {
-            return Err(Error::PostgresValidation(format!(
+            return Err(Error::PostgresPortInUse(format!(
                 "explicit Postgres port {p} is already in use; choose a free --port or omit the flag to auto-select"
             )));
         }
@@ -745,7 +780,7 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     }
 
     if let Some(cid) = target.container_id.as_deref() {
-        let _ = docker::stop_and_remove_blocking(cid);
+        docker::stop_and_remove_blocking(cid)?;
     }
 
     // Postgres data dir lives at .clickhouse/servers/<key>/data/. Remove the
@@ -1265,12 +1300,14 @@ mod tests {
             Duration::from_secs(2),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
-        assert!(error.contains("exited before PostgreSQL became ready"));
-        assert!(error.contains("exit code 7"));
-        assert!(error.contains("database system is starting up"));
+        let Error::DockerStartupExit(details) = error else {
+            panic!("expected DockerStartupExit")
+        };
+        assert!(details.contains("exited before PostgreSQL became ready"));
+        assert!(details.contains("exit code 7"));
+        assert!(details.contains("database system is starting up"));
         assert_eq!(docker.probes(), 0);
         docker.finish();
     }
@@ -1289,12 +1326,14 @@ mod tests {
             Duration::from_secs(1),
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
 
         assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(error.contains("did not become ready within 1 seconds"));
-        assert!(error.contains("database system is starting up"));
+        let Error::DockerStartupTimeout(details) = error else {
+            panic!("expected DockerStartupTimeout")
+        };
+        assert!(details.contains("did not become ready within 1 seconds"));
+        assert!(details.contains("database system is starting up"));
         assert!(docker.probes() >= 2);
         docker.finish();
     }
@@ -1314,6 +1353,17 @@ mod tests {
             &docker.client,
             FreshStartRollback {
                 container_id: "test".to_string(),
+                info: ServerInfo {
+                    name: "stuck-pg18".to_string(),
+                    pid: 0,
+                    version: "postgres:18".to_string(),
+                    http_port: 0,
+                    tcp_port: 5432,
+                    started_at: "test".to_string(),
+                    cwd: tempdir.path().display().to_string(),
+                    engine: Engine::Postgres,
+                    container_id: Some("test".to_string()),
+                },
                 metadata_path: metadata_path.clone(),
                 instance_dir: instance_dir.clone(),
                 remove_fresh_data_on_failure: true,
@@ -1344,9 +1394,8 @@ mod tests {
         docker.stall_logs();
         let started = std::time::Instant::now();
 
-        let error = readiness_error(&docker.client, "test", "readiness failed".to_string())
-            .await
-            .to_string();
+        let error =
+            readiness_diagnostics(&docker.client, "test", "readiness failed".to_string()).await;
 
         assert!(started.elapsed() < Duration::from_secs(3));
         assert!(error.contains("Timed out reading container logs"));
@@ -1376,7 +1425,9 @@ mod tests {
 
         let err = resolve_port(Some(port)).unwrap_err();
         assert!(
-            matches!(err, Error::PostgresValidation(msg) if msg.contains(&port.to_string()) && msg.contains("already in use"))
+            matches!(err, Error::PostgresPortInUse(msg) if msg == format!(
+                "explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select"
+            ))
         );
     }
 

@@ -53,7 +53,12 @@ START A SERVER DIRECTLY:
   local server, so a separate install command is optional.
 
 CONTEXT FOR AGENTS:
-  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
+  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
+
+EXAMPLES:
+  clickhousectl local install latest
+  clickhousectl local install 26.8
+  clickhousectl local install 26.8.1.1760")]
     Install {
         /// Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.9.61".
         #[arg(value_parser = parse_install_version_operand)]
@@ -80,8 +85,7 @@ CONTEXT FOR AGENTS:
     /// Set the default version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Sets the default ClickHouse version used by direct `clickhousectl local client` connections
-  when --version is omitted, and by `clickhousectl local server`.
+  Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
   Accepts version specs: \"latest\" (recommended), \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
   Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
@@ -138,16 +142,12 @@ CONTEXT FOR AGENTS:
         group(clap::ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Connection and local binary selection are separate:
+  Two connection modes:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
      locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
   2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
      to localhost (for example, `local client --port 9000`); a missing port defaults to 9000.
-     Pass --version with a direct connection to select an exact installed client binary without
-     changing the default. Otherwise direct mode uses the configured default; it never guesses
-     from installed versions. Use `local list` to find exact installed versions.
-  Named mode always uses the managed server's recorded version. --version is direct-only, and
-  named and direct selectors cannot be combined.
+  Named and direct selectors cannot be combined.
   Repeat --query to execute multiple inline queries. --queries-file accepts multiple paths after
   one flag and can also be repeated. Inline queries and query files cannot be combined, matching
   the native client.
@@ -426,7 +426,6 @@ CONTEXT FOR AGENTS:
   Defaults to 18. Image is pulled if not already present locally.
   If --port is omitted, port 5432 is used when available and a free port is auto-selected
   when 5432 is occupied. If --port is set, that exact port must be free or start fails.
-  Data persists at .clickhouse/servers/<name>-pg<major>/data/ and is bind-mounted into the container.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
   The first `-e POSTGRES_PASSWORD=...` overrides --password. --user, --database, and
   managed PGDATA take precedence over same-named `-e` variables.
@@ -497,7 +496,7 @@ CONTEXT FOR AGENTS:
      Defaults to \"default\".
   2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
      to 127.0.0.1; a missing port defaults to 5432.
-  Named and direct selectors cannot be combined.
+  Managed selectors (--name and --version) cannot be combined with direct selectors.
   If `psql` is on PATH on the host, it is execed directly. Otherwise, falls back to running
   `psql` inside the container via Docker exec (no host psql required).
   --query and --queries-file pass through to psql (-c / -f).
@@ -508,7 +507,7 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
-        #[arg(long, short = 'v')]
+        #[arg(long, short = 'v', conflicts_with_all = ["host", "port"])]
         version: Option<String>,
 
         /// Host to connect to (bypasses local server lookup)
@@ -719,6 +718,61 @@ mod tests {
     }
 
     #[test]
+    fn postgres_client_version_accepts_managed_modes() {
+        let cases = [
+            (&["--version", "17"][..], None),
+            (&["--name", "dev", "--version", "17"][..], Some("dev")),
+            (&["--version", "17", "--name", "dev"][..], Some("dev")),
+        ];
+
+        for (selectors, expected_name) in cases {
+            let mut args = vec!["postgres", "client"];
+            args.extend_from_slice(selectors);
+            let LocalCommands::Postgres {
+                command:
+                    PostgresCommands::Client {
+                        name,
+                        version,
+                        host,
+                        port,
+                        ..
+                    },
+            } = local_command(&args)
+            else {
+                panic!("expected postgres client command");
+            };
+
+            assert_eq!(name.as_deref(), expected_name, "selectors: {selectors:?}");
+            assert_eq!(version.as_deref(), Some("17"), "selectors: {selectors:?}");
+            assert_eq!(host, None, "selectors: {selectors:?}");
+            assert_eq!(port, None, "selectors: {selectors:?}");
+        }
+    }
+
+    #[test]
+    fn postgres_client_version_rejects_direct_modes_in_either_order() {
+        let cases = [
+            &["--version", "17", "--host", "db.example"][..],
+            &["--host", "db.example", "--version", "17"][..],
+            &["--version", "17", "--port", "5432"][..],
+            &["--port", "5432", "--version", "17"][..],
+        ];
+
+        for selectors in cases {
+            let mut args = vec!["postgres", "client"];
+            args.extend_from_slice(selectors);
+            let error = try_local_command(&args)
+                .err()
+                .expect("managed and direct selectors should conflict");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "selectors: {selectors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn client_selector_matrix_rejects_named_and_direct_modes_in_either_order() {
         let cases = [
             &["--name", "dev", "--host", "db.example"][..],
@@ -866,23 +920,14 @@ mod tests {
     }
 
     #[test]
-    fn clickhouse_client_help_separates_connection_and_binary_selection() {
+    fn clickhouse_client_help_describes_version_flag() {
         let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
             .err()
             .expect("help should exit through clap")
             .to_string();
 
         assert!(
-            help.contains("Connection and local binary selection are separate"),
-            "{help}"
-        );
-        assert!(
             help.contains("Exact installed ClickHouse version"),
-            "{help}"
-        );
-        assert!(help.contains("does not change the default"), "{help}");
-        assert!(
-            help.contains("Named mode always uses the managed server's recorded version"),
             "{help}"
         );
     }

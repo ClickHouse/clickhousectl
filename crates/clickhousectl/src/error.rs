@@ -104,6 +104,9 @@ pub enum Error {
     StartupTimeout(String),
 
     #[error("Docker error: {0}")]
+    DockerStartupExit(String),
+
+    #[error("Docker error: {0}")]
     DockerStartupTimeout(String),
 
     /// A child process whose status must be returned unchanged. This is
@@ -186,10 +189,13 @@ pub enum Error {
     #[error("Postgres validation failed: {0}")]
     PostgresValidation(String),
 
+    #[error("Postgres validation failed: {0}")]
+    PostgresPortInUse(String),
+
     #[error("Postgres operation failed: {0}")]
     PostgresRuntime(String),
 
-    #[error("{primary}\nPostgres startup rollback diagnostics: {cleanup}")]
+    #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
     PostgresStartupRollback {
         #[source]
         primary: Box<Error>,
@@ -272,8 +278,16 @@ mod tests {
 
     #[test]
     fn typed_local_boundaries_preserve_human_error_text() {
+        assert_eq!(
+            Error::PortInUse("HTTP port 8123 is already in use".into()).to_string(),
+            "Failed to execute ClickHouse: HTTP port 8123 is already in use"
+        );
+        assert_eq!(
+            Error::PostgresPortInUse("explicit Postgres port 5432 is already in use".into())
+                .to_string(),
+            "Postgres validation failed: explicit Postgres port 5432 is already in use"
+        );
         for error in [
-            Error::PortInUse("HTTP port 8123 is already in use".into()),
             Error::StartupExit("server exited".into()),
             Error::StartupTimeout("server timed out".into()),
         ] {
@@ -283,6 +297,10 @@ mod tests {
                     .starts_with("Failed to execute ClickHouse: ")
             );
         }
+        assert_eq!(
+            Error::DockerStartupExit("postgres exited".into()).to_string(),
+            "Docker error: postgres exited"
+        );
         assert_eq!(
             Error::DockerStartupTimeout("postgres timed out".into()).to_string(),
             "Docker error: postgres timed out"

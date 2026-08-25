@@ -39,6 +39,17 @@ pub struct LocalErrorBody {
 
 impl LocalErrorOutput {
     pub fn from_error(error: &Error) -> Self {
+        let error = match error {
+            Error::PostgresStartupRollback { primary, .. }
+                if matches!(
+                    primary.as_ref(),
+                    Error::DockerStartupExit(_) | Error::DockerStartupTimeout(_)
+                ) =>
+            {
+                primary.as_ref()
+            }
+            _ => error,
+        };
         let (code, message, command) = match error {
             Error::ServerNotFound(_)
             | Error::ServerNameRequiredForStop
@@ -78,12 +89,12 @@ impl LocalErrorOutput {
                 error.to_string(),
                 "clickhousectl local list --remote",
             ),
-            Error::PortInUse(message) => (
+            Error::PortInUse(message) | Error::PostgresPortInUse(message) => (
                 LocalErrorCode::PortInUse,
                 message.clone(),
                 "clickhousectl local server start --help",
             ),
-            Error::StartupExit(_) => (
+            Error::StartupExit(_) | Error::DockerStartupExit(_) => (
                 LocalErrorCode::StartupExit,
                 "Server exited before startup completed".to_string(),
                 "clickhousectl local server list",
@@ -783,17 +794,22 @@ mod tests {
                 "clickhousectl local list --remote",
             ),
             (
-                Error::PortInUse("HTTP port 8123 is already in use".into()),
-                LocalErrorCode::PortInUse,
-                "clickhousectl local server start --help",
-            ),
-            (
                 Error::StartupExit("raw startup diagnostics".into()),
                 LocalErrorCode::StartupExit,
                 "clickhousectl local server list",
             ),
             (
+                Error::DockerStartupExit("raw Postgres startup diagnostics".into()),
+                LocalErrorCode::StartupExit,
+                "clickhousectl local server list",
+            ),
+            (
                 Error::StartupTimeout("raw timeout diagnostics".into()),
+                LocalErrorCode::StartupTimeout,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::DockerStartupTimeout("raw Postgres timeout diagnostics".into()),
                 LocalErrorCode::StartupTimeout,
                 "clickhousectl local server list",
             ),
@@ -823,10 +839,35 @@ mod tests {
     }
 
     #[test]
+    fn engine_specific_port_errors_share_exact_structured_output() {
+        for (error, message) in [
+            (
+                Error::PortInUse("HTTP port 8123 is already in use".into()),
+                "HTTP port 8123 is already in use",
+            ),
+            (
+                Error::PostgresPortInUse("explicit Postgres port 5432 is already in use".into()),
+                "explicit Postgres port 5432 is already in use",
+            ),
+        ] {
+            let output = LocalErrorOutput::from_error(&error);
+
+            assert_eq!(output.error.code, LocalErrorCode::PortInUse);
+            assert_eq!(output.error.message, message);
+            assert_eq!(
+                output.error.command,
+                "clickhousectl local server start --help"
+            );
+        }
+    }
+
+    #[test]
     fn opaque_errors_do_not_expose_raw_diagnostics() {
         for error in [
             Error::StartupExit("/secret/path/server.log".into()),
             Error::StartupTimeout("password=hunter2".into()),
+            Error::DockerStartupExit("/secret/path/postgres.log".into()),
+            Error::DockerStartupTimeout("password=hunter2".into()),
             Error::Download("https://user:secret@example.com".into()),
             Error::DockerDownload("registry password=secret".into()),
             Error::PostgresValidation("password=hunter2".into()),
@@ -842,6 +883,33 @@ mod tests {
             assert!(!serialized.contains("secret"), "{serialized}");
             assert!(!serialized.contains("SELECT"), "{serialized}");
             assert!(!serialized.contains("customer_data"), "{serialized}");
+        }
+    }
+
+    #[test]
+    fn postgres_rollback_preserves_structured_startup_codes() {
+        for (primary, expected_code, expected_message) in [
+            (
+                Error::DockerStartupExit("raw exit diagnostics".into()),
+                LocalErrorCode::StartupExit,
+                "Server exited before startup completed",
+            ),
+            (
+                Error::DockerStartupTimeout("raw timeout diagnostics".into()),
+                LocalErrorCode::StartupTimeout,
+                "Server did not become ready before the startup timeout",
+            ),
+        ] {
+            let error = Error::PostgresStartupRollback {
+                primary: Box::new(primary),
+                cleanup: "raw rollback diagnostics".into(),
+            };
+            let output = LocalErrorOutput::from_error(&error);
+
+            assert_eq!(output.error.code, expected_code);
+            assert_eq!(output.error.message, expected_message);
+            assert_eq!(output.error.command, "clickhousectl local server list");
+            assert!(!output.error.message.contains("raw"));
         }
     }
 
