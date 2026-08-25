@@ -4113,7 +4113,6 @@ async fn service_query_restores_existing_endpoint_before_deleting_key_on_persist
     let endpoint_path =
         format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
     let existing_key = "99999999-8888-7777-6666-555555555555";
-    let concurrent_key = "11111111-2222-3333-4444-555555555555";
     let get_count = std::sync::atomic::AtomicUsize::new(0);
     Mock::given(method("GET"))
         .and(path(endpoint_path.clone()))
@@ -4129,7 +4128,7 @@ async fn service_query_restores_existing_endpoint_before_deleting_key_on_persist
                 serde_json::json!({
                     "id": "ep-1",
                     "allowedOrigins": "*",
-                    "openApiKeys": [existing_key, concurrent_key, QUERY_TEST_KEY_UUID],
+                    "openApiKeys": [existing_key, QUERY_TEST_KEY_UUID],
                     "roles": ["sql_console_admin"],
                 })
             };
@@ -4187,10 +4186,10 @@ async fn service_query_restores_existing_endpoint_before_deleting_key_on_persist
         restore_body,
         serde_json::json!({
             "allowedOrigins": "https://before.example",
-            "openApiKeys": [existing_key, concurrent_key],
+            "openApiKeys": [existing_key],
             "roles": ["sql_console_read_only"],
         }),
-        "compensation must restore pre-bind settings without removing concurrent keys",
+        "compensation must restore the snapshot when the endpoint still matches the bind",
     );
     let key_delete = requests
         .iter()
@@ -4203,6 +4202,155 @@ async fn service_query_restores_existing_endpoint_before_deleting_key_on_persist
     assert!(
         endpoint_upserts[1].0 < key_delete,
         "the key must be deleted only after it is unbound",
+    );
+}
+
+async fn invoke_persistence_failure_with_current_endpoint(
+    current_endpoint: Option<Value>,
+) -> (MockServer, std::process::Output, String) {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret",
+        }),
+    )
+    .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(credentials_dir.join(".gitignore"), "*\n").unwrap();
+    let credentials_path = credentials_dir.join("credentials.json");
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    let existing_key = "99999999-8888-7777-6666-555555555555";
+    let get_count = std::sync::atomic::AtomicUsize::new(0);
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(move |_: &wiremock::Request| {
+            if get_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {
+                        "id": "ep-1",
+                        "allowedOrigins": "https://before.example",
+                        "openApiKeys": [existing_key],
+                        "roles": ["sql_console_read_only"],
+                    },
+                    "status": 200,
+                    "requestId": "stub-endpoint-get-before-bind",
+                }))
+            } else if let Some(result) = &current_endpoint {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": result,
+                    "status": 200,
+                    "requestId": "stub-endpoint-get-before-compensation",
+                }))
+            } else {
+                ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                    "error": "not found",
+                    "status": 404,
+                    "requestId": "stub-endpoint-get-before-compensation",
+                }))
+            }
+        })
+        .expect(2)
+        .mount(&control)
+        .await;
+    let upsert_count = std::sync::atomic::AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(move |_: &wiremock::Request| {
+            if upsert_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                std::fs::create_dir(&credentials_path).unwrap();
+            }
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": "ep-1" },
+                "status": 200,
+                "requestId": "stub-endpoint-upsert",
+            }))
+        })
+        .mount(&control)
+        .await;
+
+    let output = invoke_service_query_provisioning_in(&control, &query_host, dir.path());
+    (control, output, endpoint_path)
+}
+
+#[tokio::test]
+async fn service_query_does_not_restore_over_concurrently_changed_endpoint() {
+    let concurrent_key = "11111111-2222-3333-4444-555555555555";
+    let (control, output, endpoint_path) =
+        invoke_persistence_failure_with_current_endpoint(Some(serde_json::json!({
+            "id": "ep-1",
+            "allowedOrigins": "https://new.example",
+            "openApiKeys": [concurrent_key, QUERY_TEST_KEY_UUID],
+            "roles": ["sql_console_read_only"],
+        })))
+        .await;
+
+    assert!(!output.status.success());
+    let requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == endpoint_path
+            })
+            .count(),
+        1,
+        "compensation must not overwrite the concurrently changed endpoint",
+    );
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "the possibly still-bound key must be retained for recovery",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("restoration was intentionally skipped")
+            && stderr.contains("no longer match the state written by this operation")
+            && stderr.contains(QUERY_TEST_KEY_UUID)
+            && stderr.contains("inspect the current endpoint before deleting it"),
+        "the error must explain the guarded skip and recovery action:\n{stderr}",
+    );
+}
+
+#[tokio::test]
+async fn service_query_does_not_recreate_concurrently_deleted_endpoint() {
+    let (control, output, endpoint_path) =
+        invoke_persistence_failure_with_current_endpoint(None).await;
+
+    assert!(!output.status.success());
+    let requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == endpoint_path
+            })
+            .count(),
+        1,
+        "compensation must not recreate a concurrently deleted endpoint",
+    );
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "the unbound API key should still be cleaned up",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cleanup was skipped because the endpoint was deleted concurrently")
+            && stderr.contains("it was not recreated")
+            && stderr.contains(QUERY_TEST_KEY_UUID)
+            && stderr.contains("was deleted"),
+        "the error must explain that deletion was preserved and cleanup completed:\n{stderr}",
     );
 }
 

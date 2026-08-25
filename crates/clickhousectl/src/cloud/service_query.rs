@@ -22,7 +22,15 @@ const ALLOWED_ORIGINS: &str = "*";
 
 enum EndpointCompensation {
     Delete,
-    Restore(InstanceServiceQueryApiEndpointsPostRequest),
+    Restore {
+        previous: InstanceServiceQueryApiEndpointsPostRequest,
+        written: InstanceServiceQueryApiEndpointsPostRequest,
+    },
+}
+
+enum EndpointCompensationOutcome {
+    Applied,
+    EndpointAbsent,
 }
 
 struct BoundQueryEndpoint {
@@ -149,7 +157,7 @@ pub async fn ensure_service_query_setup(
         Utc::now(),
     );
     if let Err(persistence_error) = credentials::set_service_query_key(service_id, stored.clone()) {
-        if let Err(compensation_error) = compensate_endpoint_binding(
+        let compensation_outcome = match compensate_endpoint_binding(
             client,
             org_id,
             service_id,
@@ -158,20 +166,30 @@ pub async fn ensure_service_query_setup(
         )
         .await
         {
-            return Err(CloudError::new(format!(
-                "local credential persistence failed: {persistence_error}; query endpoint cleanup \
-                 failed: {compensation_error}. API key {api_key_uuid} remains bound and was \
-                 retained for recovery"
-            )));
-        }
+            Ok(outcome) => outcome,
+            Err(compensation_error) => {
+                return Err(CloudError::new(format!(
+                    "local credential persistence failed: {persistence_error}; query endpoint \
+                     cleanup failed: {compensation_error}. API key {api_key_uuid} was retained for \
+                     recovery; inspect the current endpoint before deleting it"
+                )));
+            }
+        };
 
         if let Err(cleanup_error) = client.delete_api_key(org_id, &api_key_uuid).await {
             return Err(CloudError::new(format!(
-                "local credential persistence failed: {persistence_error}; the query endpoint \
-                 binding was restored, but deleting API key {api_key_uuid} failed: {cleanup_error}"
+                "local credential persistence failed: {persistence_error}; query endpoint cleanup \
+                 succeeded, but deleting API key {api_key_uuid} failed: {cleanup_error}"
             )));
         }
-        return Err(persistence_error);
+        return match compensation_outcome {
+            EndpointCompensationOutcome::Applied => Err(persistence_error),
+            EndpointCompensationOutcome::EndpointAbsent => Err(CloudError::new(format!(
+                "local credential persistence failed: {persistence_error}; query endpoint cleanup \
+                 was skipped because the endpoint was deleted concurrently, and it was not \
+                 recreated. API key {api_key_uuid} was deleted"
+            ))),
+        };
     }
 
     Ok(stored)
@@ -214,23 +232,18 @@ async fn bind_query_endpoint(
     service_id: &str,
     api_key_uuid: &str,
 ) -> CloudResult<BoundQueryEndpoint> {
-    let (mut open_api_keys, compensation) = match client
+    let (mut open_api_keys, previous) = match client
         .api()
         .instance_query_endpoint_get(org_id, service_id)
         .await
     {
         Ok(resp) => {
             let request = existing_endpoint_request(resp.result)?;
-            (
-                request.open_api_keys.clone(),
-                EndpointCompensation::Restore(request),
-            )
+            (request.open_api_keys.clone(), Some(request))
         }
         // Only a 404 means there is no endpoint yet, so this binding is the
         // first one and starts from an empty list.
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
-            (Vec::new(), EndpointCompensation::Delete)
-        }
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => (Vec::new(), None),
         Err(e) => return Err(client.convert_error_for_organization(e, org_id)),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
@@ -243,6 +256,13 @@ async fn bind_query_endpoint(
         roles: vec![QueryEndpointRole::SqlConsoleAdmin],
         open_api_keys,
         allowed_origins: ALLOWED_ORIGINS.to_string(),
+    };
+    let compensation = match previous {
+        Some(previous) => EndpointCompensation::Restore {
+            previous,
+            written: endpoint_request.clone(),
+        },
+        None => EndpointCompensation::Delete,
     };
 
     let endpoint = client
@@ -260,7 +280,7 @@ async fn compensate_endpoint_binding(
     service_id: &str,
     api_key_uuid: &str,
     compensation: &EndpointCompensation,
-) -> CloudResult<()> {
+) -> CloudResult<EndpointCompensationOutcome> {
     let current = match client
         .api()
         .instance_query_endpoint_get(org_id, service_id)
@@ -268,13 +288,7 @@ async fn compensate_endpoint_binding(
     {
         Ok(response) => response.result,
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
-            return match compensation {
-                EndpointCompensation::Delete => Ok(()),
-                EndpointCompensation::Restore(request) => client
-                    .create_query_endpoint(org_id, service_id, request)
-                    .await
-                    .map(|_| ()),
-            };
+            return Ok(EndpointCompensationOutcome::EndpointAbsent);
         }
         Err(error) => return Err(client.convert_error_for_organization(error, org_id)),
     };
@@ -291,34 +305,36 @@ async fn compensate_endpoint_binding(
                 let previous_len = request.open_api_keys.len();
                 request.open_api_keys.retain(|key| key != api_key_uuid);
                 if request.open_api_keys.len() == previous_len {
-                    return Ok(());
+                    return Ok(EndpointCompensationOutcome::Applied);
                 }
                 client
                     .create_query_endpoint(org_id, service_id, &request)
                     .await?;
             }
         }
-        EndpointCompensation::Restore(previous) => {
+        EndpointCompensation::Restore { previous, written } => {
             let current = current.ok_or_else(|| {
                 CloudError::new(
-                    "the query endpoint response is missing field 'result', so the newly bound \
-                     key cannot be safely removed",
+                    "query endpoint restoration was skipped because the current state could not be \
+                     confirmed: the API response is missing field 'result'",
                 )
             })?;
-            let mut request = previous.clone();
-            request.open_api_keys = current.open_api_keys.ok_or_else(|| {
-                CloudError::new(
-                    "the query endpoint response is missing field 'openApiKeys', so the newly \
-                     bound key cannot be safely removed",
-                )
-            })?;
-            request.open_api_keys.retain(|key| key != api_key_uuid);
+            if current.allowed_origins.as_ref() != Some(&written.allowed_origins)
+                || current.open_api_keys.as_ref() != Some(&written.open_api_keys)
+                || current.roles.as_ref() != Some(&written.roles)
+            {
+                return Err(CloudError::new(
+                    "query endpoint restoration was intentionally skipped because its current \
+                     roles, allowed origins, or API key bindings no longer match the state written \
+                     by this operation",
+                ));
+            }
             client
-                .create_query_endpoint(org_id, service_id, &request)
+                .create_query_endpoint(org_id, service_id, previous)
                 .await?;
         }
     }
-    Ok(())
+    Ok(EndpointCompensationOutcome::Applied)
 }
 
 #[cfg(test)]
