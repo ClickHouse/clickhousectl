@@ -180,7 +180,7 @@ pub async fn install_resolved(
         detect_binary_version(&binary_path)?
     };
 
-    let replaced_existing = commit_staged_binary(
+    let notify_running_servers = commit_staged_binary(
         &versions_dir,
         &binary_path,
         &exact_version,
@@ -188,15 +188,13 @@ pub async fn install_resolved(
         is_master,
         platform,
         master_head.as_ref(),
+        !structured_output && is_master,
+        version_in_use_by_running_server,
     )?;
 
     // Replacing a build on disk never affects already-running servers (they keep
     // executing the old binary) — just say so, so the swap isn't silent.
-    if !structured_output
-        && is_master
-        && replaced_existing
-        && version_in_use_by_running_server(&exact_version)?
-    {
+    if notify_running_servers {
         eprintln!(
             "Note: running servers keep using the previous {} build until restarted",
             exact_version
@@ -223,6 +221,8 @@ fn commit_staged_binary(
     is_master: bool,
     platform: &Platform,
     master_head: Option<&master::HeadInfo>,
+    check_running_servers: bool,
+    version_in_use: impl FnOnce(&str) -> Result<bool>,
 ) -> Result<bool> {
     let lock_path = versions_dir
         .join(".locks")
@@ -237,6 +237,8 @@ fn commit_staged_binary(
     }
 
     let replaced_existing = target_binary.exists();
+    let notify_running_servers =
+        check_running_servers && replaced_existing && version_in_use(exact_version)?;
     let new_head = if is_master { master_head } else { None };
     master::commit_install_in(versions_dir, platform, exact_version, new_head, || {
         if version_dir.exists() {
@@ -260,7 +262,7 @@ fn commit_staged_binary(
         Ok(())
     })?;
 
-    Ok(replaced_existing)
+    Ok(notify_running_servers)
 }
 
 #[cfg(test)]
@@ -285,7 +287,6 @@ fn pause_after_target_lock_for_test() {
 
 #[cfg(not(test))]
 fn pause_after_target_lock_for_test() {}
-
 /// Like `install_resolved`, but returns the existing version instead of erroring
 /// when already installed. Intended for cases like `server start --version` where
 /// the goal is "make sure this version is available" rather than "install this".
@@ -541,6 +542,8 @@ mod tests {
                 false,
                 &test_platform("amd64"),
                 None,
+                false,
+                |_| Ok(false),
             )
             .map(|_| ())
         });
@@ -581,6 +584,8 @@ mod tests {
                 etag,
                 last_modified: None,
             }),
+            false,
+            |_| Ok(false),
         )
         .unwrap();
     }
@@ -763,6 +768,8 @@ mod tests {
                 etag: "new-etag".to_string(),
                 last_modified: None,
             }),
+            false,
+            |_| Ok(false),
         )
         .unwrap();
         drop(staging);
@@ -873,6 +880,54 @@ mod tests {
 
         assert!(message.contains(&tarball.display().to_string()));
         assert!(message.contains("clickhouse or usr/bin/clickhouse"));
+    }
+
+    #[test]
+    fn metadata_failure_leaves_existing_install_and_master_record_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions_dir = temp.path().join("versions");
+        let version_dir = versions_dir.join("26.5.1.1");
+        std::fs::create_dir_all(&version_dir).unwrap();
+
+        let installed_binary = version_dir.join("clickhouse");
+        std::fs::write(&installed_binary, b"existing master build").unwrap();
+
+        let master_record = versions_dir.join(".master-builds.json");
+        let original_record =
+            br#"{"builds":{"macos-aarch64":{"etag":"old","version":"26.5.1.1"}}}"#;
+        std::fs::write(&master_record, original_record).unwrap();
+
+        let downloaded_binary = temp.path().join("downloaded-clickhouse");
+        std::fs::write(&downloaded_binary, b"replacement master build").unwrap();
+
+        let platform = test_platform("macos-aarch64");
+        let new_head = master::HeadInfo {
+            etag: "new".to_string(),
+            last_modified: None,
+        };
+        let result = commit_staged_binary(
+            &versions_dir,
+            &downloaded_binary,
+            "26.5.1.1",
+            true,
+            true,
+            &platform,
+            Some(&new_head),
+            true,
+            |_| {
+                Err(Error::ServerMetadataRead {
+                    name: "broken".to_string(),
+                    source: std::io::Error::other("metadata unavailable"),
+                })
+            },
+        );
+
+        assert!(matches!(result, Err(Error::ServerMetadataRead { .. })));
+        assert_eq!(
+            std::fs::read(&installed_binary).unwrap(),
+            b"existing master build"
+        );
+        assert_eq!(std::fs::read(&master_record).unwrap(), original_record);
     }
 
     #[test]
