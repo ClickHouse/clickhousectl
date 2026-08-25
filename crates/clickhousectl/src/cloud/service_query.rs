@@ -375,16 +375,14 @@ pub async fn repair_service_query_setup(
         };
     }
 
-    client
+    if let Err(error) = client
         .delete_api_key_if_exists(org_id, old_api_key_id)
         .await
-        .map_err(|mut error| {
-            error.message = format!(
-                "the replacement query key was stored, but the old API key {old_api_key_id} could not be deleted: {}",
-                error.message
-            );
-            error
-        })?;
+    {
+        eprintln!(
+            "Warning: the replacement query key was stored, but old API key {old_api_key_id} in organization {org_id} could not be deleted: {error}. Delete the old key manually when the control plane is available."
+        );
+    }
 
     Ok(stored)
 }
