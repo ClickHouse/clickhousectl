@@ -34,20 +34,31 @@ fn clickhousectl_binary() -> PathBuf {
 struct Sandbox {
     home: tempfile::TempDir,
     mock: MockServer,
+    endpoint_path: String,
 }
 
 impl Sandbox {
     async fn new() -> Self {
+        let home = tempfile::tempdir().unwrap();
+        let endpoint_path = format!(
+            "/v1/telemetry/{}",
+            home.path().file_name().unwrap().to_string_lossy()
+        );
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/telemetry"))
+            .and(path(endpoint_path.clone()))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&mock)
             .await;
         Sandbox {
-            home: tempfile::tempdir().unwrap(),
+            home,
             mock,
+            endpoint_path,
         }
+    }
+
+    fn telemetry_url(&self) -> String {
+        format!("{}{}", self.mock.uri(), self.endpoint_path)
     }
 
     fn state_path(&self) -> PathBuf {
@@ -68,10 +79,7 @@ impl Sandbox {
         let mut cmd = Command::new(clickhousectl_binary());
         cmd.args(args)
             .env("HOME", self.home.path())
-            .env(
-                "CHCTL_TELEMETRY_URL",
-                format!("{}/v1/telemetry", self.mock.uri()),
-            )
+            .env("CHCTL_TELEMETRY_URL", self.telemetry_url())
             .env_remove("DO_NOT_TRACK")
             .env_remove("CHCTL_TELEMETRY_DEBUG")
             .env_remove("CHCTL_TELEMETRY_PAYLOAD")
@@ -100,7 +108,7 @@ impl Sandbox {
     async fn wait_for_requests(&self, n: usize) -> Vec<Value> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let requests = self.mock.received_requests().await.unwrap_or_default();
+            let requests = self.received_requests().await;
             if requests.len() >= n {
                 return requests
                     .iter()
@@ -120,12 +128,22 @@ impl Sandbox {
     /// moment to fire first.
     async fn assert_no_requests(&self) {
         tokio::time::sleep(Duration::from_millis(750)).await;
-        let requests = self.mock.received_requests().await.unwrap_or_default();
+        let requests = self.received_requests().await;
         assert!(
             requests.is_empty(),
             "expected no telemetry, saw: {:?}",
             requests.iter().map(|r| &r.body).collect::<Vec<_>>()
         );
+    }
+
+    async fn received_requests(&self) -> Vec<wiremock::Request> {
+        self.mock
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|request| request.url.path() == self.endpoint_path.as_str())
+            .collect()
     }
 }
 
@@ -138,6 +156,22 @@ fn stdout_of(output: &Output) -> String {
 }
 
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sandbox_ignores_requests_for_another_endpoint_path() {
+    let sandbox = Sandbox::new().await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/telemetry/stale", sandbox.mock.uri()))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(sandbox.mock.received_requests().await.unwrap().len(), 1);
+    assert!(sandbox.received_requests().await.is_empty());
+}
 
 #[tokio::test]
 async fn first_run_writes_marker_prints_notice_sends_nothing() {
@@ -195,7 +229,7 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     // User-Agent as every other outbound request. The ingest worker relies on
     // the `clickhousectl/<version>` prefix to reject non-CLI traffic (an
     // ` (agent=...)` comment may follow).
-    let requests = sandbox.mock.received_requests().await.unwrap();
+    let requests = sandbox.received_requests().await;
     let ua = requests[0]
         .headers
         .get("user-agent")
@@ -240,7 +274,7 @@ async fn no_agent_correlation_headers_on_the_wire() {
     assert_eq!(event["agent"], "claude-code");
 
     // ...but no correlation headers accompany it.
-    let requests = sandbox.mock.received_requests().await.unwrap();
+    let requests = sandbox.received_requests().await;
     let headers = &requests[0].headers;
     assert!(
         headers.get("agent-session-id").is_none(),
@@ -312,10 +346,7 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
         ])
         .env_clear()
         .env("HOME", sandbox.home.path())
-        .env(
-            "CHCTL_TELEMETRY_URL",
-            format!("{}/v1/telemetry", sandbox.mock.uri()),
-        )
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
         .current_dir(project.path())
         .output()
         .unwrap();
@@ -690,14 +721,14 @@ async fn unwritable_home_fails_open_to_silent() {
 
 #[tokio::test]
 async fn parent_never_waits_for_a_slow_endpoint() {
+    let sandbox = Sandbox::new().await;
     let mock = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/telemetry"))
+        .and(path(sandbox.endpoint_path.clone()))
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)))
         .mount(&mock)
         .await;
 
-    let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
 
     let started = Instant::now();
@@ -705,7 +736,7 @@ async fn parent_never_waits_for_a_slow_endpoint() {
         .command(&["local", "list"])
         .env(
             "CHCTL_TELEMETRY_URL",
-            format!("{}/v1/telemetry", mock.uri()),
+            format!("{}{}", mock.uri(), sandbox.endpoint_path),
         )
         .output()
         .unwrap();
@@ -723,11 +754,12 @@ async fn parent_never_waits_for_a_slow_endpoint() {
     // its port can be reused by another parallel test before the child sends.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if !mock
+        if mock
             .received_requests()
             .await
             .unwrap_or_default()
-            .is_empty()
+            .iter()
+            .any(|request| request.url.path() == sandbox.endpoint_path.as_str())
         {
             break;
         }
