@@ -792,10 +792,9 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         }
 
         let bind = format!("{}:/work", parent_str);
-        let cmd = format!("rm -rf /work/{}", basename);
         let cfg = ContainerCreateBody {
             image: Some("alpine:latest".into()),
-            cmd: Some(vec!["sh".into(), "-c".into(), cmd]),
+            cmd: Some(privileged_remove_command(&basename)),
             host_config: Some(HostConfig {
                 binds: Some(vec![bind]),
                 auto_remove: Some(true),
@@ -824,6 +823,15 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         let _ = std::fs::remove_dir_all(host_path);
     }
     Ok(())
+}
+
+fn privileged_remove_command(basename: &str) -> Vec<String> {
+    vec![
+        "rm".into(),
+        "-rf".into(),
+        "--".into(),
+        format!("/work/{basename}"),
+    ]
 }
 
 pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
@@ -982,6 +990,33 @@ mod tests {
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "Pulling postgres:missing... failed\n"
+        );
+    }
+
+    #[test]
+    fn remove_host_dir_removes_normal_directory() {
+        let tempdir = tempfile::tempdir().expect("create cleanup tempdir");
+        let directory = tempdir.path().join("normal-pg18");
+        std::fs::create_dir_all(directory.join("data")).expect("create data directory");
+        std::fs::write(directory.join("data/PG_VERSION"), "18").expect("write data file");
+
+        remove_host_dir_blocking(&directory).expect("remove host directory");
+
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn privileged_remove_passes_metacharacters_as_one_argument() {
+        let basename = "db; touch injected; $(whoami) *";
+
+        assert_eq!(
+            privileged_remove_command(basename),
+            vec![
+                "rm".to_string(),
+                "-rf".to_string(),
+                "--".to_string(),
+                format!("/work/{basename}"),
+            ]
         );
     }
 }
