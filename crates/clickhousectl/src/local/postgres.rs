@@ -189,6 +189,10 @@ async fn start(
     }
 
     // Fresh create.
+    let host_port = match host_port {
+        Some(port) => port,
+        None => resolve_port(None)?,
+    };
     if !docker::image_exists(&docker, tag).await? {
         docker::pull_image(&docker, tag, json).await?;
     }
@@ -398,7 +402,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
 }
 
 struct StartPreflight {
-    host_port: u16,
+    host_port: Option<u16>,
     extra_env: Vec<String>,
     password_from_env: Option<String>,
 }
@@ -417,7 +421,7 @@ fn preflight_start_options(
     }
 
     let (extra_env, password_from_env) = validate_extra_env(extra_env)?;
-    let host_port = resolve_port(port)?;
+    let host_port = port.map(|port| resolve_port(Some(port))).transpose()?;
     Ok(StartPreflight {
         host_port,
         extra_env,
