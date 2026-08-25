@@ -3336,6 +3336,182 @@ fn write_query_repair_credentials(root: &Path, include_ownership: bool) -> Vec<u
     bytes
 }
 
+async fn invoke_service_query_repair_with_save_failure(
+    rollback_status: u16,
+) -> (MockServer, tempfile::TempDir, std::process::Output) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let control = start_mock_control_plane_with_service().await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "roles": ["sql_console_read_only"],
+                "openApiKeys": ["unrelated-endpoint-key", QUERY_TEST_OLD_KEY_UUID],
+                "allowedOrigins": "https://example.com",
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "replacement-key-id",
+                "keySecret": "replacement-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-key-delete",
+        })))
+        .mount(&control)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_query_repair_credentials(dir.path(), true);
+    let credentials_path = dir.path().join(".clickhouse/credentials.json");
+    let endpoint_upserts = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with({
+            let endpoint_upserts = Arc::clone(&endpoint_upserts);
+            move |_: &wiremock::Request| {
+                if endpoint_upserts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    // The child has already loaded the old credentials. Make
+                    // the atomic destination invalid only after replacement.
+                    std::fs::remove_file(&credentials_path).unwrap();
+                    std::fs::create_dir(&credentials_path).unwrap();
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "result": { "id": "ep-1" },
+                        "status": 200,
+                        "requestId": "stub-endpoint-replacement",
+                    }))
+                } else if rollback_status == 200 {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "result": { "id": "ep-1" },
+                        "status": 200,
+                        "requestId": "stub-endpoint-rollback",
+                    }))
+                } else {
+                    ResponseTemplate::new(rollback_status).set_body_json(serde_json::json!({
+                        "status": rollback_status,
+                        "error": "rollback failed",
+                        "requestId": "stub-endpoint-rollback",
+                    }))
+                }
+            }
+        })
+        .expect(2)
+        .mount(&control)
+        .await;
+
+    let query_host = MockServer::start().await;
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--repair-query-key",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    (control, dir, output)
+}
+
+async fn assert_repair_replacement_and_rollback_requests(control: &MockServer) {
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    let endpoint_updates: Vec<Value> = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
+        })
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    assert_eq!(endpoint_updates.len(), 2);
+    assert_eq!(
+        endpoint_updates[0]["openApiKeys"],
+        serde_json::json!(["unrelated-endpoint-key", QUERY_TEST_KEY_UUID]),
+    );
+    assert_eq!(
+        endpoint_updates[1]["openApiKeys"],
+        serde_json::json!(["unrelated-endpoint-key", QUERY_TEST_OLD_KEY_UUID]),
+    );
+}
+
+#[tokio::test]
+async fn service_query_repair_deletes_replacement_after_save_failure_and_successful_rollback() {
+    let (control, dir, output) = invoke_service_query_repair_with_save_failure(200).await;
+
+    assert!(!output.status.success());
+    assert_repair_replacement_and_rollback_requests(&control).await;
+    assert_eq!(
+        recorded_key_deletes(&control).await,
+        vec![format!(
+            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
+        )],
+        "a replacement key is safe to delete after the old binding is restored",
+    );
+    assert!(dir.path().join(".clickhouse/credentials.json").is_dir());
+}
+
+#[tokio::test]
+async fn service_query_repair_retains_replacement_after_save_failure_and_failed_rollback() {
+    let (control, dir, output) = invoke_service_query_repair_with_save_failure(500).await;
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("additionally failed to restore the previous query endpoint binding"),
+        "{stderr}",
+    );
+    assert_repair_replacement_and_rollback_requests(&control).await;
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "the replacement key must remain while the endpoint may still be bound to it",
+    );
+    assert!(dir.path().join(".clickhouse/credentials.json").is_dir());
+}
+
 #[tokio::test]
 async fn stale_stored_query_key_guidance_never_repairs_or_provisions_unrequested() {
     for status in [401, 403] {

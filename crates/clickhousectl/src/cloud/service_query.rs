@@ -355,12 +355,14 @@ pub async fn repair_service_query_setup(
             .create_query_endpoint(org_id, service_id, &rollback_request)
             .await
             .err();
-        discard_api_key(client, org_id, &key.api_key_id).await;
         return match rollback_error {
             Some(rollback_error) => Err(CloudError::new(format!(
                 "{save_error}; additionally failed to restore the previous query endpoint binding: {rollback_error}"
             ))),
-            None => Err(save_error),
+            None => {
+                discard_api_key(client, org_id, &key.api_key_id).await;
+                Err(save_error)
+            }
         };
     }
 
