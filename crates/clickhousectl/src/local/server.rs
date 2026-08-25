@@ -108,6 +108,15 @@ fn server_meta_path(name: &str) -> PathBuf {
     servers_dir().join(format!("{}.json", name))
 }
 
+/// Optimistic existence check for work that is safe to perform without the
+/// lifecycle lock. Callers must re-read metadata after acquiring the lock.
+pub(crate) fn server_metadata_exists(name: &str) -> Result<bool> {
+    validate_server_name(name)?;
+    server_meta_path(name)
+        .try_exists()
+        .map_err(|source| metadata_access_error(name, source))
+}
+
 fn server_lock_path(name: &str) -> PathBuf {
     servers_dir().join(".locks").join(format!("{}.lock", name))
 }

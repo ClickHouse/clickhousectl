@@ -154,8 +154,6 @@ async fn start(
     // Disk identifier — uniquely scopes (name, major) so two majors of the
     // same name never share container/data/metadata.
     let key = server::pg_instance_key(&user_name, &major);
-    let metadata_lock = server::ServerLock::acquire(&key)?;
-
     let docker = docker::connect().await?;
 
     let project_cwd = std::env::current_dir()
@@ -163,48 +161,66 @@ async fn start(
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
-    // Resume path: an instance for this exact (name, major) already exists.
-    if let Some(prior) = metadata_lock.load_info()? {
-        let cid = prior.container_id.as_deref().unwrap_or("");
-        let container_present =
-            !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
-        if container_present {
-            if metadata_lock.is_running()? {
-                return Err(Error::ServerAlreadyRunning(user_name));
-            }
-            if !json
-                && (port.is_some()
-                    || user.is_some()
-                    || password.is_some()
-                    || database.is_some()
-                    || has_extra_env)
-            {
-                eprintln!(
-                    "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
-                     Run `local postgres remove {}` to start over.",
-                    user_name, user_name
-                );
-            }
-            return resume_existing(&docker, prior, &metadata_lock, json).await;
+    let metadata_lock = loop {
+        // Image preparation can take minutes and does not mutate this
+        // instance. The existence probe is only advisory; the locked read
+        // below is authoritative.
+        let metadata_was_present = server::server_metadata_exists(&key)?;
+        if !metadata_was_present && !docker::image_exists(&docker, tag).await? {
+            docker::pull_image(&docker, tag, json).await?;
         }
-        // Metadata orphaned — container removed externally. Force explicit
-        // cleanup to avoid silently re-initing against potentially-stale data.
-        return Err(Error::PostgresRuntime(format!(
-            "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
-             Run `clickhousectl local postgres remove {}` to clear the data dir \
-             and start fresh.",
-            user_name, major, user_name
-        )));
-    }
 
-    // Fresh create.
+        let metadata_lock = server::ServerLock::acquire(&key)?;
+
+        // Resume path: an instance for this exact (name, major) already exists.
+        if let Some(prior) = metadata_lock.load_info()? {
+            let cid = prior.container_id.as_deref().unwrap_or("");
+            let container_present =
+                !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
+            if container_present {
+                if metadata_lock.is_running()? {
+                    return Err(Error::ServerAlreadyRunning(user_name));
+                }
+                if !json
+                    && (port.is_some()
+                        || user.is_some()
+                        || password.is_some()
+                        || database.is_some()
+                        || has_extra_env)
+                {
+                    eprintln!(
+                        "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
+                         Run `local postgres remove {}` to start over.",
+                        user_name, user_name
+                    );
+                }
+                return resume_existing(&docker, prior, &metadata_lock, json).await;
+            }
+            // Metadata orphaned — container removed externally. Force explicit
+            // cleanup to avoid silently re-initing against potentially-stale data.
+            return Err(Error::PostgresRuntime(format!(
+                "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
+                 Run `clickhousectl local postgres remove {}` to clear the data dir \
+                 and start fresh.",
+                user_name, major, user_name
+            )));
+        }
+
+        if !metadata_was_present {
+            break metadata_lock;
+        }
+
+        // The instance was removed between the optimistic probe and locked
+        // read. Retry image preparation without holding the lifecycle lock.
+        drop(metadata_lock);
+    };
+
+    // Fresh create. Explicit ports were validated before Docker work; an
+    // omitted port is selected only after existing-instance resolution.
     let host_port = match host_port {
         Some(port) => port,
         None => resolve_port(None)?,
     };
-    if !docker::image_exists(&docker, tag).await? {
-        docker::pull_image(&docker, tag, json).await?;
-    }
 
     let instance_dir = server::servers_dir_join(&key);
     let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
