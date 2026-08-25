@@ -100,6 +100,7 @@ impl NetworkFailure {
         let category = match status.as_u16() {
             403 => NetworkCategory::Forbidden,
             404 => NetworkCategory::NotFound,
+            408 => NetworkCategory::Timeout,
             429 => NetworkCategory::RateLimited,
             _ if status.is_server_error() => NetworkCategory::Server,
             _ if status.is_client_error() => NetworkCategory::Client,

@@ -219,6 +219,37 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn request_timeout_responses_are_classified_and_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(408))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+
+        let error = download_url_with(
+            &test_client(Duration::from_millis(100), Duration::from_secs(2)),
+            &server.uri(),
+            &temp.path().join("clickhouse"),
+            test_policy(3, Duration::ZERO),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::VersionNetworkRetryExhausted {
+                failure: NetworkFailure {
+                    category: NetworkCategory::Timeout,
+                    ..
+                },
+                attempts: 3,
+            }
+        ));
+    }
+
     #[derive(Clone)]
     struct RateLimitThenSuccess {
         calls: Arc<AtomicUsize>,
