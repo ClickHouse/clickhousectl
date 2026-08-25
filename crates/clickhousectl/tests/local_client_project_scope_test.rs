@@ -181,3 +181,41 @@ fn selected_missing_binary_keeps_version_code_and_managed_scope() {
         "{message}"
     );
 }
+
+#[test]
+fn invalid_lock_directory_keeps_managed_scope_in_json_and_human_errors() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let servers = project.path().join(".clickhouse/servers");
+    std::fs::create_dir_all(&servers).expect("create servers directory");
+    std::fs::write(servers.join(".locks"), b"not a directory").expect("create invalid locks path");
+
+    let json = run(project.path(), home.path(), &["local", "--json", "client"]);
+    let body = assert_managed_json_error(&json, "server_metadata_write", project.path());
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Could not update metadata for server 'default'"),
+        "{body}"
+    );
+
+    let human = run(project.path(), home.path(), &["local", "client"]);
+    assert_eq!(human.status.code(), Some(1));
+    assert!(human.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.starts_with(
+            "Error: Managed local client: Could not update metadata for server 'default'"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&project.path().canonicalize().unwrap().display().to_string()),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`clickhousectl local client --host localhost`"),
+        "{stderr}"
+    );
+}

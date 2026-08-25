@@ -274,7 +274,8 @@ fn run_client(
         let project = canonical_project_dir()?;
         server::recover_current_project_servers()
             .map_err(|error| error.with_managed_client_scope(project.clone()))?;
-        let lock = server::ServerLock::acquire(server_name)?;
+        let lock = server::ServerLock::acquire(server_name)
+            .map_err(|error| error.with_managed_client_scope(project.clone()))?;
         let info = lock
             .load_info()
             .map_err(|error| error.with_managed_client_scope(project.clone()))?
