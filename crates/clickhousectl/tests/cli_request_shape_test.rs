@@ -3783,7 +3783,7 @@ async fn service_query_probes_new_endpoint_readiness_without_repeating_user_sql(
 
     let dir = tempfile::tempdir().unwrap();
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let output = command
         .env("DO_NOT_TRACK", "1")
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
