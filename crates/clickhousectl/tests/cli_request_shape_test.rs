@@ -214,7 +214,7 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
 
 fn invoke_api_key_login(project_dir: &Path) -> std::process::Output {
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", project_dir.join("home"))
@@ -745,7 +745,7 @@ async fn service_query_key_removal_merges_changes_made_under_the_credentials_loc
     credentials_lock.lock().unwrap();
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let mut child = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
@@ -836,7 +836,7 @@ async fn service_query_key_removal_preserves_credentials_corrupted_while_waiting
     credentials_lock.lock().unwrap();
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let mut child = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
@@ -3361,7 +3361,7 @@ async fn provision_while_project_auth_changes(auth_args: &[&str]) -> tempfile::T
         .and(path(endpoint_path))
         .respond_with(move |_: &wiremock::Request| {
             let mut command = Command::new(clickhousectl_binary());
-            clear_agent_env(&mut command);
+            clear_inherited_env(&mut command);
             let output = command
                 .env("DO_NOT_TRACK", "1")
                 .env("HOME", &auth_home_dir)
@@ -3383,7 +3383,7 @@ async fn provision_while_project_auth_changes(auth_args: &[&str]) -> tempfile::T
         .await;
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let output = command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", &home_dir)
@@ -3548,7 +3548,7 @@ async fn service_query_auto_provisioning_is_single_flight_across_processes() {
     let mut children = Vec::with_capacity(PROCESS_COUNT);
     for _ in 0..PROCESS_COUNT {
         let mut command = Command::new(clickhousectl_binary());
-        clear_agent_env(&mut command);
+        clear_inherited_env(&mut command);
         children.push(
             command
                 .env("DO_NOT_TRACK", "1")
@@ -3962,7 +3962,7 @@ fn invoke_service_query_provisioning_in(
     project_dir: &Path,
 ) -> std::process::Output {
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     command
         .env("DO_NOT_TRACK", "1")
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
