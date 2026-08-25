@@ -4006,6 +4006,215 @@ async fn service_query_auto_provisioning_is_single_flight_across_processes() {
 }
 
 #[tokio::test]
+async fn long_user_query_does_not_hold_the_project_provisioning_lock() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    const OTHER_SERVICE_ID: &str = "66666666-7777-8888-9999-000000000000";
+
+    let control = start_mock_control_plane_with_service().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{OTHER_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": OTHER_SERVICE_ID, "name": "other" },
+            "status": 200,
+            "requestId": "stub-other-service-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "provisioned-key-id",
+                "keySecret": "provisioned-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(2)
+        .mount(&control)
+        .await;
+
+    let other_endpoint_path =
+        format!("/v1/organizations/org-1/services/{OTHER_SERVICE_ID}/serviceQueryEndpoint");
+    for service_id in [QUERY_TEST_SERVICE_ID, OTHER_SERVICE_ID] {
+        let endpoint_path =
+            format!("/v1/organizations/org-1/services/{service_id}/serviceQueryEndpoint");
+        Mock::given(method("GET"))
+            .and(path(endpoint_path.clone()))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "not found",
+                "status": 404,
+                "requestId": "stub-endpoint-get",
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": "ep-1" },
+                "status": 200,
+                "requestId": "stub-endpoint-upsert",
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+    }
+
+    let query_host = MockServer::start().await;
+    let basic_auth = |credentials: &str| {
+        format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+        )
+    };
+    let primary_auth = basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(header("authorization", primary_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .expect(2)
+        .mount(&query_host)
+        .await;
+
+    let provisioned_auth = basic_auth("provisioned-key-id:provisioned-key-secret");
+    let long_sql_started = Arc::new(AtomicBool::new(false));
+    let responder_long_sql_started = Arc::clone(&long_sql_started);
+    let first_query_path = format!("/service/{QUERY_TEST_SERVICE_ID}/run");
+    let other_query_path = format!("/service/{OTHER_SERVICE_ID}/run");
+    Mock::given(method("POST"))
+        .and(header("authorization", provisioned_auth.as_str()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            match (request.url.path(), body["sql"].as_str()) {
+                (_, Some("SELECT 1")) => ResponseTemplate::new(200).set_body_string("1\n"),
+                (path, Some("SELECT 41")) if path == first_query_path => {
+                    responder_long_sql_started.store(true, Ordering::SeqCst);
+                    ResponseTemplate::new(200)
+                        .set_delay(std::time::Duration::from_secs(5))
+                        .set_body_string("41\n")
+                }
+                (path, Some("SELECT 42")) if path == other_query_path => {
+                    ResponseTemplate::new(200).set_body_string("42\n")
+                }
+                (path, sql) => ResponseTemplate::new(400)
+                    .set_body_string(format!("unexpected query {sql:?} for {path}")),
+            }
+        })
+        .expect(4)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+    let control_url = control.uri();
+    let query_host_url = query_host.uri();
+    let spawn_query = |service_id: &str, sql: &str| {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        command
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home_dir)
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
+            .current_dir(dir.path())
+            .args([
+                "cloud",
+                "--url",
+                control_url.as_str(),
+                "service",
+                "query",
+                "--id",
+                service_id,
+                "--org-id",
+                "org-1",
+                "--query",
+                sql,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn service query")
+    };
+
+    let mut first = spawn_query(QUERY_TEST_SERVICE_ID, "SELECT 41");
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while !long_sql_started.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the first query did not reach user SQL after readiness");
+    assert!(
+        first.try_wait().unwrap().is_none(),
+        "the first process must remain blocked in user SQL"
+    );
+
+    let second = spawn_query(OTHER_SERVICE_ID, "SELECT 42");
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::task::spawn_blocking(move || second.wait_with_output().unwrap()),
+    )
+    .await
+    .expect("the second service could not provision while the first ran user SQL")
+    .unwrap();
+    assert_success(&second);
+    assert_eq!(second.stdout, b"42\n");
+    assert!(
+        first.try_wait().unwrap().is_none(),
+        "the second service must provision before the first user SQL completes"
+    );
+
+    let control_requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        2,
+        "both services must acquire the project lock and provision",
+    );
+    assert!(control_requests.iter().any(|request| {
+        request.method == wiremock::http::Method::POST && request.url.path() == other_endpoint_path
+    }));
+
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::task::spawn_blocking(move || first.wait_with_output().unwrap()),
+    )
+    .await
+    .expect("the first user query did not finish")
+    .unwrap();
+    assert_success(&first);
+    assert_eq!(first.stdout, b"41\n");
+
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"],
+        "provisioned-key-id"
+    );
+    assert_eq!(
+        stored["service_query_keys"][OTHER_SERVICE_ID]["key_id"],
+        "provisioned-key-id"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_rejection_during_readiness_does_not_retire_the_winning_key() {
     use std::sync::{
         Arc,

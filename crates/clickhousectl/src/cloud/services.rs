@@ -1854,19 +1854,39 @@ fn retire_stale_stored_query_key(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_newly_provisioned_service_query(
+async fn probe_service_query_readiness(
     client: &CloudClient,
     service_id: &str,
     key_id: &str,
     key_secret: &str,
-    sql: &str,
-    database: Option<&str>,
-    format: &str,
-    service_name: &str,
+) -> Result<bool, clickhouse_cloud_api::Error> {
+    match client
+        .api()
+        .run_query(
+            service_id,
+            key_id,
+            key_secret,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
+        )
+        .await
+    {
+        Ok(_) => Ok(false),
+        Err(clickhouse_cloud_api::Error::ServiceIdle) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+async fn wait_for_service_query_readiness(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
     readiness: QueryEndpointReadiness,
-) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
+) -> Result<bool, clickhouse_cloud_api::Error> {
+    wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
             service_id,
             key_id,
@@ -1877,19 +1897,6 @@ async fn run_newly_provisioned_service_query(
             false,
         )
     })
-    .await?;
-
-    run_basic_service_query(
-        client,
-        service_id,
-        key_id,
-        key_secret,
-        sql,
-        database,
-        format,
-        service_name,
-        confirmed_idle,
-    )
     .await
 }
 
@@ -1960,7 +1967,35 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     // converges. Wait for that process, then retry so a
                     // transient rejection cannot retire its winning key.
                     let provision_lock = credentials::lock_service_query_provisioning()?;
-                    let retry = run_basic_service_query(
+                    let confirmed_idle = match probe_service_query_readiness(
+                        client,
+                        &service_id,
+                        &key.key_id,
+                        &key.key_secret,
+                    )
+                    .await
+                    {
+                        Ok(confirmed_idle) => confirmed_idle,
+                        Err(retry_error) => {
+                            if let Some(stale) = retire_stale_stored_query_key(
+                                &provision_lock,
+                                &retry_error,
+                                &service_id,
+                                &key,
+                            ) {
+                                return Err(stale);
+                            }
+                            return Err(convert_query_error(
+                                client,
+                                retry_error,
+                                &service_name,
+                                &service_id,
+                                &org_id,
+                            ));
+                        }
+                    };
+                    drop(provision_lock);
+                    run_basic_service_query(
                         client,
                         &service_id,
                         &key.key_id,
@@ -1969,20 +2004,9 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         options.database.as_deref(),
                         &format,
                         &service_name,
-                        false,
+                        confirmed_idle,
                     )
-                    .await;
-                    if let Err(retry_error) = &retry
-                        && let Some(stale) = retire_stale_stored_query_key(
-                            &provision_lock,
-                            retry_error,
-                            &service_id,
-                            &key,
-                        )
-                    {
-                        return Err(stale);
-                    }
-                    retry
+                    .await
                 }
                 other => other,
             }
@@ -2013,7 +2037,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
                     );
-                    let (key, _provision_lock) =
+                    let (key, provision_lock) =
                         crate::cloud::service_query::ensure_service_query_setup(
                             client,
                             &org_id,
@@ -2021,18 +2045,32 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                             &service_name,
                         )
                         .await?;
-                    run_newly_provisioned_service_query(
+                    let readiness = wait_for_service_query_readiness(
                         client,
                         &service_id,
                         &key.key_id,
                         &key.key_secret,
-                        &sql,
-                        options.database.as_deref(),
-                        &format,
-                        &service_name,
                         QUERY_ENDPOINT_READINESS,
                     )
-                    .await
+                    .await;
+                    match readiness {
+                        Ok(confirmed_idle) => {
+                            drop(provision_lock);
+                            run_basic_service_query(
+                                client,
+                                &service_id,
+                                &key.key_id,
+                                &key.key_secret,
+                                &sql,
+                                options.database.as_deref(),
+                                &format,
+                                &service_name,
+                                confirmed_idle,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 other => other,
             }
@@ -4130,9 +4168,16 @@ mod tests {
         .with_query_host_for_tests(query_host.uri());
         let started = tokio::time::Instant::now();
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            run_newly_provisioned_service_query(
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let confirmed_idle = wait_for_service_query_readiness(
+                &client,
+                "service-1",
+                "key-id",
+                "key-secret",
+                readiness,
+            )
+            .await?;
+            run_basic_service_query(
                 &client,
                 "service-1",
                 "key-id",
@@ -4141,9 +4186,10 @@ mod tests {
                 None,
                 "TabSeparated",
                 "demo",
-                readiness,
-            ),
-        )
+                confirmed_idle,
+            )
+            .await
+        })
         .await
         .expect("wake and user query exceeded the test guard");
 
