@@ -109,11 +109,18 @@ pub fn try_load_credentials() -> CloudResult<Credentials> {
 
 pub fn clear_credentials() -> CloudResult<()> {
     let path = credentials_path();
+    clear_credentials_with_lock(&path, lock_credentials_mutation)
+}
+
+fn clear_credentials_with_lock(
+    path: &Path,
+    acquire_lock: impl FnOnce() -> CloudResult<std::fs::File>,
+) -> CloudResult<()> {
+    let _lock = acquire_lock()?;
     if !path.exists() {
         return Ok(());
     }
-    let _lock = lock_credentials_mutation()?;
-    remove_credentials_file(&path)
+    remove_credentials_file(path)
 }
 
 fn remove_credentials_file(path: &Path) -> CloudResult<()> {
@@ -179,9 +186,46 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
     Ok(())
 }
 
+/// Remove only the query credential this caller actually used. A concurrent
+/// replacement must survive a late rejection from the previous key.
+pub fn remove_service_query_key_if_matches(
+    service_id: &str,
+    expected: &ServiceQueryKey,
+) -> CloudResult<bool> {
+    if !credentials_path().exists() {
+        return Ok(false);
+    }
+    let _lock = lock_credentials_mutation()?;
+    let mut creds = try_load_credentials()?;
+    let matches = creds
+        .service_query_keys
+        .get(service_id)
+        .is_some_and(|key| key.key_id == expected.key_id && key.key_secret == expected.key_secret);
+    if !matches {
+        return Ok(false);
+    }
+    creds.service_query_keys.remove(service_id);
+    save_credentials(&creds)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_credentials_checks_for_file_after_acquiring_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+
+        clear_credentials_with_lock(&path, || {
+            std::fs::write(&path, "credentials").unwrap();
+            Ok(tempfile::tempfile().unwrap())
+        })
+        .unwrap();
+
+        assert!(!path.exists());
+    }
 
     #[test]
     fn remove_credentials_file_removes_existing_file() {
