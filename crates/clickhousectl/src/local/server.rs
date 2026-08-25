@@ -484,6 +484,9 @@ pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
             Some(s) => s,
             None => continue,
         };
+        if !entry.path().is_file() {
+            continue;
+        }
         let Some((info, running)) = normalize_server_info(stem)? else {
             continue;
         };
@@ -1039,6 +1042,7 @@ mod tests {
     const WRITE_HELPER: &str = "local::server::tests::metadata_write_subprocess";
     const NORMALIZE_HELPER: &str = "local::server::tests::metadata_normalize_subprocess";
     const CONCURRENCY_HELPER: &str = "local::server::tests::metadata_concurrency_subprocess";
+    const LIST_HELPER: &str = "local::server::tests::list_all_servers_ignores_json_directories";
 
     fn test_info(name: &str, pid: u32, version: &str) -> ServerInfo {
         ServerInfo {
@@ -1165,6 +1169,23 @@ mod tests {
             }
             operation => panic!("unknown metadata test operation {operation}"),
         }
+    }
+
+    #[test]
+    fn list_all_servers_ignores_json_directories() {
+        if enter_helper_project().is_some() {
+            assert!(list_all_servers().unwrap().is_empty());
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".clickhouse/servers/foo.json")).unwrap();
+
+        let status = helper(LIST_HELPER, project.path()).status().unwrap();
+        assert!(
+            status.success(),
+            "metadata list helper failed with {status}"
+        );
     }
 
     #[test]
