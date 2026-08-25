@@ -279,15 +279,12 @@ mod tests {
 
     #[test]
     fn retry_after_http_date_forms_are_parsed() {
-        use chrono::Datelike;
-
-        let future = (Utc::now() + chrono::Months::new(1)).with_day(6).unwrap();
         for value in [
-            future.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-            future.format("%A, %d-%b-%y %H:%M:%S GMT").to_string(),
-            future.format("%a %b %e %H:%M:%S %Y").to_string(),
+            "Sat, 06 Nov 2060 08:49:37 GMT",
+            "Saturday, 06-Nov-60 08:49:37 GMT",
+            "Sat Nov  6 08:49:37 2060",
         ] {
-            assert!(parse_retry_after(&value).is_some(), "{value}");
+            assert!(parse_retry_after(value).is_some(), "{value}");
         }
     }
 
