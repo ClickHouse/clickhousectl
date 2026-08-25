@@ -418,7 +418,6 @@ CONTEXT FOR AGENTS:
   Defaults to 18. Image is pulled if not already present locally.
   If --port is omitted, port 5432 is used when available and a free port is auto-selected
   when 5432 is occupied. If --port is set, that exact port must be free or start fails.
-  Data persists at .clickhouse/servers/<name>-pg<major>/data/ and is bind-mounted into the container.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
   The first `-e POSTGRES_PASSWORD=...` overrides --password. --user, --database, and
   managed PGDATA take precedence over same-named `-e` variables.
