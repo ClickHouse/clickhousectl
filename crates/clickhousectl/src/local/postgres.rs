@@ -957,12 +957,12 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
     if !metadata_lock.is_running()? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
-    drop(metadata_lock);
 
     // Read user/password/db from the container env so we always emit accurate creds.
     let (user, password, database) = docker::block_on(read_pg_env_for_dotenv(
         info.container_id.as_deref().unwrap_or_default(),
     ));
+    drop(metadata_lock);
 
     let vars: Vec<(&str, String)> = vec![
         ("POSTGRES_HOST", "127.0.0.1".to_string()),
