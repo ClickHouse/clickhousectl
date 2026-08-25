@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const VERSION: &str = "25.12.9.61";
+const VERSION: &str = "latest";
 
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
@@ -502,7 +502,7 @@ fn start_args(name: Option<&str>) -> Vec<&str> {
     if let Some(name) = name {
         args.push(name);
     }
-    args.extend(["--version", VERSION, "--no-wait"]);
+    args.push("--no-wait");
     args
 }
 
