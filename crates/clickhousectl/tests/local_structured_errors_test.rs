@@ -260,6 +260,50 @@ fn occupied_port_has_an_exact_structured_error() {
 }
 
 #[test]
+fn occupied_explicit_postgres_port_has_an_exact_structured_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupy port");
+    let port = listener.local_addr().unwrap().port().to_string();
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "start", "--port", &port],
+    );
+
+    assert_structured_error(
+        &output,
+        &expected_error(
+            "port_in_use",
+            &format!(
+                "explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select"
+            ),
+            "clickhousectl local server start --help",
+        ),
+    );
+}
+
+#[test]
+fn non_port_postgres_validation_remains_a_generic_structured_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "start", "--version", "16"],
+    );
+
+    assert_structured_error(
+        &output,
+        &expected_error(
+            "local_error",
+            "Postgres validation failed",
+            "clickhousectl local postgres start --help",
+        ),
+    );
+}
+
+#[test]
 fn startup_exit_is_structured_without_exposing_the_log_path() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
