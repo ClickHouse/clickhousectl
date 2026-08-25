@@ -416,7 +416,7 @@ impl ServerLock {
             .ok_or_else(|| Error::ServerNotRunning(self.name.clone()))?;
         match info.engine {
             Engine::Clickhouse => {
-                kill_process(info.pid)?;
+                kill_clickhouse_process(&info)?;
                 self.mark_stopped(info.pid)?;
             }
             Engine::Postgres => {
@@ -454,7 +454,9 @@ pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
 /// Engine-aware liveness check.
 fn is_alive(info: &ServerInfo) -> bool {
     match info.engine {
-        Engine::Clickhouse => is_process_alive(info.pid),
+        Engine::Clickhouse => {
+            discovery::is_managed_clickhouse_process(info.pid, &info.cwd, &info.name)
+        }
         Engine::Postgres => match info.container_id.as_deref() {
             Some(id) => docker::is_container_running_blocking(id),
             None => false,
@@ -658,23 +660,34 @@ fn send_signal(pid: u32, signal: i32) -> Result<()> {
     }
 }
 
+fn kill_clickhouse_process(info: &ServerInfo) -> Result<()> {
+    kill_process_while(info.pid, &info.name, || is_alive(info))
+}
+
 /// Attempt to terminate a process: SIGTERM, wait, SIGKILL if needed, then verify exit.
-fn kill_process(pid: u32) -> Result<()> {
+fn kill_process_while(
+    pid: u32,
+    identity: &str,
+    is_target_process: impl Fn() -> bool,
+) -> Result<()> {
+    if !is_target_process() {
+        return Err(Error::ServerNotRunning(identity.to_string()));
+    }
     send_signal(pid, libc::SIGTERM)?;
 
     // Wait briefly for graceful shutdown
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    if is_process_alive(pid) {
+    if is_target_process() {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        if is_process_alive(pid) {
+        if is_target_process() {
             send_signal(pid, libc::SIGKILL)?;
             // Give the kernel a moment to reap the process
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
-    if is_process_alive(pid) {
+    if is_target_process() {
         return Err(Error::Exec(format!(
             "Process {} did not exit after SIGKILL",
             pid
@@ -682,6 +695,10 @@ fn kill_process(pid: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn kill_process(pid: u32) -> Result<()> {
+    kill_process_while(pid, &format!("PID {pid}"), || is_process_alive(pid))
 }
 
 /// Stop a running server by name.
@@ -1118,6 +1135,7 @@ fn pause_during_stale_normalization_for_test() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use std::time::Instant;
 
@@ -1130,6 +1148,8 @@ mod tests {
     const STRICT_LIST_HELPER: &str = "local::server::tests::strict_list_reports_corrupt_metadata";
     const POSTGRES_RECOVERY_HELPER: &str = "local::server::tests::postgres_recovery_subprocess";
     const CLICKHOUSE_RECOVERY_HELPER: &str = "local::server::tests::clickhouse_recovery_subprocess";
+    const MANAGED_PROCESS_HELPER: &str =
+        "local::server::tests::managed_clickhouse_process_subprocess";
 
     #[test]
     fn lock_directory_failure_preserves_operation_path_and_source() {
@@ -1248,6 +1268,42 @@ mod tests {
         assert!(status.success(), "metadata helper failed with {status}");
     }
 
+    fn spawn_managed_clickhouse(project: &Path, name: &str) -> Child {
+        let data_dir = project.join(".clickhouse/servers").join(name).join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg0("clickhouse")
+            .args(["--exact", MANAGED_PROCESS_HELPER, "--nocapture"])
+            .env("CHCTL_TEST_MANAGED_PROCESS", "1")
+            .current_dir(data_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !discovery::is_managed_clickhouse_process(
+            child.id(),
+            &project.display().to_string(),
+            name,
+        ) {
+            assert_eq!(child.try_wait().unwrap(), None, "test process exited");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for managed ClickHouse test process"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child
+    }
+
+    #[test]
+    fn managed_clickhouse_process_subprocess() {
+        if std::env::var_os("CHCTL_TEST_MANAGED_PROCESS").is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
     fn enter_helper_project() -> Option<PathBuf> {
         let project = std::env::var_os("CHCTL_TEST_METADATA_PROJECT")?;
         let project = PathBuf::from(project);
@@ -1305,8 +1361,9 @@ mod tests {
             "lifecycle" => {
                 let lock = ServerLock::acquire("default").unwrap();
                 wait_for_test_release("CHCTL_TEST_LIFECYCLE_READY", "CHCTL_TEST_LIFECYCLE_RELEASE");
-                lock.save_info(&test_info("default", pid, "26.8.1.1"))
-                    .unwrap();
+                let mut info = test_info("default", pid, "26.8.1.1");
+                info.cwd = std::env::current_dir().unwrap().display().to_string();
+                lock.save_info(&info).unwrap();
             }
             "client" => {
                 std::fs::write(
@@ -1349,15 +1406,28 @@ mod tests {
 
     #[test]
     fn clickhouse_recovery_subprocess() {
-        if enter_helper_project().is_none() {
+        let Some(project) = enter_helper_project() else {
             return;
-        }
+        };
         let name = std::env::var("CHCTL_TEST_METADATA_NAME").unwrap();
-        save_recovered_server_info(
-            &test_info(&name, std::process::id(), "clickhouse-recovered"),
-            true,
-        )
-        .unwrap();
+        match std::env::var("CHCTL_TEST_METADATA_OPERATION").as_deref() {
+            Ok("stop") => kill_server(&name).unwrap(),
+            Ok("reject-stop") => assert!(matches!(
+                kill_server(&name),
+                Err(Error::ServerNotRunning(server)) if server == name
+            )),
+            _ => {
+                let pid = std::env::var("CHCTL_TEST_METADATA_PID")
+                    .ok()
+                    .and_then(|pid| pid.parse().ok())
+                    .unwrap_or_else(std::process::id);
+                let version = std::env::var("CHCTL_TEST_METADATA_VERSION")
+                    .unwrap_or_else(|_| "clickhouse-recovered".to_string());
+                let mut info = test_info(&name, pid, &version);
+                info.cwd = project.display().to_string();
+                save_recovered_server_info(&info, true).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -1394,6 +1464,85 @@ mod tests {
         assert_eq!(live_clickhouse.version, "clickhouse-recovered");
         assert_eq!(live_clickhouse.engine, Engine::Clickhouse);
         assert!(live_clickhouse.container_id.is_none());
+    }
+
+    #[test]
+    fn recovery_replaces_reused_pid_and_stop_never_signals_unrelated_process() {
+        let project = tempfile::tempdir().unwrap();
+        let mut unrelated = Command::new("/bin/sleep")
+            .arg("30")
+            .current_dir(project.path())
+            .spawn()
+            .unwrap();
+        let mut discovered = spawn_managed_clickhouse(project.path(), "default");
+        let mut stale = test_info("default", unrelated.id(), "clickhouse-stale");
+        stale.cwd = project.path().display().to_string();
+        write_initial_metadata(project.path(), &stale);
+
+        let rejected_stop = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_OPERATION", "reject-stop")
+            .status()
+            .unwrap();
+        assert!(
+            rejected_stop.success(),
+            "stop helper failed with {rejected_stop}"
+        );
+        assert!(unrelated.try_wait().unwrap().is_none());
+
+        let recovered = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_PID", discovered.id().to_string())
+            .env("CHCTL_TEST_METADATA_VERSION", "clickhouse-recovered")
+            .status()
+            .unwrap();
+        assert!(
+            recovered.success(),
+            "recovery helper failed with {recovered}"
+        );
+
+        let live: ServerInfo =
+            serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+        assert_eq!(live.pid, discovered.id());
+        assert_eq!(live.version, "clickhouse-recovered");
+
+        let stopped = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_OPERATION", "stop")
+            .status()
+            .unwrap();
+        assert!(stopped.success(), "stop helper failed with {stopped}");
+        assert!(!discovered.wait().unwrap().success());
+        assert!(unrelated.try_wait().unwrap().is_none());
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_existing_managed_clickhouse_identity() {
+        let project = tempfile::tempdir().unwrap();
+        let mut managed = spawn_managed_clickhouse(project.path(), "default");
+        let mut existing = test_info("default", managed.id(), "clickhouse-existing");
+        existing.cwd = project.path().display().to_string();
+        write_initial_metadata(project.path(), &existing);
+
+        let recovered = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_PID", managed.id().to_string())
+            .env("CHCTL_TEST_METADATA_VERSION", "clickhouse-recovered")
+            .status()
+            .unwrap();
+        assert!(
+            recovered.success(),
+            "recovery helper failed with {recovered}"
+        );
+
+        let live: ServerInfo =
+            serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+        assert_eq!(live.pid, managed.id());
+        assert_eq!(live.version, "clickhouse-existing");
+        managed.kill().unwrap();
+        managed.wait().unwrap();
     }
 
     #[test]
@@ -1476,10 +1625,12 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         let servers = project.path().join(".clickhouse/servers");
         std::fs::create_dir_all(&servers).unwrap();
+        let mut process = spawn_managed_clickhouse(project.path(), "healthy");
+        let mut healthy = test_info("healthy", process.id(), "26.8.1.1");
+        healthy.cwd = project.path().display().to_string();
         std::fs::write(
             servers.join("healthy.json"),
-            serde_json::to_vec_pretty(&test_info("healthy", std::process::id(), "26.8.1.1"))
-                .unwrap(),
+            serde_json::to_vec_pretty(&healthy).unwrap(),
         )
         .unwrap();
         std::fs::write(servers.join("corrupt.json"), b"not json").unwrap();
@@ -1491,6 +1642,8 @@ mod tests {
             status.success(),
             "advisory count helper failed with {status}"
         );
+        process.kill().unwrap();
+        process.wait().unwrap();
     }
 
     #[test]
@@ -1606,10 +1759,7 @@ mod tests {
     fn concurrent_lifecycle_client_and_stop_observe_complete_metadata() {
         let project = tempfile::tempdir().unwrap();
         write_initial_metadata(project.path(), &test_info("default", 0, ""));
-        let mut process = Command::new("sh")
-            .args(["-c", "exec sleep 30"])
-            .spawn()
-            .unwrap();
+        let mut process = spawn_managed_clickhouse(project.path(), "default");
         let pid = process.id();
         let reaper = std::thread::spawn(move || process.wait().unwrap());
         let ready = project.path().join("lifecycle-ready");

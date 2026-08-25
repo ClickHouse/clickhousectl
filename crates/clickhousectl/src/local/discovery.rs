@@ -4,7 +4,7 @@
 //! and command-line arguments to recover server metadata (project root, name,
 //! ports, version). Used for orphaned server recovery and global server listing.
 
-use std::{collections::HashMap, process::Command};
+use std::{collections::HashMap, path::Path, process::Command};
 
 /// A ClickHouse process discovered via OS-level process inspection.
 #[derive(Debug, Clone)]
@@ -15,6 +15,14 @@ pub struct DiscoveredProcess {
     pub http_port: Option<u16>,
     pub tcp_port: Option<u16>,
     pub version: Option<String>,
+}
+
+fn process_command(standard_path: &'static str, fallback: &'static str) -> Command {
+    Command::new(if Path::new(standard_path).is_file() {
+        standard_path
+    } else {
+        fallback
+    })
 }
 
 /// Find all running ClickHouse processes started by the CLI and parse their metadata.
@@ -39,9 +47,46 @@ pub fn discover_clickhouse_processes() -> Vec<DiscoveredProcess> {
     discovered
 }
 
+/// Confirm that a PID is a ClickHouse process in the managed data directory
+/// for the recorded project and server name.
+pub fn is_managed_clickhouse_process(pid: u32, project_root: &str, server_name: &str) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let is_clickhouse = find_clickhouse_pids().contains(&pid)
+        || get_process_cmdline(pid).is_some_and(|cmdline| {
+            cmdline.split_whitespace().take(2).any(|arg| {
+                Path::new(arg)
+                    .file_name()
+                    .is_some_and(|name| name == "clickhouse")
+            })
+        });
+    if !is_clickhouse {
+        return false;
+    }
+
+    let pids = [pid];
+    let Some(cwd) = get_process_cwds(&pids).remove(&pid) else {
+        return false;
+    };
+    let expected_cwd = Path::new(project_root)
+        .join(".clickhouse")
+        .join("servers")
+        .join(server_name)
+        .join("data");
+
+    match (Path::new(&cwd).canonicalize(), expected_cwd.canonicalize()) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => false,
+    }
+}
+
 /// Find PIDs of running `clickhouse` processes.
 fn find_clickhouse_pids() -> Vec<u32> {
-    let output = Command::new("pgrep").arg("-x").arg("clickhouse").output();
+    let output = process_command("/usr/bin/pgrep", "pgrep")
+        .arg("-x")
+        .arg("clickhouse")
+        .output();
 
     match output {
         Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
@@ -88,7 +133,7 @@ fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
 
     // -a is required to AND the conditions; without it macOS lsof OR's
     // -d and -p, returning the cwd of every process on the system.
-    let output = Command::new("lsof")
+    let output = process_command("/usr/sbin/lsof", "lsof")
         .args(["-a", "-d", "cwd", "-Fn", "-p", &pid_list])
         .output();
 
@@ -135,7 +180,7 @@ fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
 
 /// Get the command-line string of a process.
 fn get_process_cmdline(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
+    let output = process_command("/bin/ps", "ps")
         .args(["-o", "args=", "-p", &pid.to_string()])
         .output()
         .ok()?;
