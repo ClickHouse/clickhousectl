@@ -371,21 +371,26 @@ async fn rollback_fresh_start(
         }
     };
 
-    if let Err(error) = std::fs::remove_file(&rollback.metadata_path)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        diagnostics.push(format!(
-            "failed to remove metadata '{}': {error}",
-            rollback.metadata_path.display()
-        ));
-    }
-
     if rollback.remove_fresh_data_on_failure && container_removed {
-        if let Err(error) = docker::remove_host_dir_blocking(&rollback.instance_dir) {
-            diagnostics.push(format!(
+        match docker::remove_host_dir_blocking(&rollback.instance_dir) {
+            Ok(()) if !rollback.instance_dir.exists() => {
+                if let Err(error) = std::fs::remove_file(&rollback.metadata_path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    diagnostics.push(format!(
+                        "failed to remove metadata '{}': {error}",
+                        rollback.metadata_path.display()
+                    ));
+                }
+            }
+            Ok(()) => diagnostics.push(format!(
+                "failed to remove fresh Postgres data '{}': path still exists",
+                rollback.instance_dir.display()
+            )),
+            Err(error) => diagnostics.push(format!(
                 "failed to remove fresh Postgres data '{}': {error}",
                 rollback.instance_dir.display()
-            ));
+            )),
         }
     } else {
         let reason = if container_removed {
