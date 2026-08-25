@@ -41,8 +41,7 @@ CONTEXT FOR AGENTS:
     /// Set the default version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Sets the default ClickHouse version used by direct `clickhousectl local client` connections
-  when --version is omitted, and by `clickhousectl local server`.
+  Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
   Accepts version specs: \"latest\" (recommended), \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
   Auto-installs the version if not already present.
   Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
@@ -98,16 +97,12 @@ CONTEXT FOR AGENTS:
         group(clap::ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Connection and local binary selection are separate:
+  Two connection modes:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
      locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
   2. Direct: pass --host, --port, or both to bypass local server lookup. A missing host defaults
      to localhost (for example, `local client --port 9000`); a missing port defaults to 9000.
-     Pass --version with a direct connection to select an exact installed client binary without
-     changing the default. Otherwise direct mode uses the configured default; it never guesses
-     from installed versions. Use `local list` to find exact installed versions.
-  Named mode always uses the managed server's recorded version. --version is direct-only, and
-  named and direct selectors cannot be combined.
+  Named and direct selectors cannot be combined.
   --query and --queries-file execute SQL inline or from a file.
   Additional clickhouse-client args can be passed after --.
   Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
@@ -759,23 +754,14 @@ mod tests {
     }
 
     #[test]
-    fn clickhouse_client_help_separates_connection_and_binary_selection() {
+    fn clickhouse_client_help_describes_version_flag() {
         let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
             .err()
             .expect("help should exit through clap")
             .to_string();
 
         assert!(
-            help.contains("Connection and local binary selection are separate"),
-            "{help}"
-        );
-        assert!(
             help.contains("Exact installed ClickHouse version"),
-            "{help}"
-        );
-        assert!(help.contains("does not change the default"), "{help}");
-        assert!(
-            help.contains("Named mode always uses the managed server's recorded version"),
             "{help}"
         );
     }
