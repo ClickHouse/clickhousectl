@@ -1744,7 +1744,7 @@ async fn run_query_attempt_before_deadline<T>(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_basic_service_query(
-    client: &clickhouse_cloud_api::Client,
+    client: &CloudClient,
     service_id: &str,
     key_id: &str,
     key_secret: &str,
@@ -1754,7 +1754,11 @@ async fn run_basic_service_query(
     service_name: &str,
     confirmed_idle: bool,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let run = |wake| client.run_query(service_id, key_id, key_secret, sql, database, format, wake);
+    let run = |wake| {
+        client
+            .api()
+            .run_query(service_id, key_id, key_secret, sql, database, format, wake)
+    };
     if confirmed_idle {
         eprint_waking_service(service_name);
         return run(true).await;
@@ -1814,7 +1818,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 async fn run_newly_provisioned_service_query(
-    client: &clickhouse_cloud_api::Client,
+    client: &CloudClient,
     service_id: &str,
     key_id: &str,
     key_secret: &str,
@@ -1825,7 +1829,7 @@ async fn run_newly_provisioned_service_query(
     readiness: QueryEndpointReadiness,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
-        client.run_query(
+        client.api().run_query(
             service_id,
             key_id,
             key_secret,
@@ -1901,7 +1905,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     } else {
         let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
             run_basic_service_query(
-                client.api(),
+                client,
                 &service_id,
                 &key.key_id,
                 &key.key_secret,
@@ -1917,7 +1921,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 .basic_auth_credentials()
                 .ok_or_else(|| CloudError::new("API key credentials are unavailable"))?;
             match run_basic_service_query(
-                client.api(),
+                client,
                 &service_id,
                 key_id,
                 key_secret,
@@ -1947,7 +1951,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     )
                     .await?;
                     run_newly_provisioned_service_query(
-                        client.api(),
+                        client,
                         &service_id,
                         &key.key_id,
                         &key.key_secret,
@@ -4045,8 +4049,13 @@ mod tests {
             .expect(3)
             .mount(&query_host)
             .await;
-        let client = clickhouse_cloud_api::Client::new("key-id", "key-secret")
-            .with_query_host(query_host.uri());
+        let client = CloudClient::new(
+            Some("control-key"),
+            Some("control-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap()
+        .with_query_host_for_tests(query_host.uri());
         let started = tokio::time::Instant::now();
 
         let result = tokio::time::timeout(
