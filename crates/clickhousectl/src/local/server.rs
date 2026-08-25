@@ -871,7 +871,8 @@ pub async fn wait_for_server_ready(
                 Err(error)
                     if matches!(
                         &error,
-                        Error::ServerMetadataRead { .. }
+                        Error::ServerLock { .. }
+                            | Error::ServerMetadataRead { .. }
                             | Error::ServerMetadataPermission { .. }
                             | Error::ServerMetadataParse { .. }
                             | Error::ServerMetadataWrite { .. }
@@ -1150,6 +1151,8 @@ mod tests {
     const CLICKHOUSE_RECOVERY_HELPER: &str = "local::server::tests::clickhouse_recovery_subprocess";
     const MANAGED_PROCESS_HELPER: &str =
         "local::server::tests::managed_clickhouse_process_subprocess";
+    const READINESS_LOCK_HELPER: &str =
+        "local::server::tests::readiness_timeout_lock_failure_subprocess";
 
     #[test]
     fn lock_directory_failure_preserves_operation_path_and_source() {
@@ -1309,6 +1312,43 @@ mod tests {
         let project = PathBuf::from(project);
         std::env::set_current_dir(&project).unwrap();
         Some(project)
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_lock_failure_subprocess() {
+        if enter_helper_project().is_none() {
+            return;
+        }
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 10"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        let error = wait_for_server_ready(
+            &mut child,
+            "readiness-lock-test",
+            0,
+            0,
+            Path::new("server.log"),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(&error, Error::ServerLock { .. }));
+        assert!(!is_process_alive(pid));
+        let structured = crate::local::output::LocalErrorOutput::from_error(&error);
+        std::fs::write(
+            std::env::var_os("CHCTL_TEST_STRUCTURED_ERROR").unwrap(),
+            serde_json::to_vec(&structured).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            std::env::var_os("CHCTL_TEST_HUMAN_ERROR").unwrap(),
+            format!("Error: {error}\n"),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1886,6 +1926,38 @@ mod tests {
         assert!(message.contains("did not become ready"));
         assert!(message.contains("server.log"));
         assert!(!is_process_alive(pid));
+    }
+
+    #[test]
+    fn readiness_timeout_preserves_lock_failure_output() {
+        let project = tempfile::tempdir().unwrap();
+        let lock_directory = project.path().join(".clickhouse/servers/.locks");
+        std::fs::create_dir_all(lock_directory.parent().unwrap()).unwrap();
+        std::fs::write(&lock_directory, b"not a directory").unwrap();
+        let structured_path = project.path().join("structured-error.json");
+        let human_path = project.path().join("human-error.txt");
+
+        let status = helper(READINESS_LOCK_HELPER, project.path())
+            .env("CHCTL_TEST_STRUCTURED_ERROR", &structured_path)
+            .env("CHCTL_TEST_HUMAN_ERROR", &human_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "readiness helper failed with {status}");
+
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(structured_path).unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "server_lock");
+        assert_eq!(body["error"]["command"], "clickhousectl local server list");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("create server lifecycle lock directory"));
+        assert!(message.contains(&lock_directory.display().to_string()));
+        assert!(message.contains("Check write access to the parent directory and retry."));
+
+        let human = std::fs::read_to_string(human_path).unwrap();
+        assert!(human.starts_with("Error: Could not create server lifecycle lock directory"));
+        assert!(human.contains(&lock_directory.display().to_string()));
+        assert!(human.contains("Check write access to the parent directory and retry."));
+        assert!(!human.contains("did not become ready"));
     }
 
     #[test]
