@@ -391,7 +391,7 @@ async fn start_server(
     }
 
     // Show running server count
-    let running = server::running_server_count()?;
+    let running = server::advisory_running_server_count();
     if !json && running > 0 {
         eprintln!(
             "Note: {} server{} already running (use `clickhousectl local server list` to see them)",

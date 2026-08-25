@@ -463,6 +463,10 @@ pub fn load_running_info(name: &str) -> Result<Option<ServerInfo>> {
 /// it's `<name>-pg<major>`. Also runs process/container discovery so
 /// orphaned instances reappear.
 pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
+    list_all_servers_inner(false)
+}
+
+fn list_all_servers_inner(skip_entry_errors: bool) -> Result<Vec<ServerEntry>> {
     recover_current_project_servers()?;
 
     let dir = servers_dir();
@@ -487,7 +491,12 @@ pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
         if !entry.path().is_file() {
             continue;
         }
-        let Some((info, running)) = normalize_server_info(stem)? else {
+        let normalized = match normalize_server_info(stem) {
+            Ok(normalized) => normalized,
+            Err(_) if skip_entry_errors => continue,
+            Err(error) => return Err(error),
+        };
+        let Some((info, running)) = normalized else {
             continue;
         };
 
@@ -566,9 +575,11 @@ pub fn is_server_running(name: &str) -> Result<bool> {
     Ok(load_running_info(name)?.is_some())
 }
 
-/// Count running servers.
-pub fn running_server_count() -> Result<usize> {
-    Ok(list_running_servers()?.len())
+/// Best-effort count used only for the informational notice during start.
+pub fn advisory_running_server_count() -> usize {
+    list_all_servers_inner(true)
+        .map(|entries| entries.iter().filter(|entry| entry.running).count())
+        .unwrap_or_default()
 }
 
 fn is_process_alive(pid: u32) -> bool {
@@ -1043,6 +1054,9 @@ mod tests {
     const NORMALIZE_HELPER: &str = "local::server::tests::metadata_normalize_subprocess";
     const CONCURRENCY_HELPER: &str = "local::server::tests::metadata_concurrency_subprocess";
     const LIST_HELPER: &str = "local::server::tests::list_all_servers_ignores_json_directories";
+    const ADVISORY_COUNT_HELPER: &str =
+        "local::server::tests::advisory_count_ignores_unrelated_corrupt_metadata";
+    const STRICT_LIST_HELPER: &str = "local::server::tests::strict_list_reports_corrupt_metadata";
 
     fn test_info(name: &str, pid: u32, version: &str) -> ServerInfo {
         ServerInfo {
@@ -1186,6 +1200,52 @@ mod tests {
             status.success(),
             "metadata list helper failed with {status}"
         );
+    }
+
+    #[test]
+    fn advisory_count_ignores_unrelated_corrupt_metadata() {
+        if enter_helper_project().is_some() {
+            assert_eq!(advisory_running_server_count(), 1);
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        let servers = project.path().join(".clickhouse/servers");
+        std::fs::create_dir_all(&servers).unwrap();
+        std::fs::write(
+            servers.join("healthy.json"),
+            serde_json::to_vec_pretty(&test_info("healthy", std::process::id(), "26.8.1.1"))
+                .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(servers.join("corrupt.json"), b"not json").unwrap();
+
+        let status = helper(ADVISORY_COUNT_HELPER, project.path())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "advisory count helper failed with {status}"
+        );
+    }
+
+    #[test]
+    fn strict_list_reports_corrupt_metadata() {
+        if enter_helper_project().is_some() {
+            assert!(matches!(
+                list_all_servers(),
+                Err(Error::ServerMetadataParse { name, .. }) if name == "corrupt"
+            ));
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        let servers = project.path().join(".clickhouse/servers");
+        std::fs::create_dir_all(&servers).unwrap();
+        std::fs::write(servers.join("corrupt.json"), b"not json").unwrap();
+
+        let status = helper(STRICT_LIST_HELPER, project.path()).status().unwrap();
+        assert!(status.success(), "strict list helper failed with {status}");
     }
 
     #[test]
