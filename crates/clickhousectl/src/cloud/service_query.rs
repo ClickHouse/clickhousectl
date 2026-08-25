@@ -257,12 +257,15 @@ fn repair_endpoint_configuration(
 
 /// Replace one service's stored query key without touching any other local
 /// credential or endpoint binding. The same project lock as first-time
-/// provisioning protects the read-modify-write sequence across processes.
+/// provisioning protects the read-modify-write sequence across processes. If
+/// another repair replaced the expected stale key while this caller waited,
+/// its winning credential is returned without another rotation.
 pub async fn repair_service_query_setup(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
     service_name: &str,
+    expected_stale: ServiceQueryKey,
 ) -> CloudResult<ServiceQueryKey> {
     let _lock = credentials::lock_service_query_provisioning()?;
     let old = credentials::try_get_service_query_key(service_id)?
@@ -285,6 +288,12 @@ pub async fn repair_service_query_setup(
         return Err(CloudError::new(format!(
             "the stored query key for service {service_id} belongs to organization {old_org_id}, not {org_id}; refusing to repair it"
         )));
+    }
+    if old.api_key_id != expected_stale.api_key_id
+        || old.key_id != expected_stale.key_id
+        || old.key_secret != expected_stale.key_secret
+    {
+        return Ok(old);
     }
 
     let endpoint = client.get_query_endpoint(org_id, service_id).await?;
