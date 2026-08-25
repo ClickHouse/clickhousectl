@@ -1714,6 +1714,24 @@ const QUERY_ENDPOINT_RETRY_INITIAL_DELAY: std::time::Duration =
     std::time::Duration::from_millis(100);
 const QUERY_ENDPOINT_RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
+async fn run_query_attempt_before_deadline<T>(
+    deadline: tokio::time::Instant,
+    readiness_timeout: std::time::Duration,
+    attempt: impl std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+) -> Result<T, clickhouse_cloud_api::Error> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    tokio::time::timeout(remaining, attempt)
+        .await
+        .unwrap_or_else(|_| {
+            Err(clickhouse_cloud_api::Error::Api {
+                status: 408,
+                message: format!(
+                    "Query API endpoint did not become ready within {readiness_timeout:?}"
+                ),
+            })
+        })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_basic_service_query(
     client: &CloudClient,
@@ -1765,15 +1783,19 @@ async fn run_newly_provisioned_service_query(
     let mut waiting = false;
 
     loop {
-        let result = run_basic_service_query(
-            client,
-            service_id,
-            key_id,
-            key_secret,
-            sql,
-            database,
-            format,
-            service_name,
+        let result = run_query_attempt_before_deadline(
+            deadline,
+            QUERY_ENDPOINT_READY_TIMEOUT,
+            run_basic_service_query(
+                client,
+                service_id,
+                key_id,
+                key_secret,
+                sql,
+                database,
+                format,
+                service_name,
+            ),
         )
         .await;
         if !result.as_ref().is_err_and(query_requires_provisioning) {
@@ -3861,6 +3883,30 @@ mod tests {
         }
         assert!(!query_requires_provisioning(
             &clickhouse_cloud_api::Error::ServiceStopped
+        ));
+    }
+
+    #[tokio::test]
+    async fn query_readiness_deadline_bounds_a_stalled_attempt() {
+        let readiness_timeout = std::time::Duration::from_millis(5);
+        let deadline = tokio::time::Instant::now() + readiness_timeout;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            run_query_attempt_before_deadline(
+                deadline,
+                readiness_timeout,
+                std::future::pending::<Result<(), clickhouse_cloud_api::Error>>(),
+            ),
+        )
+        .await
+        .expect("stalled attempt exceeded the test guard");
+
+        assert!(matches!(
+            result,
+            Err(clickhouse_cloud_api::Error::Api {
+                status: 408,
+                ref message,
+            }) if message == "Query API endpoint did not become ready within 5ms"
         ));
     }
 
