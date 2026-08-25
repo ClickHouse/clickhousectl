@@ -259,6 +259,17 @@ fn metadata_write_error(name: &str, source: std::io::Error) -> Error {
     }
 }
 
+fn sync_metadata_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if std::env::var_os("CHCTL_TEST_METADATA_DIR_SYNC_FAILURE").is_some() {
+        return Err(std::io::Error::other(
+            "injected metadata directory sync failure",
+        ));
+    }
+
+    File::open(path)?.sync_all()
+}
+
 fn read_server_info(name: &str) -> Result<Option<ServerInfo>> {
     let content = match std::fs::read(server_meta_path(name)) {
         Ok(content) => content,
@@ -275,6 +286,9 @@ fn read_server_info(name: &str) -> Result<Option<ServerInfo>> {
 
 fn write_server_info(name: &str, info: &ServerInfo) -> Result<()> {
     let path = server_meta_path(name);
+    let directory = path
+        .parent()
+        .expect("server metadata path has a parent directory");
     let file_name = path
         .file_name()
         .expect("server metadata path has a file name")
@@ -301,6 +315,7 @@ fn write_server_info(name: &str, info: &ServerInfo) -> Result<()> {
         .map_err(|source| metadata_write_error(name, source))?;
     pause_before_metadata_rename_for_test();
     std::fs::rename(&temp_path, &path).map_err(|source| metadata_write_error(name, source))?;
+    sync_metadata_directory(directory).map_err(|source| metadata_write_error(name, source))?;
     temporary.committed = true;
     Ok(())
 }
@@ -1172,7 +1187,17 @@ mod tests {
         if let Some(attempt) = std::env::var_os("CHCTL_TEST_METADATA_ATTEMPT") {
             std::fs::write(attempt, b"attempt").unwrap();
         }
-        save_server_info(&test_info("default", pid, &version)).unwrap();
+        let result = save_server_info(&test_info("default", pid, &version));
+        if std::env::var_os("CHCTL_TEST_METADATA_DIR_SYNC_FAILURE").is_some() {
+            assert!(matches!(
+                result,
+                Err(Error::ServerMetadataWrite { name, source })
+                    if name == "default"
+                        && source.to_string() == "injected metadata directory sync failure"
+            ));
+        } else {
+            result.unwrap();
+        }
     }
 
     #[test]
@@ -1436,6 +1461,30 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(abandoned, 1);
+    }
+
+    #[test]
+    fn directory_sync_failure_is_reported_after_rename() {
+        let project = tempfile::tempdir().unwrap();
+        write_initial_metadata(project.path(), &test_info("default", 0, "old"));
+
+        let status = helper(WRITE_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_PID", "12345")
+            .env("CHCTL_TEST_METADATA_VERSION", "new")
+            .env("CHCTL_TEST_METADATA_DIR_SYNC_FAILURE", "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "metadata helper failed with {status}");
+
+        let live: ServerInfo =
+            serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+        assert_eq!(live.version, "new");
+        let temporary_files = std::fs::read_dir(project.path().join(".clickhouse/servers"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temporary_files, 0);
     }
 
     #[test]
