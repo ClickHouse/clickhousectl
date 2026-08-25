@@ -3695,7 +3695,7 @@ async fn service_query_auto_provisioning_is_single_flight_across_processes() {
 }
 
 #[tokio::test]
-async fn service_query_retries_new_endpoint_readiness_without_reprovisioning() {
+async fn service_query_probes_new_endpoint_readiness_without_repeating_user_sql() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -3760,15 +3760,24 @@ async fn service_query_retries_new_endpoint_readiness_without_reprovisioning() {
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .and(header("authorization", provisioned_auth.as_str()))
-        .respond_with(
-            move |_: &wiremock::Request| match attempt.fetch_add(1, Ordering::SeqCst) {
-                0 => ResponseTemplate::new(401).set_body_string("new key not ready"),
-                1 => ResponseTemplate::new(403).set_body_string("new binding not ready"),
-                2 => ResponseTemplate::new(404).set_body_string("query endpoint not found"),
-                _ => ResponseTemplate::new(200).set_body_string("1\n"),
-            },
-        )
-        .expect(4)
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            match body["sql"].as_str() {
+                Some("SELECT 1") => match attempt.fetch_add(1, Ordering::SeqCst) {
+                    0 => ResponseTemplate::new(401).set_body_string("new key not ready"),
+                    1 => ResponseTemplate::new(403).set_body_string("new binding not ready"),
+                    2 => ResponseTemplate::new(404).set_body_string("query endpoint not found"),
+                    _ => ResponseTemplate::new(206)
+                        .set_body_string(r#"{"data":"Confirm wake service"}"#),
+                },
+                Some("SELECT 42") => ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(50))
+                    .set_body_string("42\n"),
+                sql => ResponseTemplate::new(400)
+                    .set_body_string(format!("unexpected SQL in readiness test: {sql:?}")),
+            }
+        })
+        .expect(5)
         .mount(&query_host)
         .await;
 
@@ -3792,16 +3801,45 @@ async fn service_query_retries_new_endpoint_readiness_without_reprovisioning() {
             "--org-id",
             "org-1",
             "--query",
-            "SELECT 1",
+            "SELECT 42",
         ])
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
-    assert_eq!(output.stdout, b"1\n");
+    assert_eq!(output.stdout, b"42\n");
     assert!(
         String::from_utf8_lossy(&output.stderr)
             .contains("Waiting for the Query API endpoint to become ready")
     );
+
+    let query_requests = query_host.received_requests().await.unwrap();
+    let provisioned_requests: Vec<_> = query_requests
+        .iter()
+        .filter(|request| {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                == Some(provisioned_auth.as_str())
+        })
+        .collect();
+    let sql: Vec<_> = provisioned_requests
+        .iter()
+        .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap()["sql"].clone())
+        .collect();
+    assert_eq!(
+        sql.iter().filter(|value| **value == "SELECT 1").count(),
+        4,
+        "readiness retries must use the harmless probe",
+    );
+    let user_queries: Vec<_> = provisioned_requests
+        .iter()
+        .filter(|request| {
+            serde_json::from_slice::<Value>(&request.body).unwrap()["sql"] == "SELECT 42"
+        })
+        .collect();
+    assert_eq!(user_queries.len(), 1, "user SQL must run exactly once");
+    assert_eq!(user_queries[0].headers.get("wake-service").unwrap(), "true");
 
     let control_requests = control.received_requests().await.unwrap();
     assert_eq!(

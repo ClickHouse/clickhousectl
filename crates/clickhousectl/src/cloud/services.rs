@@ -1709,10 +1709,18 @@ struct ServiceQueryOptions {
     no_auto_enable: bool,
 }
 
-const QUERY_ENDPOINT_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-const QUERY_ENDPOINT_RETRY_INITIAL_DELAY: std::time::Duration =
-    std::time::Duration::from_millis(100);
-const QUERY_ENDPOINT_RETRY_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+#[derive(Clone, Copy)]
+struct QueryEndpointReadiness {
+    timeout: std::time::Duration,
+    initial_delay: std::time::Duration,
+    max_delay: std::time::Duration,
+}
+
+const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
+    timeout: std::time::Duration::from_secs(120),
+    initial_delay: std::time::Duration::from_millis(100),
+    max_delay: std::time::Duration::from_secs(5),
+};
 
 async fn run_query_attempt_before_deadline<T>(
     deadline: tokio::time::Instant,
@@ -1734,7 +1742,7 @@ async fn run_query_attempt_before_deadline<T>(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_basic_service_query(
-    client: &CloudClient,
+    client: &clickhouse_cloud_api::Client,
     service_id: &str,
     key_id: &str,
     key_secret: &str,
@@ -1742,12 +1750,14 @@ async fn run_basic_service_query(
     database: Option<&str>,
     format: &str,
     service_name: &str,
+    confirmed_idle: bool,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let run = |wake: bool| {
-        client
-            .api()
-            .run_query(service_id, key_id, key_secret, sql, database, format, wake)
-    };
+    let run = |wake| client.run_query(service_id, key_id, key_secret, sql, database, format, wake);
+    if confirmed_idle {
+        eprint_waking_service(service_name);
+        return run(true).await;
+    }
+
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
@@ -1769,7 +1779,7 @@ fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_newly_provisioned_service_query(
-    client: &CloudClient,
+    client: &clickhouse_cloud_api::Client,
     service_id: &str,
     key_id: &str,
     key_secret: &str,
@@ -1777,42 +1787,58 @@ async fn run_newly_provisioned_service_query(
     database: Option<&str>,
     format: &str,
     service_name: &str,
+    readiness: QueryEndpointReadiness,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let deadline = tokio::time::Instant::now() + QUERY_ENDPOINT_READY_TIMEOUT;
-    let mut delay = QUERY_ENDPOINT_RETRY_INITIAL_DELAY;
+    let deadline = tokio::time::Instant::now() + readiness.timeout;
+    let mut delay = readiness.initial_delay;
     let mut waiting = false;
 
-    loop {
-        let result = run_query_attempt_before_deadline(
+    let confirmed_idle = loop {
+        let error = match run_query_attempt_before_deadline(
             deadline,
-            QUERY_ENDPOINT_READY_TIMEOUT,
-            run_basic_service_query(
-                client,
+            readiness.timeout,
+            client.run_query(
                 service_id,
                 key_id,
                 key_secret,
-                sql,
-                database,
-                format,
-                service_name,
+                "SELECT 1",
+                None,
+                "TabSeparated",
+                false,
             ),
         )
-        .await;
-        if !result.as_ref().is_err_and(query_requires_provisioning) {
-            return result;
-        }
+        .await
+        {
+            Ok(_) => break false,
+            Err(clickhouse_cloud_api::Error::ServiceIdle) => break true,
+            Err(error) if query_requires_provisioning(&error) => error,
+            Err(error) => return Err(error),
+        };
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return result;
+            return Err(error);
         }
         if !waiting {
             eprintln!("Waiting for the Query API endpoint to become ready...");
             waiting = true;
         }
         tokio::time::sleep(delay.min(remaining)).await;
-        delay = (delay * 2).min(QUERY_ENDPOINT_RETRY_MAX_DELAY);
-    }
+        delay = (delay * 2).min(readiness.max_delay);
+    };
+
+    run_basic_service_query(
+        client,
+        service_id,
+        key_id,
+        key_secret,
+        sql,
+        database,
+        format,
+        service_name,
+        confirmed_idle,
+    )
+    .await
 }
 
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
@@ -1865,7 +1891,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     } else {
         let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
             run_basic_service_query(
-                client,
+                client.api(),
                 &service_id,
                 &key.key_id,
                 &key.key_secret,
@@ -1873,6 +1899,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 options.database.as_deref(),
                 &format,
                 &service_name,
+                false,
             )
             .await
         } else {
@@ -1880,7 +1907,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 .basic_auth_credentials()
                 .ok_or_else(|| CloudError::new("API key credentials are unavailable"))?;
             match run_basic_service_query(
-                client,
+                client.api(),
                 &service_id,
                 key_id,
                 key_secret,
@@ -1888,6 +1915,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 options.database.as_deref(),
                 &format,
                 &service_name,
+                false,
             )
             .await
             {
@@ -1909,7 +1937,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     )
                     .await?;
                     run_newly_provisioned_service_query(
-                        client,
+                        client.api(),
                         &service_id,
                         &key.key_id,
                         &key.key_secret,
@@ -1917,6 +1945,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         options.database.as_deref(),
                         &format,
                         &service_name,
+                        QUERY_ENDPOINT_READINESS,
                     )
                     .await
                 }
@@ -3908,6 +3937,92 @@ mod tests {
                 ref message,
             }) if message == "Query API endpoint did not become ready within 5ms"
         ));
+    }
+
+    #[tokio::test]
+    async fn query_readiness_deadline_does_not_bound_idle_wake_or_repeat_user_query() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let readiness = QueryEndpointReadiness {
+            timeout: std::time::Duration::from_millis(300),
+            initial_delay: std::time::Duration::from_millis(10),
+            max_delay: std::time::Duration::from_millis(10),
+        };
+        let query_host = MockServer::start().await;
+        let probe_attempts = Arc::new(AtomicUsize::new(0));
+        let probe_attempts_for_response = Arc::clone(&probe_attempts);
+        Mock::given(method("POST"))
+            .and(path("/service/service-1/run"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                match body["sql"].as_str() {
+                    Some("SELECT 1") => {
+                        if probe_attempts_for_response.fetch_add(1, Ordering::SeqCst) == 0 {
+                            ResponseTemplate::new(401)
+                                .set_delay(std::time::Duration::from_millis(225))
+                                .set_body_string("new key not ready")
+                        } else {
+                            ResponseTemplate::new(206)
+                                .set_body_string(r#"{"data":"Confirm wake service"}"#)
+                        }
+                    }
+                    Some("SELECT 42") => ResponseTemplate::new(200)
+                        .set_delay(std::time::Duration::from_millis(150))
+                        .set_body_string("42\n"),
+                    sql => ResponseTemplate::new(400)
+                        .set_body_string(format!("unexpected SQL in readiness test: {sql:?}")),
+                }
+            })
+            .expect(3)
+            .mount(&query_host)
+            .await;
+        let client = clickhouse_cloud_api::Client::new("key-id", "key-secret")
+            .with_query_host(query_host.uri());
+        let started = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run_newly_provisioned_service_query(
+                &client,
+                "service-1",
+                "key-id",
+                "key-secret",
+                "SELECT 42",
+                None,
+                "TabSeparated",
+                "demo",
+                readiness,
+            ),
+        )
+        .await
+        .expect("wake and user query exceeded the test guard");
+
+        assert_eq!(result.unwrap().text().await.unwrap(), "42\n");
+        assert_eq!(probe_attempts.load(Ordering::SeqCst), 2);
+        assert!(
+            started.elapsed() > readiness.timeout,
+            "the delayed wake/query should finish after the readiness deadline"
+        );
+
+        let requests = query_host.received_requests().await.unwrap();
+        let sql: Vec<_> = requests
+            .iter()
+            .map(|request| {
+                serde_json::from_slice::<serde_json::Value>(&request.body).unwrap()["sql"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(sql, ["SELECT 1", "SELECT 1", "SELECT 42"]);
+        assert!(requests[0].headers.get("wake-service").is_none());
+        assert!(requests[1].headers.get("wake-service").is_none());
+        assert_eq!(requests[2].headers.get("wake-service").unwrap(), "true");
     }
 
     #[test]
