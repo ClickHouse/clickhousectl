@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use reqwest::header::RETRY_AFTER;
 use std::fmt;
 use std::time::Duration;
@@ -153,8 +153,15 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     }
 
     let retry_at = DateTime::parse_from_rfc2822(value)
-        .ok()?
-        .with_timezone(&Utc);
+        .map(|date| date.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%A, %d-%b-%y %H:%M:%S GMT")
+                .map(|date| date.and_utc())
+        })
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").map(|date| date.and_utc())
+        })
+        .ok()?;
     retry_at.signed_duration_since(Utc::now()).to_std().ok()
 }
 
@@ -266,13 +273,34 @@ mod tests {
     use tokio::net::TcpListener;
 
     #[test]
-    fn retry_after_seconds_and_date_are_parsed() {
+    fn retry_after_seconds_are_parsed() {
         assert_eq!(parse_retry_after("7"), Some(Duration::from_secs(7)));
+    }
 
-        let future = Utc::now() + chrono::Duration::seconds(30);
-        let parsed = parse_retry_after(&future.to_rfc2822()).unwrap();
-        assert!(parsed >= Duration::from_secs(28));
-        assert!(parsed <= Duration::from_secs(30));
+    #[test]
+    fn retry_after_http_date_forms_are_parsed() {
+        use chrono::Datelike;
+
+        let future = (Utc::now() + chrono::Months::new(1)).with_day(6).unwrap();
+        for value in [
+            future.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+            future.format("%A, %d-%b-%y %H:%M:%S GMT").to_string(),
+            future.format("%a %b %e %H:%M:%S %Y").to_string(),
+        ] {
+            assert!(parse_retry_after(&value).is_some(), "{value}");
+        }
+    }
+
+    #[test]
+    fn expired_retry_after_dates_are_ignored() {
+        let past = Utc::now() - chrono::Duration::seconds(30);
+        for value in [
+            past.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+            past.format("%A, %d-%b-%y %H:%M:%S GMT").to_string(),
+            past.format("%a %b %e %H:%M:%S %Y").to_string(),
+        ] {
+            assert_eq!(parse_retry_after(&value), None, "{value}");
+        }
     }
 
     #[test]
