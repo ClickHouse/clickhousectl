@@ -103,9 +103,23 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
         }
         expected_no_install = {
             "crates/clickhousectl/tests/cli_request_shape_test.rs",
+            "crates/clickhousectl/tests/local_client_project_scope_test.rs",
+            "crates/clickhousectl/tests/local_client_selectors_test.rs",
             "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
+            "crates/clickhousectl/tests/local_postgres_diagnostics_test.rs",
+            "crates/clickhousectl/tests/local_postgres_help_test.rs",
+            "crates/clickhousectl/tests/local_postgres_preflight_test.rs",
+            "crates/clickhousectl/tests/local_postgres_readiness_test.rs",
+            "crates/clickhousectl/tests/local_postgres_start_lock_test.rs",
+            "crates/clickhousectl/tests/local_server_metadata_test.rs",
+            "crates/clickhousectl/tests/local_server_project_scope_test.rs",
             "crates/clickhousectl/tests/local_server_readiness_test.rs",
+            "crates/clickhousectl/tests/local_server_selection_test.rs",
+            "crates/clickhousectl/tests/local_server_state_machine_test.rs",
             "crates/clickhousectl/tests/local_server_stopped_test.rs",
+            "crates/clickhousectl/tests/local_structured_errors_test.rs",
+            "crates/clickhousectl/tests/snapshots/local_postgres_help.txt",
+            "crates/clickhousectl/tests/snapshots/local_postgres_start_help.txt",
         }
         self.assertEqual(
             {path for path, selected in classifier.TEST_PATH_INSTALL.items() if selected},

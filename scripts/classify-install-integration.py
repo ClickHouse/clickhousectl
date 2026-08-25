@@ -45,12 +45,26 @@ SOURCE_PATH_INSTALL = {
 
 TEST_PATH_INSTALL = {
     "crates/clickhousectl/tests/cli_request_shape_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_client_project_scope_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_client_selectors_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_docker_pull_progress_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_install_local_first_test.rs": INSTALL,
+    "crates/clickhousectl/tests/local_postgres_diagnostics_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_postgres_help_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_postgres_preflight_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_postgres_readiness_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_postgres_start_lock_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_server_metadata_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_server_project_scope_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_server_readiness_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_server_selection_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_server_start_args_test.rs": INSTALL,
+    "crates/clickhousectl/tests/local_server_state_machine_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_server_stopped_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_structured_errors_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_version_error_test.rs": INSTALL,
+    "crates/clickhousectl/tests/snapshots/local_postgres_help.txt": NO_INSTALL,
+    "crates/clickhousectl/tests/snapshots/local_postgres_start_help.txt": NO_INSTALL,
     "crates/clickhousectl/tests/telemetry_test.rs": INSTALL,
 }
 
