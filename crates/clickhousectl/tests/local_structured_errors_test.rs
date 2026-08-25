@@ -105,7 +105,7 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     };
 
     let output = fresh_home_command()
-        .args(["local", "--json", "server", "stop"])
+        .args(["local", "--json", "server", "stop", "missing"])
         .output()
         .expect("run structured failure");
     assert_eq!(output.status.code(), Some(1));
@@ -119,14 +119,14 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     );
 
     let output = fresh_home_command()
-        .args(["local", "server", "stop"])
+        .args(["local", "server", "stop", "missing"])
         .output()
         .expect("run human failure");
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
     assert!(
-        stderr.contains("Error: Server 'default' not found"),
+        stderr.contains("Error: Server 'missing' not found"),
         "{stderr}"
     );
     assert!(stderr.contains("anonymous usage data"), "{stderr}");
