@@ -777,6 +777,7 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
 
@@ -785,6 +786,7 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-private-pg-pipe \
   --host db.private.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
   --ca-certificate ./postgres-ca.pem \
   --table-mapping "public.users:public_users"
 
@@ -817,7 +819,7 @@ Before creating a PostgreSQL CDC ClickPipe:
 
 - Make the source reachable from ClickPipes and allow the [ClickPipes static IPs](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips) for your service region.
 - Enable logical replication on PostgreSQL.
-- Create a publication that includes every source table passed with `--table-mapping`.
+- Create a publication named `clickpipes` that includes every source table passed with `--table-mapping`.
 - Grant the ClickPipes user schema `USAGE`, table `SELECT`, and replication privileges.
 
 See the [PostgreSQL ClickPipes setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres) for provider-specific prerequisites or the [generic PostgreSQL source setup](https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic) for self-hosted and other providers. `--ca-certificate` is needed only when the source certificate is signed by a private CA or is self-signed. Use `--tls-host` when the hostname in that certificate differs from `--host`.
