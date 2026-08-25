@@ -86,7 +86,7 @@ impl LocalErrorOutput {
                 error.to_string(),
                 "clickhousectl local list --remote",
             ),
-            Error::PortInUse(message) => (
+            Error::PortInUse(message) | Error::PostgresPortInUse(message) => (
                 LocalErrorCode::PortInUse,
                 message.clone(),
                 "clickhousectl local server start --help",
@@ -755,11 +755,6 @@ mod tests {
                 "clickhousectl local list --remote",
             ),
             (
-                Error::PortInUse("HTTP port 8123 is already in use".into()),
-                LocalErrorCode::PortInUse,
-                "clickhousectl local server start --help",
-            ),
-            (
                 Error::StartupExit("raw startup diagnostics".into()),
                 LocalErrorCode::StartupExit,
                 "clickhousectl local server list",
@@ -801,6 +796,29 @@ mod tests {
             assert_eq!(output.error.code, code);
             assert_eq!(output.error.command, command);
             assert!(!output.error.command.contains(['\n', '\r']));
+        }
+    }
+
+    #[test]
+    fn engine_specific_port_errors_share_exact_structured_output() {
+        for (error, message) in [
+            (
+                Error::PortInUse("HTTP port 8123 is already in use".into()),
+                "HTTP port 8123 is already in use",
+            ),
+            (
+                Error::PostgresPortInUse("explicit Postgres port 5432 is already in use".into()),
+                "explicit Postgres port 5432 is already in use",
+            ),
+        ] {
+            let output = LocalErrorOutput::from_error(&error);
+
+            assert_eq!(output.error.code, LocalErrorCode::PortInUse);
+            assert_eq!(output.error.message, message);
+            assert_eq!(
+                output.error.command,
+                "clickhousectl local server start --help"
+            );
         }
     }
 

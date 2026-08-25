@@ -240,11 +240,11 @@ fn bound_explicit_port_is_rejected_before_existing_instance_recovery() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     assert!(output.stdout.is_empty());
-    assert!(
-        stderr.contains(&format!(
-            "explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select"
-        )),
-        "stderr: {stderr}"
+    assert_eq!(
+        stderr,
+        format!(
+            "Error: Postgres validation failed: explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select\n"
+        )
     );
     assert_eq!(
         requests, 0,

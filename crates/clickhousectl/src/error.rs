@@ -174,6 +174,9 @@ pub enum Error {
     #[error("Postgres validation failed: {0}")]
     PostgresValidation(String),
 
+    #[error("Postgres validation failed: {0}")]
+    PostgresPortInUse(String),
+
     #[error("Postgres operation failed: {0}")]
     PostgresRuntime(String),
 
@@ -260,8 +263,16 @@ mod tests {
 
     #[test]
     fn typed_local_boundaries_preserve_human_error_text() {
+        assert_eq!(
+            Error::PortInUse("HTTP port 8123 is already in use".into()).to_string(),
+            "Failed to execute ClickHouse: HTTP port 8123 is already in use"
+        );
+        assert_eq!(
+            Error::PostgresPortInUse("explicit Postgres port 5432 is already in use".into())
+                .to_string(),
+            "Postgres validation failed: explicit Postgres port 5432 is already in use"
+        );
         for error in [
-            Error::PortInUse("HTTP port 8123 is already in use".into()),
             Error::StartupExit("server exited".into()),
             Error::StartupTimeout("server timed out".into()),
         ] {

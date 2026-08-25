@@ -610,7 +610,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             ));
         }
         if std::net::TcpListener::bind(("127.0.0.1", p)).is_err() {
-            return Err(Error::PortInUse(format!(
+            return Err(Error::PostgresPortInUse(format!(
                 "explicit Postgres port {p} is already in use; choose a free --port or omit the flag to auto-select"
             )));
         }
@@ -1380,9 +1380,11 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let err = resolve_port(Some(port)).unwrap_err();
-        assert!(matches!(err, Error::PortInUse(msg) if msg == format!(
-            "explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select"
-        )));
+        assert!(
+            matches!(err, Error::PostgresPortInUse(msg) if msg == format!(
+                "explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select"
+            ))
+        );
     }
 
     #[test]
