@@ -3414,7 +3414,7 @@ async fn stale_stored_query_key_recovery_rerun_replaces_the_local_credential() {
             .respond_with(
                 ResponseTemplate::new(status).set_body_string(r#"{"error":"Unauthorized"}"#),
             )
-            .expect(1)
+            .expect(2)
             .mount(&query_host)
             .await;
         let project_auth = basic_auth("project-key:project-secret");
@@ -3484,7 +3484,7 @@ async fn stale_stored_query_key_recovery_rerun_replaces_the_local_credential() {
         assert_eq!(rerun.stdout, b"1\n");
 
         let query_requests = query_host.received_requests().await.unwrap();
-        assert_eq!(query_requests.len(), 4);
+        assert_eq!(query_requests.len(), 5);
         assert_eq!(
             query_requests
                 .iter()
@@ -3496,8 +3496,8 @@ async fn stale_stored_query_key_recovery_rerun_replaces_the_local_credential() {
                         == Some(stale_auth.as_str())
                 })
                 .count(),
-            1,
-            "the recovery rerun must not reload the rejected credential",
+            2,
+            "the rejected credential must be confirmed once under the provisioning lock",
         );
         let stored: Value = serde_json::from_slice(
             &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -3572,7 +3572,7 @@ async fn stale_key_cleanup_failure_guides_existing_credential_commands() {
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
-        .expect(1)
+        .expect(2)
         .mount(&query_host)
         .await;
 
@@ -4003,6 +4003,233 @@ async fn service_query_auto_provisioning_is_single_flight_across_processes() {
         ],
         "atomic persistence must not leave a temporary file",
     );
+}
+
+#[tokio::test]
+async fn concurrent_rejection_during_readiness_does_not_retire_the_winning_key() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let control = start_mock_control_plane_with_service().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "provisioned-key-id",
+                "keySecret": "provisioned-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let query_host = MockServer::start().await;
+    let basic_auth = |credentials: &str| {
+        format!(
+            "Basic {}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+        )
+    };
+    let primary_auth = basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", primary_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let provisioned_auth = basic_auth("provisioned-key-id:provisioned-key-secret");
+    let endpoint_ready = Arc::new(AtomicBool::new(false));
+    let readiness_paused = Arc::new(AtomicBool::new(false));
+    let concurrent_rejected = Arc::new(AtomicBool::new(false));
+    let responder_ready = Arc::clone(&endpoint_ready);
+    let responder_readiness_paused = Arc::clone(&readiness_paused);
+    let responder_concurrent_rejected = Arc::clone(&concurrent_rejected);
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", provisioned_auth.as_str()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let sql = body["sql"].as_str();
+            if !responder_ready.load(Ordering::SeqCst) {
+                match sql {
+                    Some("SELECT 1") => responder_readiness_paused.store(true, Ordering::SeqCst),
+                    Some("SELECT 42") => {
+                        responder_concurrent_rejected.store(true, Ordering::SeqCst)
+                    }
+                    _ => {}
+                }
+                return ResponseTemplate::new(403).set_body_string("endpoint binding not ready");
+            }
+            let result = match sql {
+                Some("SELECT 41") => "41\n",
+                Some("SELECT 42") => "42\n",
+                _ => "1\n",
+            };
+            ResponseTemplate::new(200).set_body_string(result)
+        })
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+    let control_url = control.uri();
+    let query_host_url = query_host.uri();
+    let spawn_query = |sql: &str| {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        command
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home_dir)
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
+            .current_dir(dir.path())
+            .args([
+                "cloud",
+                "--url",
+                control_url.as_str(),
+                "service",
+                "query",
+                "--id",
+                QUERY_TEST_SERVICE_ID,
+                "--org-id",
+                "org-1",
+                "--query",
+                sql,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn service query")
+    };
+
+    let first = spawn_query("SELECT 41");
+    let credentials_path = dir.path().join(".clickhouse/credentials.json");
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let persisted = std::fs::read(&credentials_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|credentials| {
+                    credentials["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"]
+                        == "provisioned-key-id"
+                });
+            if persisted && readiness_paused.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the winner did not persist its key and begin readiness");
+
+    let second = spawn_query("SELECT 42");
+    let concurrent_rejection = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if concurrent_rejected.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    endpoint_ready.store(true, Ordering::SeqCst);
+    concurrent_rejection
+        .expect("the concurrent stored-key query did not receive the temporary 403");
+
+    let (first, second) = tokio::join!(
+        tokio::task::spawn_blocking(move || first.wait_with_output().unwrap()),
+        tokio::task::spawn_blocking(move || second.wait_with_output().unwrap()),
+    );
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_success(&first);
+    assert_success(&second);
+    assert_eq!(first.stdout, b"41\n");
+    assert_eq!(second.stdout, b"42\n");
+
+    let control_requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1,
+        "the temporary rejection must not trigger duplicate provisioning",
+    );
+    assert_eq!(
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == endpoint_path
+            })
+            .count(),
+        1,
+        "the winning key must be bound only once",
+    );
+    assert!(
+        control_requests
+            .iter()
+            .all(|request| request.method != wiremock::http::Method::DELETE),
+        "the winning key must not be deleted",
+    );
+
+    let query_requests = query_host.received_requests().await.unwrap();
+    let concurrent_attempts = query_requests
+        .iter()
+        .filter(|request| {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                == Some(provisioned_auth.as_str())
+                && serde_json::from_slice::<Value>(&request.body).unwrap()["sql"] == "SELECT 42"
+        })
+        .count();
+    assert_eq!(
+        concurrent_attempts, 2,
+        "the concurrent query must retry the winning key after readiness settles",
+    );
+
+    let stored: Value = serde_json::from_slice(&std::fs::read(credentials_path).unwrap()).unwrap();
+    let winner = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(winner["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(winner["key_id"], "provisioned-key-id");
+    assert_eq!(winner["key_secret"], "provisioned-key-secret");
 }
 
 #[tokio::test]

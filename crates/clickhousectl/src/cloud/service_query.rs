@@ -77,21 +77,19 @@ fn build_service_query_key(
 }
 
 /// Ensure a query endpoint is provisioned for `service_id` and return the
-/// persisted key. Provisioning is serialized across processes in this project;
-/// after taking the lock, credentials are re-read so waiters reuse the winner's
-/// key. The winner creates the API key, binds it to the query endpoint (merging
-/// into any existing endpoint configuration) with read+write scope on this
-/// service, then merges the key into the latest credentials under the shared
-/// credentials mutation lock.
+/// persisted key with the provisioning guard. The caller keeps the guard until
+/// endpoint readiness completes so a concurrent rejection cannot retire the
+/// winner while its binding converges. After taking the lock, credentials are
+/// re-read so waiters reuse the winner's key.
 pub async fn ensure_service_query_setup(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
     service_name: &str,
-) -> CloudResult<ServiceQueryKey> {
-    let _lock = credentials::lock_service_query_provisioning()?;
+) -> CloudResult<(ServiceQueryKey, credentials::ServiceQueryProvisionLock)> {
+    let lock = credentials::lock_service_query_provisioning()?;
     if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
-        return Ok(existing);
+        return Ok((existing, lock));
     }
 
     let key_request = ApiKeyPostRequest {
@@ -192,7 +190,7 @@ pub async fn ensure_service_query_setup(
         };
     }
 
-    Ok(stored)
+    Ok((stored, lock))
 }
 
 /// Capture an existing endpoint exactly enough to restore it if local

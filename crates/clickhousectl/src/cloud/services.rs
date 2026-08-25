@@ -1816,7 +1816,18 @@ where
     }
 }
 
+fn stored_query_key_was_rejected(error: &clickhouse_cloud_api::Error) -> bool {
+    matches!(
+        error,
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403,
+            message,
+        } if !message.starts_with("SQL error ")
+    )
+}
+
 fn retire_stale_stored_query_key(
+    _provision_lock: &credentials::ServiceQueryProvisionLock,
     error: &clickhouse_cloud_api::Error,
     service_id: &str,
     key: &credentials::ServiceQueryKey,
@@ -1944,11 +1955,34 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             )
             .await;
             match result {
-                Err(error) => {
-                    if let Some(stale) = retire_stale_stored_query_key(&error, &service_id, &key) {
+                Err(error) if stored_query_key_was_rejected(&error) => {
+                    // Provisioning persists its key before endpoint readiness
+                    // converges. Wait for that process, then retry so a
+                    // transient rejection cannot retire its winning key.
+                    let provision_lock = credentials::lock_service_query_provisioning()?;
+                    let retry = run_basic_service_query(
+                        client,
+                        &service_id,
+                        &key.key_id,
+                        &key.key_secret,
+                        &sql,
+                        options.database.as_deref(),
+                        &format,
+                        &service_name,
+                        false,
+                    )
+                    .await;
+                    if let Err(retry_error) = &retry
+                        && let Some(stale) = retire_stale_stored_query_key(
+                            &provision_lock,
+                            retry_error,
+                            &service_id,
+                            &key,
+                        )
+                    {
                         return Err(stale);
                     }
-                    Err(error)
+                    retry
                 }
                 other => other,
             }
@@ -1979,13 +2013,14 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
                     );
-                    let key = crate::cloud::service_query::ensure_service_query_setup(
-                        client,
-                        &org_id,
-                        &service_id,
-                        &service_name,
-                    )
-                    .await?;
+                    let (key, _provision_lock) =
+                        crate::cloud::service_query::ensure_service_query_setup(
+                            client,
+                            &org_id,
+                            &service_id,
+                            &service_name,
+                        )
+                        .await?;
                     run_newly_provisioned_service_query(
                         client,
                         &service_id,
