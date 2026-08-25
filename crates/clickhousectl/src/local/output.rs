@@ -20,6 +20,7 @@ pub enum LocalErrorCode {
     ServerMetadataPermission,
     ServerMetadataInvalid,
     ServerMetadataWrite,
+    ServerProcessInspection,
     InvalidVersion,
     VersionUnavailable,
     PortInUse,
@@ -87,6 +88,11 @@ impl LocalErrorOutput {
             ),
             Error::ServerMetadataWrite { .. } => (
                 LocalErrorCode::ServerMetadataWrite,
+                error.to_string(),
+                "clickhousectl local server list",
+            ),
+            Error::ServerProcessInspection { .. } => (
+                LocalErrorCode::ServerProcessInspection,
                 error.to_string(),
                 "clickhousectl local server list",
             ),
@@ -842,6 +848,16 @@ mod tests {
                     source: std::io::Error::other("write failed"),
                 },
                 LocalErrorCode::ServerMetadataWrite,
+                "clickhousectl local server list",
+            ),
+            (
+                Error::ServerProcessInspection {
+                    name: "default".into(),
+                    pid: 12345,
+                    operation: "read the recorded process working directory",
+                    source: std::io::Error::other("inspection failed"),
+                },
+                LocalErrorCode::ServerProcessInspection,
                 "clickhousectl local server list",
             ),
             (

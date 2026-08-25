@@ -4,7 +4,7 @@
 //! and command-line arguments to recover server metadata (project root, name,
 //! ports, version). Used for orphaned server recovery and global server listing.
 
-use std::{collections::HashMap, path::Path, process::Command};
+use std::{collections::HashMap, io, path::Path, process::Command};
 
 /// A ClickHouse process discovered via OS-level process inspection.
 #[derive(Debug, Clone)]
@@ -15,6 +15,24 @@ pub struct DiscoveredProcess {
     pub http_port: Option<u16>,
     pub tcp_port: Option<u16>,
     pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedProcessIdentity {
+    Managed,
+    NotManaged,
+}
+
+#[derive(Debug)]
+pub struct ProcessInspectionError {
+    pub operation: &'static str,
+    pub source: io::Error,
+}
+
+impl ProcessInspectionError {
+    fn new(operation: &'static str, source: io::Error) -> Self {
+        Self { operation, source }
+    }
 }
 
 fn process_command(standard_path: &'static str, fallback: &'static str) -> Command {
@@ -30,7 +48,7 @@ fn process_command(standard_path: &'static str, fallback: &'static str) -> Comma
 /// Only returns processes whose cwd matches the `.clickhouse/servers/<name>/data/` pattern,
 /// meaning they were started by this CLI. Other ClickHouse processes are ignored.
 pub fn discover_clickhouse_processes() -> Vec<DiscoveredProcess> {
-    let pids = find_clickhouse_pids();
+    let pids = find_clickhouse_pids().unwrap_or_default();
     let cwds = get_process_cwds(&pids);
     let mut discovered = Vec::new();
 
@@ -47,27 +65,74 @@ pub fn discover_clickhouse_processes() -> Vec<DiscoveredProcess> {
     discovered
 }
 
-/// Confirm that a PID is a ClickHouse process in the managed data directory
-/// for the recorded project and server name.
-pub fn is_managed_clickhouse_process(pid: u32, project_root: &str, server_name: &str) -> bool {
-    if pid == 0 {
-        return false;
+/// Determine whether a PID is a ClickHouse process in the managed data
+/// directory for the recorded project and server name.
+pub fn inspect_managed_clickhouse_process(
+    pid: u32,
+    project_root: &str,
+    server_name: &str,
+) -> Result<ManagedProcessIdentity, ProcessInspectionError> {
+    if pid == 0 || i32::try_from(pid).is_err() {
+        return Ok(ManagedProcessIdentity::NotManaged);
     }
-    let is_clickhouse = find_clickhouse_pids().contains(&pid)
-        || get_process_cmdline(pid).is_some_and(|cmdline| {
-            cmdline.split_whitespace().take(2).any(|arg| {
-                Path::new(arg)
-                    .file_name()
-                    .is_some_and(|name| name == "clickhouse")
-            })
-        });
-    if !is_clickhouse {
-        return false;
+    if !process_exists(pid).map_err(|source| {
+        ProcessInspectionError::new("check whether the recorded process exists", source)
+    })? {
+        return Ok(ManagedProcessIdentity::NotManaged);
     }
 
-    let pids = [pid];
-    let Some(cwd) = get_process_cwds(&pids).remove(&pid) else {
-        return false;
+    inject_inspection_failure("command", "inspect the recorded process executable")?;
+    let is_clickhouse = match (find_clickhouse_pids(), get_process_cmdline(pid)) {
+        (Ok(pids), cmdline) => {
+            pids.contains(&pid) || cmdline.is_ok_and(|cmdline| cmdline_is_clickhouse(&cmdline))
+        }
+        (Err(_), Ok(cmdline)) => cmdline_is_clickhouse(&cmdline),
+        (Err(pgrep_error), Err(ps_error)) => {
+            if !process_exists(pid).map_err(|source| {
+                ProcessInspectionError::new("recheck whether the recorded process exists", source)
+            })? {
+                return Ok(ManagedProcessIdentity::NotManaged);
+            }
+            return Err(ProcessInspectionError::new(
+                "inspect the recorded process executable",
+                io::Error::other(format!(
+                    "pgrep failed: {pgrep_error}; ps failed: {ps_error}"
+                )),
+            ));
+        }
+    };
+    if !is_clickhouse {
+        return Ok(ManagedProcessIdentity::NotManaged);
+    }
+
+    inject_inspection_failure("cwd", "read the recorded process working directory")?;
+    let cwd = match get_process_cwd(pid) {
+        Ok(Some(cwd)) => cwd,
+        Ok(None) => {
+            if !process_exists(pid).map_err(|source| {
+                ProcessInspectionError::new("recheck whether the recorded process exists", source)
+            })? {
+                return Ok(ManagedProcessIdentity::NotManaged);
+            }
+            return Err(ProcessInspectionError::new(
+                "read the recorded process working directory",
+                io::Error::other("process inspection returned no working directory"),
+            ));
+        }
+        Err(source) => {
+            if !process_exists(pid).map_err(|recheck_source| {
+                ProcessInspectionError::new(
+                    "recheck whether the recorded process exists",
+                    recheck_source,
+                )
+            })? {
+                return Ok(ManagedProcessIdentity::NotManaged);
+            }
+            return Err(ProcessInspectionError::new(
+                "read the recorded process working directory",
+                source,
+            ));
+        }
     };
     let expected_cwd = Path::new(project_root)
         .join(".clickhouse")
@@ -75,26 +140,93 @@ pub fn is_managed_clickhouse_process(pid: u32, project_root: &str, server_name: 
         .join(server_name)
         .join("data");
 
-    match (Path::new(&cwd).canonicalize(), expected_cwd.canonicalize()) {
-        (Ok(actual), Ok(expected)) => actual == expected,
-        _ => false,
-    }
+    inject_inspection_failure("canonicalize", "resolve the managed process paths")?;
+    let actual = Path::new(&cwd).canonicalize().map_err(|source| {
+        ProcessInspectionError::new("resolve the recorded process working directory", source)
+    })?;
+    let expected = expected_cwd.canonicalize().map_err(|source| {
+        ProcessInspectionError::new("resolve the expected managed data directory", source)
+    })?;
+
+    Ok(if actual == expected {
+        ManagedProcessIdentity::Managed
+    } else {
+        ManagedProcessIdentity::NotManaged
+    })
 }
 
 /// Find PIDs of running `clickhouse` processes.
-fn find_clickhouse_pids() -> Vec<u32> {
+fn find_clickhouse_pids() -> io::Result<Vec<u32>> {
     let output = process_command("/usr/bin/pgrep", "pgrep")
         .arg("-x")
         .arg("clickhouse")
-        .output();
+        .output()?;
 
-    match output {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter_map(|line| line.trim().parse::<u32>().ok())
-            .collect(),
-        _ => Vec::new(),
+            .collect()),
+        Some(1) => Ok(Vec::new()),
+        _ => Err(command_error("pgrep", &output)),
     }
+}
+
+fn cmdline_is_clickhouse(cmdline: &str) -> bool {
+    cmdline.split_whitespace().take(2).any(|arg| {
+        Path::new(arg)
+            .file_name()
+            .is_some_and(|name| name == "clickhouse")
+    })
+}
+
+fn process_exists(pid: u32) -> io::Result<bool> {
+    let pid = i32::try_from(pid).map_err(io::Error::other)?;
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return Ok(true);
+    }
+
+    let source = io::Error::last_os_error();
+    match source.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(source),
+    }
+}
+
+fn command_error(command: &str, output: &std::process::Output) -> io::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    io::Error::other(format!(
+        "{command} exited with {}{}",
+        output.status,
+        if stderr.trim().is_empty() {
+            String::new()
+        } else {
+            format!(": {}", stderr.trim())
+        }
+    ))
+}
+
+#[cfg(test)]
+fn inject_inspection_failure(
+    failure: &str,
+    operation: &'static str,
+) -> Result<(), ProcessInspectionError> {
+    if std::env::var("CHCTL_TEST_PROCESS_INSPECTION_FAILURE").as_deref() == Ok(failure) {
+        return Err(ProcessInspectionError::new(
+            operation,
+            io::Error::other(format!("injected {failure} inspection failure")),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn inject_inspection_failure(
+    _failure: &str,
+    _operation: &'static str,
+) -> Result<(), ProcessInspectionError> {
+    Ok(())
 }
 
 /// Inspect a single process to extract server metadata from its cwd and cmdline.
@@ -146,6 +278,20 @@ fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
     parse_lsof_cwds(&String::from_utf8_lossy(&output.stdout))
 }
 
+#[cfg(target_os = "macos")]
+fn get_process_cwd(pid: u32) -> io::Result<Option<String>> {
+    let pid_arg = pid.to_string();
+    let output = process_command("/usr/sbin/lsof", "lsof")
+        .args(["-a", "-d", "cwd", "-Fn", "-p", &pid_arg])
+        .output()?;
+    let cwd = parse_lsof_cwds(&String::from_utf8_lossy(&output.stdout)).remove(&pid);
+    if cwd.is_some() || output.status.success() {
+        Ok(cwd)
+    } else {
+        Err(command_error("lsof", &output))
+    }
+}
+
 /// Parse `lsof -Fn` output into process working directories.
 ///
 /// `p<pid>` starts a process record and `n<path>` names its cwd. Other fields
@@ -178,17 +324,27 @@ fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
+fn get_process_cwd(pid: u32) -> io::Result<Option<String>> {
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd"))?;
+    path.into_os_string().into_string().map(Some).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process working directory is not valid UTF-8",
+        )
+    })
+}
+
 /// Get the command-line string of a process.
-fn get_process_cmdline(pid: u32) -> Option<String> {
+fn get_process_cmdline(pid: u32) -> io::Result<String> {
     let output = process_command("/bin/ps", "ps")
         .args(["-o", "args=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+        .output()?;
 
     if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
-        None
+        Err(command_error("ps", &output))
     }
 }
 

@@ -178,6 +178,17 @@ pub enum Error {
     },
 
     #[error(
+        "Could not verify process identity for server '{name}' (PID {pid}) while attempting to {operation}: {source}. Metadata was preserved. Check that process inspection tools are available and that you have permission to inspect the process, then retry."
+    )]
+    ServerProcessInspection {
+        name: String,
+        pid: u32,
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "No server name was provided and multiple non-default ClickHouse servers exist. Pass a name or run `clickhousectl local server stop-all`; use `clickhousectl local server list` to see available servers."
     )]
     ServerNameRequiredForStop,

@@ -380,7 +380,10 @@ impl ServerLock {
     }
 
     pub fn load_running_info(&self) -> Result<Option<ServerInfo>> {
-        Ok(self.load_info()?.filter(is_alive))
+        let Some(info) = self.load_info()? else {
+            return Ok(None);
+        };
+        Ok(is_alive(&info)?.then_some(info))
     }
 
     pub fn is_running(&self) -> Result<bool> {
@@ -451,15 +454,25 @@ pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
     ServerLock::acquire(name)?.mark_stopped(pid)
 }
 
-/// Engine-aware liveness check.
-fn is_alive(info: &ServerInfo) -> bool {
+/// Engine-aware liveness check. ClickHouse inspection failures remain unknown
+/// instead of being treated as proof that the recorded process is stale.
+fn is_alive(info: &ServerInfo) -> Result<bool> {
     match info.engine {
         Engine::Clickhouse => {
-            discovery::is_managed_clickhouse_process(info.pid, &info.cwd, &info.name)
+            match discovery::inspect_managed_clickhouse_process(info.pid, &info.cwd, &info.name) {
+                Ok(discovery::ManagedProcessIdentity::Managed) => Ok(true),
+                Ok(discovery::ManagedProcessIdentity::NotManaged) => Ok(false),
+                Err(error) => Err(Error::ServerProcessInspection {
+                    name: info.name.clone(),
+                    pid: info.pid,
+                    operation: error.operation,
+                    source: error.source,
+                }),
+            }
         }
         Engine::Postgres => match info.container_id.as_deref() {
-            Some(id) => docker::is_container_running_blocking(id),
-            None => false,
+            Some(id) => Ok(docker::is_container_running_blocking(id)),
+            None => Ok(false),
         },
     }
 }
@@ -575,7 +588,7 @@ fn normalize_server_info(name: &str) -> Result<Option<(ServerInfo, bool)>> {
     let Some(mut info) = lock.load_info()? else {
         return Ok(None);
     };
-    let running = is_alive(&info);
+    let running = is_alive(&info)?;
     if !running && info.engine == Engine::Clickhouse && info.pid != 0 {
         pause_during_stale_normalization_for_test();
         set_stopped(&mut info);
@@ -668,9 +681,9 @@ fn kill_clickhouse_process(info: &ServerInfo) -> Result<()> {
 fn kill_process_while(
     pid: u32,
     identity: &str,
-    is_target_process: impl Fn() -> bool,
+    is_target_process: impl Fn() -> Result<bool>,
 ) -> Result<()> {
-    if !is_target_process() {
+    if !is_target_process()? {
         return Err(Error::ServerNotRunning(identity.to_string()));
     }
     send_signal(pid, libc::SIGTERM)?;
@@ -678,16 +691,16 @@ fn kill_process_while(
     // Wait briefly for graceful shutdown
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    if is_target_process() {
+    if is_target_process()? {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        if is_target_process() {
+        if is_target_process()? {
             send_signal(pid, libc::SIGKILL)?;
             // Give the kernel a moment to reap the process
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
-    if is_target_process() {
+    if is_target_process()? {
         return Err(Error::Exec(format!(
             "Process {} did not exit after SIGKILL",
             pid
@@ -698,7 +711,7 @@ fn kill_process_while(
 }
 
 fn kill_process(pid: u32) -> Result<()> {
-    kill_process_while(pid, &format!("PID {pid}"), || is_process_alive(pid))
+    kill_process_while(pid, &format!("PID {pid}"), || Ok(is_process_alive(pid)))
 }
 
 /// Stop a running server by name.
@@ -1030,7 +1043,7 @@ pub fn recover_current_project_servers() -> Result<()> {
 pub fn save_recovered_server_info(info: &ServerInfo, replace_stale: bool) -> Result<()> {
     let lock = ServerLock::acquire(&info.name)?;
     if let Some(existing) = lock.load_info()?
-        && (!replace_stale || existing.engine != Engine::Clickhouse || is_alive(&existing))
+        && (!replace_stale || existing.engine != Engine::Clickhouse || is_alive(&existing)?)
     {
         return Ok(());
     }
@@ -1151,6 +1164,8 @@ mod tests {
     const CLICKHOUSE_RECOVERY_HELPER: &str = "local::server::tests::clickhouse_recovery_subprocess";
     const MANAGED_PROCESS_HELPER: &str =
         "local::server::tests::managed_clickhouse_process_subprocess";
+    const INSPECTION_FAILURE_HELPER: &str =
+        "local::server::tests::process_inspection_failure_subprocess";
     const READINESS_LOCK_HELPER: &str =
         "local::server::tests::readiness_timeout_lock_failure_subprocess";
 
@@ -1285,10 +1300,13 @@ mod tests {
             .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !discovery::is_managed_clickhouse_process(
-            child.id(),
-            &project.display().to_string(),
-            name,
+        while !matches!(
+            discovery::inspect_managed_clickhouse_process(
+                child.id(),
+                &project.display().to_string(),
+                name,
+            ),
+            Ok(discovery::ManagedProcessIdentity::Managed)
         ) {
             assert_eq!(child.try_wait().unwrap(), None, "test process exited");
             assert!(
@@ -1305,6 +1323,42 @@ mod tests {
         if std::env::var_os("CHCTL_TEST_MANAGED_PROCESS").is_some() {
             std::thread::sleep(Duration::from_secs(30));
         }
+    }
+
+    #[test]
+    fn process_inspection_failure_subprocess() {
+        let Some(project) = enter_helper_project() else {
+            return;
+        };
+        let name = "default";
+        let pid: u32 = std::env::var("CHCTL_TEST_METADATA_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let result = match std::env::var("CHCTL_TEST_METADATA_OPERATION")
+            .unwrap()
+            .as_str()
+        {
+            "normalize" => normalize_server_info(name).map(|_| ()),
+            "recover" => {
+                let mut replacement = test_info(name, std::process::id(), "replacement");
+                replacement.cwd = project.display().to_string();
+                save_recovered_server_info(&replacement, true)
+            }
+            "start" => is_server_running(name).map(|_| ()),
+            "remove" => ServerLock::acquire(name).and_then(|lock| lock.is_running().map(|_| ())),
+            "stop" => kill_server(name),
+            operation => panic!("unknown process inspection operation {operation}"),
+        };
+
+        assert!(matches!(
+            result,
+            Err(Error::ServerProcessInspection {
+                name: error_name,
+                pid: error_pid,
+                ..
+            }) if error_name == name && error_pid == pid
+        ));
     }
 
     fn enter_helper_project() -> Option<PathBuf> {
@@ -1468,6 +1522,89 @@ mod tests {
                 save_recovered_server_info(&info, true).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn process_identity_distinguishes_managed_unrelated_and_dead_pids() {
+        let project = tempfile::tempdir().unwrap();
+        let mut managed = spawn_managed_clickhouse(project.path(), "default");
+        let mut unrelated = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let unrelated_pid = unrelated.id();
+
+        assert_eq!(
+            discovery::inspect_managed_clickhouse_process(
+                managed.id(),
+                &project.path().display().to_string(),
+                "default",
+            )
+            .unwrap(),
+            discovery::ManagedProcessIdentity::Managed
+        );
+        assert_eq!(
+            discovery::inspect_managed_clickhouse_process(
+                unrelated_pid,
+                &project.path().display().to_string(),
+                "default",
+            )
+            .unwrap(),
+            discovery::ManagedProcessIdentity::NotManaged
+        );
+
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
+        assert_eq!(
+            discovery::inspect_managed_clickhouse_process(
+                unrelated_pid,
+                &project.path().display().to_string(),
+                "default",
+            )
+            .unwrap(),
+            discovery::ManagedProcessIdentity::NotManaged
+        );
+
+        managed.kill().unwrap();
+        managed.wait().unwrap();
+    }
+
+    #[test]
+    fn unknown_process_identity_preserves_metadata_and_blocks_lifecycle_actions() {
+        let project = tempfile::tempdir().unwrap();
+        let mut managed = spawn_managed_clickhouse(project.path(), "default");
+        let mut existing = test_info("default", managed.id(), "clickhouse-existing");
+        existing.cwd = project.path().display().to_string();
+        write_initial_metadata(project.path(), &existing);
+
+        let cases = [
+            ("command", "normalize"),
+            ("cwd", "normalize"),
+            ("canonicalize", "normalize"),
+            ("canonicalize", "recover"),
+            ("canonicalize", "start"),
+            ("canonicalize", "remove"),
+            ("canonicalize", "stop"),
+        ];
+        for (failure, operation) in cases {
+            let status = helper(INSPECTION_FAILURE_HELPER, project.path())
+                .env("CHCTL_TEST_METADATA_PID", managed.id().to_string())
+                .env("CHCTL_TEST_METADATA_OPERATION", operation)
+                .env("CHCTL_TEST_PROCESS_INSPECTION_FAILURE", failure)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "{operation} helper with {failure} failure failed with {status}"
+            );
+
+            let preserved: ServerInfo =
+                serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap())
+                    .unwrap();
+            assert_eq!(preserved.pid, managed.id());
+            assert_eq!(preserved.version, "clickhouse-existing");
+            assert_eq!(managed.try_wait().unwrap(), None);
+        }
+
+        managed.kill().unwrap();
+        managed.wait().unwrap();
     }
 
     #[test]
