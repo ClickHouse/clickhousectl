@@ -254,8 +254,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Stops a ClickHouse server. The name defaults to \"default\"; pass it positionally to select
-  another server (e.g., `server stop dev`). The older `--name dev` form remains accepted, but
-  cannot be combined with a positional name. Use `clickhousectl local server list` to find names.
+  another server (e.g., `server stop dev`). Use `clickhousectl local server list` to find names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
@@ -300,8 +299,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  The name defaults to \"default\"; pass it positionally to select another server. The older
-  `--name dev` form remains accepted, but cannot be combined with a positional name.
+  The name defaults to \"default\"; pass it positionally to select another server.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (default: "default")
