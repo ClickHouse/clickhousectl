@@ -68,13 +68,7 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
                     path: link.to_path_buf(),
                 });
             }
-            if let Err(e) = std::fs::remove_file(link) {
-                eprintln!("warning: could not update {}: {}", link.display(), e);
-                return Ok(SymlinkOutcome::Unchanged {
-                    path: link.to_path_buf(),
-                });
-            }
-            if let Err(e) = symlink(target, link) {
+            if let Err(e) = replace_symlink_atomically(target, link) {
                 eprintln!("warning: could not update {}: {}", link.display(), e);
                 return Ok(SymlinkOutcome::Unchanged {
                     path: link.to_path_buf(),
@@ -116,6 +110,30 @@ fn ensure_symlink_at(link: &Path, target: &Path, bin_dir: &Path) -> Result<Symli
             })
         }
     }
+}
+
+#[cfg(unix)]
+fn replace_symlink_atomically(target: &Path, link: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::symlink;
+
+    let link_name = link
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("clickhouse");
+    let temp = loop {
+        let candidate = link.with_file_name(format!(".{link_name}.tmp-{}", uuid::Uuid::new_v4()));
+        match symlink(target, &candidate) {
+            Ok(()) => break candidate,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    };
+
+    let result = std::fs::rename(&temp, link);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }
 
 #[cfg(unix)]
@@ -200,6 +218,23 @@ mod tests {
 
         assert!(matches!(outcome, SymlinkOutcome::Updated { .. }));
         assert_eq!(std::fs::read_link(&link).unwrap(), new_target);
+        assert_eq!(std::fs::read_dir(&bin_dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn preserves_existing_symlink_when_replacement_staging_fails() {
+        let tmp = TempDir::new().unwrap();
+        let bin_dir = tmp.path().join(".local").join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let link = bin_dir.join("clickhouse");
+        let old_target = tmp.path().join("old-clickhouse");
+        symlink(&old_target, &link).unwrap();
+        let invalid_target = PathBuf::from("invalid\0target");
+
+        let outcome = ensure_symlink_at(&link, &invalid_target, &bin_dir).unwrap();
+
+        assert!(matches!(outcome, SymlinkOutcome::Unchanged { .. }));
+        assert_eq!(std::fs::read_link(&link).unwrap(), old_target);
     }
 
     #[test]
