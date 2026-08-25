@@ -3643,7 +3643,7 @@ async fn service_query_repair_continues_when_old_key_cleanup_fails() {
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .and(header("authorization", replacement_auth.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
-        .expect(1)
+        .expect(2)
         .mount(&query_host)
         .await;
 
@@ -3844,7 +3844,7 @@ async fn concurrent_service_query_repairs_share_the_lock_winner() {
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .and(header("authorization", winner_auth.as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
-        .expect(PROCESS_COUNT as u64)
+        .expect((PROCESS_COUNT * 2) as u64)
         .mount(&query_host)
         .await;
     let second_auth = basic_auth("second-key-id:second-key-secret");
@@ -3971,7 +3971,7 @@ async fn concurrent_service_query_repairs_share_the_lock_winner() {
     );
 
     let query_requests = query_host.received_requests().await.unwrap();
-    assert_eq!(query_requests.len(), PROCESS_COUNT);
+    assert_eq!(query_requests.len(), PROCESS_COUNT * 2);
     assert!(query_requests.iter().all(|request| {
         request
             .headers
