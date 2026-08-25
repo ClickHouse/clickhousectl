@@ -1816,18 +1816,29 @@ where
     }
 }
 
-fn stale_stored_query_key_error(
+fn retire_stale_stored_query_key(
     error: &clickhouse_cloud_api::Error,
     service_id: &str,
-    org_id: &str,
+    key: &credentials::ServiceQueryKey,
 ) -> Option<CloudError> {
     match error {
         clickhouse_cloud_api::Error::Api {
             status: 401 | 403,
             message,
-        } if !message.starts_with("SQL error ") => Some(CloudError::new(format!(
-            "the stored Query API key for service {service_id} was rejected and may be stale: {message}\n\nNo credentials were changed. Create a replacement key, then associate its resource ID (`key.id` in the JSON response) with this service's Query API endpoint:\n  clickhousectl cloud api-key create --name clickhousectl-query-{service_id} --org-id {org_id} --json\n  clickhousectl cloud service query-endpoint get {service_id} --org-id {org_id}\n  clickhousectl cloud service query-endpoint create {service_id} --org-id {org_id} --role sql_console_admin --open-api-key <new-key.id>\n\n`query-endpoint create` replaces the complete endpoint configuration. Repeat every existing role and API key from `query-endpoint get`, and preserve its allowed origin with `--allowed-origins`, if set."
-        ))),
+        } if !message.starts_with("SQL error ") => {
+            let recovery = match credentials::remove_service_query_key_if_matches(service_id, key) {
+                Ok(true) => format!(
+                    "The rejected local credential was removed from `service_query_keys.{service_id}`. Rerun the same `clickhousectl cloud service query` command; it will try your active API key and automatically provision and store a replacement if needed. If you used `--no-auto-enable`, omit it to allow provisioning."
+                ),
+                Ok(false) => "The local credential changed while the query was running, so the current record was left untouched. Rerun the same `clickhousectl cloud service query` command to use the current credential.".to_string(),
+                Err(cleanup_error) => format!(
+                    "Automatic recovery could not safely remove the rejected local credential: {cleanup_error}\n\nNo local credentials were changed. After fixing the reported credential-store error, clear saved API credentials with:\n  clickhousectl cloud auth logout --api-keys\nThen restore API key auth (for example, with `clickhousectl cloud auth login --api-key <api-key> --api-secret <api-secret>`) and rerun the query."
+                ),
+            };
+            Some(CloudError::new(format!(
+                "the stored Query API key for service {service_id} was rejected and may be stale: {message}\n\n{recovery}"
+            )))
+        }
         _ => None,
     }
 }
@@ -1934,8 +1945,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             .await;
             match result {
                 Err(error) => {
-                    if let Some(stale) = stale_stored_query_key_error(&error, &service_id, &org_id)
-                    {
+                    if let Some(stale) = retire_stale_stored_query_key(&error, &service_id, &key) {
                         return Err(stale);
                     }
                     Err(error)

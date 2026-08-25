@@ -186,6 +186,29 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
     Ok(())
 }
 
+/// Remove only the query credential this caller actually used. A concurrent
+/// replacement must survive a late rejection from the previous key.
+pub fn remove_service_query_key_if_matches(
+    service_id: &str,
+    expected: &ServiceQueryKey,
+) -> CloudResult<bool> {
+    if !credentials_path().exists() {
+        return Ok(false);
+    }
+    let _lock = lock_credentials_mutation()?;
+    let mut creds = try_load_credentials()?;
+    let matches = creds
+        .service_query_keys
+        .get(service_id)
+        .is_some_and(|key| key.key_id == expected.key_id && key.key_secret == expected.key_secret);
+    if !matches {
+        return Ok(false);
+    }
+    creds.service_query_keys.remove(service_id);
+    save_credentials(&creds)?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

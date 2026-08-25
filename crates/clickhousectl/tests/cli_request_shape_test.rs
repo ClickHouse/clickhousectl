@@ -3306,6 +3306,15 @@ fn write_stale_query_credentials(root: &Path) -> Vec<u8> {
                 "endpoint_id": "ep-1",
                 "service_name": "demo",
                 "created_at": "2026-05-11T12:00:00Z",
+            },
+            "other-service": {
+                "organization_id": "org-1",
+                "api_key_id": "other-api-key-uuid",
+                "key_id": "other-key-id",
+                "key_secret": "other-key-secret",
+                "endpoint_id": "other-ep",
+                "service_name": "other",
+                "created_at": "2026-05-10T12:00:00Z",
             }
         }
     }))
@@ -3314,68 +3323,151 @@ fn write_stale_query_credentials(root: &Path) -> Vec<u8> {
     bytes
 }
 
+fn invoke_stale_service_query(
+    control: &MockServer,
+    query_host: &MockServer,
+    project_dir: &Path,
+) -> std::process::Output {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "environment-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "environment-secret")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(project_dir)
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
 #[tokio::test]
-async fn stale_stored_query_key_guidance_uses_existing_key_and_endpoint_commands() {
+async fn stale_stored_query_key_recovery_rerun_replaces_the_local_credential() {
     for status in [401, 403] {
         let control = start_mock_control_plane_with_service().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/organizations/org-1/keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "key": { "id": QUERY_TEST_KEY_UUID },
+                    "keyId": "replacement-key-id",
+                    "keySecret": "replacement-key-secret",
+                },
+                "status": 200,
+                "requestId": "stub-key-create",
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+        let endpoint_path = format!(
+            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint"
+        );
+        Mock::given(method("GET"))
+            .and(path(endpoint_path.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": "ep-1",
+                    "roles": ["sql_console_admin"],
+                    "openApiKeys": ["stale-api-key-uuid"],
+                    "allowedOrigins": "*",
+                },
+                "status": 200,
+                "requestId": "stub-endpoint-get",
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(endpoint_path.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": "ep-1" },
+                "status": 200,
+                "requestId": "stub-endpoint-upsert",
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+
         let query_host = MockServer::start().await;
+        let basic_auth = |credentials: &str| {
+            format!(
+                "Basic {}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+            )
+        };
+        let stale_auth = basic_auth("stale-key-id:stale-key-secret");
         Mock::given(method("POST"))
             .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+            .and(header("authorization", stale_auth.as_str()))
             .respond_with(
                 ResponseTemplate::new(status).set_body_string(r#"{"error":"Unauthorized"}"#),
             )
             .expect(1)
             .mount(&query_host)
             .await;
+        let project_auth = basic_auth("project-key:project-secret");
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+            .and(header("authorization", project_auth.as_str()))
+            .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+            .expect(1)
+            .mount(&query_host)
+            .await;
+        let replacement_auth = basic_auth("replacement-key-id:replacement-key-secret");
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+            .and(header("authorization", replacement_auth.as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+            .expect(2)
+            .mount(&query_host)
+            .await;
 
         let dir = tempfile::tempdir().unwrap();
-        let original = write_stale_query_credentials(dir.path());
-        let mut command = Command::new(clickhousectl_binary());
-        clear_inherited_env(&mut command);
-        let output = command
-            .env("DO_NOT_TRACK", "1")
-            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-            .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
-            .current_dir(dir.path())
-            .args([
-                "cloud",
-                "--url",
-                &control.uri(),
-                "service",
-                "query",
-                "--id",
-                QUERY_TEST_SERVICE_ID,
-                "--org-id",
-                "org-1",
-                "--query",
-                "SELECT 1",
-            ])
-            .output()
-            .expect("failed to spawn clickhousectl");
+        write_stale_query_credentials(dir.path());
+        let output = invoke_stale_service_query(&control, &query_host, dir.path());
 
         assert_eq!(output.status.code(), Some(1));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("stored Query API key"), "{stderr}");
-        assert!(stderr.contains("No credentials were changed"), "{stderr}");
-        assert!(stderr.contains("cloud api-key create"), "{stderr}");
-        assert!(stderr.contains("key.id"), "{stderr}");
         assert!(
-            stderr.contains("cloud service query-endpoint get"),
+            stderr.contains("rejected local credential was removed"),
             "{stderr}"
         );
         assert!(
-            stderr.contains("cloud service query-endpoint create"),
+            stderr.contains("Rerun the same `clickhousectl cloud service query` command"),
             "{stderr}"
         );
         assert!(
-            stderr.contains("replaces the complete endpoint configuration"),
+            stderr.contains("automatically provision and store a replacement"),
             "{stderr}"
+        );
+        let after_rejection: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(after_rejection["api_key"], "project-key");
+        assert_eq!(after_rejection["api_secret"], "project-secret");
+        assert!(
+            after_rejection["service_query_keys"]
+                .get(QUERY_TEST_SERVICE_ID)
+                .is_none(),
+            "the rejected service credential must be retired: {after_rejection}",
         );
         assert_eq!(
-            std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
-            original,
-            "a stale-key error must leave the credentials file byte-for-byte unchanged",
+            after_rejection["service_query_keys"]["other-service"]["key_id"],
+            "other-key-id",
         );
         assert!(
             control
@@ -3384,9 +3476,130 @@ async fn stale_stored_query_key_guidance_uses_existing_key_and_endpoint_commands
                 .unwrap()
                 .iter()
                 .all(|request| request.method == wiremock::http::Method::GET),
-            "stale-key guidance must not change control-plane resources",
+            "retiring a rejected local credential must not change cloud resources",
+        );
+
+        let rerun = invoke_stale_service_query(&control, &query_host, dir.path());
+        assert_success(&rerun);
+        assert_eq!(rerun.stdout, b"1\n");
+
+        let query_requests = query_host.received_requests().await.unwrap();
+        assert_eq!(query_requests.len(), 4);
+        assert_eq!(
+            query_requests
+                .iter()
+                .filter(|request| {
+                    request
+                        .headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        == Some(stale_auth.as_str())
+                })
+                .count(),
+            1,
+            "the recovery rerun must not reload the rejected credential",
+        );
+        let stored: Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["api_key_id"],
+            QUERY_TEST_KEY_UUID,
+        );
+        assert_eq!(
+            stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"],
+            "replacement-key-id",
+        );
+        assert_eq!(
+            stored["service_query_keys"]["other-service"]["key_id"],
+            "other-key-id",
+        );
+        let endpoint_update = control
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == endpoint_path
+            })
+            .expect("recovery rerun did not bind the replacement key");
+        let body: Value = serde_json::from_slice(&endpoint_update.body).unwrap();
+        assert_eq!(
+            body["openApiKeys"],
+            serde_json::json!(["stale-api-key-uuid", QUERY_TEST_KEY_UUID]),
         );
     }
+}
+
+#[tokio::test]
+async fn ambiguous_stored_query_failure_preserves_the_local_credential() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(500).set_body_string("temporary query failure"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let original = write_stale_query_credentials(dir.path());
+    let output = invoke_stale_service_query(&control, &query_host, dir.path());
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+        original,
+        "an ambiguous query failure must leave every credential byte-for-byte unchanged",
+    );
+    assert!(
+        control
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "an ambiguous query failure must not provision or mutate cloud resources",
+    );
+}
+
+#[tokio::test]
+async fn stale_key_cleanup_failure_guides_existing_credential_commands() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let original = write_stale_query_credentials(dir.path());
+    std::fs::create_dir(dir.path().join(".clickhouse/credentials.lock")).unwrap();
+    let output = invoke_stale_service_query(&control, &query_host, dir.path());
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Automatic recovery could not safely remove"),
+        "{stderr}",
+    );
+    assert!(
+        stderr.contains("clickhousectl cloud auth logout --api-keys"),
+        "{stderr}",
+    );
+    assert!(
+        stderr.contains("clickhousectl cloud auth login --api-key"),
+        "{stderr}",
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+        original,
+        "failed cleanup must not damage or partially rewrite credentials",
+    );
 }
 
 // ── Provisioning cleanup (issue #314) ──────────────────────────────────────
