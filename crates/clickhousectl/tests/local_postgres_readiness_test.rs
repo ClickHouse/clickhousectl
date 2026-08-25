@@ -515,7 +515,7 @@ fn create_success_start_failure_rolls_back_container_and_partial_pgdata() {
 }
 
 #[test]
-fn metadata_failure_uses_the_same_fresh_start_rollback() {
+fn metadata_failure_precedes_docker_mutation() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let metadata_path = project
         .path()
@@ -527,16 +527,13 @@ fn metadata_failure_uses_the_same_fresh_start_rollback() {
         StartBehavior::DelayedReady { ready_on_probe: 1 },
     );
 
-    let output = run_start(project.path(), &docker, "metadata-failure", false);
+    let output = run_start(project.path(), &docker, "metadata-failure", true);
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("IO error"), "stderr: {stderr}");
-    assert!(
-        stderr.contains("failed to remove metadata"),
-        "stderr: {stderr}"
-    );
-    assert_eq!(docker.starts(), 1);
-    assert_eq!(docker.removes(), 1);
+    let error: Value = serde_json::from_slice(&output.stderr).expect("parse metadata error JSON");
+    assert_eq!(error["error"]["code"], "server_metadata_read");
+    assert_eq!(docker.starts(), 0);
+    assert_eq!(docker.removes(), 0);
+    assert!(metadata_path.is_dir(), "metadata collision was mutated");
     assert!(
         !project
             .path()
