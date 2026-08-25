@@ -291,7 +291,7 @@ An omitted `server remove` is deliberately more conservative: it removes only an
 
 Project-scoped `server list`, `stop`, and `remove` use `.clickhouse` under the canonical current directory only. They do not search parent directories, including when the current directory is reached through a symlink or has its own nested `.clickhouse`. Lookup and state errors print that canonical project directory, direct you to change to the intended project directory for stopped servers, and suggest `clickhousectl local server list --global` for finding running servers across projects.
 
-**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly. If a name is generated, retain the returned name for later `stop` and `remove` commands.
+**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 

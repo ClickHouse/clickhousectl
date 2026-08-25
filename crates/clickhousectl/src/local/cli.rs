@@ -205,8 +205,6 @@ CONTEXT FOR AGENTS:
   Without a name, `stop` prefers an existing \"default\", then the sole known ClickHouse server;
   none is a successful no-op, while multiple non-default servers require a name or `stop-all`.
   Without a name, `remove` only removes an existing \"default\"; it never infers a custom server.
-  For project cleanup, use `clickhousectl local server stop-all`; it stops every running
-  ClickHouse and Postgres server in this project without deleting data.
   Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Related: `clickhousectl local client` to connect to a running server.")]
@@ -1203,11 +1201,6 @@ mod tests {
             help.contains("retain the returned `name` and pass it to `stop` and `remove`"),
             "{help}"
         );
-        assert!(
-            help.contains("For project cleanup, use `clickhousectl local server stop-all`"),
-            "{help}"
-        );
-
         let stop_help = local_help(&["server", "stop"]);
         assert!(
             stop_help
