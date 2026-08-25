@@ -17,12 +17,15 @@ fn clickhousectl_binary() -> PathBuf {
 #[derive(Clone, Copy)]
 enum StartBehavior {
     DelayedReady { ready_on_probe: usize },
-    ImmediateExit,
+    ImmediateExit { remove_fails: bool },
 }
 
 struct FakeDockerState {
     behavior: StartBehavior,
+    project: PathBuf,
+    instance_name: String,
     started: AtomicBool,
+    removes: AtomicUsize,
     probes: AtomicUsize,
 }
 
@@ -34,7 +37,7 @@ struct FakeDocker {
 }
 
 impl FakeDocker {
-    fn spawn(directory: &Path, behavior: StartBehavior) -> Self {
+    fn spawn(directory: &Path, instance_name: &str, behavior: StartBehavior) -> Self {
         let socket_path = directory.join("docker.sock");
         let listener = UnixListener::bind(&socket_path).expect("bind fake Docker socket");
         listener
@@ -42,7 +45,10 @@ impl FakeDocker {
             .expect("make fake Docker socket nonblocking");
         let state = Arc::new(FakeDockerState {
             behavior,
+            project: directory.to_path_buf(),
+            instance_name: instance_name.to_string(),
             started: AtomicBool::new(false),
+            removes: AtomicUsize::new(0),
             probes: AtomicUsize::new(0),
         });
         let stop = Arc::new(AtomicBool::new(false));
@@ -79,6 +85,10 @@ impl FakeDocker {
 
     fn probes(&self) -> usize {
         self.state.probes.load(Ordering::SeqCst)
+    }
+
+    fn removes(&self) -> usize {
+        self.state.removes.load(Ordering::SeqCst)
     }
 
     fn finish(mut self) {
@@ -171,7 +181,7 @@ fn inspect_body(state: &FakeDockerState) -> String {
     let running = state.started.load(Ordering::SeqCst)
         && matches!(state.behavior, StartBehavior::DelayedReady { .. });
     let status = if running { "running" } else { "exited" };
-    let exit_code = if matches!(state.behavior, StartBehavior::ImmediateExit)
+    let exit_code = if matches!(state.behavior, StartBehavior::ImmediateExit { .. })
         && state.started.load(Ordering::SeqCst)
     {
         7
@@ -194,6 +204,15 @@ fn inspect_body(state: &FakeDockerState) -> String {
         }
     })
     .to_string()
+}
+
+fn write_pgdata_marker(state: &FakeDockerState) {
+    let data_dir = state
+        .project
+        .join(".clickhouse/servers")
+        .join(format!("{}-pg18/data", state.instance_name));
+    std::fs::create_dir_all(&data_dir).expect("create simulated PGDATA");
+    std::fs::write(data_dir.join("PG_VERSION"), "18").expect("write simulated PGDATA marker");
 }
 
 fn respond(stream: &mut UnixStream, request: &str, state: &FakeDockerState) {
@@ -221,6 +240,7 @@ fn respond(stream: &mut UnixStream, request: &str, state: &FakeDockerState) {
         && request_line.contains("/containers/test-container/start ")
     {
         state.started.store(true, Ordering::SeqCst);
+        write_pgdata_marker(state);
         ok_json(stream, "");
     } else if request_line.starts_with("GET ")
         && request_line.contains("/containers/test-container/logs?")
@@ -272,7 +292,20 @@ fn respond(stream: &mut UnixStream, request: &str, state: &FakeDockerState) {
     } else if request_line.starts_with("DELETE ")
         && request_line.contains("/containers/test-container?")
     {
-        ok_json(stream, "");
+        state.removes.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            state.behavior,
+            StartBehavior::ImmediateExit { remove_fails: true }
+        ) {
+            write_response(
+                stream,
+                "500 Internal Server Error",
+                "application/json",
+                r#"{"message":"simulated cleanup failure"}"#,
+            );
+        } else {
+            ok_json(stream, "");
+        }
     } else {
         panic!("unexpected fake Docker request: {request_line}");
     }
@@ -355,6 +388,7 @@ fn fresh_start_waits_for_delayed_postgres_readiness() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let docker = FakeDocker::spawn(
         project.path(),
+        "fresh",
         StartBehavior::DelayedReady { ready_on_probe: 2 },
     );
 
@@ -376,6 +410,7 @@ fn resumed_start_waits_for_delayed_postgres_readiness() {
     write_stopped_metadata(project.path());
     let docker = FakeDocker::spawn(
         project.path(),
+        "resume",
         StartBehavior::DelayedReady { ready_on_probe: 2 },
     );
 
@@ -394,7 +429,13 @@ fn resumed_start_waits_for_delayed_postgres_readiness() {
 #[test]
 fn immediate_container_exit_is_a_failed_start_with_logs() {
     let project = tempfile::tempdir().expect("create project tempdir");
-    let docker = FakeDocker::spawn(project.path(), StartBehavior::ImmediateExit);
+    let docker = FakeDocker::spawn(
+        project.path(),
+        "crashed",
+        StartBehavior::ImmediateExit {
+            remove_fails: false,
+        },
+    );
 
     let output = run_start(project.path(), &docker, "crashed");
     assert_eq!(output.status.code(), Some(1));
@@ -404,6 +445,7 @@ fn immediate_container_exit_is_a_failed_start_with_logs() {
     assert!(stderr.contains("exit code 7"));
     assert!(stderr.contains("database system was interrupted during startup"));
     assert_eq!(docker.probes(), 0);
+    assert_eq!(docker.removes(), 1);
     assert!(
         !project
             .path()
@@ -411,5 +453,84 @@ fn immediate_container_exit_is_a_failed_start_with_logs() {
             .exists(),
         "failed fresh start retained success metadata"
     );
+    assert!(
+        !project
+            .path()
+            .join(".clickhouse/servers/crashed-pg18")
+            .exists(),
+        "failed fresh start retained PGDATA created by this attempt"
+    );
+    docker.finish();
+}
+
+#[test]
+fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let marker = project
+        .path()
+        .join(".clickhouse/servers/preexisting-pg18/data/existing-data");
+    std::fs::create_dir_all(marker.parent().unwrap()).expect("create pre-existing data dir");
+    std::fs::write(&marker, "keep").expect("write pre-existing data marker");
+    let docker = FakeDocker::spawn(
+        project.path(),
+        "preexisting",
+        StartBehavior::ImmediateExit {
+            remove_fails: false,
+        },
+    );
+
+    let output = run_start(project.path(), &docker, "preexisting");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exited before PostgreSQL became ready"));
+    assert!(stderr.contains("directory existed before this start attempt"));
+    assert_eq!(docker.removes(), 1);
+    assert!(marker.exists(), "failed start removed pre-existing data");
+    let metadata: Value = serde_json::from_slice(
+        &std::fs::read(
+            project
+                .path()
+                .join(".clickhouse/servers/preexisting-pg18.json"),
+        )
+        .expect("read retained metadata"),
+    )
+    .expect("parse retained metadata");
+    assert_eq!(metadata["container_id"], "test-container");
+    docker.finish();
+}
+
+#[test]
+fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let docker = FakeDocker::spawn(
+        project.path(),
+        "cleanup-failure",
+        StartBehavior::ImmediateExit { remove_fails: true },
+    );
+
+    let output = run_start(project.path(), &docker, "cleanup-failure");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("exited before PostgreSQL became ready"));
+    assert!(stderr.contains("simulated cleanup failure"));
+    assert!(stderr.contains("recovery metadata retained"));
+    assert_eq!(docker.removes(), 1);
+    assert!(
+        project
+            .path()
+            .join(".clickhouse/servers/cleanup-failure-pg18/data/PG_VERSION")
+            .exists(),
+        "PGDATA was removed while its container remained"
+    );
+    let metadata: Value = serde_json::from_slice(
+        &std::fs::read(
+            project
+                .path()
+                .join(".clickhouse/servers/cleanup-failure-pg18.json"),
+        )
+        .expect("read recovery metadata"),
+    )
+    .expect("parse recovery metadata");
+    assert_eq!(metadata["container_id"], "test-container");
     docker.finish();
 }

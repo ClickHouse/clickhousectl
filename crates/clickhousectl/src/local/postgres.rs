@@ -202,7 +202,7 @@ async fn start(
         docker::pull_image(&docker, tag, json).await?;
     }
 
-    server::ensure_pg_data_dir(&user_name, &major)?;
+    let created_instance_dir = server::ensure_pg_data_dir(&user_name, &major)?;
     let data_dir = server::pg_data_dir(&user_name, &major);
 
     // Defensive cleanup of any unmanaged container colliding on our chosen
@@ -255,9 +255,14 @@ async fn start(
     .await
     {
         let _ = docker::stop_container(&docker, &container_id).await;
-        let _ = docker::remove_container(&docker, &container_id).await;
-        server::remove_server_info(&key);
-        return Err(error);
+        return Err(rollback_failed_fresh_start(
+            &docker,
+            &container_id,
+            &info,
+            created_instance_dir,
+            error,
+        )
+        .await);
     }
 
     let out = output::PostgresStartOutput {
@@ -271,6 +276,87 @@ async fn start(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+async fn rollback_failed_fresh_start(
+    docker: &bollard::Docker,
+    container_id: &str,
+    info: &ServerInfo,
+    created_instance_dir: bool,
+    primary: Error,
+) -> Error {
+    let instance_dir = server::servers_dir_join(&info.name);
+    let metadata_path = server::server_meta_path_for_recovery(&info.name);
+    let mut diagnostics = Vec::new();
+
+    let container_removed = match docker::remove_container(docker, container_id).await {
+        Ok(()) => true,
+        Err(error) => {
+            diagnostics.push(format!(
+                "failed to remove container '{container_id}': {error}"
+            ));
+            false
+        }
+    };
+
+    let instance_removed = if created_instance_dir && container_removed {
+        match docker::remove_host_dir_blocking(&instance_dir) {
+            Ok(()) if !instance_dir.exists() => true,
+            Ok(()) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': path still exists",
+                    instance_dir.display()
+                ));
+                false
+            }
+            Err(error) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': {error}",
+                    instance_dir.display()
+                ));
+                false
+            }
+        }
+    } else {
+        let reason = if created_instance_dir {
+            "the container could not be removed"
+        } else {
+            "the directory existed before this start attempt"
+        };
+        diagnostics.push(format!(
+            "retained Postgres data '{}' because {reason}",
+            instance_dir.display()
+        ));
+        false
+    };
+
+    if container_removed && instance_removed {
+        match std::fs::remove_file(&metadata_path) {
+            Ok(()) => return primary,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return primary,
+            Err(error) => diagnostics.push(format!(
+                "failed to remove metadata '{}': {error}",
+                metadata_path.display()
+            )),
+        }
+    } else {
+        match server::save_server_info(info) {
+            Ok(()) => diagnostics.push(format!(
+                "recovery metadata retained at '{}'; run `clickhousectl local postgres remove {}` to clean up",
+                metadata_path.display(),
+                user_name_from_key(&info.name)
+            )),
+            Err(error) => diagnostics.push(format!(
+                "failed to preserve recovery metadata '{}': {error}",
+                metadata_path.display()
+            )),
+        }
+    }
+
+    Error::PostgresStartupRollback {
+        primary: Box::new(primary),
+        cleanup: diagnostics.join("; "),
+    }
 }
 
 /// Default user-facing name when `--name` is omitted: `"default"` if no
