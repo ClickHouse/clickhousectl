@@ -13,11 +13,22 @@ use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry, QueryEndpointRole,
+    ServiceQueryAPIEndpoint,
 };
 
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
 /// caller so CORS doesn't apply, but the API still requires a value.
 const ALLOWED_ORIGINS: &str = "*";
+
+enum EndpointCompensation {
+    Delete,
+    Restore(InstanceServiceQueryApiEndpointsPostRequest),
+}
+
+struct BoundQueryEndpoint {
+    endpoint: ServiceQueryAPIEndpoint,
+    compensation: EndpointCompensation,
+}
 
 /// Requires a response field the provisioning flow cannot proceed without.
 fn require_field<T>(value: Option<T>, field: &str) -> CloudResult<T> {
@@ -96,9 +107,8 @@ pub async fn ensure_service_query_setup(
     // The endpoint binding's `openApiKeys` array, by contrast, references
     // API keys by their resource UUID — the same value the management
     // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept. Resolve the UUID
-    // first: every failure past this point deletes the key it identifies, so
-    // an absent `key.id` is the only one with no cleanup available — we
-    // cannot name the key we just created.
+    // first so every later failure can either delete the key safely or report
+    // the exact retained key for recovery.
     let api_key_uuid =
         require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
 
@@ -115,8 +125,8 @@ pub async fn ensure_service_query_setup(
         }
     };
 
-    let endpoint = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
-        Ok(endpoint) => endpoint,
+    let binding = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
+        Ok(binding) => binding,
         Err(e) => {
             // The key was created but never bound or persisted, so nothing
             // can use it.
@@ -134,36 +144,64 @@ pub async fn ensure_service_query_setup(
         api_key_uuid.clone(),
         key_id,
         key_secret,
-        endpoint.id,
+        binding.endpoint.id,
         service_name,
         Utc::now(),
     );
-    if let Err(error) = credentials::set_service_query_key(service_id, stored.clone()) {
-        discard_api_key(client, org_id, &api_key_uuid).await;
-        return Err(error);
+    if let Err(persistence_error) = credentials::set_service_query_key(service_id, stored.clone()) {
+        if let Err(compensation_error) = compensate_endpoint_binding(
+            client,
+            org_id,
+            service_id,
+            &api_key_uuid,
+            &binding.compensation,
+        )
+        .await
+        {
+            return Err(CloudError::new(format!(
+                "local credential persistence failed: {persistence_error}; query endpoint cleanup \
+                 failed: {compensation_error}. API key {api_key_uuid} remains bound and was \
+                 retained for recovery"
+            )));
+        }
+
+        if let Err(cleanup_error) = client.delete_api_key(org_id, &api_key_uuid).await {
+            return Err(CloudError::new(format!(
+                "local credential persistence failed: {persistence_error}; the query endpoint \
+                 binding was restored, but deleting API key {api_key_uuid} failed: {cleanup_error}"
+            )));
+        }
+        return Err(persistence_error);
     }
 
     Ok(stored)
 }
 
-/// The keys already bound to an existing query endpoint, taken from a
-/// successful GET. The upsert replaces `openApiKeys` wholesale, so an absent
-/// `result` or absent `openApiKeys` cannot be read as "no keys bound": merging
-/// into an empty list would revoke every binding the response failed to
-/// report. An explicitly empty list is a real answer and merges normally.
-fn existing_open_api_keys(
-    endpoint: Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>,
-) -> CloudResult<Vec<String>> {
+/// Capture an existing endpoint exactly enough to restore it if local
+/// persistence fails after binding. Every request field is replaced by an
+/// upsert, so binding is unsafe when the GET omits any of them.
+fn existing_endpoint_request(
+    endpoint: Option<ServiceQueryAPIEndpoint>,
+) -> CloudResult<InstanceServiceQueryApiEndpointsPostRequest> {
     let incomplete = |field: &str| {
         CloudError::new(format!(
-            "the query endpoint response is missing field '{field}', so the keys currently bound \
-             to the endpoint are unknown; binding a new key would revoke them"
+            "the query endpoint response is missing field '{field}', so its pre-bind state cannot \
+             be safely restored; refusing to bind a new key"
         ))
     };
-    endpoint
-        .ok_or_else(|| incomplete("result"))?
+    let endpoint = endpoint.ok_or_else(|| incomplete("result"))?;
+    let open_api_keys = endpoint
         .open_api_keys
-        .ok_or_else(|| incomplete("openApiKeys"))
+        .ok_or_else(|| incomplete("openApiKeys"))?;
+    let allowed_origins = endpoint
+        .allowed_origins
+        .ok_or_else(|| incomplete("allowedOrigins"))?;
+    let roles = endpoint.roles.ok_or_else(|| incomplete("roles"))?;
+    Ok(InstanceServiceQueryApiEndpointsPostRequest {
+        allowed_origins,
+        open_api_keys,
+        roles,
+    })
 }
 
 /// Bind `api_key_uuid` to the service's query endpoint, merging into the
@@ -175,16 +213,24 @@ async fn bind_query_endpoint(
     org_id: &str,
     service_id: &str,
     api_key_uuid: &str,
-) -> CloudResult<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-    let mut open_api_keys = match client
+) -> CloudResult<BoundQueryEndpoint> {
+    let (mut open_api_keys, compensation) = match client
         .api()
         .instance_query_endpoint_get(org_id, service_id)
         .await
     {
-        Ok(resp) => existing_open_api_keys(resp.result)?,
+        Ok(resp) => {
+            let request = existing_endpoint_request(resp.result)?;
+            (
+                request.open_api_keys.clone(),
+                EndpointCompensation::Restore(request),
+            )
+        }
         // Only a 404 means there is no endpoint yet, so this binding is the
         // first one and starts from an empty list.
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+            (Vec::new(), EndpointCompensation::Delete)
+        }
         Err(e) => return Err(client.convert_error_for_organization(e, org_id)),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
@@ -199,9 +245,80 @@ async fn bind_query_endpoint(
         allowed_origins: ALLOWED_ORIGINS.to_string(),
     };
 
-    client
+    let endpoint = client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
+        .await?;
+    Ok(BoundQueryEndpoint {
+        endpoint,
+        compensation,
+    })
+}
+
+async fn compensate_endpoint_binding(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_uuid: &str,
+    compensation: &EndpointCompensation,
+) -> CloudResult<()> {
+    let current = match client
+        .api()
+        .instance_query_endpoint_get(org_id, service_id)
         .await
+    {
+        Ok(response) => response.result,
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
+            return match compensation {
+                EndpointCompensation::Delete => Ok(()),
+                EndpointCompensation::Restore(request) => client
+                    .create_query_endpoint(org_id, service_id, request)
+                    .await
+                    .map(|_| ()),
+            };
+        }
+        Err(error) => return Err(client.convert_error_for_organization(error, org_id)),
+    };
+
+    match compensation {
+        EndpointCompensation::Delete => {
+            let mut request = existing_endpoint_request(current)?;
+            if request.allowed_origins == ALLOWED_ORIGINS
+                && request.roles == [QueryEndpointRole::SqlConsoleAdmin]
+                && request.open_api_keys == [api_key_uuid]
+            {
+                client.delete_query_endpoint(org_id, service_id).await?;
+            } else {
+                let previous_len = request.open_api_keys.len();
+                request.open_api_keys.retain(|key| key != api_key_uuid);
+                if request.open_api_keys.len() == previous_len {
+                    return Ok(());
+                }
+                client
+                    .create_query_endpoint(org_id, service_id, &request)
+                    .await?;
+            }
+        }
+        EndpointCompensation::Restore(previous) => {
+            let current = current.ok_or_else(|| {
+                CloudError::new(
+                    "the query endpoint response is missing field 'result', so the newly bound \
+                     key cannot be safely removed",
+                )
+            })?;
+            let mut request = previous.clone();
+            request.open_api_keys = current.open_api_keys.ok_or_else(|| {
+                CloudError::new(
+                    "the query endpoint response is missing field 'openApiKeys', so the newly \
+                     bound key cannot be safely removed",
+                )
+            })?;
+            request.open_api_keys.retain(|key| key != api_key_uuid);
+            client
+                .create_query_endpoint(org_id, service_id, &request)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -266,46 +383,47 @@ mod tests {
         assert_eq!(key.created_at, created_at);
     }
 
-    fn endpoint(
-        open_api_keys: Option<Vec<&str>>,
-    ) -> clickhouse_cloud_api::models::ServiceQueryAPIEndpoint {
-        clickhouse_cloud_api::models::ServiceQueryAPIEndpoint {
-            allowed_origins: None,
+    fn endpoint(open_api_keys: Option<Vec<&str>>) -> ServiceQueryAPIEndpoint {
+        ServiceQueryAPIEndpoint {
+            allowed_origins: Some("https://example.com".to_string()),
             id: Some("ep-1".to_string()),
             open_api_keys: open_api_keys.map(|keys| keys.into_iter().map(str::to_string).collect()),
-            roles: None,
+            roles: Some(vec![QueryEndpointRole::SqlConsoleReadOnly]),
         }
     }
 
     #[test]
     fn existing_keys_are_returned_when_the_endpoint_reports_them() {
         assert_eq!(
-            existing_open_api_keys(Some(endpoint(Some(vec!["uuid-a", "uuid-b"])))).unwrap(),
-            vec!["uuid-a".to_string(), "uuid-b".to_string()],
+            existing_endpoint_request(Some(endpoint(Some(vec!["uuid-a", "uuid-b"]))))
+                .unwrap()
+                .open_api_keys,
+            vec!["uuid-a".to_string(), "uuid-b".to_string()]
         );
     }
 
     #[test]
     fn an_explicitly_empty_key_list_is_a_real_answer() {
         assert!(
-            existing_open_api_keys(Some(endpoint(Some(vec![]))))
+            existing_endpoint_request(Some(endpoint(Some(vec![]))))
                 .unwrap()
+                .open_api_keys
                 .is_empty()
         );
     }
 
     #[test]
     fn absent_open_api_keys_is_refused_rather_than_treated_as_empty() {
-        let err = existing_open_api_keys(Some(endpoint(None))).unwrap_err();
+        let err = existing_endpoint_request(Some(endpoint(None))).unwrap_err();
         assert!(
-            err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
-            "error should name the field and the consequence: {err}",
+            err.to_string().contains("'openApiKeys'") && err.to_string().contains("restored"),
+            "error should name the field and the rollback consequence: {err}",
         );
     }
 
     #[test]
     fn absent_result_is_refused_rather_than_treated_as_empty() {
-        let err = existing_open_api_keys(None).unwrap_err();
+        let err = existing_endpoint_request(None).unwrap_err();
         assert!(
             err.to_string().contains("'result'"),
             "error should name the field: {err}",
