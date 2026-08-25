@@ -22,7 +22,15 @@ const ALLOWED_ORIGINS: &str = "*";
 
 enum EndpointCompensation {
     Delete,
-    Restore(InstanceServiceQueryApiEndpointsPostRequest),
+    Restore {
+        previous: InstanceServiceQueryApiEndpointsPostRequest,
+        written: InstanceServiceQueryApiEndpointsPostRequest,
+    },
+}
+
+enum EndpointCompensationOutcome {
+    Applied,
+    EndpointAbsent,
 }
 
 struct BoundQueryEndpoint {
@@ -68,14 +76,23 @@ fn build_service_query_key(
     }
 }
 
-struct ProvisionedQueryKey {
-    api_key_id: String,
-    key_id: String,
-    key_secret: String,
-}
+/// Ensure a query endpoint is provisioned for `service_id` and return the
+/// persisted key with the provisioning guard. The caller keeps the guard until
+/// endpoint readiness completes so a concurrent rejection cannot retire the
+/// winner while its binding converges. After taking the lock, credentials are
+/// re-read so waiters reuse the winner's key.
+pub async fn ensure_service_query_setup(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    service_name: &str,
+) -> CloudResult<(ServiceQueryKey, credentials::ServiceQueryProvisionLock)> {
+    let lock = credentials::lock_service_query_provisioning()?;
+    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
+        return Ok((existing, lock));
+    }
 
-fn build_query_key_request(service_name: &str) -> ApiKeyPostRequest {
-    ApiKeyPostRequest {
+    let key_request = ApiKeyPostRequest {
         name: format!("clickhousectl-query-{service_name}"),
         assigned_role_ids: vec![],
         expire_at: None,
@@ -89,62 +106,37 @@ fn build_query_key_request(service_name: &str) -> ApiKeyPostRequest {
         #[cfg(feature = "deprecated-fields")]
         roles: None,
         state: ApiKeyPostRequestState::Enabled,
-    }
-}
+    };
 
-async fn create_query_key(
-    client: &CloudClient,
-    org_id: &str,
-    service_name: &str,
-) -> CloudResult<ProvisionedQueryKey> {
-    let key_response = client
-        .create_api_key(org_id, &build_query_key_request(service_name))
-        .await?;
-    // `key_id`/`key_secret` authenticate to the query host. Endpoint and
-    // management APIs identify the same key by the resource UUID in `key.id`.
-    let api_key_id =
+    let key_response = client.create_api_key(org_id, &key_request).await?;
+    // `key_id`/`key_secret` are the credential pair used for query auth.
+    // The endpoint binding's `openApiKeys` array, by contrast, references
+    // API keys by their resource UUID — the same value the management
+    // endpoints (GET/DELETE /v1/.../keys/{keyId}) accept. Resolve the UUID
+    // first so every later failure can either delete the key safely or report
+    // the exact retained key for recovery.
+    let api_key_uuid =
         require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
+
+    // Every response field is `Option<T>`, and an absent credential cannot be
+    // substituted with a placeholder: fail loudly instead of persisting an
+    // empty key pair that every later query would reject.
     let (key_id, key_secret) = match require_credential_pair(&key_response) {
         Ok(pair) => pair,
-        Err(error) => {
-            discard_api_key(client, org_id, &api_key_id).await;
-            return Err(error);
+        Err(e) => {
+            // The key exists but we can't authenticate with it, so it is
+            // dead weight in the org: discard it before failing.
+            discard_api_key(client, org_id, &api_key_uuid).await;
+            return Err(e);
         }
     };
 
-    Ok(ProvisionedQueryKey {
-        api_key_id,
-        key_id,
-        key_secret,
-    })
-}
-
-/// Ensure a query endpoint is provisioned for `service_id` and return the
-/// persisted key. Provisioning is serialized across processes in this project;
-/// after taking the lock, credentials are re-read so waiters reuse the winner's
-/// key. The winner creates the API key, binds it to the query endpoint (merging
-/// into any existing endpoint configuration) with read+write scope on this
-/// service, then merges the key into the latest credentials under the shared
-/// credentials mutation lock.
-pub async fn ensure_service_query_setup(
-    client: &CloudClient,
-    org_id: &str,
-    service_id: &str,
-    service_name: &str,
-) -> CloudResult<ServiceQueryKey> {
-    let _lock = credentials::lock_service_query_provisioning()?;
-    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
-        return Ok(existing);
-    }
-
-    let key = create_query_key(client, org_id, service_name).await?;
-
-    let binding = match bind_query_endpoint(client, org_id, service_id, &key.api_key_id).await {
+    let binding = match bind_query_endpoint(client, org_id, service_id, &api_key_uuid).await {
         Ok(binding) => binding,
         Err(e) => {
             // The key was created but never bound or persisted, so nothing
             // can use it.
-            discard_api_key(client, org_id, &key.api_key_id).await;
+            discard_api_key(client, org_id, &api_key_uuid).await;
             return Err(e);
         }
     };
@@ -155,217 +147,50 @@ pub async fn ensure_service_query_setup(
     // dangling UUID in the endpoint's `openApiKeys`.
     let stored = build_service_query_key(
         org_id,
-        key.api_key_id.clone(),
-        key.key_id,
-        key.key_secret,
+        api_key_uuid.clone(),
+        key_id,
+        key_secret,
         binding.endpoint.id,
         service_name,
         Utc::now(),
     );
     if let Err(persistence_error) = credentials::set_service_query_key(service_id, stored.clone()) {
-        if let Err(compensation_error) = compensate_endpoint_binding(
+        let compensation_outcome = match compensate_endpoint_binding(
             client,
             org_id,
             service_id,
-            &key.api_key_id,
+            &api_key_uuid,
             &binding.compensation,
         )
         .await
         {
+            Ok(outcome) => outcome,
+            Err(compensation_error) => {
+                return Err(CloudError::new(format!(
+                    "local credential persistence failed: {persistence_error}; query endpoint \
+                     cleanup failed: {compensation_error}. API key {api_key_uuid} was retained for \
+                     recovery; inspect the current endpoint before deleting it"
+                )));
+            }
+        };
+
+        if let Err(cleanup_error) = client.delete_api_key(org_id, &api_key_uuid).await {
             return Err(CloudError::new(format!(
                 "local credential persistence failed: {persistence_error}; query endpoint cleanup \
-                 failed: {compensation_error}. API key {} remains bound and was \
-                 retained for recovery",
-                key.api_key_id
+                 succeeded, but deleting API key {api_key_uuid} failed: {cleanup_error}"
             )));
         }
-
-        if let Err(cleanup_error) = client.delete_api_key(org_id, &key.api_key_id).await {
-            return Err(CloudError::new(format!(
-                "local credential persistence failed: {persistence_error}; the query endpoint \
-                 binding was restored, but deleting API key {} failed: {cleanup_error}",
-                key.api_key_id
-            )));
-        }
-        return Err(persistence_error);
-    }
-
-    Ok(stored)
-}
-
-struct RepairEndpointConfiguration {
-    id: Option<String>,
-    roles: Vec<QueryEndpointRole>,
-    open_api_keys: Vec<String>,
-    allowed_origins: String,
-}
-
-impl RepairEndpointConfiguration {
-    fn request(&self, open_api_keys: Vec<String>) -> InstanceServiceQueryApiEndpointsPostRequest {
-        InstanceServiceQueryApiEndpointsPostRequest {
-            roles: self.roles.clone(),
-            open_api_keys,
-            allowed_origins: self.allowed_origins.clone(),
-        }
-    }
-}
-
-fn repair_endpoint_configuration(
-    endpoint: clickhouse_cloud_api::models::ServiceQueryAPIEndpoint,
-    stored_endpoint_id: Option<&str>,
-    api_key_id: &str,
-) -> CloudResult<RepairEndpointConfiguration> {
-    if let Some(stored_endpoint_id) = stored_endpoint_id {
-        let current_endpoint_id = endpoint.id.as_deref().ok_or_else(|| {
-            CloudError::new(
-                "the query endpoint response omitted its id; refusing to repair a stored endpoint binding without confirming ownership",
-            )
-        })?;
-        if current_endpoint_id != stored_endpoint_id {
-            return Err(CloudError::new(format!(
-                "the stored query key belongs to endpoint {stored_endpoint_id}, but the service now reports endpoint {current_endpoint_id}; refusing to modify the replacement endpoint"
-            )));
-        }
-    }
-
-    let open_api_keys = endpoint.open_api_keys.ok_or_else(|| {
-        CloudError::new(
-            "the query endpoint response omitted 'openApiKeys'; refusing to replace a binding when the other authorized keys are unknown",
-        )
-    })?;
-    if !open_api_keys.iter().any(|key| key == api_key_id) {
-        return Err(CloudError::new(format!(
-            "the query endpoint no longer contains the stored API key binding {api_key_id}; refusing to add or remove credentials without an exact binding to replace"
-        )));
-    }
-
-    Ok(RepairEndpointConfiguration {
-        id: endpoint.id,
-        roles: endpoint.roles.ok_or_else(|| {
-            CloudError::new(
-                "the query endpoint response omitted 'roles'; refusing to replace a binding when the endpoint permissions are unknown",
-            )
-        })?,
-        open_api_keys,
-        allowed_origins: endpoint.allowed_origins.ok_or_else(|| {
-            CloudError::new(
-                "the query endpoint response omitted 'allowedOrigins'; refusing to replace a binding when the endpoint configuration is unknown",
-            )
-        })?,
-    })
-}
-
-/// Replace one service's stored query key without touching any other local
-/// credential or endpoint binding. The same project lock as first-time
-/// provisioning protects the read-modify-write sequence across processes. If
-/// another repair replaced the expected stale key while this caller waited,
-/// its winning credential is returned without another rotation.
-pub async fn repair_service_query_setup(
-    client: &CloudClient,
-    org_id: &str,
-    service_id: &str,
-    service_name: &str,
-    expected_stale: ServiceQueryKey,
-) -> CloudResult<ServiceQueryKey> {
-    let _lock = credentials::lock_service_query_provisioning()?;
-    let old = credentials::try_get_service_query_key(service_id)?
-        .ok_or_else(|| {
-            CloudError::new(format!(
-                "no stored query key exists for service {service_id}; refusing to provision one under --repair-query-key"
-            ))
-        })?;
-    let old_api_key_id = old.api_key_id.as_deref().ok_or_else(|| {
-        CloudError::new(format!(
-            "the stored query key for service {service_id} predates exact management API key IDs; refusing unsafe repair"
-        ))
-    })?;
-    let old_org_id = old.organization_id.as_deref().ok_or_else(|| {
-        CloudError::new(format!(
-            "the stored query key for service {service_id} has no provisioning organization; refusing unsafe repair"
-        ))
-    })?;
-    if old_org_id != org_id {
-        return Err(CloudError::new(format!(
-            "the stored query key for service {service_id} belongs to organization {old_org_id}, not {org_id}; refusing to repair it"
-        )));
-    }
-    if old.api_key_id != expected_stale.api_key_id
-        || old.key_id != expected_stale.key_id
-        || old.key_secret != expected_stale.key_secret
-    {
-        return Ok(old);
-    }
-
-    let endpoint = client.get_query_endpoint(org_id, service_id).await?;
-    let endpoint =
-        repair_endpoint_configuration(endpoint, old.endpoint_id.as_deref(), old_api_key_id)?;
-    let key = create_query_key(client, org_id, service_name).await?;
-
-    let mut replaced = false;
-    let replacement_keys = endpoint
-        .open_api_keys
-        .iter()
-        .filter_map(|existing| {
-            if existing == old_api_key_id {
-                if replaced {
-                    None
-                } else {
-                    replaced = true;
-                    Some(key.api_key_id.clone())
-                }
-            } else {
-                Some(existing.clone())
-            }
-        })
-        .collect();
-    let replacement_request = endpoint.request(replacement_keys);
-    let rollback_request = endpoint.request(endpoint.open_api_keys.clone());
-    let replacement_endpoint = match client
-        .create_query_endpoint(org_id, service_id, &replacement_request)
-        .await
-    {
-        Ok(endpoint) => endpoint,
-        Err(error) => {
-            discard_api_key(client, org_id, &key.api_key_id).await;
-            return Err(error);
-        }
-    };
-
-    let stored = build_service_query_key(
-        org_id,
-        key.api_key_id.clone(),
-        key.key_id,
-        key.key_secret,
-        replacement_endpoint.id.or(endpoint.id),
-        service_name,
-        Utc::now(),
-    );
-    if let Err(save_error) = credentials::set_service_query_key(service_id, stored.clone()) {
-        let rollback_error = client
-            .create_query_endpoint(org_id, service_id, &rollback_request)
-            .await
-            .err();
-        return match rollback_error {
-            Some(rollback_error) => Err(CloudError::new(format!(
-                "{save_error}; additionally failed to restore the previous query endpoint binding: {rollback_error}"
+        return match compensation_outcome {
+            EndpointCompensationOutcome::Applied => Err(persistence_error),
+            EndpointCompensationOutcome::EndpointAbsent => Err(CloudError::new(format!(
+                "local credential persistence failed: {persistence_error}; query endpoint cleanup \
+                 was skipped because the endpoint was deleted concurrently, and it was not \
+                 recreated. API key {api_key_uuid} was deleted"
             ))),
-            None => {
-                discard_api_key(client, org_id, &key.api_key_id).await;
-                Err(save_error)
-            }
         };
     }
 
-    if let Err(error) = client
-        .delete_api_key_if_exists(org_id, old_api_key_id)
-        .await
-    {
-        eprintln!(
-            "Warning: the replacement query key was stored, but old API key {old_api_key_id} in organization {org_id} could not be deleted: {error}. Delete the old key manually when the control plane is available."
-        );
-    }
-
-    Ok(stored)
+    Ok((stored, lock))
 }
 
 /// Capture an existing endpoint exactly enough to restore it if local
@@ -405,23 +230,18 @@ async fn bind_query_endpoint(
     service_id: &str,
     api_key_uuid: &str,
 ) -> CloudResult<BoundQueryEndpoint> {
-    let (mut open_api_keys, compensation) = match client
+    let (mut open_api_keys, previous) = match client
         .api()
         .instance_query_endpoint_get(org_id, service_id)
         .await
     {
         Ok(resp) => {
             let request = existing_endpoint_request(resp.result)?;
-            (
-                request.open_api_keys.clone(),
-                EndpointCompensation::Restore(request),
-            )
+            (request.open_api_keys.clone(), Some(request))
         }
         // Only a 404 means there is no endpoint yet, so this binding is the
         // first one and starts from an empty list.
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
-            (Vec::new(), EndpointCompensation::Delete)
-        }
+        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => (Vec::new(), None),
         Err(e) => return Err(client.convert_error_for_organization(e, org_id)),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
@@ -434,6 +254,13 @@ async fn bind_query_endpoint(
         roles: vec![QueryEndpointRole::SqlConsoleAdmin],
         open_api_keys,
         allowed_origins: ALLOWED_ORIGINS.to_string(),
+    };
+    let compensation = match previous {
+        Some(previous) => EndpointCompensation::Restore {
+            previous,
+            written: endpoint_request.clone(),
+        },
+        None => EndpointCompensation::Delete,
     };
 
     let endpoint = client
@@ -451,7 +278,7 @@ async fn compensate_endpoint_binding(
     service_id: &str,
     api_key_uuid: &str,
     compensation: &EndpointCompensation,
-) -> CloudResult<()> {
+) -> CloudResult<EndpointCompensationOutcome> {
     let current = match client
         .api()
         .instance_query_endpoint_get(org_id, service_id)
@@ -459,13 +286,7 @@ async fn compensate_endpoint_binding(
     {
         Ok(response) => response.result,
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
-            return match compensation {
-                EndpointCompensation::Delete => Ok(()),
-                EndpointCompensation::Restore(request) => client
-                    .create_query_endpoint(org_id, service_id, request)
-                    .await
-                    .map(|_| ()),
-            };
+            return Ok(EndpointCompensationOutcome::EndpointAbsent);
         }
         Err(error) => return Err(client.convert_error_for_organization(error, org_id)),
     };
@@ -482,34 +303,36 @@ async fn compensate_endpoint_binding(
                 let previous_len = request.open_api_keys.len();
                 request.open_api_keys.retain(|key| key != api_key_uuid);
                 if request.open_api_keys.len() == previous_len {
-                    return Ok(());
+                    return Ok(EndpointCompensationOutcome::Applied);
                 }
                 client
                     .create_query_endpoint(org_id, service_id, &request)
                     .await?;
             }
         }
-        EndpointCompensation::Restore(previous) => {
+        EndpointCompensation::Restore { previous, written } => {
             let current = current.ok_or_else(|| {
                 CloudError::new(
-                    "the query endpoint response is missing field 'result', so the newly bound \
-                     key cannot be safely removed",
+                    "query endpoint restoration was skipped because the current state could not be \
+                     confirmed: the API response is missing field 'result'",
                 )
             })?;
-            let mut request = previous.clone();
-            request.open_api_keys = current.open_api_keys.ok_or_else(|| {
-                CloudError::new(
-                    "the query endpoint response is missing field 'openApiKeys', so the newly \
-                     bound key cannot be safely removed",
-                )
-            })?;
-            request.open_api_keys.retain(|key| key != api_key_uuid);
+            if current.allowed_origins.as_ref() != Some(&written.allowed_origins)
+                || current.open_api_keys.as_ref() != Some(&written.open_api_keys)
+                || current.roles.as_ref() != Some(&written.roles)
+            {
+                return Err(CloudError::new(
+                    "query endpoint restoration was intentionally skipped because its current \
+                     roles, allowed origins, or API key bindings no longer match the state written \
+                     by this operation",
+                ));
+            }
             client
-                .create_query_endpoint(org_id, service_id, &request)
+                .create_query_endpoint(org_id, service_id, previous)
                 .await?;
         }
     }
-    Ok(())
+    Ok(EndpointCompensationOutcome::Applied)
 }
 
 #[cfg(test)]

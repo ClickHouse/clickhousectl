@@ -156,7 +156,7 @@ pub enum Error {
     #[allow(clippy::enum_variant_names)]
     DockerError(String),
 
-    #[error("{primary}\nPostgres startup rollback diagnostics: {cleanup}")]
+    #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
     PostgresStartupRollback {
         #[source]
         primary: Box<Error>,
