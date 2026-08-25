@@ -95,6 +95,21 @@ impl FakeDocker {
                                 }
                             });
                             write_response(&mut stream, "application/json", &body.to_string());
+                        } else if request.contains("/containers/existing-container/exec ") {
+                            assert!(request.contains("pg_isready"));
+                            write_response(
+                                &mut stream,
+                                "application/json",
+                                r#"{"Id":"probe-1"}"#,
+                            );
+                        } else if request.contains("/exec/probe-1/start ") {
+                            write_response(&mut stream, "application/json", "");
+                        } else if request.contains("/exec/probe-1/json ") {
+                            write_response(
+                                &mut stream,
+                                "application/json",
+                                r#"{"Running":false,"ExitCode":0}"#,
+                            );
                         } else {
                             write_response(&mut stream, "application/json", "{}");
                         }
