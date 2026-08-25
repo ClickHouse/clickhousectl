@@ -964,7 +964,7 @@ pub fn recover_current_project_servers() -> Result<()> {
 pub fn save_recovered_server_info(info: &ServerInfo, replace_stale: bool) -> Result<()> {
     let lock = ServerLock::acquire(&info.name)?;
     if let Some(existing) = lock.load_info()?
-        && (!replace_stale || is_alive(&existing))
+        && (!replace_stale || existing.engine != Engine::Clickhouse || is_alive(&existing))
     {
         return Ok(());
     }
@@ -1081,6 +1081,7 @@ mod tests {
         "local::server::tests::advisory_count_ignores_unrelated_corrupt_metadata";
     const STRICT_LIST_HELPER: &str = "local::server::tests::strict_list_reports_corrupt_metadata";
     const POSTGRES_RECOVERY_HELPER: &str = "local::server::tests::postgres_recovery_subprocess";
+    const CLICKHOUSE_RECOVERY_HELPER: &str = "local::server::tests::clickhouse_recovery_subprocess";
 
     fn test_info(name: &str, pid: u32, version: &str) -> ServerInfo {
         ServerInfo {
@@ -1111,11 +1112,15 @@ mod tests {
     }
 
     fn metadata_path(project: &Path) -> PathBuf {
-        project.join(".clickhouse/servers/default.json")
+        metadata_path_for(project, "default")
+    }
+
+    fn metadata_path_for(project: &Path, name: &str) -> PathBuf {
+        project.join(format!(".clickhouse/servers/{name}.json"))
     }
 
     fn write_initial_metadata(project: &Path, info: &ServerInfo) {
-        let path = metadata_path(project);
+        let path = metadata_path_for(project, &info.name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, serde_json::to_vec_pretty(info).unwrap()).unwrap();
     }
@@ -1234,6 +1239,55 @@ mod tests {
             "17",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn clickhouse_recovery_subprocess() {
+        if enter_helper_project().is_none() {
+            return;
+        }
+        let name = std::env::var("CHCTL_TEST_METADATA_NAME").unwrap();
+        save_recovered_server_info(
+            &test_info(&name, std::process::id(), "clickhouse-recovered"),
+            true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn clickhouse_recovery_preserves_postgres_collision_and_replaces_stale_clickhouse() {
+        let project = tempfile::tempdir().unwrap();
+        let postgres = test_postgres_info("postgres:17-existing");
+        let stale_clickhouse = test_info("stale-clickhouse", u32::MAX, "clickhouse-stale");
+        write_initial_metadata(project.path(), &postgres);
+        write_initial_metadata(project.path(), &stale_clickhouse);
+
+        for name in [&postgres.name, &stale_clickhouse.name] {
+            let status = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+                .env("CHCTL_TEST_METADATA_NAME", name)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "ClickHouse recovery helper failed with {status}"
+            );
+        }
+
+        let live_postgres: ServerInfo = serde_json::from_slice(
+            &std::fs::read(metadata_path_for(project.path(), &postgres.name)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(live_postgres.version, "postgres:17-existing");
+        assert_eq!(live_postgres.engine, Engine::Postgres);
+        assert_eq!(live_postgres.container_id.as_deref(), Some("container-17"));
+
+        let live_clickhouse: ServerInfo = serde_json::from_slice(
+            &std::fs::read(metadata_path_for(project.path(), &stale_clickhouse.name)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(live_clickhouse.version, "clickhouse-recovered");
+        assert_eq!(live_clickhouse.engine, Engine::Clickhouse);
+        assert!(live_clickhouse.container_id.is_none());
     }
 
     #[test]
