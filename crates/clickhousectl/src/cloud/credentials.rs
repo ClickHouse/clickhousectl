@@ -59,7 +59,17 @@ fn ensure_credentials_dir() -> CloudResult<PathBuf> {
 
 /// Serialize Query API provisioning across processes in this project.
 pub fn lock_service_query_provisioning() -> CloudResult<ServiceQueryProvisionLock> {
-    let path = ensure_credentials_dir()?.join("query-provision.lock");
+    Ok(ServiceQueryProvisionLock {
+        _file: lock_file("query-provision.lock")?,
+    })
+}
+
+fn lock_credentials_mutation() -> CloudResult<std::fs::File> {
+    lock_file("credentials.lock")
+}
+
+fn lock_file(name: &str) -> CloudResult<std::fs::File> {
+    let path = ensure_credentials_dir()?.join(name);
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -69,7 +79,7 @@ pub fn lock_service_query_provisioning() -> CloudResult<ServiceQueryProvisionLoc
         .map_err(|error| CloudError::new(format!("failed to open {}: {error}", path.display())))?;
     file.lock()
         .map_err(|error| CloudError::new(format!("failed to lock {}: {error}", path.display())))?;
-    Ok(ServiceQueryProvisionLock { _file: file })
+    Ok(file)
 }
 
 pub fn load_credentials() -> Option<Credentials> {
@@ -97,12 +107,17 @@ pub fn try_load_credentials() -> CloudResult<Credentials> {
         .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))
 }
 
-pub fn clear_credentials() {
+pub fn clear_credentials() -> CloudResult<()> {
     let path = credentials_path();
+    if !path.exists() {
+        return Ok(());
+    }
+    let _lock = lock_credentials_mutation()?;
     let _ = std::fs::remove_file(path);
+    Ok(())
 }
 
-pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
+fn save_credentials(creds: &Credentials) -> CloudResult<()> {
     ensure_credentials_dir()?;
     let path = credentials_path();
     let json = serde_json::to_string_pretty(creds)?;
@@ -120,6 +135,21 @@ pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
     Ok(())
 }
 
+pub fn set_api_credentials(api_key: String, api_secret: String) -> CloudResult<()> {
+    let _lock = lock_credentials_mutation()?;
+    let mut creds = load_credentials().unwrap_or_default();
+    creds.api_key = Some(api_key);
+    creds.api_secret = Some(api_secret);
+    save_credentials(&creds)
+}
+
+pub fn set_service_query_key(service_id: &str, key: ServiceQueryKey) -> CloudResult<()> {
+    let _lock = lock_credentials_mutation()?;
+    let mut creds = try_load_credentials()?;
+    creds.service_query_keys.insert(service_id.to_string(), key);
+    save_credentials(&creds)
+}
+
 pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
     let creds = load_credentials()?;
     creds.service_query_keys.get(service_id).cloned()
@@ -131,6 +161,10 @@ pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<Service
 }
 
 pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
+    if !credentials_path().exists() {
+        return Ok(());
+    }
+    let _lock = lock_credentials_mutation()?;
     let Some(mut creds) = load_credentials() else {
         return Ok(());
     };

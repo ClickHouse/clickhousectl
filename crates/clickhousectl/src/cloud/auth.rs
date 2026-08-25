@@ -93,10 +93,7 @@ pub async fn run(
                         "--api-secret is required when --api-key is provided".into(),
                     )
                 })?;
-                let mut creds = credentials::load_credentials().unwrap_or_default();
-                creds.api_key = Some(key);
-                creds.api_secret = Some(secret);
-                credentials::save_credentials(&creds)
+                credentials::set_api_credentials(key, secret)
                     .map_err(|error| Error::Cloud(error.to_string()))?;
                 println!(
                     "Credentials saved to {}",
@@ -138,12 +135,14 @@ pub async fn run(
                     println!("OAuth tokens cleared. API keys unchanged.");
                 }
                 (false, true) => {
-                    credentials::clear_credentials();
+                    credentials::clear_credentials()
+                        .map_err(|error| Error::Cloud(error.to_string()))?;
                     println!("API keys cleared. OAuth tokens unchanged.");
                 }
                 _ => {
                     clear_tokens();
-                    credentials::clear_credentials();
+                    credentials::clear_credentials()
+                        .map_err(|error| Error::Cloud(error.to_string()))?;
                     println!("Logged out. All saved credentials cleared.");
                 }
             }
@@ -303,10 +302,7 @@ fn auth_interactive() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Err("API secret cannot be empty".into());
     }
 
-    let mut creds = credentials::load_credentials().unwrap_or_default();
-    creds.api_key = Some(api_key);
-    creds.api_secret = Some(api_secret);
-    credentials::save_credentials(&creds)?;
+    credentials::set_api_credentials(api_key, api_secret)?;
 
     println!(
         "Credentials saved to {}",

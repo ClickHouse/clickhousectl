@@ -610,6 +610,97 @@ async fn service_delete_removes_the_exact_stored_query_key_after_the_service() {
 }
 
 #[tokio::test]
+async fn service_query_key_removal_merges_changes_made_under_the_credentials_lock() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-key-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_service_query_key(dir.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
+    let credentials_dir = dir.path().join(".clickhouse");
+    let credentials_path = credentials_dir.join("credentials.json");
+    let credentials_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(credentials_dir.join("credentials.lock"))
+        .unwrap();
+    credentials_lock.lock().unwrap();
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let mut child = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "delete",
+            DELETE_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if mock.received_requests().await.unwrap().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("service deletion did not reach local credential cleanup");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "service-key removal did not wait for the credentials lock",
+    );
+
+    let mut latest: Value = serde_json::from_slice(&std::fs::read(&credentials_path).unwrap())
+        .expect("credentials were not valid JSON");
+    latest["api_key"] = Value::String("concurrent-key".to_string());
+    latest["api_secret"] = Value::String("concurrent-secret".to_string());
+    std::fs::write(&credentials_path, serde_json::to_vec(&latest).unwrap()).unwrap();
+    credentials_lock.unlock().unwrap();
+    drop(credentials_lock);
+
+    let output = tokio::task::spawn_blocking(move || child.wait_with_output().unwrap())
+        .await
+        .unwrap();
+    assert_success(&output);
+    let stored: Value = serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
+    assert_eq!(stored["api_key"], "concurrent-key");
+    assert_eq!(stored["api_secret"], "concurrent-secret");
+    assert!(stored.get("service_query_keys").is_none());
+}
+
+#[tokio::test]
 async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
     let mock = MockServer::start().await;
     Mock::given(method("DELETE"))
@@ -3017,6 +3108,167 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
 
 const QUERY_TEST_KEY_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
+async fn provision_while_project_auth_changes(auth_args: &[&str]) -> tempfile::TempDir {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": QUERY_TEST_KEY_UUID },
+                "keyId": "provisioned-key-id",
+                "keySecret": "provisioned-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get",
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir_all(&home_dir).unwrap();
+    let credentials_dir = dir.path().join(".clickhouse");
+    std::fs::create_dir_all(&credentials_dir).unwrap();
+    std::fs::write(credentials_dir.join(".gitignore"), "*\n").unwrap();
+    std::fs::write(
+        credentials_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "api_key": "fake-key-for-tests",
+            "api_secret": "fake-secret-for-tests",
+            "service_query_keys": {
+                "existing-service": {
+                    "key_id": "existing-key-id",
+                    "key_secret": "existing-key-secret",
+                    "service_name": "existing",
+                    "created_at": "2026-05-11T12:00:00Z",
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let auth_args: Vec<String> = auth_args.iter().map(|arg| (*arg).to_string()).collect();
+    let auth_project_dir = dir.path().to_path_buf();
+    let auth_home_dir = home_dir.clone();
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(move |_: &wiremock::Request| {
+            let mut command = Command::new(clickhousectl_binary());
+            clear_agent_env(&mut command);
+            let output = command
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", &auth_home_dir)
+                .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+                .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+                .current_dir(&auth_project_dir)
+                .args(&auth_args)
+                .output()
+                .expect("failed to spawn concurrent auth command");
+            assert_success(&output);
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": "ep-1" },
+                "status": 200,
+                "requestId": "stub-endpoint-upsert",
+            }))
+        })
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home_dir)
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+    dir
+}
+
+#[tokio::test]
+async fn provisioning_merges_a_concurrent_api_key_login() {
+    let dir = provision_while_project_auth_changes(&[
+        "cloud",
+        "auth",
+        "login",
+        "--api-key",
+        "concurrent-key",
+        "--api-secret",
+        "concurrent-secret",
+    ])
+    .await;
+
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["api_key"], "concurrent-key");
+    assert_eq!(stored["api_secret"], "concurrent-secret");
+    assert_eq!(
+        stored["service_query_keys"]["existing-service"]["key_id"],
+        "existing-key-id"
+    );
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"],
+        "provisioned-key-id"
+    );
+}
+
+#[tokio::test]
+async fn provisioning_does_not_restore_credentials_cleared_by_concurrent_logout() {
+    let dir =
+        provision_while_project_auth_changes(&["cloud", "auth", "logout", "--api-keys"]).await;
+
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(stored.get("api_key").is_none());
+    assert!(stored.get("api_secret").is_none());
+    assert!(
+        stored["service_query_keys"]
+            .get("existing-service")
+            .is_none()
+    );
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"],
+        "provisioned-key-id"
+    );
+    assert_eq!(stored["service_query_keys"].as_object().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn service_query_auto_provisioning_is_single_flight_across_processes() {
     const PROCESS_COUNT: usize = 6;
@@ -3240,7 +3492,12 @@ async fn service_query_auto_provisioning_is_single_flight_across_processes() {
     entries.sort();
     assert_eq!(
         entries,
-        [".gitignore", "credentials.json", "query-provision.lock"],
+        [
+            ".gitignore",
+            "credentials.json",
+            "credentials.lock",
+            "query-provision.lock",
+        ],
         "atomic persistence must not leave a temporary file",
     );
 }

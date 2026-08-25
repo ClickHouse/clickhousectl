@@ -62,7 +62,8 @@ fn build_service_query_key(
 /// after taking the lock, credentials are re-read so waiters reuse the winner's
 /// key. The winner creates the API key, binds it to the query endpoint (merging
 /// into any existing endpoint configuration) with read+write scope on this
-/// service, and atomically saves the merged credentials.
+/// service, then merges the key into the latest credentials under the shared
+/// credentials mutation lock.
 pub async fn ensure_service_query_setup(
     client: &CloudClient,
     org_id: &str,
@@ -70,9 +71,8 @@ pub async fn ensure_service_query_setup(
     service_name: &str,
 ) -> CloudResult<ServiceQueryKey> {
     let _lock = credentials::lock_service_query_provisioning()?;
-    let mut creds = credentials::try_load_credentials()?;
-    if let Some(existing) = creds.service_query_keys.get(service_id) {
-        return Ok(existing.clone());
+    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
+        return Ok(existing);
     }
 
     let key_request = ApiKeyPostRequest {
@@ -138,10 +138,7 @@ pub async fn ensure_service_query_setup(
         service_name,
         Utc::now(),
     );
-    creds
-        .service_query_keys
-        .insert(service_id.to_string(), stored.clone());
-    if let Err(error) = credentials::save_credentials(&creds) {
+    if let Err(error) = credentials::set_service_query_key(service_id, stored.clone()) {
         discard_api_key(client, org_id, &api_key_uuid).await;
         return Err(error);
     }
