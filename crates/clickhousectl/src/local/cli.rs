@@ -36,24 +36,13 @@ pub struct LocalArgs {
 pub enum LocalCommands {
     /// Install a ClickHouse version
     #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
+
 EXAMPLES:
   clickhousectl local install latest
-  clickhousectl local install stable
   clickhousectl local install 26.8
-  clickhousectl local install 26.8.1.1760
-
-DOWNLOAD:
-  Expect an approximately 150 MB download. Binaries are installed at
-  ~/.clickhouse/versions/<version>/clickhouse.
-  Downloads use builds.clickhouse.com, with fallbacks to packages.clickhouse.com
-  on Linux and github.com/ClickHouse/ClickHouse releases on macOS.
-
-START A SERVER DIRECTLY:
-  `clickhousectl local server start` installs `latest` when needed and starts a
-  local server, so a separate install command is optional.
-
-CONTEXT FOR AGENTS:
-  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
+  clickhousectl local install 26.8.1.1760")]
     Install {
         /// Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.9.61".
         #[arg(value_parser = parse_install_version_operand)]
@@ -655,37 +644,6 @@ mod tests {
                 assert_eq!(port, expected_port, "selectors: {selectors:?}");
             }
         }
-    }
-
-    #[test]
-    fn install_help_documents_examples_destination_downloads_and_server_route() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "install", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        assert!(
-            help.contains("clickhousectl local install latest"),
-            "{help}"
-        );
-        assert!(
-            help.contains("clickhousectl local install stable"),
-            "{help}"
-        );
-        assert!(help.contains("clickhousectl local install 26.8"), "{help}");
-        assert!(
-            help.contains("~/.clickhouse/versions/<version>/clickhouse"),
-            "{help}"
-        );
-        assert!(help.contains("approximately 150 MB"), "{help}");
-        assert!(help.contains("builds.clickhouse.com"), "{help}");
-        assert!(help.contains("packages.clickhouse.com"), "{help}");
-        assert!(help.contains("github.com/ClickHouse/ClickHouse"), "{help}");
-        assert!(
-            help.contains("`clickhousectl local server start` installs `latest`"),
-            "{help}"
-        );
     }
 
     #[test]
