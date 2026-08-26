@@ -73,8 +73,24 @@ fn assert_success(output: &std::process::Output) {
     );
 }
 
-fn clear_agent_env(command: &mut Command) {
+fn clear_inherited_env(command: &mut Command) {
     command.env_clear();
+}
+
+#[test]
+fn clear_inherited_env_removes_agent_credentials_home_and_path() {
+    let mut command = Command::new(clickhousectl_binary());
+    command.envs([
+        ("CLAUDECODE", "1"),
+        ("CLICKHOUSE_CLOUD_API_KEY", "ambient-key"),
+        ("CLICKHOUSE_CLOUD_API_SECRET", "ambient-secret"),
+        ("HOME", "/ambient/home"),
+        ("PATH", "/ambient/bin"),
+    ]);
+
+    clear_inherited_env(&mut command);
+
+    assert!(command.get_envs().next().is_none());
 }
 
 /// Run the clickhousectl binary against the mock, returning the JSON body
@@ -1126,9 +1142,7 @@ fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
         "2025-01-31",
     ]);
     let mut command = Command::new(clickhousectl_binary());
-    // Keep the human-output assertion deterministic inside coding agents.
-    command.env("CLAUDECODE", "1");
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
@@ -2414,7 +2428,7 @@ async fn invoke_oauth_service_query_response(
     args.extend(extra_args.iter().map(|arg| (*arg).to_string()));
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     if agent {
         command.env("AGENT", "opencode");
     }
@@ -2528,7 +2542,7 @@ async fn service_query_rejects_json_with_an_explicit_format_before_network_acces
 
     for args in cases {
         let mut command = Command::new(clickhousectl_binary());
-        clear_agent_env(&mut command);
+        clear_inherited_env(&mut command);
         let output = command
             .env("DO_NOT_TRACK", "1")
             .env("CLICKHOUSE_CLOUD_API_KEY", "unused-key")
