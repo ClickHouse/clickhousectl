@@ -805,9 +805,11 @@ impl ClickHouseQuery {
     }
 
     async fn count_rows(&self, table: &str) -> TestResult<i64> {
+        // Cloud ClickPipes tables use SharedMergeTree storage, which rejects
+        // FINAL. This fixture inserts distinct IDs, so the raw count is exact.
         let body = self
             .run_query(&format!(
-                "SELECT count() FROM default.{table} FINAL FORMAT TabSeparated"
+                "SELECT count() FROM default.{table} FORMAT TabSeparated"
             ))
             .await?;
         Ok(body.trim().parse::<i64>()?)
