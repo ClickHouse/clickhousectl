@@ -84,7 +84,7 @@ pub async fn install_resolved(
 
     // If we know the exact version upfront, check if already installed
     if let Some(ref version) = resolved.exact_version
-        && paths::binary_path(version)?.exists()
+        && is_installed(&paths::binary_path(version)?)
         && !force
     {
         return Err(Error::VersionAlreadyInstalled(version.to_string()));
@@ -223,14 +223,16 @@ fn commit_staged_install_locked(
     checkpoint(CommitCheckpoint::BinaryReplaced)?;
 
     if is_master && let Some(head) = master_head {
-        master::record_install(
+        // The binary is already durably committed. A failed freshness record
+        // must only cause a later re-download, not report the install as failed.
+        let _ = master::record_install(
             lock,
             versions_dir,
             staging.path(),
             platform,
             head,
             exact_version,
-        )?;
+        );
     }
 
     Ok(replaced_existing)
@@ -241,11 +243,10 @@ fn commit_staged_install_locked(
 /// the goal is "make sure this version is available" rather than "install this".
 pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -> Result<String> {
     // If we know the exact version upfront, return it if already installed
-    if let Some(ref version) = resolved.exact_version {
-        let version_dir = paths::version_dir(version)?;
-        if version_dir.exists() {
-            return Ok(version.clone());
-        }
+    if let Some(ref version) = resolved.exact_version
+        && is_installed(&paths::binary_path(version)?)
+    {
+        return Ok(version.clone());
     }
 
     // For builds source (minor versions), check if a matching minor is installed
@@ -270,6 +271,10 @@ pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -
         Err(Error::VersionAlreadyInstalled(version)) => Ok(version),
         other => other,
     }
+}
+
+fn is_installed(binary_path: &Path) -> bool {
+    binary_path.exists()
 }
 
 /// Whether a running managed server (in the current project) was started from
@@ -589,6 +594,54 @@ mod tests {
             }
             None => assert!(record.is_none(), "unexpected master record: {record:?}"),
         }
+    }
+
+    #[test]
+    fn empty_version_directory_is_not_installed() {
+        let temp = tempfile::tempdir().unwrap();
+        let version_dir = temp.path().join("26.5.1.1");
+        fs::create_dir(&version_dir).unwrap();
+        let binary = version_dir.join("clickhouse");
+
+        assert!(!is_installed(&binary));
+
+        fs::write(&binary, b"clickhouse").unwrap();
+        assert!(is_installed(&binary));
+    }
+
+    #[test]
+    fn post_commit_sidecar_failure_does_not_fail_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions_dir = temp.path().join("versions");
+        fs::create_dir(&versions_dir).unwrap();
+        let staging = InstallStaging::create(&versions_dir).unwrap();
+        fs::write(staging.binary_path(), b"complete-master-build").unwrap();
+        fs::write(staging.path().join("master-builds.json.tmp"), b"occupied").unwrap();
+        let lock = CommitLock::acquire_blocking(&versions_dir).unwrap();
+        let head = master::HeadInfo {
+            etag: "etag-new".to_string(),
+            last_modified: None,
+        };
+
+        let replaced = commit_staged_install_locked(
+            &lock,
+            &versions_dir,
+            &staging,
+            "26.5.1.1",
+            true,
+            true,
+            &test_platform(),
+            Some(&head),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(!replaced);
+        assert_eq!(
+            fs::read(versions_dir.join("26.5.1.1/clickhouse")).unwrap(),
+            b"complete-master-build"
+        );
+        assert!(!versions_dir.join(".master-builds.json").exists());
     }
 
     #[test]
