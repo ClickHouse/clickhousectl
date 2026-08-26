@@ -12,6 +12,7 @@ impl FromStr for InstallVersionArg {
     type Err = String;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
         if let Some(tag) = input
             .strip_prefix("postgres@")
             .or_else(|| input.strip_prefix("postgres:"))
@@ -25,6 +26,7 @@ impl FromStr for InstallVersionArg {
     }
 }
 
+/// Kept distinct from `ServerVersionArg` so each command owns its accepted inputs and errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseVersionArg(VersionSpec);
 
@@ -38,6 +40,7 @@ impl FromStr for UseVersionArg {
     type Err = String;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
         if input.starts_with("postgres@") || input.starts_with("postgres:") {
             return Err(
                 "Postgres image selectors are only supported by `local install`; `local use` requires a ClickHouse version"
@@ -51,6 +54,7 @@ impl FromStr for UseVersionArg {
     }
 }
 
+/// Kept distinct from `UseVersionArg` so each command owns its accepted inputs and errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerVersionArg(VersionSpec);
 
@@ -64,6 +68,7 @@ impl FromStr for ServerVersionArg {
     type Err = String;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let input = input.trim();
         if input.starts_with("postgres@") || input.starts_with("postgres:") {
             return Err(
                 "Postgres image selectors are only supported by `local install`; `local server start --version` requires a ClickHouse version"
@@ -144,6 +149,7 @@ CONTEXT FOR AGENTS:
   Related: `clickhousectl local list` to see installed versions.")]
     Remove {
         /// Version to remove
+        // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
         version: String,
 
         /// Stop any running servers using this version, then remove it
@@ -549,6 +555,7 @@ CONTEXT FOR AGENTS:
 mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
+    use crate::version_manager::list::Channel;
     use clap::Parser;
 
     fn local_command(args: &[&str]) -> LocalCommands {
@@ -573,7 +580,14 @@ mod tests {
 
     #[test]
     fn parses_supported_clickhouse_version_forms_for_each_command() {
-        for input in ["latest", "stable", "lts", "25", "25.12", "25.12.9.61"] {
+        for (input, expected) in [
+            ("latest", VersionSpec::Latest),
+            ("stable", VersionSpec::Channel(Channel::Stable)),
+            ("lts", VersionSpec::Channel(Channel::Lts)),
+            ("25", VersionSpec::Major(25)),
+            ("25.12", VersionSpec::Minor(25, 12)),
+            ("25.12.9.61", VersionSpec::Exact("25.12.9.61".to_string())),
+        ] {
             let LocalCommands::Install {
                 version: InstallVersionArg::ClickHouse(version),
                 ..
@@ -581,12 +595,12 @@ mod tests {
             else {
                 panic!("expected ClickHouse install version for {input}");
             };
-            assert_eq!(version.to_string(), input);
+            assert_eq!(version, expected);
 
             let LocalCommands::Use { version, .. } = local_command(&["use", input]) else {
                 panic!("expected use version for {input}");
             };
-            assert_eq!(version.into_spec().to_string(), input);
+            assert_eq!(version.into_spec(), expected);
 
             let LocalCommands::Server {
                 command: ServerCommands::Start { version, .. },
@@ -595,11 +609,8 @@ mod tests {
                 panic!("expected server version for {input}");
             };
             assert_eq!(
-                version
-                    .expect("version should be present")
-                    .into_spec()
-                    .to_string(),
-                input
+                version.expect("version should be present").into_spec(),
+                expected
             );
         }
     }
@@ -630,7 +641,11 @@ mod tests {
 
     #[test]
     fn postgres_image_selectors_are_install_only() {
-        for (input, expected) in [("postgres@18", "18"), ("postgres:17-alpine", "17-alpine")] {
+        for (input, expected) in [
+            ("postgres@18", "18"),
+            ("postgres:17-alpine", "17-alpine"),
+            ("  postgres@16  ", "16"),
+        ] {
             let LocalCommands::Install {
                 version: InstallVersionArg::Postgres(tag),
                 ..
@@ -642,11 +657,11 @@ mod tests {
         }
 
         assert_version_rejected(
-            &["use", "postgres@18"],
+            &["use", "  postgres@18  "],
             "only supported by `local install`; `local use` requires a ClickHouse version",
         );
         assert_version_rejected(
-            &["server", "start", "--version", "postgres@18"],
+            &["server", "start", "--version", "  postgres@18  "],
             "only supported by `local install`; `local server start --version` requires a ClickHouse version",
         );
     }
