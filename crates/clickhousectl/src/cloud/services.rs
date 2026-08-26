@@ -17,8 +17,12 @@ use clickhouse_cloud_api::models::{
     ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
-use std::io::IsTerminal;
+use std::{io::IsTerminal, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
+
+const QUERY_ENDPOINT_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
+const QUERY_ENDPOINT_READINESS_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
+const QUERY_ENDPOINT_READINESS_MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -1735,14 +1739,58 @@ async fn run_basic_service_query(
     }
 }
 
-fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
-    matches!(
-        error,
-        clickhouse_cloud_api::Error::Api {
-            status: 401 | 403 | 404,
-            ..
+#[allow(clippy::too_many_arguments)]
+async fn run_just_provisioned_service_query(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    service_name: &str,
+) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+    let deadline = tokio::time::Instant::now() + QUERY_ENDPOINT_READINESS_TIMEOUT;
+    let mut backoff = QUERY_ENDPOINT_READINESS_INITIAL_BACKOFF;
+
+    loop {
+        match run_basic_service_query(
+            client,
+            service_id,
+            key_id,
+            key_secret,
+            sql,
+            database,
+            format,
+            service_name,
+        )
+        .await
+        {
+            Err(error) if query_endpoint_readiness_error(&error) => {
+                if tokio::time::Instant::now() + backoff > deadline {
+                    return Err(error);
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = backoff
+                    .saturating_mul(2)
+                    .min(QUERY_ENDPOINT_READINESS_MAX_BACKOFF);
+            }
+            result => return result,
         }
-    )
+    }
+}
+
+fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403, ..
+        } => true,
+        clickhouse_cloud_api::Error::Api {
+            status: 404,
+            message,
+        } => !message.starts_with("SQL error "),
+        _ => false,
+    }
 }
 
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
@@ -1821,7 +1869,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             )
             .await
             {
-                Err(error) if query_requires_provisioning(&error) => {
+                Err(error) if query_endpoint_readiness_error(&error) => {
                     if options.no_auto_enable {
                         return Err(CloudError::new(format!(
                             "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
@@ -1838,7 +1886,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         &service_name,
                     )
                     .await?;
-                    run_basic_service_query(
+                    run_just_provisioned_service_query(
                         client,
                         &service_id,
                         &key.key_id,
@@ -3783,9 +3831,9 @@ mod tests {
     }
 
     #[test]
-    fn query_provisions_only_for_endpoint_or_auth_rejections() {
+    fn query_readiness_is_only_auth_or_generic_not_found() {
         for status in [401, 403, 404] {
-            assert!(query_requires_provisioning(
+            assert!(query_endpoint_readiness_error(
                 &clickhouse_cloud_api::Error::Api {
                     status,
                     message: "rejected".into(),
@@ -3793,16 +3841,54 @@ mod tests {
             ));
         }
         for status in [400, 408, 429, 500] {
-            assert!(!query_requires_provisioning(
+            assert!(!query_endpoint_readiness_error(
                 &clickhouse_cloud_api::Error::Api {
                     status,
                     message: "query failed".into(),
                 }
             ));
         }
-        assert!(!query_requires_provisioning(
+        assert!(!query_endpoint_readiness_error(
+            &clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "SQL error 60: Unknown table".into(),
+            }
+        ));
+        assert!(!query_endpoint_readiness_error(
             &clickhouse_cloud_api::Error::ServiceStopped
         ));
+    }
+
+    #[tokio::test]
+    async fn query_does_not_provision_or_retry_transport_errors() {
+        let transport_error = reqwest::Client::new()
+            .get("not a url")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(!query_endpoint_readiness_error(
+            &clickhouse_cloud_api::Error::Http(transport_error)
+        ));
+    }
+
+    #[test]
+    fn query_endpoint_readiness_backoff_is_bounded() {
+        let mut elapsed = Duration::ZERO;
+        let mut backoff = QUERY_ENDPOINT_READINESS_INITIAL_BACKOFF;
+        let mut retry_count = 0;
+
+        while elapsed + backoff <= QUERY_ENDPOINT_READINESS_TIMEOUT {
+            elapsed += backoff;
+            backoff = backoff
+                .saturating_mul(2)
+                .min(QUERY_ENDPOINT_READINESS_MAX_BACKOFF);
+            retry_count += 1;
+        }
+
+        assert!(retry_count > 1);
+        assert!(elapsed <= QUERY_ENDPOINT_READINESS_TIMEOUT);
+        assert!(QUERY_ENDPOINT_READINESS_TIMEOUT - elapsed < backoff);
+        assert!(backoff <= QUERY_ENDPOINT_READINESS_MAX_BACKOFF);
     }
 
     #[test]

@@ -3550,6 +3550,200 @@ async fn concurrent_service_queries_provision_once_and_reuse_atomically_saved_cr
     }
 }
 
+async fn mount_successful_query_provisioning(control: &MockServer) -> String {
+    mount_key_create_and_delete(
+        control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret"
+        }),
+    )
+    .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": [QUERY_TEST_KEY_UUID] },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+    endpoint_path
+}
+
+fn query_test_basic_auth(credentials: &str) -> String {
+    format!(
+        "Basic {}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
+    )
+}
+
+#[tokio::test]
+async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_key() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    let control = start_mock_control_plane_with_service().await;
+    let endpoint_path = mount_successful_query_provisioning(&control).await;
+    let query_host = MockServer::start().await;
+    let query_path = format!("/service/{QUERY_TEST_SERVICE_ID}/run");
+    let primary_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(path(query_path.clone()))
+        .and(header("authorization", primary_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let provisioned_auth = query_test_basic_auth("provisioned-key-id:provisioned-key-secret");
+    let response_index = Arc::new(AtomicUsize::new(0));
+    let delivered_statuses = Arc::new(Mutex::new(Vec::new()));
+    let responder_index = Arc::clone(&response_index);
+    let responder_statuses = Arc::clone(&delivered_statuses);
+    Mock::given(method("POST"))
+        .and(path(query_path))
+        .and(header("authorization", provisioned_auth.as_str()))
+        .respond_with(move |_: &wiremock::Request| {
+            let index = responder_index.fetch_add(1, Ordering::SeqCst);
+            let status = [401, 403, 404, 200].get(index).copied().unwrap_or(500);
+            responder_statuses.lock().unwrap().push(status);
+            if status == 200 {
+                ResponseTemplate::new(status).set_body_string("1\n")
+            } else {
+                ResponseTemplate::new(status).set_body_string("query endpoint is not ready")
+            }
+        })
+        .expect(4)
+        .mount(&query_host)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let started = Instant::now();
+    let output = service_query_process(project.path(), &control, &query_host)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    let elapsed = started.elapsed();
+
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+    assert_eq!(*delivered_statuses.lock().unwrap(), [401, 403, 404, 200]);
+    assert!(
+        elapsed >= Duration::from_millis(1_200),
+        "readiness retries did not back off: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "readiness retries exceeded their expected timing bound: {elapsed:?}"
+    );
+
+    let query_requests = query_host.received_requests().await.unwrap();
+    assert_eq!(query_requests.len(), 5);
+    let provisioned_requests = query_requests
+        .iter()
+        .filter(|request| {
+            request
+                .headers
+                .get("authorization")
+                .is_some_and(|value| value == provisioned_auth.as_str())
+        })
+        .count();
+    assert_eq!(
+        provisioned_requests, 4,
+        "every retry must reuse the new key"
+    );
+
+    let control_requests = control.received_requests().await.unwrap();
+    let request_count = |request_method: wiremock::http::Method, request_path: &str| {
+        control_requests
+            .iter()
+            .filter(|request| {
+                request.method == request_method && request.url.path() == request_path
+            })
+            .count()
+    };
+    assert_eq!(
+        request_count(wiremock::http::Method::POST, "/v1/organizations/org-1/keys"),
+        1,
+        "readiness retries must not reprovision the key"
+    );
+    assert_eq!(
+        request_count(wiremock::http::Method::POST, &endpoint_path),
+        1,
+        "readiness retries must not upsert the endpoint again"
+    );
+}
+
+#[tokio::test]
+async fn just_provisioned_service_query_fails_immediately_when_the_service_is_stopped() {
+    use std::time::{Duration, Instant};
+
+    let control = start_mock_control_plane_with_service().await;
+    mount_successful_query_provisioning(&control).await;
+    let query_host = MockServer::start().await;
+    let query_path = format!("/service/{QUERY_TEST_SERVICE_ID}/run");
+    let primary_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(path(query_path.clone()))
+        .and(header("authorization", primary_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+    let provisioned_auth = query_test_basic_auth("provisioned-key-id:provisioned-key-secret");
+    Mock::given(method("POST"))
+        .and(path(query_path))
+        .and(header("authorization", provisioned_auth.as_str()))
+        .respond_with(ResponseTemplate::new(404).set_body_string(
+            r#"{"error":"ClickHouse service is currently unavailable. Please try again later."}"#,
+        ))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let started = Instant::now();
+    let output = service_query_process(project.path(), &control, &query_host)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    let elapsed = started.elapsed();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 2);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "stopped-service recognition unexpectedly waited: {elapsed:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Provisioning Query API endpoint + key for service 'demo'...\nError: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id org-1` and retry\n"
+        )
+    );
+}
+
 #[tokio::test]
 async fn concurrent_failed_provisioners_delete_only_their_exact_created_key() {
     const PROCESS_COUNT: usize = 3;
