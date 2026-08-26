@@ -248,9 +248,14 @@ Start and manage ClickHouse server instances. Each server gets its own isolated 
 A bare `clickhousectl local server start` bootstraps from zero: if no version is installed and no default is set, it installs `latest` and starts with it (it does not set a default, so you keep tracking `latest` on subsequent starts). Pin a version with `--version`, or set a default with `local use`, to opt out. Because `latest` tracks the rolling master build, repeat `latest` installs/starts do a cheap `HEAD` against `builds.clickhouse.com` and skip the ~150 MB re-download when master hasn't changed (the build's `etag` is cached in `~/.clickhouse/versions/.master-builds.json`).
 
 ```bash
-# Start a server (runs in background by default)
+# Canonical named lifecycle
+clickhousectl local server start dev
+clickhousectl local server list
+clickhousectl local server stop dev
+clickhousectl local server remove dev
+
+# Other start options (servers run in background by default)
 clickhousectl local server start                          # Named "default" (installs latest if nothing is set up yet)
-clickhousectl local server start dev                      # Named "dev"
 clickhousectl local server start --version latest         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --no-wait                # Return after spawning without waiting for readiness
@@ -266,7 +271,6 @@ clickhousectl local server list --global                  # List running ClickHo
 
 # Stop servers
 clickhousectl local server stop                           # Stop "default", or the sole ClickHouse server
-clickhousectl local server stop dev                       # Stop by name
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
 clickhousectl local server stop-all                       # Stop all ClickHouse and Postgres servers in this project
@@ -274,7 +278,6 @@ clickhousectl local server stop-all --global              # Stop all ClickHouse 
 
 # Remove a stopped server and its data
 clickhousectl local server remove                         # Remove "default" only; never guesses a custom name
-clickhousectl local server remove test                    # Remove by name
 
 # Write connection env vars to .env file
 clickhousectl local server dotenv                        # From "default" server → .env
@@ -289,7 +292,14 @@ Project-local server commands select `.clickhouse` under the exact current worki
 
 Without a name, `server stop` selects an existing `default`, then a sole known ClickHouse server. It succeeds without changing anything when none exist, and requires a name or `server stop-all` when multiple non-default servers exist. Bare `server remove` is deliberately stricter: it removes an existing `default` only and otherwise requires an explicit name, even when there is just one custom server.
 
-**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
+Use `server stop-all` when the intent is to stop every ClickHouse and Postgres server in the current project. Version removal and server-data removal are separate operations:
+
+| Command | Removes |
+| --- | --- |
+| `clickhousectl local remove <exact-version>` | An installed ClickHouse binary from the global version store. |
+| `clickhousectl local server remove <server-name>` | A stopped named server and its data from the exact current project. |
+
+**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Retain the returned generated name for later stop and remove commands, or pass a name positionally for a stable identity.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 

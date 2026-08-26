@@ -296,11 +296,21 @@ CONTEXT FOR AGENTS:
   Manage named local server instances. Project-scoped `server list` and `server stop-all`
   include both ClickHouse processes and Docker-backed Postgres containers; other commands
   here manage ClickHouse.
-  Project-local commands use .clickhouse under the exact current working directory and do
-  not search parent directories. Change to the project root before running them.
+  Project-local commands use `.clickhouse` under the exact current working directory; parent
+  `.clickhouse` directories are not searched. Change to the project root before running them.
   Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start test`.
+
+  Canonical named lifecycle:
+    clickhousectl local server start dev
+    clickhousectl local server list
+    clickhousectl local server stop dev
+    clickhousectl local server remove dev
+
+  If `server start` generates a name, retain the returned name for later `stop` and `remove`
+  commands. For project cleanup, use `clickhousectl local server stop-all`.
+  `clickhousectl local remove <exact-version>` removes an installed ClickHouse binary;
+  `clickhousectl local server remove <server-name>` removes a stopped server and its data.
   Related: `clickhousectl local client` to connect to a running server.")]
     Server {
         #[command(subcommand)]
@@ -331,6 +341,7 @@ CONTEXT FOR AGENTS:
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Without a name, the first server is called \"default\"; if \"default\" is already running,
   a random name is generated (e.g., \"bold-crane\").
+  Retain a generated name for later `server stop <name>` and `server remove <name>` commands.
   Pass the name positionally to give a server a stable identity (e.g., `server start dev`).
   The older `--name dev` form remains accepted, but cannot be combined with a positional name.
   Use --version (-v) to run a specific ClickHouse version without changing the default.
@@ -349,6 +360,8 @@ CONTEXT FOR AGENTS:
   to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
   file's contents (they are forced as command-line overrides).
   Additional clickhouse-server arguments must follow `--`.
+  Project-local commands use `.clickhouse` under the exact current working directory; parent
+  `.clickhouse` directories are not searched. Change to the project root before running them.
   Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop [name]` to stop one.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
@@ -404,8 +417,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
-  The default list uses only .clickhouse under the exact current working directory; parent
-  directories are not searched. Use --global to list running ClickHouse servers across projects.
+  Project-local commands use `.clickhouse` under the exact current working directory; parent
+  `.clickhouse` directories are not searched. Change to the project root before running them.
+  Use --global to list running ClickHouse servers across projects.
   Processes that exited unexpectedly are retained and shown as stopped.
   Running ClickHouse entries also show their PID, version, and ports.
   Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop [name]` to stop one.")]
@@ -424,8 +438,9 @@ CONTEXT FOR AGENTS:
   Use `clickhousectl local server list` to find names.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
-  Project-local lookup uses the exact current working directory and never searches parent
-  .clickhouse directories. Change to the project root, or inspect --global before global action.
+  Project-local commands use `.clickhouse` under the exact current working directory; parent
+  `.clickhouse` directories are not searched. Change to the project root before running them.
+  Use `clickhousectl local server stop-all` when the intent is project cleanup.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
@@ -454,6 +469,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Stops all running ClickHouse and Postgres server instances in this project.
+  Project-local commands use `.clickhouse` under the exact current working directory; parent
+  `.clickhouse` directories are not searched. Change to the project root before running them.
   ClickHouse processes receive SIGTERM first, then SIGKILL if they don't exit.
   Postgres containers are stopped but retained for a subsequent start.
   With --global, stops ClickHouse servers only; global Postgres discovery is not supported.
@@ -469,11 +486,13 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
-  This is irreversible — all data for this server instance will be lost.
+  This is irreversible: all data for this server instance will be lost.
   Without a name, removes \"default\" only when it exists. It never guesses a custom server;
   use `server list`, then pass a custom name positionally.
-  Project-local lookup uses the exact current working directory and never searches parent
-  .clickhouse directories. Change to the project root before removing server data.
+  Project-local commands use `.clickhouse` under the exact current working directory; parent
+  `.clickhouse` directories are not searched. Change to the project root before running them.
+  Unlike `local server remove <server-name>`, `local remove <exact-version>` removes an installed
+  ClickHouse binary rather than server data.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (only an existing "default" is selected when omitted)
@@ -725,6 +744,16 @@ mod tests {
         Cli::try_parse_from(argv)
             .err()
             .expect("invalid local arguments should fail during clap parsing")
+    }
+
+    fn rendered_help(args: &[&str]) -> String {
+        let mut argv = vec!["clickhousectl", "local"];
+        argv.extend_from_slice(args);
+        let error = Cli::try_parse_from(argv)
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        error.to_string()
     }
 
     #[test]
@@ -1313,16 +1342,90 @@ mod tests {
 
     #[test]
     fn server_start_help_renders_default_name_without_escaped_quotes() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "server", "start", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
+        let help = rendered_help(&["server", "start", "--help"]);
 
         assert!(help.lines().any(|line| {
             line == r#"  [NAME]               Server name (default: "default", or random if default is already running)"#
         }), "{help}");
         assert!(!help.contains(r#"\"default\""#), "{help}");
+    }
+
+    #[test]
+    fn server_help_pins_scope_workflow_and_removal_distinction() {
+        let help = rendered_help(&["server", "--help"]);
+        let context = help
+            .split_once("CONTEXT FOR AGENTS:\n")
+            .expect("agent context")
+            .1;
+
+        assert_eq!(
+            context,
+            concat!(
+                "  Manage named local server instances. Project-scoped `server list` and `server stop-all`\n",
+                "  include both ClickHouse processes and Docker-backed Postgres containers; other commands\n",
+                "  here manage ClickHouse.\n",
+                "  Project-local commands use `.clickhouse` under the exact current working directory; parent\n",
+                "  `.clickhouse` directories are not searched. Change to the project root before running them.\n",
+                "  Each server has its own data directory.\n",
+                "  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.\n",
+                "\n",
+                "  Canonical named lifecycle:\n",
+                "    clickhousectl local server start dev\n",
+                "    clickhousectl local server list\n",
+                "    clickhousectl local server stop dev\n",
+                "    clickhousectl local server remove dev\n",
+                "\n",
+                "  If `server start` generates a name, retain the returned name for later `stop` and `remove`\n",
+                "  commands. For project cleanup, use `clickhousectl local server stop-all`.\n",
+                "  `clickhousectl local remove <exact-version>` removes an installed ClickHouse binary;\n",
+                "  `clickhousectl local server remove <server-name>` removes a stopped server and its data.\n",
+                "  Related: `clickhousectl local client` to connect to a running server.\n",
+            )
+        );
+    }
+
+    #[test]
+    fn server_stop_help_pins_omitted_name_selection() {
+        let help = rendered_help(&["server", "stop", "--help"]);
+
+        assert!(
+            help.contains(concat!(
+                "  Without a name, zero ClickHouse servers is a successful no-op; one server selects that sole\n",
+                "  server; multiple servers select \"default\" when it exists; and multiple non-default servers\n",
+                "  require an explicit name or `clickhousectl local server stop-all`."
+            )),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn server_remove_help_pins_conservative_default_selection() {
+        let help = rendered_help(&["server", "remove", "--help"]);
+
+        assert!(
+            help.contains(concat!(
+                "  Without a name, removes \"default\" only when it exists. A custom server is never selected\n",
+                "  implicitly; use `server list`, then pass its name explicitly."
+            )),
+            "{help}"
+        );
+        assert!(
+            help.contains(concat!(
+                "  Unlike `local server remove <server-name>`, `local remove <exact-version>` removes an installed\n",
+                "  ClickHouse binary rather than server data."
+            )),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn readme_contrasts_version_and_server_removal() {
+        let readme = include_str!("../../../../README.md");
+
+        assert!(readme.contains(concat!(
+            "| `clickhousectl local remove <exact-version>` | An installed ClickHouse binary from the global version store. |\n",
+            "| `clickhousectl local server remove <server-name>` | A stopped named server and its data from the exact current project. |"
+        )));
     }
 
     #[test]
