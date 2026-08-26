@@ -125,22 +125,33 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     let Commands::Cloud(args) = &cli.command else {
         return Ok(());
     };
-    if !args.has_explicit_json_format_conflict() {
-        return Ok(());
+    if args.has_explicit_json_format_conflict() {
+        // clap validates each subcommand before propagating values supplied for a
+        // global argument at a parent level, so this cross-level conflict needs a
+        // post-parse check. Format the error against the owning command.
+        let query = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("service"))
+            .and_then(|service| service.find_subcommand_mut("query"))
+            .expect("service query command must exist");
+        return Err(query.error(
+            ErrorKind::ArgumentConflict,
+            "the argument '--json' cannot be used with '--format <FORMAT>'",
+        ));
     }
 
-    // clap validates each subcommand before propagating values supplied for a
-    // global argument at a parent level, so this cross-level conflict needs a
-    // post-parse check. Format the error against the owning command.
-    let query = cmd
+    // clap can require --iam-role for one auth value, but cannot express the
+    // inverse conflict or condition --replication-slot-name on another value.
+    let Some(message) = args.postgres_clickpipe_validation_error() else {
+        return Ok(());
+    };
+    let postgres = cmd
         .find_subcommand_mut("cloud")
-        .and_then(|cloud| cloud.find_subcommand_mut("service"))
-        .and_then(|service| service.find_subcommand_mut("query"))
-        .expect("service query command must exist");
-    Err(query.error(
-        ErrorKind::ArgumentConflict,
-        "the argument '--json' cannot be used with '--format <FORMAT>'",
-    ))
+        .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+        .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
+        .and_then(|create| create.find_subcommand_mut("postgres"))
+        .expect("clickpipe create postgres command must exist");
+    Err(postgres.error(ErrorKind::ArgumentConflict, message))
 }
 
 /// Run a successfully parsed invocation to completion and report the exit
@@ -337,6 +348,65 @@ mod tests {
             assert!(message.contains("--format"), "{message}");
             assert!(
                 message.contains("clickhousectl cloud service query"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_clickpipe_relationship_errors_are_clap_usage_errors() {
+        let base = [
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "public.events:events",
+        ];
+        let cases = [
+            (
+                ["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"].as_slice(),
+                "--iam-role cannot be used with --auth basic",
+            ),
+            (
+                ["--replication-slot-name", "existing_slot"].as_slice(),
+                "--replication-slot-name can only be used with --replication-mode cdc_only",
+            ),
+            (
+                [
+                    "--replication-mode",
+                    "snapshot",
+                    "--replication-slot-name",
+                    "existing_slot",
+                ]
+                .as_slice(),
+                "--replication-slot-name can only be used with --replication-mode cdc_only",
+            ),
+        ];
+
+        for (extra, diagnostic) in cases {
+            let args: Vec<&str> = base.iter().chain(extra).copied().collect();
+            let error = parse_and_validate(&args)
+                .err()
+                .expect("invalid postgres relationship should fail validation");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains(diagnostic), "{message}");
+            assert!(
+                message.contains("clickhousectl cloud clickpipe create postgres"),
                 "{message}"
             );
         }

@@ -810,6 +810,12 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --table-mapping "dataset.table:target_table"
 ```
 
+PostgreSQL ClickPipes require one or more complete
+`--table-mapping schema.table:target_table` values. Ports must be in
+`1..=65535`. `--auth IAM_ROLE` requires `--iam-role`; the CLI rejects
+`--iam-role` with basic auth rather than silently ignoring it.
+`--replication-slot-name` is valid only with `--replication-mode cdc_only`.
+
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
 #### Discovering a source schema (beta)

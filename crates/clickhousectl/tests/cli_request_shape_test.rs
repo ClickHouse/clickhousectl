@@ -198,6 +198,26 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .expect("failed to spawn clickhousectl")
 }
 
+fn invoke_cli_without_cloud_credentials(
+    mock: &MockServer,
+    cli_args: &[String],
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let mut args = vec!["cloud".to_string(), "--url".to_string(), mock.uri()];
+    args.extend_from_slice(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(dir.path())
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
 fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     let credentials_dir = root.join(".clickhouse");
     std::fs::create_dir_all(&credentials_dir).unwrap();
@@ -2242,6 +2262,88 @@ fn postgres_args_minimal() -> Vec<String> {
 }
 
 #[tokio::test]
+async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_network() {
+    let mock = MockServer::start().await;
+    let missing_ca = "/missing/postgres-ca.pem";
+    let base = || {
+        let mut args = postgres_args_minimal();
+        args.extend(["--ca-certificate".into(), missing_ca.into()]);
+        args
+    };
+    let replace_value = |args: &mut Vec<String>, flag: &str, value: &str| {
+        let index = args
+            .iter()
+            .position(|arg| arg == flag)
+            .unwrap_or_else(|| panic!("missing test flag {flag}"));
+        args[index + 1] = value.into();
+    };
+
+    let mut cases = Vec::new();
+    for port in ["0", "65536"] {
+        let mut args = base();
+        replace_value(&mut args, "--port", port);
+        cases.push((args, "--port"));
+    }
+
+    let mut no_mapping = base();
+    let mapping = no_mapping
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .expect("baseline table mapping");
+    no_mapping.drain(mapping..=mapping + 1);
+    cases.push((no_mapping, "--table-mapping"));
+
+    for (mapping, diagnostic) in [
+        (".events:events", "source schema must not be empty"),
+        ("public.:events", "source table must not be empty"),
+        ("public.events:", "target table must not be empty"),
+    ] {
+        let mut args = base();
+        replace_value(&mut args, "--table-mapping", mapping);
+        cases.push((args, diagnostic));
+    }
+
+    let mut missing_iam_role = base();
+    missing_iam_role.extend(["--auth".into(), "IAM_ROLE".into()]);
+    cases.push((missing_iam_role, "--iam-role"));
+
+    let mut ignored_iam_role = base();
+    ignored_iam_role.extend([
+        "--iam-role".into(),
+        "arn:aws:iam::123456789012:role/clickpipe".into(),
+    ]);
+    cases.push((
+        ignored_iam_role,
+        "--iam-role cannot be used with --auth basic",
+    ));
+
+    for mode in ["cdc", "snapshot"] {
+        let mut args = base();
+        replace_value(&mut args, "--replication-mode", mode);
+        args.extend(["--replication-slot-name".into(), "existing_slot".into()]);
+        cases.push((
+            args,
+            "--replication-slot-name can only be used with --replication-mode cdc_only",
+        ));
+    }
+
+    for (args, diagnostic) in cases {
+        let output = invoke_cli_without_cloud_credentials(&mock, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{stderr}");
+        assert!(!stderr.contains(missing_ca), "CA file was read: {stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn postgres_publication_name_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
@@ -2259,6 +2361,8 @@ async fn postgres_publication_name_serializes_when_provided() {
 async fn postgres_replication_slot_name_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
+    let mode = args.iter().position(|arg| arg == "cdc").unwrap();
+    args[mode] = "cdc_only".into();
     args.push("--replication-slot-name".into());
     args.push("my_slot".into());
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -2287,6 +2391,8 @@ async fn postgres_tls_host_serializes_when_provided() {
 async fn postgres_iam_role_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
+    args.push("--auth".into());
+    args.push("IAM_ROLE".into());
     args.push("--iam-role".into());
     args.push("arn:aws:iam::123:role/x".into());
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
