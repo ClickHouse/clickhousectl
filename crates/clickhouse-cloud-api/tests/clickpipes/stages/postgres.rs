@@ -3,13 +3,11 @@
 //! Postgres-on-EC2 ClickPipe stage: per-test EC2 + Basic auth + CDC.
 //!
 //! Parallel to the MySQL and Mongo stages — launches a t3.medium with
-//! PostgreSQL 16 configured for logical replication, then creates a pipe via
-//! the CLI with `--replication-mode cdc` but **without** `--publication-name`
-//! / `--replication-slot-name`. That's Al's `4f6c2ba` Bug 1 scenario: a
-//! handler regression that sends `""` for those fields would re-trigger
-//! `replicationSlotName: ''` server validation here. Distinct from
-//! `clickpipes/postgres_cdc_test.rs`, which exercises Al's flow against
-//! CHC-managed Postgres via the library, not the CLI.
+//! PostgreSQL 16 configured for logical replication, then creates a pipe
+//! directly through the API with `replicationMode=cdc` but without
+//! `publicationName` / `replicationSlotName`. Distinct from
+//! `clickpipes/postgres_cli_cdc_test.rs`, which exercises the required real
+//! CLI path against CHC-managed Postgres.
 
 use std::time::Duration;
 
