@@ -2344,11 +2344,21 @@ async fn start_mock_control_plane_with_service() -> MockServer {
         "status": 200,
         "requestId": "stub-service-get",
     });
+    let stub_services = serde_json::json!({
+        "result": [{ "id": QUERY_TEST_SERVICE_ID, "name": "demo" }],
+        "status": 200,
+        "requestId": "stub-service-list",
+    });
     Mock::given(method("GET"))
         .and(path(format!(
             "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
         )))
         .respond_with(ResponseTemplate::new(200).set_body_json(stub_service))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_services))
         .mount(&mock)
         .await;
     mock
@@ -2565,41 +2575,79 @@ async fn service_query_rejects_json_with_an_explicit_format_before_network_acces
 }
 
 #[tokio::test]
-async fn service_query_requires_a_selector_before_auth_input_or_network() {
-    let control = MockServer::start().await;
+async fn service_query_requires_exactly_one_selector_before_network_access() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
     let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir(&home).unwrap();
+    let home_dir = dir.path().join("home");
+    std::fs::create_dir(&home_dir).unwrap();
     let url = control.uri();
     let missing_query_file = dir.path().join("must-not-be-read.sql");
 
-    let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
-    let output = command
-        .env("DO_NOT_TRACK", "1")
-        .env("HOME", &home)
-        .current_dir(dir.path())
-        .args([
+    let invoke = |selector: &[&str], query_input: &[&str], authenticated: bool| {
+        let mut args = vec![
             "cloud",
             "--url",
-            &url,
+            url.as_str(),
             "service",
             "query",
-            "--queries-file",
-            missing_query_file.to_str().unwrap(),
-        ])
-        .output()
-        .expect("failed to spawn clickhousectl");
+            "--org-id",
+            "org-1",
+        ];
+        args.extend_from_slice(query_input);
+        args.extend_from_slice(selector);
 
-    assert_eq!(output.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        command
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home_dir)
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+            .current_dir(dir.path())
+            .args(args);
+        if authenticated {
+            command
+                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests");
+        }
+        command.output().expect("failed to spawn clickhousectl")
+    };
+
+    let missing = invoke(
+        &[],
+        &["--queries-file", missing_query_file.to_str().unwrap()],
+        false,
+    );
+    assert_eq!(missing.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&missing.stderr);
     assert!(stderr.contains("--name <NAME>"), "{stderr}");
     assert!(stderr.contains("--id <ID>"), "{stderr}");
     assert!(
         !stderr.contains("must-not-be-read.sql"),
         "query input was read before selector validation: {stderr}"
     );
+
+    let both = invoke(
+        &["--name", "demo", "--id", QUERY_TEST_SERVICE_ID],
+        &["--query", "SELECT 1"],
+        false,
+    );
+    assert_eq!(both.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(stderr.contains("--name <NAME>"), "{stderr}");
+    assert!(stderr.contains("--id <ID>"), "{stderr}");
+
     assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+
+    for selector in [["--name", "demo"], ["--id", QUERY_TEST_SERVICE_ID]] {
+        let output = invoke(&selector, &["--query", "SELECT 1"], true);
+        assert_success(&output);
+        assert_eq!(output.stdout, b"1\n");
+    }
+
+    assert_eq!(control.received_requests().await.unwrap().len(), 2);
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 2);
 }
 
 #[tokio::test]

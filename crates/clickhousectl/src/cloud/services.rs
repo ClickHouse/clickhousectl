@@ -840,6 +840,7 @@ async fn resolve_service(
         }
         (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
         (Some(_), Some(_)) => Err(CloudError::new("specify either --name or --id, not both")),
+        // Clap rejects this state; retain the check for any future non-CLI caller.
         (None, None) => Err(CloudError::new(
             "specify --name or --id to identify the service",
         )),
