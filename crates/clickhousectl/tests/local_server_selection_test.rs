@@ -316,7 +316,10 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
         assert_eq!(explicit_unknown.status.code(), Some(1));
         let error: Value = serde_json::from_slice(&explicit_unknown.stderr).unwrap();
         assert_eq!(error["error"]["code"], "server_not_found");
-        assert_eq!(error["error"]["message"], "Server 'missing' not found");
+        assert_eq!(
+            error["error"]["message"],
+            "Server 'missing' was not found in the current project"
+        );
     }
 }
 

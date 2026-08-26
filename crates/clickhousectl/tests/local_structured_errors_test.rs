@@ -38,6 +38,44 @@ fn expected_error(code: &str, message: &str, recovery: Option<&str>) -> String {
     format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
 }
 
+fn expected_project_server_error(project: &Path, name: &str) -> String {
+    let value = serde_json::json!({
+        "error": {
+            "code": "server_not_found",
+            "message": format!("Server '{name}' was not found in the current project"),
+            "project_scope": {
+                "kind": "exact_current_project",
+                "path": project.canonicalize().unwrap(),
+                "parent_projects_searched": false
+            },
+            "server": { "name": name },
+            "guidance": [
+                {
+                    "action": "return_to_project_root",
+                    "message": "Change to the project root that owns the server",
+                    "command": "cd <project-root>"
+                },
+                {
+                    "action": "list_project_servers",
+                    "message": "List servers after returning to that exact project",
+                    "command": "clickhousectl local server list"
+                },
+                {
+                    "action": "list_global_servers",
+                    "message": "Locate running ClickHouse servers across projects",
+                    "command": "clickhousectl local server list --global"
+                },
+                {
+                    "action": "stop_global_project_server",
+                    "message": "After confirming the project, stop the server with explicit global project selection",
+                    "command": "clickhousectl local server stop <name> --global --project <project-root>"
+                }
+            ]
+        }
+    });
+    format!("{}\n", serde_json::to_string_pretty(&value).unwrap())
+}
+
 fn assert_structured_failure(output: &Output, expected: &str) {
     assert_eq!(
         output.status.code(),
@@ -70,11 +108,7 @@ fn unused_port() -> u16 {
 fn explicit_json_and_agent_mode_emit_the_same_exact_server_error() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
-    let expected = expected_error(
-        "server_not_found",
-        "Server 'missing' not found",
-        Some("clickhousectl local server list"),
-    );
+    let expected = expected_project_server_error(project.path(), "missing");
 
     let explicit = run(
         project.path(),
@@ -296,7 +330,12 @@ fn human_and_clap_errors_keep_their_existing_formats() {
     assert!(human.stdout.is_empty());
     assert_eq!(
         String::from_utf8_lossy(&human.stderr),
-        "Error: Server 'missing' not found\n"
+        format!(
+            "Error: Server 'missing' was not found in project '{}'.\n\
+             Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+             Return to the project root and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`.\n",
+            project.path().canonicalize().unwrap().display()
+        )
     );
 
     let clap = run(

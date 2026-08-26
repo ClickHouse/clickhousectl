@@ -296,6 +296,8 @@ CONTEXT FOR AGENTS:
   Manage named local server instances. Project-scoped `server list` and `server stop-all`
   include both ClickHouse processes and Docker-backed Postgres containers; other commands
   here manage ClickHouse.
+  Project-local commands use .clickhouse under the exact current working directory and do
+  not search parent directories. Change to the project root before running them.
   Each server has its own data directory.
   Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
   Typical: `clickhousectl local server start` (starts \"default\"), `clickhousectl local server start test`.
@@ -402,6 +404,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Shows all named ClickHouse server instances and their status.
+  The default list uses only .clickhouse under the exact current working directory; parent
+  directories are not searched. Use --global to list running ClickHouse servers across projects.
   Processes that exited unexpectedly are retained and shown as stopped.
   Running ClickHouse entries also show their PID, version, and ports.
   Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop [name]` to stop one.")]
@@ -420,6 +424,8 @@ CONTEXT FOR AGENTS:
   Use `clickhousectl local server list` to find names.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
+  Project-local lookup uses the exact current working directory and never searches parent
+  .clickhouse directories. Change to the project root, or inspect --global before global action.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
@@ -466,6 +472,8 @@ CONTEXT FOR AGENTS:
   This is irreversible — all data for this server instance will be lost.
   Without a name, removes \"default\" only when it exists. It never guesses a custom server;
   use `server list`, then pass a custom name positionally.
+  Project-local lookup uses the exact current working directory and never searches parent
+  .clickhouse directories. Change to the project root before removing server data.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (only an existing "default" is selected when omitted)

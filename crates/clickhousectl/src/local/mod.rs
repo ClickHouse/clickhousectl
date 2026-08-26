@@ -10,7 +10,8 @@ pub mod symlink;
 use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
 use crate::error::{
-    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, Result,
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
+    ProjectServerCommand, ProjectServerNotFound, Result,
 };
 use crate::{init, paths, version_manager};
 use std::io::Write;
@@ -291,7 +292,7 @@ fn run_client(
         };
         // Resolve symlinks so diagnostics identify the one physical directory
         // whose project-local state was inspected.
-        let project_dir = std::env::current_dir()?.canonicalize()?;
+        let project_dir = init::canonical_project_dir()?;
         let managed_error = |kind, binary_version| {
             Error::ManagedClient(ManagedClientError {
                 kind,
@@ -892,6 +893,7 @@ fn stop_server(
     if let Some(name) = explicit_name {
         server::validate_server_name(name)?;
     }
+    let project_dir = init::canonical_project_dir()?;
 
     // Recover orphaned servers so we can stop processes
     // that lost their metadata files.
@@ -961,7 +963,11 @@ fn stop_server(
             Ok(())
         }
         // No such server in this project — surface the typo.
-        StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
+        StopOutcome::NotFound => Err(Error::ProjectServerNotFound(ProjectServerNotFound {
+            command: ProjectServerCommand::Stop,
+            project_dir,
+            server_name: name,
+        })),
     }
 }
 
@@ -973,6 +979,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     if let Some(name) = explicit_name {
         server::validate_server_name(name)?;
     }
+    let project_dir = init::canonical_project_dir()?;
 
     // Recover orphaned servers so we correctly detect a running
     // process even when its metadata file is missing.
@@ -999,7 +1006,11 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     }
     let data_dir = server::server_data_dir(&name);
     if !data_dir.exists() {
-        return Err(Error::ServerNotFound(name));
+        return Err(Error::ProjectServerNotFound(ProjectServerNotFound {
+            command: ProjectServerCommand::Remove,
+            project_dir,
+            server_name: name,
+        }));
     }
     // Remove the whole server directory (parent of data/)
     let server_dir = data_dir.parent().unwrap();
@@ -1034,6 +1045,7 @@ fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
 }
 
 fn list_servers_local(json: bool) -> Result<()> {
+    let project_dir = init::canonical_project_dir()?;
     let entries = server::list_all_servers()?;
     let running_count = entries.iter().filter(|e| e.running).count();
     let total = entries.len();
@@ -1111,6 +1123,12 @@ fn list_servers_local(json: bool) -> Result<()> {
             .collect(),
         total_servers: total,
         total_running_servers: running_count,
+        project_scope: Some(output::exact_current_project_scope(&project_dir)),
+        guidance: if total == 0 {
+            output::project_scope_guidance(None)
+        } else {
+            Vec::new()
+        },
     };
     output::print_output(&out, json);
     Ok(())
@@ -1137,6 +1155,8 @@ fn list_servers_global(json: bool) -> Result<()> {
             .collect(),
         total_servers: total,
         total_running_servers: total,
+        project_scope: None,
+        guidance: Vec::new(),
     };
     output::print_output(&out, json);
     Ok(())

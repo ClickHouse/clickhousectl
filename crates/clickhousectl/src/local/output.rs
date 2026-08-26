@@ -5,11 +5,12 @@
 
 use crate::error::{
     Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
-    PortKind,
+    PortKind, ProjectServerCommand, ProjectServerNotFound,
 };
 use serde::Serialize;
 use std::fmt;
 use std::io::Write;
+use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
 
 /// Stable codes for local runtime failures. New codes may be added, but
@@ -50,6 +51,19 @@ struct LocalProjectScope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub(crate) enum LocalProjectScopeKind {
+    ExactCurrentProject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ServerProjectScope {
+    kind: LocalProjectScopeKind,
+    path: String,
+    parent_projects_searched: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum LocalServerSelection {
     Default,
     Named,
@@ -70,6 +84,23 @@ struct LocalGuidance {
     command: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalGuidanceAction {
+    ListProjectServers,
+    ListGlobalServers,
+    ReturnToProjectRoot,
+    StopGlobalProjectServer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ProjectServerGuidance {
+    action: LocalGuidanceAction,
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct ManagedClientErrorDetail {
     code: LocalErrorCode,
@@ -80,10 +111,25 @@ struct ManagedClientErrorDetail {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+struct ProjectServerErrorDetail {
+    code: LocalErrorCode,
+    message: String,
+    project_scope: ServerProjectScope,
+    server: LocalProjectServer,
+    guidance: Vec<ProjectServerGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalProjectServer {
+    name: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 enum LocalErrorBody {
     General(LocalErrorDetail),
     ManagedClient(ManagedClientErrorDetail),
+    ProjectServer(ProjectServerErrorDetail),
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -96,6 +142,11 @@ impl LocalErrorOutput {
         if let Error::ManagedClient(error) = error {
             return Self {
                 error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(error)),
+            };
+        }
+        if let Error::ProjectServerNotFound(error) = error {
+            return Self {
+                error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(error)),
             };
         }
         let detail = match error {
@@ -316,6 +367,63 @@ impl ManagedClientErrorDetail {
             guidance,
         }
     }
+}
+
+impl ProjectServerErrorDetail {
+    fn from_error(error: &ProjectServerNotFound) -> Self {
+        Self {
+            code: LocalErrorCode::ServerNotFound,
+            message: format!(
+                "Server '{}' was not found in the current project",
+                error.server_name
+            ),
+            project_scope: exact_current_project_scope(&error.project_dir),
+            server: LocalProjectServer {
+                name: error.server_name.clone(),
+            },
+            guidance: project_scope_guidance(Some(error.command)),
+        }
+    }
+}
+
+pub(crate) fn exact_current_project_scope(project_dir: &Path) -> ServerProjectScope {
+    ServerProjectScope {
+        kind: LocalProjectScopeKind::ExactCurrentProject,
+        path: project_dir.display().to_string(),
+        parent_projects_searched: false,
+    }
+}
+
+pub(crate) fn project_scope_guidance(
+    command: Option<ProjectServerCommand>,
+) -> Vec<ProjectServerGuidance> {
+    let mut guidance = vec![
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ReturnToProjectRoot,
+            message: "Change to the project root that owns the server",
+            command: Some("cd <project-root>"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List servers after returning to that exact project",
+            command: Some("clickhousectl local server list"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListGlobalServers,
+            message: "Locate running ClickHouse servers across projects",
+            command: Some("clickhousectl local server list --global"),
+        },
+    ];
+    if command == Some(ProjectServerCommand::Stop) {
+        guidance.push(ProjectServerGuidance {
+            action: LocalGuidanceAction::StopGlobalProjectServer,
+            message: "After confirming the project, stop the server with explicit global project selection",
+            command: Some(
+                "clickhousectl local server stop <name> --global --project <project-root>",
+            ),
+        });
+    }
+    guidance
 }
 
 fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
@@ -589,6 +697,10 @@ pub struct ServerListOutput {
     pub servers: Vec<ServerListEntry>,
     pub total_servers: usize,
     pub total_running_servers: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_scope: Option<ServerProjectScope>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guidance: Vec<ProjectServerGuidance>,
 }
 
 #[derive(Tabled)]
@@ -646,6 +758,17 @@ struct ServerListRowGlobal {
 impl fmt::Display for ServerListOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.servers.is_empty() {
+            if let Some(scope) = &self.project_scope {
+                writeln!(f, "No servers found in project '{}'.", scope.path)?;
+                writeln!(
+                    f,
+                    "Project-local server list uses the exact current working directory; parent `.clickhouse` directories are not searched."
+                )?;
+                return write!(
+                    f,
+                    "Return to the project root and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+                );
+            }
             write!(f, "No servers")?;
             return Ok(());
         }
@@ -1002,6 +1125,14 @@ mod tests {
                 }),
                 "managed_client_project_state_unavailable",
             ),
+            (
+                Error::ProjectServerNotFound(ProjectServerNotFound {
+                    command: ProjectServerCommand::Stop,
+                    project_dir: "/project".into(),
+                    server_name: "default".into(),
+                }),
+                "server_not_found",
+            ),
             (Error::ServerNotFound("default".into()), "server_not_found"),
             (
                 Error::ServerStopSelectionRequired { available: 2 },
@@ -1266,6 +1397,8 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: Vec::new(),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -1281,6 +1414,8 @@ mod tests {
         assert!(json["servers"][1].get("version").is_none());
         assert_eq!(json["total_servers"], 2);
         assert_eq!(json["total_running_servers"], 1);
+        assert_eq!(json["project_scope"]["path"], "/project");
+        assert_eq!(json["project_scope"]["parent_projects_searched"], false);
     }
 
     #[test]
@@ -1289,6 +1424,8 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: project_scope_guidance(None),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -1296,6 +1433,8 @@ mod tests {
         assert_eq!(json["servers"].as_array().unwrap().len(), 0);
         assert_eq!(json["total_servers"], 0);
         assert_eq!(json["total_running_servers"], 0);
+        assert_eq!(json["project_scope"]["kind"], "exact_current_project");
+        assert_eq!(json["guidance"][2]["action"], "list_global_servers");
     }
 
     #[test]
@@ -1586,6 +1725,8 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         let text = output.to_string();
         assert!(text.contains("Name"));
@@ -1610,8 +1751,26 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         assert_eq!(output.to_string(), "No servers");
+    }
+
+    #[test]
+    fn server_list_display_empty_project_explains_exact_scope() {
+        let output = ServerListOutput {
+            servers: vec![],
+            total_servers: 0,
+            total_running_servers: 0,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: project_scope_guidance(None),
+        };
+        let text = output.to_string();
+        assert!(text.contains("No servers found in project '/project'"));
+        assert!(text.contains("exact current working directory"));
+        assert!(text.contains("parent `.clickhouse` directories are not searched"));
+        assert!(text.contains("clickhousectl local server list --global"));
     }
 
     #[test]
@@ -1630,6 +1789,8 @@ mod tests {
             }],
             total_servers: 1,
             total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         let text = output.to_string();
         assert!(text.contains("1 server, 1 running"));

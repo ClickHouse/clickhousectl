@@ -260,6 +260,57 @@ impl std::error::Error for ManagedClientError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectServerCommand {
+    Stop,
+    Remove,
+}
+
+impl fmt::Display for ProjectServerCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Stop => "stop",
+            Self::Remove => "remove",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectServerNotFound {
+    pub command: ProjectServerCommand,
+    pub project_dir: PathBuf,
+    pub server_name: String,
+}
+
+impl fmt::Display for ProjectServerNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "Server '{}' was not found in project '{}'.",
+            self.server_name,
+            self.project_dir.display()
+        )?;
+        writeln!(
+            f,
+            "Project-local server {} uses the exact current working directory; parent `.clickhouse` directories are not searched.",
+            self.command
+        )?;
+        write!(
+            f,
+            "Return to the project root and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects"
+        )?;
+        if self.command == ProjectServerCommand::Stop {
+            write!(
+                f,
+                "; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`"
+            )?;
+        }
+        write!(f, ".")
+    }
+}
+
+impl std::error::Error for ProjectServerNotFound {}
+
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum Error {
@@ -409,6 +460,9 @@ pub enum Error {
 
     #[error("Server '{0}' not found")]
     ServerNotFound(String),
+
+    #[error("{0}")]
+    ProjectServerNotFound(ProjectServerNotFound),
 
     #[error("{0}")]
     ManagedClient(ManagedClientError),

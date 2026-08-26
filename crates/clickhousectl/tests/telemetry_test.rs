@@ -365,6 +365,42 @@ async fn managed_client_failure_details_never_reach_telemetry() {
     }
 }
 
+#[tokio::test]
+async fn server_scope_failure_paths_never_reach_telemetry() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("server-project-private-token");
+    let server_name = "server-name-private-token";
+    std::fs::create_dir(&project).unwrap();
+
+    let output = sandbox
+        .command(&["local", "server", "stop", server_name])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let raw_message = stderr_of(&output);
+    assert!(raw_message.contains(server_name));
+    assert!(raw_message.contains("server-project-private-token"));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "local server stop");
+    assert_eq!(event["exit_code"], 1);
+    let raw_payload = serde_json::to_string(event).unwrap();
+    for sensitive in [
+        server_name,
+        "server-project-private-token",
+        raw_message.as_str(),
+    ] {
+        assert!(
+            !raw_payload.contains(sensitive),
+            "server scope detail leaked into telemetry: {raw_payload}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
