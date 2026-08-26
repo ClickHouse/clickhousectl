@@ -480,7 +480,7 @@ CONTEXT FOR AGENTS:
         version: Option<String>,
 
         /// Host TCP port (default: 5432, auto-assigns a free port if in use)
-        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=65535))]
+        #[arg(long, value_parser = crate::local::postgres::parse_pg_port_arg)]
         port: Option<u16>,
 
         /// POSTGRES_USER (default: postgres)
@@ -1055,7 +1055,10 @@ mod tests {
                 vec!["--version", "18..1"],
                 "invalid or unsupported postgres version",
             ),
-            (vec!["--port", "0"], "0 is not in 1..=65535"),
+            (
+                vec!["--port", "0"],
+                "--port 0 is not allowed; pick a specific port or omit the flag",
+            ),
             (vec!["--env", "NO_EQUALS"], "expected KEY=VALUE"),
             (vec!["--env", "1KEY=value"], "do not start with a digit"),
             (

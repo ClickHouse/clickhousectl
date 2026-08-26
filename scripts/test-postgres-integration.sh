@@ -217,7 +217,7 @@ EOF
 # ── 11. --port 0 rejected ──
 case_port_zero_rejected() {
     local out; out=$("$CTL" local postgres start --name z --port 0 2>&1) || true
-    echo "$out" | grep -q -- "--port 0 is not allowed" || { die "no rejection: $out"; return 1; }
+    echo "$out" | grep -q -- "--port 0 is not allowed; pick a specific port or omit the flag" || { die "no rejection: $out"; return 1; }
 }
 
 # ── 12. Non-TTY query path returns query result ──
@@ -298,9 +298,9 @@ case_unsupported_majors() {
     o14=$("$CTL" local postgres start --name t --version 14-alpine 2>&1) || true
     o16=$("$CTL" local postgres start --name t --version 16-alpine 2>&1) || true
     o19=$("$CTL" local postgres start --name t --version 19 2>&1) || true
-    echo "$o14" | grep -q "not supported" || { die "14 not rejected: $o14"; return 1; }
-    echo "$o16" | grep -q "not supported" || { die "16 not rejected: $o16"; return 1; }
-    echo "$o19" | grep -q "not supported" || { die "19 not rejected: $o19"; return 1; }
+    echo "$o14" | grep -q "invalid or unsupported postgres version" || { die "14 not rejected: $o14"; return 1; }
+    echo "$o16" | grep -q "invalid or unsupported postgres version" || { die "16 not rejected: $o16"; return 1; }
+    echo "$o19" | grep -q "invalid or unsupported postgres version" || { die "19 not rejected: $o19"; return 1; }
 }
 
 # ── Run all ──

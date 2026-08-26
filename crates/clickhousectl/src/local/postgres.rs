@@ -68,6 +68,16 @@ pub(crate) fn parse_pg_tag_arg(tag: &str) -> std::result::Result<String, String>
         .map_err(|error| error.to_string())
 }
 
+pub(crate) fn parse_pg_port_arg(value: &str) -> std::result::Result<u16, String> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid port '{value}': expected an integer from 1 to 65535"))?;
+    if port == 0 {
+        return Err("--port 0 is not allowed; pick a specific port or omit the flag".into());
+    }
+    Ok(port)
+}
+
 fn validate_pg_env_assignment(assignment: &str) -> std::result::Result<(&str, &str), String> {
     let Some((key, value)) = assignment.split_once('=') else {
         return Err(format!(
@@ -124,7 +134,7 @@ pub(crate) fn validate_pg_start_env_args(
 }
 
 struct StartPreflight {
-    host_port: u16,
+    host_port: Option<u16>,
     extra_env: Vec<String>,
     password_from_env: Option<String>,
 }
@@ -154,7 +164,7 @@ fn validate_start_options(
         .filter(|assignment| !assignment.starts_with("POSTGRES_PASSWORD="))
         .collect();
 
-    let host_port = resolve_port(port)?;
+    let host_port = port.map(|port| resolve_port(Some(port))).transpose()?;
     Ok(StartPreflight {
         host_port,
         extra_env: validated_env,
@@ -204,6 +214,7 @@ async fn start(
     extra_env: Vec<String>,
     json: bool,
 ) -> Result<()> {
+    let has_extra_env = !extra_env.is_empty();
     let preflight = validate_start_options(
         name.as_deref(),
         version.as_deref(),
@@ -284,7 +295,7 @@ async fn start(
                 || user.is_some()
                 || password.is_some()
                 || database.is_some()
-                || !extra_env.is_empty()
+                || has_extra_env
             {
                 eprintln!(
                     "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
@@ -305,6 +316,10 @@ async fn start(
     }
 
     // Fresh create.
+    let host_port = match host_port {
+        Some(port) => port,
+        None => resolve_port(None)?,
+    };
     if !docker::image_exists(&docker, tag).await? {
         docker::pull_image(&docker, tag, json).await?;
     }
@@ -804,6 +819,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_pg_port_rejects_zero_with_actionable_error() {
+        let err = parse_pg_port_arg("0").unwrap_err();
+        assert_eq!(
+            err,
+            "--port 0 is not allowed; pick a specific port or omit the flag"
+        );
+    }
+
+    #[test]
     fn resolve_port_passes_through_explicit_value() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -914,6 +938,7 @@ mod tests {
             ]
         );
         assert_eq!(preflight.password_from_env.as_deref(), Some("a=b"));
+        assert_eq!(preflight.host_port, None);
     }
 
     #[test]
