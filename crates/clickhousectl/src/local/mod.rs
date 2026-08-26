@@ -7,7 +7,7 @@ pub mod postgres;
 pub mod server;
 pub mod symlink;
 
-use cli::{InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
+use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
 use crate::error::{Error, Result};
 use crate::{init, paths, version_manager};
@@ -42,10 +42,11 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             name,
             host,
             port,
+            version,
             query,
             queries_file,
             args,
-        } => run_client(name, host, port, query, queries_file, args),
+        } => run_client(name, host, port, version, query, queries_file, args),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
@@ -259,6 +260,7 @@ fn run_client(
     name: Option<String>,
     host: Option<String>,
     port: Option<u16>,
+    version_spec: Option<ClientVersionArg>,
     query: Option<String>,
     queries_file: Option<String>,
     args: Vec<String>,
@@ -268,7 +270,7 @@ fn run_client(
     let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
         let h = host.unwrap_or_else(|| "localhost".to_string());
         let p = port.unwrap_or(9000);
-        let v = version_manager::get_default_version()?;
+        let v = resolve_direct_client_version(version_spec)?;
         (h, p, v)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
@@ -315,6 +317,28 @@ fn run_client(
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
+}
+
+fn resolve_direct_client_version(version_spec: Option<ClientVersionArg>) -> Result<String> {
+    if let Some(version_spec) = version_spec {
+        let spec = version_spec.into_spec();
+        return version_manager::resolve::try_resolve_local(&spec)
+            .ok_or_else(|| Error::ClientVersionNotInstalled(spec.to_string()));
+    }
+
+    match version_manager::get_default_version() {
+        Ok(version) => Ok(version),
+        Err(Error::NoDefaultVersion) => {
+            let installed = version_manager::list_installed_versions()?;
+            match installed.as_slice() {
+                [] => Err(Error::NoClientVersionInstalled),
+                [version] => Ok(version.clone()),
+                _ => Err(Error::AmbiguousClientVersion),
+            }
+        }
+        Err(Error::VersionNotFound(version)) => Err(Error::StaleDefaultVersion(version)),
+        Err(error) => Err(error),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,5 +1,5 @@
 use crate::version_manager::{self, VersionSpec};
-use clap::{Args, Subcommand};
+use clap::{ArgGroup, Args, Subcommand};
 use std::str::FromStr;
 
 fn parse_server_name_arg(name: &str) -> Result<String, String> {
@@ -101,6 +101,37 @@ impl FromStr for ServerVersionArg {
         version_manager::parse_version_spec(input)
             .map(Self)
             .map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientVersionArg(VersionSpec);
+
+impl ClientVersionArg {
+    pub(crate) fn into_spec(self) -> VersionSpec {
+        self.0
+    }
+}
+
+impl FromStr for ClientVersionArg {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        if input.starts_with("postgres@") || input.starts_with("postgres:") {
+            return Err(
+                "Postgres image selectors are only supported by `local install`; `local client --version` requires an installed ClickHouse version"
+                    .to_string(),
+            );
+        }
+
+        let spec = version_manager::parse_version_spec(input).map_err(|error| error.to_string())?;
+        if matches!(spec, VersionSpec::Latest | VersionSpec::Channel(_)) {
+            return Err(
+                "`local client --version` selects an installed numeric version (for example, 25.12 or 25.12.9.61); floating selectors latest, stable, and lts are not supported"
+                    .to_string(),
+            );
+        }
+        Ok(Self(spec))
     }
 }
 
@@ -208,17 +239,27 @@ CONTEXT FOR AGENTS:
     Init,
 
     /// Connect to a running ClickHouse server with clickhouse-client
-    #[command(after_help = "\
+    #[command(
+        group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
+        after_help = "\
 CONTEXT FOR AGENTS:
   Two connection modes:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
      locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
+     Its recorded server version selects the local client binary; --version is not accepted.
   2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
      ClickHouse server directly, bypassing local server lookup. Host-only uses port 9000; port-only
-     connects to localhost. Direct selectors cannot be combined with --name.
+     connects to localhost. --host/--port select the connection; --version selects an already
+     installed local client binary and never changes the default. Direct selectors cannot be
+     combined with --name.
+  Direct mode without --version uses a valid default. With no default, it uses the sole installed
+  version without setting a default; zero installed versions and multiple installed versions are
+  errors. A stale default must be repaired with `local use` or bypassed with --version.
   --query and --queries-file execute SQL inline or from a file.
   Additional clickhouse-client args can be passed after --.
-  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers.")]
+  Related: `clickhousectl local list` to see installed versions, `clickhousectl local use` to set a
+  default, `clickhousectl local server list` to see managed servers."
+    )]
     Client {
         /// Server name to connect to (default: "default")
         #[arg(long, short, conflicts_with_all = ["host", "port"])]
@@ -235,6 +276,10 @@ CONTEXT FOR AGENTS:
             value_parser = clap::value_parser!(u16).range(1..=65535)
         )]
         port: Option<u16>,
+
+        /// Installed local client version for direct host/port mode (e.g. 25, 25.12, or 25.12.9.61). Does not change the default.
+        #[arg(long, short = 'v', requires = "direct", conflicts_with = "name")]
+        version: Option<ClientVersionArg>,
 
         /// Execute a SQL query
         #[arg(long, short)]
@@ -699,6 +744,10 @@ mod tests {
         assert_version_rejected(&["install", "not.a.version"], expected);
         assert_version_rejected(&["use", "not.a.version"], expected);
         assert_version_rejected(&["server", "start", "--version", "not.a.version"], expected);
+        assert_version_rejected(
+            &["client", "--host", "remote", "--version", "not.a.version"],
+            expected,
+        );
     }
 
     #[test]
@@ -707,6 +756,10 @@ mod tests {
         assert_version_rejected(&["install", "25.12.9"], expected);
         assert_version_rejected(&["use", "25.12.9"], expected);
         assert_version_rejected(&["server", "start", "--version", "25.12.9"], expected);
+        assert_version_rejected(
+            &["client", "--host", "remote", "--version", "25.12.9"],
+            expected,
+        );
     }
 
     #[test]
@@ -715,6 +768,10 @@ mod tests {
         assert_version_rejected(&["install", "25.12.9.61.2"], expected);
         assert_version_rejected(&["use", "25.12.9.61.2"], expected);
         assert_version_rejected(&["server", "start", "--version", "25.12.9.61.2"], expected);
+        assert_version_rejected(
+            &["client", "--host", "remote", "--version", "25.12.9.61.2"],
+            expected,
+        );
     }
 
     #[test]
@@ -742,6 +799,41 @@ mod tests {
             &["server", "start", "--version", "  postgres@18  "],
             "only supported by `local install`; `local server start --version` requires a ClickHouse version",
         );
+        assert_version_rejected(
+            &["client", "--host", "remote", "--version", "postgres@18"],
+            "only supported by `local install`; `local client --version` requires an installed ClickHouse version",
+        );
+    }
+
+    #[test]
+    fn clickhouse_client_parses_numeric_installed_version_selectors() {
+        for input in ["25", "25.12", "25.12.9.61"] {
+            for selectors in [
+                vec!["--host", "remote", "--version", input],
+                vec!["--version", input, "--port", "9000"],
+            ] {
+                let mut args = vec!["client"];
+                args.extend(selectors);
+                let LocalCommands::Client {
+                    version: Some(version),
+                    ..
+                } = local_command(&args)
+                else {
+                    panic!("expected ClickHouse client version {input}");
+                };
+                assert_eq!(version.into_spec().to_string(), input);
+            }
+        }
+    }
+
+    #[test]
+    fn clickhouse_client_rejects_floating_binary_versions() {
+        for input in ["latest", "stable", "lts"] {
+            assert_version_rejected(
+                &["client", "--host", "remote", "--version", input],
+                "selects an installed numeric version",
+            );
+        }
     }
 
     #[test]
@@ -819,6 +911,34 @@ mod tests {
     }
 
     #[test]
+    fn clickhouse_client_version_requires_direct_mode_and_conflicts_with_named_mode() {
+        let missing_direct = local_parse_error(&["client", "--version", "25.12.9.61"]);
+        assert_eq!(
+            missing_direct.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(
+            missing_direct.to_string().contains("--host"),
+            "{missing_direct}"
+        );
+        assert!(
+            missing_direct.to_string().contains("--port"),
+            "{missing_direct}"
+        );
+
+        for selectors in [
+            ["--name", "dev", "--version", "25.12.9.61"],
+            ["--version", "25.12.9.61", "--name", "dev"],
+        ] {
+            let args: Vec<&str> = ["client"].into_iter().chain(selectors).collect();
+            let error = local_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(error.to_string().contains("--version"), "{error}");
+            assert!(error.to_string().contains("--name"), "{error}");
+        }
+    }
+
+    #[test]
     fn clickhouse_client_rejects_zero_and_nonnumeric_ports() {
         for port in ["0", "not-a-port"] {
             let error = local_parse_error(&["client", "--port", port]);
@@ -838,12 +958,44 @@ mod tests {
             "child-host",
             "--port",
             "0",
+            "--version",
+            "child-version",
         ]) else {
             panic!("expected ClickHouse client");
         };
 
         assert_eq!(name.as_deref(), Some("dev"));
-        assert_eq!(args, ["--host", "child-host", "--port", "0"]);
+        assert_eq!(
+            args,
+            [
+                "--host",
+                "child-host",
+                "--port",
+                "0",
+                "--version",
+                "child-version"
+            ]
+        );
+    }
+
+    #[test]
+    fn clickhouse_client_help_distinguishes_connection_and_binary_selection() {
+        let error = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        for text in [
+            "--host/--port select the connection",
+            "--version selects an already",
+            "installed local client binary",
+            "never changes the default",
+            "uses the sole installed",
+            "A stale default must be repaired",
+        ] {
+            assert!(help.contains(text), "missing {text:?} in:\n{help}");
+        }
     }
 
     #[test]

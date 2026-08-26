@@ -226,9 +226,14 @@ clickhousectl local client --queries-file schema.sql # Run queries from a file
 clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
 clickhousectl local client --host remote-host         # Direct mode; port defaults to 9000
 clickhousectl local client --port 19000               # Direct mode; host defaults to localhost
+clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an installed client binary
 ```
 
-`--name` selects a managed server and cannot be combined with direct `--host` or `--port` selectors.
+`--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
+
+In direct mode, `--host` and `--port` select the server connection while `--version` independently selects an already installed local client binary. Numeric selectors such as `26`, `26.8`, and `26.8.1.1760` select the newest installed match. This does not install a binary or change `~/.clickhouse/default`.
+
+Without `--version`, direct mode uses the valid default. If no default exists, zero installed versions is an error, one installed version is used without creating a default, and multiple installed versions require either `--version` or `local use`. A default that names a missing binary is an error; repair it with `local use`, or bypass it for one direct connection with `--version`.
 
 ### Creating and managing ClickHouse servers
 

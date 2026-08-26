@@ -57,6 +57,17 @@ fn invalid_local_versions_fail_before_dispatch_or_filesystem_setup() {
         &["local", "server", "start", "--version", "25.12.9.61.2"],
         "expected 1-2 or 4 parts",
     );
+    assert_rejected_before_side_effects(
+        &[
+            "local",
+            "client",
+            "--host",
+            "remote",
+            "--version",
+            "25.12.9",
+        ],
+        "3-part version '25.12.9' is not supported",
+    );
 }
 
 #[test]
@@ -68,5 +79,16 @@ fn postgres_install_selector_is_rejected_by_clickhouse_only_commands() {
     assert_rejected_before_side_effects(
         &["local", "server", "start", "--version", "postgres@18"],
         "only supported by `local install`; `local server start --version` requires a ClickHouse version",
+    );
+    assert_rejected_before_side_effects(
+        &[
+            "local",
+            "client",
+            "--host",
+            "remote",
+            "--version",
+            "postgres@18",
+        ],
+        "only supported by `local install`; `local client --version` requires an installed ClickHouse version",
     );
 }
