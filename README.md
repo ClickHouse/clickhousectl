@@ -224,7 +224,11 @@ clickhousectl local client --name dev                # Connects to "dev" server
 clickhousectl local client --query "SHOW DATABASES"  # Run a query
 clickhousectl local client --queries-file schema.sql # Run queries from a file
 clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
+clickhousectl local client --host remote-host         # Direct mode; port defaults to 9000
+clickhousectl local client --port 19000               # Direct mode; host defaults to localhost
 ```
+
+`--name` selects a managed server and cannot be combined with direct `--host` or `--port` selectors.
 
 ### Creating and managing ClickHouse servers
 
@@ -323,6 +327,8 @@ clickhousectl local server list
 # Connect with psql (uses host psql if installed; otherwise falls back to docker exec)
 clickhousectl local postgres client --name dev
 clickhousectl local postgres client --name dev --query "SELECT 1"
+clickhousectl local postgres client --host remote-host       # Direct mode; port defaults to 5432
+clickhousectl local postgres client --port 55432             # Direct mode; connects locally
 
 # Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env.local
 clickhousectl local postgres dotenv --name dev --local
@@ -335,6 +341,8 @@ clickhousectl local postgres stop-all                     # Stop all Postgres in
 clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
+
+Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
 
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.
 
