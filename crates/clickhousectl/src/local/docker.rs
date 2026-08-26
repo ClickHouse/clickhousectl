@@ -396,15 +396,21 @@ pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
 }
 
 pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
+    use bollard::errors::Error as BErr;
     use bollard::query_parameters::RemoveContainerOptionsBuilder;
-    docker
+    match docker
         .remove_container(
             id,
             Some(RemoveContainerOptionsBuilder::default().force(true).build()),
         )
         .await
-        .map_err(|e| Error::DockerError(e.to_string()))?;
-    Ok(())
+    {
+        Ok(())
+        | Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
+        Err(e) => Err(Error::DockerError(e.to_string())),
+    }
 }
 
 pub async fn container_logs_tail(docker: &Docker, id: &str, n: usize) -> Result<String> {
