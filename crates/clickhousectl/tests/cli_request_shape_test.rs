@@ -2651,6 +2651,42 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
 }
 
 #[tokio::test]
+async fn service_query_rejects_conflicting_sql_sources_before_file_or_network_access() {
+    let control = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let missing_query_file = dir.path().join("must-not-be-read.sql");
+    let url = control.uri();
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--query",
+            "SELECT 1",
+            "--queries-file",
+            missing_query_file.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--query <QUERY>"), "{stderr}");
+    assert!(stderr.contains("--queries-file <QUERIES_FILE>"), "{stderr}");
+    assert!(!stderr.contains("No such file or directory"), "{stderr}");
+    assert!(control.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
     let control = start_mock_control_plane_with_service().await;
     let query_host = start_mock_query_host().await;

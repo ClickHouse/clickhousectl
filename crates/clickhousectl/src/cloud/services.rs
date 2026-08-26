@@ -416,10 +416,10 @@ CONTEXT FOR AGENTS:
   For queries that may exceed Query API timeouts, `clickhousectl local use latest`
   puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
   to the service instead.
-  SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
-  on a TTY, TabSeparated when piped. --json selects JSONEachRow and cannot be
-  combined with --format; an explicit --format takes precedence over agent
-  auto-JSON."
+  SQL sources: --query and --queries-file are mutually exclusive. When neither
+  is supplied, SQL is read from stdin. Default format: PrettyCompact on a TTY,
+  TabSeparated when piped. --json selects JSONEachRow and cannot be combined
+  with --format; an explicit --format takes precedence over agent auto-JSON."
     )]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
@@ -431,11 +431,11 @@ CONTEXT FOR AGENTS:
         id: Option<String>,
 
         /// Execute a SQL query
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
         /// Execute queries from a SQL file (use "-" for stdin)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "query")]
         queries_file: Option<String>,
 
         /// Target database
@@ -2292,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn service_query_help_documents_native_client_for_long_queries() {
+    fn service_query_help_documents_query_behavior() {
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
             .err()
             .expect("--help should stop parsing");
@@ -2302,6 +2302,11 @@ mod tests {
         assert!(help.contains("Query API timeouts"), "{help}");
         assert!(help.contains("`clickhousectl local use latest`"), "{help}");
         assert!(help.contains("`clickhouse client`"), "{help}");
+        assert!(
+            help.contains("--query and --queries-file are mutually exclusive"),
+            "{help}"
+        );
+        assert!(help.contains("SQL is read from stdin"), "{help}");
     }
 
     #[test]
@@ -3192,8 +3197,6 @@ mod tests {
             "analytics",
             "--query",
             "SELECT 1",
-            "--queries-file",
-            "queries.sql",
             "--database",
             "default",
             "--format",
@@ -3219,11 +3222,62 @@ mod tests {
         assert_eq!(name.as_deref(), Some("analytics"));
         assert!(id.is_none());
         assert_eq!(query.as_deref(), Some("SELECT 1"));
-        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
+        assert!(queries_file.is_none());
         assert_eq!(database.as_deref(), Some("default"));
         assert_eq!(format.as_deref(), Some("CSV"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert!(no_auto_enable);
+    }
+
+    #[test]
+    fn parses_service_query_file_source() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--name",
+            "analytics",
+            "--queries-file",
+            "queries.sql",
+        ]);
+        let ServiceCommands::Query {
+            query,
+            queries_file,
+            ..
+        } = command
+        else {
+            panic!("expected service query");
+        };
+
+        assert!(query.is_none());
+        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
+    }
+
+    #[test]
+    fn rejects_service_query_with_inline_and_file_sources() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--query",
+            "SELECT 1",
+            "--queries-file",
+            "queries.sql",
+        ])
+        .err()
+        .expect("service query with conflicting SQL sources should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = error.to_string();
+        assert!(message.contains("--query <QUERY>"), "{message}");
+        assert!(
+            message.contains("--queries-file <QUERIES_FILE>"),
+            "{message}"
+        );
     }
 
     #[test]
