@@ -60,23 +60,17 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhousectl/src/new_shared.rs",
             "crates/clickhousectl/src/local/new_installer_helper.rs",
             "crates/clickhousectl/tests/new_install_subprocess_test.rs",
+            "crates/clickhousectl/tests/snapshots/new_install.snap",
         ):
             with self.subTest(path=path):
                 self.assertIsNone(classifier.classify_path(path))
 
-    def test_unknown_candidate_fails_closed(self):
-        run, unknown = classifier.classify_paths(
-            ["README.md", "crates/clickhousectl/src/local/new_helper.rs"]
-        )
-        self.assertTrue(run)
-        self.assertEqual(
-            unknown, ("crates/clickhousectl/src/local/new_helper.rs",)
-        )
-
     def test_current_cli_sources_and_subprocess_tests_are_classified(self):
         crate = classifier.REPO_ROOT / "crates" / "clickhousectl"
         candidates = [*sorted((crate / "src").rglob("*.rs"))]
-        candidates.extend(sorted((crate / "tests").rglob("*.rs")))
+        candidates.extend(
+            path for path in sorted((crate / "tests").rglob("*")) if path.is_file()
+        )
         unknown = [
             path.relative_to(classifier.REPO_ROOT).as_posix()
             for path in candidates
@@ -86,6 +80,68 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             is None
         ]
         self.assertEqual(unknown, [])
+
+    def test_exact_path_mappings(self):
+        self.assertEqual(
+            classifier.INSTALL_EXACT_PATHS,
+            frozenset(
+                {
+                    ".github/workflows/test-cli.yml",
+                    ".github/workflows/test-install.yml",
+                    "Cargo.lock",
+                    "Cargo.toml",
+                    "crates/clickhousectl/Cargo.toml",
+                    "crates/clickhousectl/src/cli.rs",
+                    "crates/clickhousectl/src/error.rs",
+                    "crates/clickhousectl/src/http.rs",
+                    "crates/clickhousectl/src/init.rs",
+                    "crates/clickhousectl/src/local/cli.rs",
+                    "crates/clickhousectl/src/local/discovery.rs",
+                    "crates/clickhousectl/src/local/mod.rs",
+                    "crates/clickhousectl/src/local/output.rs",
+                    "crates/clickhousectl/src/local/server.rs",
+                    "crates/clickhousectl/src/local/symlink.rs",
+                    "crates/clickhousectl/src/main.rs",
+                    "crates/clickhousectl/src/paths.rs",
+                    "crates/clickhousectl/src/user_agent.rs",
+                    "crates/clickhousectl/tests/local_install_local_first_test.rs",
+                    "crates/clickhousectl/tests/local_version_error_test.rs",
+                    "scripts/classify-install-integration.py",
+                    "scripts/tests/test_classify_install_integration.py",
+                }
+            ),
+        )
+        self.assertEqual(
+            classifier.NON_INSTALL_EXACT_PATHS,
+            frozenset(
+                {
+                    "crates/clickhousectl/src/dotenv.rs",
+                    "crates/clickhousectl/src/local/config.rs",
+                    "crates/clickhousectl/src/local/docker.rs",
+                    "crates/clickhousectl/src/local/postgres.rs",
+                    "crates/clickhousectl/src/skills.rs",
+                    "crates/clickhousectl/src/telemetry.rs",
+                    "crates/clickhousectl/src/update.rs",
+                    "crates/clickhousectl/tests/cli_request_shape_test.rs",
+                    "crates/clickhousectl/tests/local_client_project_scope_errors_test.rs",
+                    "crates/clickhousectl/tests/local_client_selectors_test.rs",
+                    "crates/clickhousectl/tests/local_docker_diagnostics_test.rs",
+                    "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
+                    "crates/clickhousectl/tests/local_postgres_readiness_test.rs",
+                    "crates/clickhousectl/tests/local_postgres_start_validation_test.rs",
+                    "crates/clickhousectl/tests/local_server_metadata_test.rs",
+                    "crates/clickhousectl/tests/local_server_name_compatibility_test.rs",
+                    "crates/clickhousectl/tests/local_server_project_scope_errors_test.rs",
+                    "crates/clickhousectl/tests/local_server_readiness_test.rs",
+                    "crates/clickhousectl/tests/local_server_selection_test.rs",
+                    "crates/clickhousectl/tests/local_server_start_args_test.rs",
+                    "crates/clickhousectl/tests/local_server_state_machine_test.rs",
+                    "crates/clickhousectl/tests/local_server_stopped_test.rs",
+                    "crates/clickhousectl/tests/local_structured_errors_test.rs",
+                    "crates/clickhousectl/tests/telemetry_test.rs",
+                }
+            ),
+        )
 
     def test_workflow_filter_exactly_matches_classifier(self):
         workflow = classifier.REPO_ROOT / ".github" / "workflows" / "test-install.yml"

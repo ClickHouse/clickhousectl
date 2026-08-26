@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Classify paths that can affect live local ClickHouse install checks."""
 
-import argparse
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Keep this exact: local Docker/Postgres changes must not start the live install
-# matrix. The static test inventories shared/local Rust and subprocess test files,
-# so a new or renamed candidate fails closed until it is classified here.
+# matrix. The static test inventories shared/local Rust sources and every
+# subprocess test file, so a new or renamed candidate fails closed until it is
+# classified here.
 INSTALL_EXACT_PATHS = frozenset(
     {
         ".github/workflows/test-cli.yml",
@@ -86,43 +85,8 @@ def classify_path(path: str) -> bool | None:
         return True
     if path in NON_INSTALL_EXACT_PATHS or path.startswith(CLOUD_SOURCE_PREFIX):
         return False
-    if path.endswith(".rs") and (
-        path.startswith(CANDIDATE_SOURCE_PREFIX)
-        or path.startswith(CANDIDATE_TEST_PREFIX)
-    ):
+    if (
+        path.endswith(".rs") and path.startswith(CANDIDATE_SOURCE_PREFIX)
+    ) or path.startswith(CANDIDATE_TEST_PREFIX):
         return None
     return False
-
-
-def classify_paths(paths: list[str]) -> tuple[bool, tuple[str, ...]]:
-    """Select the install workflow, failing closed on unknown candidates."""
-    run = False
-    unknown = []
-    for path in paths:
-        classification = classify_path(path)
-        if classification is None:
-            unknown.append(path)
-            run = True
-        else:
-            run = run or classification
-    return run, tuple(unknown)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="+")
-    args = parser.parse_args()
-
-    run, unknown = classify_paths(args.paths)
-    if unknown:
-        print(
-            f"warning: unclassified install candidate(s): {', '.join(unknown)}; "
-            "selecting install workflow",
-            file=sys.stderr,
-        )
-    print("run" if run else "skip")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
