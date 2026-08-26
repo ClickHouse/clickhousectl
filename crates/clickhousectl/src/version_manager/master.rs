@@ -12,8 +12,9 @@
 //! *and* the post-download version detection; changed (or no record, or the
 //! recorded binary is missing) -> download afresh and re-record.
 
-use crate::error::Result;
+use crate::error::{NetworkCategory, NetworkFailure, NetworkStage, Result};
 use crate::paths;
+use crate::version_manager::network;
 use crate::version_manager::platform::{DownloadSource, Platform};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -115,35 +116,46 @@ pub fn record(platform: &Platform, head: &HeadInfo, version: &str) -> Result<()>
 }
 
 /// HEAD the master URL and pull the change-detection headers.
-/// Best-effort: returns `None` on any network/build error, so callers fall
-/// back to an unconditional download rather than failing.
-pub async fn head_info(platform: &Platform) -> Option<HeadInfo> {
+/// Callers treat failure as best-effort and continue with a download, but the
+/// classified error is returned so it can be reported without leaking the URL.
+pub async fn head_info(platform: &Platform) -> Result<Option<HeadInfo>> {
     let url = DownloadSource::Builds {
         version_path: "master".to_string(),
     }
     .url(platform);
+    head_info_url(&url).await
+}
 
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
-        .build()
-        .ok()?;
+async fn head_info_url(url: &str) -> Result<Option<HeadInfo>> {
+    head_info_url_with_policy(url, network::METADATA_POLICY).await
+}
 
-    let resp = client.head(&url).send().await.ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
+async fn head_info_url_with_policy(
+    url: &str,
+    policy: network::RequestPolicy,
+) -> Result<Option<HeadInfo>> {
+    let client = network::client(policy, NetworkStage::MasterCheck, url)?;
+    let resp = network::send(client.head(url), NetworkStage::MasterCheck, url).await?;
+    let resp = network::ensure_success(resp, NetworkStage::MasterCheck, url)?;
     let header = |name: reqwest::header::HeaderName| {
         resp.headers()
             .get(name)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string())
     };
-    let etag = header(reqwest::header::ETAG)?;
+    let Some(etag) = header(reqwest::header::ETAG) else {
+        return Err(NetworkFailure::new(
+            NetworkStage::MasterCheck,
+            url,
+            NetworkCategory::InvalidResponse,
+        )
+        .into());
+    };
     let last_modified = header(reqwest::header::LAST_MODIFIED);
-    Some(HeadInfo {
+    Ok(Some(HeadInfo {
         etag,
         last_modified,
-    })
+    }))
 }
 
 /// Pure reuse decision: reuse the recorded build only when we have a record,
@@ -179,6 +191,10 @@ pub fn reuse_if_unchanged(platform: &Platform, head: Option<&HeadInfo>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::{Error, NetworkCategory};
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn rec(etag: &str, version: &str) -> MasterRecord {
         MasterRecord {
@@ -186,6 +202,81 @@ mod tests {
             last_modified: None,
             version: version.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn master_check_reads_change_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/master"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("etag", "\"abc-1\"")
+                    .insert_header("last-modified", "Wed, 21 Oct 2015 07:28:00 GMT"),
+            )
+            .mount(&server)
+            .await;
+
+        let head = head_info_url(&format!("{}/master", server.uri()))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(head.etag, "\"abc-1\"");
+        assert_eq!(
+            head.last_modified.as_deref(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
+    }
+
+    #[tokio::test]
+    async fn stalled_master_headers_are_bounded_and_classified() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/master"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(300)))
+            .mount(&server)
+            .await;
+        let policy = network::RequestPolicy {
+            connect_timeout: Duration::from_millis(30),
+            read_timeout: Duration::from_millis(40),
+            request_timeout: Duration::from_millis(60),
+        };
+
+        let error =
+            head_info_url_with_policy(&format!("{}/master?token=secret", server.uri()), policy)
+                .await
+                .unwrap_err();
+
+        let Error::Network(failure) = error else {
+            panic!("expected network failure");
+        };
+        assert_eq!(failure.stage, NetworkStage::MasterCheck);
+        assert_eq!(failure.category, NetworkCategory::Timeout);
+        assert!(!failure.to_string().contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn master_server_status_is_not_treated_as_unchanged() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/master"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let error = head_info_url(&format!("{}/master", server.uri()))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Network(NetworkFailure {
+                stage: NetworkStage::MasterCheck,
+                category: NetworkCategory::ServerError,
+                ..
+            })
+        ));
     }
 
     #[test]

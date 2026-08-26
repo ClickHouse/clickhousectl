@@ -66,7 +66,10 @@ pub async fn install_resolved(
     );
     let mut master_head = None;
     if is_master {
-        master_head = master::head_info(platform).await;
+        match master::head_info(platform).await {
+            Ok(head) => master_head = head,
+            Err(error) => eprintln!("Master freshness check skipped: {error}"),
+        }
         if !force && let Some(version) = master::reuse_if_unchanged(platform, master_head.as_ref())
         {
             eprintln!(

@@ -1,5 +1,123 @@
 use std::path::PathBuf;
+use std::{fmt, str::FromStr};
 use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkStage {
+    BuildProbe,
+    VersionFallback,
+    VersionList,
+    MasterCheck,
+    DownloadHeaders,
+    DownloadBody,
+    Download,
+}
+
+impl fmt::Display for NetworkStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let stage = match self {
+            Self::BuildProbe => "build probe",
+            Self::VersionFallback => "version fallback",
+            Self::VersionList => "version list",
+            Self::MasterCheck => "master check",
+            Self::DownloadHeaders => "download headers",
+            Self::DownloadBody => "download body",
+            Self::Download => "download",
+        };
+        f.write_str(stage)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkCategory {
+    Timeout,
+    Connection,
+    Transport,
+    InvalidResponse,
+    Forbidden,
+    NotFound,
+    RateLimited,
+    ClientError,
+    ServerError,
+    UnexpectedStatus,
+}
+
+impl NetworkCategory {
+    pub(crate) const fn priority(self) -> u8 {
+        match self {
+            Self::RateLimited => 7,
+            Self::ServerError => 6,
+            Self::Timeout => 5,
+            Self::Connection => 4,
+            Self::Transport => 3,
+            Self::InvalidResponse => 2,
+            Self::ClientError | Self::UnexpectedStatus => 1,
+            Self::Forbidden | Self::NotFound => 0,
+        }
+    }
+}
+
+impl fmt::Display for NetworkCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let category = match self {
+            Self::Timeout => "timeout",
+            Self::Connection => "connection",
+            Self::Transport => "transport",
+            Self::InvalidResponse => "invalid-response",
+            Self::Forbidden => "forbidden",
+            Self::NotFound => "not-found",
+            Self::RateLimited => "rate-limited",
+            Self::ClientError => "client-error",
+            Self::ServerError => "server-error",
+            Self::UnexpectedStatus => "unexpected-status",
+        };
+        f.write_str(category)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkFailure {
+    pub stage: NetworkStage,
+    pub host: String,
+    pub category: NetworkCategory,
+    pub attempts: Option<usize>,
+}
+
+impl NetworkFailure {
+    pub(crate) fn new(stage: NetworkStage, url: &str, category: NetworkCategory) -> Self {
+        let host = url::Url::from_str(url)
+            .ok()
+            .and_then(|url| url.host_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| "unknown-host".to_string());
+        Self {
+            stage,
+            host,
+            category,
+            attempts: None,
+        }
+    }
+
+    pub(crate) fn after_attempts(mut self, attempts: usize) -> Self {
+        self.attempts = Some(attempts);
+        self
+    }
+}
+
+impl fmt::Display for NetworkFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} request to {} failed ({})",
+            self.stage, self.host, self.category
+        )?;
+        if let Some(attempts) = self.attempts {
+            write!(f, " after {attempts} attempts")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for NetworkFailure {}
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]
@@ -42,6 +160,15 @@ pub enum Error {
 
     #[error("Download failed: {0}")]
     Download(String),
+
+    #[error("{0}")]
+    Network(#[from] NetworkFailure),
+
+    #[error("{probe}; fallback also failed: {fallback}")]
+    VersionResolutionFallback {
+        probe: NetworkFailure,
+        fallback: Box<Error>,
+    },
 
     #[error("No matching version found for: {0}")]
     NoMatchingVersion(String),

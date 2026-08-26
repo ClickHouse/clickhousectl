@@ -1,8 +1,11 @@
-use crate::error::{Error, Result};
+use crate::error::{Error, NetworkStage, Result};
 use crate::paths;
+use crate::version_manager::network::{self, ProbeOutcome};
 use chrono::Datelike;
+use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use std::fmt;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Channel {
@@ -72,15 +75,11 @@ pub struct VersionEntry {
 /// Fetches available versions from GitHub releases
 pub async fn list_available_versions() -> Result<Vec<VersionEntry>> {
     let url = "https://api.github.com/repos/ClickHouse/ClickHouse/releases?per_page=100";
-    let client = crate::http::client_builder().build()?;
-
-    let response = client
-        .get(url)
-        .send()
-        .await?
-        .error_for_status()
-        .map_err(|e| Error::Download(format!("GitHub API request failed: {}", e)))?;
-    let releases: Vec<GitHubRelease> = response.json().await?;
+    let client = network::client(network::METADATA_POLICY, NetworkStage::VersionList, url)?;
+    let response = network::send(client.get(url), NetworkStage::VersionList, url).await?;
+    let response = network::ensure_success(response, NetworkStage::VersionList, url)?;
+    let releases: Vec<GitHubRelease> =
+        network::json(response, NetworkStage::VersionList, url).await?;
 
     let mut versions = Vec::new();
     for release in releases {
@@ -112,30 +111,68 @@ pub async fn list_available_versions_from_builds() -> Result<Vec<String>> {
     use crate::version_manager::platform::{Platform, builds_probe_url};
 
     let platform = Platform::detect()?;
-    let client = crate::http::client_builder()
-        .build()
-        .map_err(|e| Error::Download(e.to_string()))?;
-
     let current_year = chrono::Utc::now().year() as u32;
     // ClickHouse uses YY.MM versioning — scan from current year down to 20 (2020)
     // Use two-digit year format
     let start_yy = current_year % 100;
 
-    let mut available = Vec::new();
-
+    let mut candidates = Vec::new();
     for yy in (20..=start_yy).rev() {
         for mm in (1..=12).rev() {
             let version_path = format!("{}.{}", yy, mm);
             let url = builds_probe_url(&version_path, &platform);
-            match client.head(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    available.push(version_path);
-                }
-                _ => {}
+            candidates.push((version_path, url));
+        }
+    }
+    scan_build_candidates(candidates, network::LIST_OPERATION_TIMEOUT).await
+}
+
+async fn scan_build_candidates(
+    candidates: Vec<(String, String)>,
+    operation_timeout: Duration,
+) -> Result<Vec<String>> {
+    let Some((_, first_url)) = candidates.first() else {
+        return Ok(Vec::new());
+    };
+    let first_url = first_url.clone();
+    let client = network::client(
+        network::METADATA_POLICY,
+        NetworkStage::VersionList,
+        &first_url,
+    )?;
+    let scan = stream::iter(candidates)
+        .map(|(version, url)| {
+            let client = client.clone();
+            async move {
+                let outcome = network::probe(&client, &url, NetworkStage::VersionList).await;
+                (version, outcome)
+            }
+        })
+        .buffer_unordered(8)
+        .collect::<Vec<_>>();
+    let outcomes = network::with_operation_timeout(
+        operation_timeout,
+        NetworkStage::VersionList,
+        &first_url,
+        scan,
+    )
+    .await?;
+
+    let mut available = Vec::new();
+    let mut failure = None;
+    for (version, outcome) in outcomes {
+        match outcome {
+            ProbeOutcome::Available => available.push(version),
+            ProbeOutcome::Missing => {}
+            ProbeOutcome::Failed(candidate) => {
+                failure = network::preferred_failure(failure, candidate);
             }
         }
     }
-
+    if let Some(failure) = failure {
+        return Err(failure.into());
+    }
+    available.sort_by(|a, b| compare_versions(b, a));
     Ok(available)
 }
 
@@ -206,7 +243,94 @@ pub(crate) fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::{NetworkCategory, NetworkFailure};
     use std::cmp::Ordering;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn mount_head(server: &MockServer, endpoint: &str, status: u16) {
+        Mock::given(method("HEAD"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn build_list_treats_404_as_absent_and_keeps_successes_sorted() {
+        let server = MockServer::start().await;
+        mount_head(&server, "/new", 200).await;
+        mount_head(&server, "/old", 200).await;
+        mount_head(&server, "/missing", 404).await;
+        let candidates = vec![
+            ("25.2".to_string(), format!("{}/old", server.uri())),
+            ("25.12".to_string(), format!("{}/new", server.uri())),
+            ("25.11".to_string(), format!("{}/missing", server.uri())),
+        ];
+
+        let versions = scan_build_candidates(candidates, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert_eq!(versions, ["25.12", "25.2"]);
+    }
+
+    #[tokio::test]
+    async fn build_list_reports_rate_limit_instead_of_partial_results() {
+        let server = MockServer::start().await;
+        mount_head(&server, "/available", 200).await;
+        mount_head(&server, "/server-error", 500).await;
+        mount_head(&server, "/rate-limit", 429).await;
+        let candidates = vec![
+            ("25.12".to_string(), format!("{}/available", server.uri())),
+            (
+                "25.11".to_string(),
+                format!("{}/server-error", server.uri()),
+            ),
+            ("25.10".to_string(), format!("{}/rate-limit", server.uri())),
+        ];
+
+        let error = scan_build_candidates(candidates, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            Error::Network(NetworkFailure {
+                stage: NetworkStage::VersionList,
+                category: NetworkCategory::RateLimited,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn build_list_scan_has_a_total_operation_deadline() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/slow"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_millis(500)))
+            .mount(&server)
+            .await;
+        let candidates = (1..=20)
+            .map(|minor| (format!("25.{minor}"), format!("{}/slow", server.uri())))
+            .collect();
+        let started = tokio::time::Instant::now();
+
+        let error = scan_build_candidates(candidates, Duration::from_millis(60))
+            .await
+            .unwrap_err();
+
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(matches!(
+            error,
+            Error::Network(NetworkFailure {
+                stage: NetworkStage::VersionList,
+                category: NetworkCategory::Timeout,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn test_equal_versions() {
