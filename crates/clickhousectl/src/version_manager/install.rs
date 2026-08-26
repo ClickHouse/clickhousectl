@@ -22,16 +22,21 @@ pub async fn install_local_first(
     spec: &VersionSpec,
     platform: &Platform,
     force: bool,
+    structured_output: bool,
 ) -> Result<String> {
     if !force && let Some(local) = try_resolve_local(spec)? {
-        eprintln!("ClickHouse {} is already installed as {}", spec, local);
-        eprintln!("Use --force to re-download the latest build");
+        if !structured_output {
+            eprintln!("ClickHouse {} is already installed as {}", spec, local);
+            eprintln!("Use --force to re-download the latest build");
+        }
         return Ok(local);
     }
 
-    eprintln!("Resolving {}...", spec);
+    if !structured_output {
+        eprintln!("Resolving {}...", spec);
+    }
     let resolved = resolve(spec, platform).await?;
-    install_resolved(&resolved, platform, force).await
+    install_resolved(&resolved, platform, force, structured_output).await
 }
 
 /// Like `install_local_first`, but returns an existing local version silently
@@ -39,14 +44,17 @@ pub async fn install_local_first(
 pub async fn ensure_installed_local_first(
     spec: &VersionSpec,
     platform: &Platform,
+    structured_output: bool,
 ) -> Result<String> {
     if let Some(local) = try_resolve_local(spec)? {
         return Ok(local);
     }
 
-    eprintln!("Resolving {}...", spec);
+    if !structured_output {
+        eprintln!("Resolving {}...", spec);
+    }
     let resolved = resolve(spec, platform).await?;
-    ensure_installed(&resolved, platform).await
+    ensure_installed(&resolved, platform, structured_output).await
 }
 
 /// Installs a ClickHouse version using the multi-source resolution system.
@@ -55,6 +63,7 @@ pub async fn install_resolved(
     resolved: &ResolvedVersion,
     platform: &Platform,
     force: bool,
+    structured_output: bool,
 ) -> Result<String> {
     paths::ensure_dirs()?;
     let versions_dir = paths::versions_dir()?;
@@ -70,14 +79,20 @@ pub async fn install_resolved(
     if is_master {
         match master::head_info(platform).await {
             Ok(head) => master_head = head,
-            Err(error) => eprintln!("Master freshness check skipped: {error}"),
+            Err(error) => {
+                if !structured_output {
+                    eprintln!("Master freshness check skipped: {error}");
+                }
+            }
         }
         if !force && let Some(version) = master::reuse_if_unchanged(platform, master_head.as_ref())
         {
-            eprintln!(
-                "latest is up to date (master build unchanged); using {}",
-                version
-            );
+            if !structured_output {
+                eprintln!(
+                    "latest is up to date (master build unchanged); using {}",
+                    version
+                );
+            }
             return Ok(version);
         }
     }
@@ -100,11 +115,13 @@ pub async fn install_resolved(
         if let Ok(installed) = list_installed_versions()
             && let Some(existing) = installed.iter().find(|v| v.starts_with(&prefix))
         {
-            eprintln!(
-                "ClickHouse {} is already installed as {}",
-                version_path, existing
-            );
-            eprintln!("Use --force to re-download the latest build");
+            if !structured_output {
+                eprintln!(
+                    "ClickHouse {} is already installed as {}",
+                    version_path, existing
+                );
+                eprintln!("Use --force to re-download the latest build");
+            }
             return Ok(existing.clone());
         }
     }
@@ -113,15 +130,19 @@ pub async fn install_resolved(
     let staging = InstallStaging::create(&versions_dir)?;
     let binary_path = staging.binary_path();
 
-    eprintln!("Downloading ClickHouse {}...", resolved.display_version);
+    if !structured_output {
+        eprintln!("Downloading ClickHouse {}...", resolved.display_version);
+    }
 
     if resolved.source.is_tarball(platform) {
         let tarball_path = staging.path().join("clickhouse.tgz");
-        download_from_source(&resolved.source, platform, &tarball_path).await?;
-        eprintln!("Extracting...");
+        download_from_source(&resolved.source, platform, &tarball_path, structured_output).await?;
+        if !structured_output {
+            eprintln!("Extracting...");
+        }
         extract_tarball_auto(&tarball_path, staging.payload())?;
     } else {
-        download_from_source(&resolved.source, platform, &binary_path).await?;
+        download_from_source(&resolved.source, platform, &binary_path, structured_output).await?;
     }
 
     // Make the binary executable
@@ -133,7 +154,9 @@ pub async fn install_resolved(
     let exact_version = if resolved.exact_version_known {
         resolved.exact_version.clone().unwrap()
     } else {
-        eprintln!("Detecting version...");
+        if !structured_output {
+            eprintln!("Detecting version...");
+        }
         detect_binary_version(&binary_path)?
     };
 
@@ -147,7 +170,13 @@ pub async fn install_resolved(
         is_master,
         platform,
         master_head.as_ref(),
-        version_in_use_by_running_server,
+        |version| {
+            if structured_output {
+                Ok(false)
+            } else {
+                version_in_use_by_running_server(version)
+            }
+        },
         |_| Ok(()),
     )?;
 
@@ -165,7 +194,9 @@ pub async fn install_resolved(
         Some(ch) => format!(" ({})", ch),
         None => String::new(),
     };
-    eprintln!("Installed ClickHouse {}{}", exact_version, channel_suffix);
+    if !structured_output {
+        eprintln!("Installed ClickHouse {}{}", exact_version, channel_suffix);
+    }
 
     Ok(exact_version)
 }
@@ -245,7 +276,11 @@ fn commit_staged_install_locked(
 /// Like `install_resolved`, but returns the existing version instead of erroring
 /// when already installed. Intended for cases like `server start --version` where
 /// the goal is "make sure this version is available" rather than "install this".
-pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -> Result<String> {
+pub async fn ensure_installed(
+    resolved: &ResolvedVersion,
+    platform: &Platform,
+    structured_output: bool,
+) -> Result<String> {
     // If we know the exact version upfront, return it if already installed
     if let Some(ref version) = resolved.exact_version
         && is_installed(&paths::binary_path(version)?)
@@ -271,7 +306,7 @@ pub async fn ensure_installed(resolved: &ResolvedVersion, platform: &Platform) -
     // upfront, so install_resolved downloads, detects the version, and may find it
     // already installed. That's a success for the "ensure" contract, not an error:
     // map VersionAlreadyInstalled back to the existing version.
-    match install_resolved(resolved, platform, false).await {
+    match install_resolved(resolved, platform, false, structured_output).await {
         Err(Error::VersionAlreadyInstalled(version)) => Ok(version),
         other => other,
     }

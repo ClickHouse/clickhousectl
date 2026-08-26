@@ -1,11 +1,185 @@
 //! Structured output types for local commands.
 //!
-//! Each type supports both JSON serialization (via serde) and human-readable
-//! display (via `fmt::Display`). The `--json` flag switches between the two.
+//! Successful output types support both JSON serialization and human-readable
+//! display. Runtime failures use the redacted stable envelope below.
 
+use crate::error::{Error, NetworkStage, PortKind};
 use serde::Serialize;
 use std::fmt;
+use std::io::Write;
 use tabled::{Table, Tabled, settings::Style};
+
+/// Stable codes for local runtime failures. New codes may be added, but
+/// existing spellings and meanings are part of the machine-output contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalErrorCode {
+    ServerNotFound,
+    ServerNotRunning,
+    ServerRunning,
+    InvalidVersion,
+    VersionUnavailable,
+    PortInUse,
+    StartupExit,
+    StartupTimeout,
+    DownloadFailed,
+    IoError,
+    LocalError,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalErrorDetail {
+    code: LocalErrorCode,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalErrorOutput {
+    error: LocalErrorDetail,
+}
+
+impl LocalErrorOutput {
+    fn from_error(error: &Error) -> Self {
+        let detail = match error {
+            Error::ServerNotFound(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerNotFound,
+                message: format!("Server '{name}' not found"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerNotRunning(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerNotRunning,
+                message: format!("Server '{name}' is not running"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerAlreadyRunning(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerRunning,
+                message: format!("Server '{name}' is already running"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerRunningCannotRemove(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerRunning,
+                message: format!("Server '{name}' is running"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::VersionInUse { .. } => LocalErrorDetail {
+                code: LocalErrorCode::ServerRunning,
+                message: "A running server is using this version".to_string(),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::InvalidVersion(_) => LocalErrorDetail {
+                code: LocalErrorCode::InvalidVersion,
+                message: "Invalid version".to_string(),
+                command: Some("clickhousectl local install --help"),
+            },
+            Error::VersionNotFound(_)
+            | Error::NoVersionsInstalled
+            | Error::NoDefaultVersion
+            | Error::NoClientVersionInstalled
+            | Error::AmbiguousClientVersion
+            | Error::StaleDefaultVersion(_)
+            | Error::ClientVersionNotInstalled(_)
+            | Error::RepeatedClientQueryUnsupported { .. }
+            | Error::NoMatchingVersion(_)
+            | Error::ExactVersionUnavailable { .. }
+            | Error::UnknownVersionChannel(_)
+            | Error::VersionResolutionFallback { .. } => LocalErrorDetail {
+                code: LocalErrorCode::VersionUnavailable,
+                message: "Requested version is unavailable".to_string(),
+                command: Some("clickhousectl local list --remote"),
+            },
+            Error::PortInUse { kind, port } => LocalErrorDetail {
+                code: LocalErrorCode::PortInUse,
+                message: format!("{kind} port {port} is already in use"),
+                command: Some(match kind {
+                    PortKind::Postgres => "clickhousectl local postgres start --help",
+                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
+                }),
+            },
+            Error::PortUnavailable(kind) => LocalErrorDetail {
+                code: LocalErrorCode::PortInUse,
+                message: format!("No free {kind} port is available"),
+                command: Some(match kind {
+                    PortKind::Postgres => "clickhousectl local postgres start --help",
+                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
+                }),
+            },
+            Error::StartupExit { kind, name, .. } => LocalErrorDetail {
+                code: LocalErrorCode::StartupExit,
+                message: format!("{kind} server '{name}' exited before becoming ready"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::StartupTimeout {
+                kind,
+                name,
+                seconds,
+                ..
+            } => LocalErrorDetail {
+                code: LocalErrorCode::StartupTimeout,
+                message: format!(
+                    "{kind} server '{name}' did not become ready within {seconds} seconds"
+                ),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::Download(_) | Error::Extract(_) => LocalErrorDetail {
+                code: LocalErrorCode::DownloadFailed,
+                message: "Download failed".to_string(),
+                command: None,
+            },
+            Error::Network(failure)
+                if matches!(
+                    failure.stage,
+                    NetworkStage::DownloadHeaders
+                        | NetworkStage::DownloadBody
+                        | NetworkStage::Download
+                ) =>
+            {
+                LocalErrorDetail {
+                    code: LocalErrorCode::DownloadFailed,
+                    message: "Download failed".to_string(),
+                    command: None,
+                }
+            }
+            Error::Network(_) => LocalErrorDetail {
+                code: LocalErrorCode::VersionUnavailable,
+                message: "Requested version is unavailable".to_string(),
+                command: Some("clickhousectl local list --remote"),
+            },
+            Error::Io(_)
+            | Error::Json(_)
+            | Error::CreateDir { .. }
+            | Error::ServerMetadataRead { .. }
+            | Error::ServerMetadataUtf8 { .. }
+            | Error::ServerMetadataParse { .. }
+            | Error::ServerMetadataWrite { .. } => LocalErrorDetail {
+                code: LocalErrorCode::IoError,
+                message: "Local I/O operation failed".to_string(),
+                command: None,
+            },
+            Error::PostgresStartupRollback { primary, .. } => {
+                return Self::from_error(primary);
+            }
+            _ => LocalErrorDetail {
+                code: LocalErrorCode::LocalError,
+                message: "Local command failed".to_string(),
+                command: None,
+            },
+        };
+        Self { error: detail }
+    }
+}
+
+/// Write exactly one local runtime error object to stderr. The serialized DTO
+/// is allowlisted above and never includes an error source or arbitrary detail.
+pub fn print_error(error: &Error) {
+    let output = LocalErrorOutput::from_error(error);
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if serde_json::to_writer_pretty(&mut stderr, &output).is_ok() {
+        let _ = writeln!(stderr);
+    }
+}
 
 // ── list (installed) ────────────────────────────────────────────────────────
 
@@ -580,6 +754,107 @@ pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn error_json(error: &Error) -> serde_json::Value {
+        serde_json::to_value(LocalErrorOutput::from_error(error)).unwrap()
+    }
+
+    #[test]
+    fn local_error_codes_cover_the_stable_vocabulary() {
+        let cases = [
+            (Error::ServerNotFound("default".into()), "server_not_found"),
+            (
+                Error::ServerNotRunning("default".into()),
+                "server_not_running",
+            ),
+            (
+                Error::ServerAlreadyRunning("default".into()),
+                "server_running",
+            ),
+            (
+                Error::VersionInUse {
+                    version: "25.12.9.61".into(),
+                    servers: "default".into(),
+                },
+                "server_running",
+            ),
+            (
+                Error::InvalidVersion("unsafe input".into()),
+                "invalid_version",
+            ),
+            (
+                Error::VersionNotFound("25.12.9.61".into()),
+                "version_unavailable",
+            ),
+            (
+                Error::PortInUse {
+                    kind: PortKind::Http,
+                    port: 8123,
+                },
+                "port_in_use",
+            ),
+            (
+                Error::StartupExit {
+                    kind: crate::error::StartupKind::ClickHouse,
+                    name: "default".into(),
+                    details: "raw startup details".into(),
+                },
+                "startup_exit",
+            ),
+            (
+                Error::StartupTimeout {
+                    kind: crate::error::StartupKind::Postgres,
+                    name: "default".into(),
+                    seconds: 60,
+                    details: "raw timeout details".into(),
+                },
+                "startup_timeout",
+            ),
+            (
+                Error::Download("raw download details".into()),
+                "download_failed",
+            ),
+            (
+                Error::Io(std::io::Error::other("raw I/O details")),
+                "io_error",
+            ),
+            (Error::Exec("raw fallback details".into()), "local_error"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error_json(&error)["error"]["code"], expected);
+        }
+    }
+
+    #[test]
+    fn structured_fallback_and_wrapped_errors_never_serialize_raw_details() {
+        let sensitive =
+            "SELECT * FROM private_table; password=hunter2; /Users/al/secret; container=abc";
+        let fallback = serde_json::to_string(&LocalErrorOutput::from_error(&Error::Exec(
+            sensitive.to_string(),
+        )))
+        .unwrap();
+        assert_eq!(
+            fallback,
+            r#"{"error":{"code":"local_error","message":"Local command failed"}}"#
+        );
+        assert!(!fallback.contains(sensitive));
+
+        let wrapped = Error::PostgresStartupRollback {
+            primary: Box::new(Error::StartupExit {
+                kind: crate::error::StartupKind::Postgres,
+                name: "default".into(),
+                details: sensitive.into(),
+            }),
+            cleanup: sensitive.into(),
+        };
+        let wrapped = serde_json::to_string(&LocalErrorOutput::from_error(&wrapped)).unwrap();
+        assert_eq!(
+            wrapped,
+            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local server list"}}"#
+        );
+        assert!(!wrapped.contains("hunter2"));
+    }
 
     // ── JSON serialization tests ────────────────────────────────────────
 

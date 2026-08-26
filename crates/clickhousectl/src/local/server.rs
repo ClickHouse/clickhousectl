@@ -1,4 +1,4 @@
-use crate::error::{Error, Result};
+use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::init;
 use crate::local::discovery;
 use crate::local::docker;
@@ -676,18 +676,22 @@ pub async fn check_spawn_health(
 ) -> Result<()> {
     tokio::time::sleep(SPAWN_HEALTH_DELAY).await;
     if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
-        let message = format!(
+        let mut details = format!(
             "Server '{}' exited immediately after starting ({}). See server log: {}",
             name,
             status,
             log_path.display()
         );
-        return match mark_server_stopped(name, child.id()) {
-            Ok(()) => Err(Error::Exec(message)),
-            Err(metadata_error) => Err(Error::Exec(format!(
-                "{message}; additionally failed to record the stopped server: {metadata_error}"
-            ))),
-        };
+        if let Err(metadata_error) = mark_server_stopped(name, child.id()) {
+            details.push_str(&format!(
+                "; additionally failed to record the stopped server: {metadata_error}"
+            ));
+        }
+        return Err(Error::StartupExit {
+            kind: StartupKind::ClickHouse,
+            name: name.to_string(),
+            details,
+        });
     }
     Ok(())
 }
@@ -740,7 +744,7 @@ pub async fn wait_for_server_ready(
 
     loop {
         if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
-            let message = format!(
+            let mut details = format!(
                 "Server '{}' exited before becoming ready on HTTP port {} and TCP port {} ({}). \
                  See server log: {}",
                 name,
@@ -749,12 +753,16 @@ pub async fn wait_for_server_ready(
                 status,
                 log_path.display()
             );
-            return match mark_server_stopped(name, child.id()) {
-                Ok(()) => Err(Error::Exec(message)),
-                Err(metadata_error) => Err(Error::Exec(format!(
-                    "{message}; additionally failed to record the stopped server: {metadata_error}"
-                ))),
-            };
+            if let Err(metadata_error) = mark_server_stopped(name, child.id()) {
+                details.push_str(&format!(
+                    "; additionally failed to record the stopped server: {metadata_error}"
+                ));
+            }
+            return Err(Error::StartupExit {
+                kind: StartupKind::ClickHouse,
+                name: name.to_string(),
+                details,
+            });
         }
 
         let tcp_ready = matches!(
@@ -785,16 +793,21 @@ pub async fn wait_for_server_ready(
                 Ok(()) => " and was stopped".to_string(),
                 Err(error) => format!("; failed to stop PID {}: {}", pid, error),
             };
-            return Err(Error::Exec(format!(
-                "Server '{}' did not become ready on HTTP port {} and TCP port {} within {} seconds{}. \
+            return Err(Error::StartupTimeout {
+                kind: StartupKind::ClickHouse,
+                name: name.to_string(),
+                seconds: timeout.as_secs(),
+                details: format!(
+                    "Server '{}' did not become ready on HTTP port {} and TCP port {} within {} seconds{}. \
                  See server log: {}",
-                name,
-                http_port,
-                tcp_port,
-                timeout.as_secs(),
-                cleanup,
-                log_path.display()
-            )));
+                    name,
+                    http_port,
+                    tcp_port,
+                    timeout.as_secs(),
+                    cleanup,
+                    log_path.display()
+                ),
+            });
         }
 
         tokio::time::sleep(STARTUP_POLL_INTERVAL).await;
@@ -824,13 +837,18 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
             ));
         }
         Some(p) if is_port_available(p) => p,
-        Some(p) => return Err(Error::Exec(format!("HTTP port {} is already in use", p))),
+        Some(p) => {
+            return Err(Error::PortInUse {
+                kind: PortKind::Http,
+                port: p,
+            });
+        }
         None => {
             if is_port_available(DEFAULT_HTTP_PORT) {
                 DEFAULT_HTTP_PORT
             } else {
                 find_free_port(DEFAULT_HTTP_PORT + 1)
-                    .ok_or_else(|| Error::Exec("Could not find a free HTTP port".into()))?
+                    .ok_or(Error::PortUnavailable(PortKind::Http))?
             }
         }
     };
@@ -842,13 +860,17 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
             ));
         }
         Some(p) if is_port_available(p) => p,
-        Some(p) => return Err(Error::Exec(format!("TCP port {} is already in use", p))),
+        Some(p) => {
+            return Err(Error::PortInUse {
+                kind: PortKind::Tcp,
+                port: p,
+            });
+        }
         None => {
             if is_port_available(DEFAULT_TCP_PORT) {
                 DEFAULT_TCP_PORT
             } else {
-                find_free_port(DEFAULT_TCP_PORT + 1)
-                    .ok_or_else(|| Error::Exec("Could not find a free TCP port".into()))?
+                find_free_port(DEFAULT_TCP_PORT + 1).ok_or(Error::PortUnavailable(PortKind::Tcp))?
             }
         }
     };

@@ -180,14 +180,26 @@ fn write_stopped_postgres_metadata(project: &Path, port: u16) {
     .expect("write Postgres metadata");
 }
 
-fn run_resume(project: &Path, home: &Path, socket_path: &Path, args: &[&str]) -> Output {
-    Command::new(clickhousectl_binary())
+fn run_resume(
+    project: &Path,
+    home: &Path,
+    socket_path: &Path,
+    json: bool,
+    args: &[&str],
+) -> Output {
+    let mut command = Command::new(clickhousectl_binary());
+    command
         .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
         .current_dir(project)
-        .args(["local", "--json", "postgres", "start"])
+        .arg("local");
+    if json {
+        command.arg("--json");
+    }
+    command
+        .args(["postgres", "start"])
         .args(args)
         .output()
         .expect("run clickhousectl")
@@ -243,8 +255,16 @@ fn bound_explicit_port_fails_locally_without_docker_or_project_state() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains(&format!("Postgres error: port {port} is already in use")));
-    assert!(stderr.contains("omit --port to auto-select a free port"));
+    let error: serde_json::Value = serde_json::from_str(&stderr).expect("structured port error");
+    assert_eq!(error["error"]["code"], "port_in_use");
+    assert_eq!(
+        error["error"]["message"],
+        format!("Postgres port {port} is already in use")
+    );
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local postgres start --help"
+    );
     assert!(!stderr.contains("Failed to execute ClickHouse"));
     assert_eq!(requests, 0);
     assert!(!project_state_created);
@@ -269,7 +289,7 @@ fn exhausted_auto_port_range_does_not_block_resume() {
         )
         .collect();
 
-    let output = run_resume(project.path(), home.path(), &socket_path, &[]);
+    let output = run_resume(project.path(), home.path(), &socket_path, true, &[]);
 
     assert!(
         output.status.success(),
@@ -294,6 +314,7 @@ fn password_env_override_reports_stored_settings_on_resume() {
         project.path(),
         home.path(),
         &socket_path,
+        false,
         &["--env", "POSTGRES_PASSWORD=ignored"],
     );
 

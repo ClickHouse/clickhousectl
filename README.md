@@ -958,6 +958,36 @@ clickhousectl cloud --json service get <service-id>
 
 `clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: Prometheus commands emit text, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
+Local runtime failures also use structured output when `local --json` is set or a coding agent is detected. The CLI writes exactly one error object to stderr and preserves the documented exit code:
+
+```json
+{
+  "error": {
+    "code": "server_not_found",
+    "message": "Server 'default' not found",
+    "command": "clickhousectl local server list"
+  }
+}
+```
+
+`error.code` and `error.message` are always present. `error.command` is an optional safe recovery command. Messages are built from allowlisted fields and never serialize raw I/O errors, paths, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+
+The schema and meanings of existing codes are stable. New optional fields or codes may be added compatibly; unclassified local failures use the bounded `local_error` fallback.
+
+| Code | Meaning |
+| ---- | ------- |
+| `server_not_found` | The selected local server does not exist |
+| `server_not_running` | The selected local server exists but is stopped |
+| `server_running` | The operation requires a stopped server |
+| `invalid_version` | The version selector is invalid |
+| `version_unavailable` | The requested or configured version is unavailable |
+| `port_in_use` | A requested port is occupied or no managed port is available |
+| `startup_exit` | A managed server exited before it became ready |
+| `startup_timeout` | A managed server did not become ready before its deadline |
+| `download_failed` | An artifact or image download failed |
+| `io_error` | A local filesystem, metadata, or serialization operation failed |
+| `local_error` | A redacted fallback for other local runtime failures |
+
 ### Exit codes
 
 Usage errors and cancelled actions use distinct exit codes.

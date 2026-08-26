@@ -198,6 +198,10 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
     // Decide whether to surface the update notice before `run` consumes the
     // command. Shown on every command that does not emit machine-readable JSON.
     let show_notice = should_show_update_notice(&cli.command);
+    let local_json = match &cli.command {
+        Commands::Local(args) => json_output(args.json),
+        _ => false,
+    };
 
     let result = run(cli.command).await;
 
@@ -213,10 +217,14 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
             if !is_child_exit {
-                use std::io::Write;
-                // Not `eprintln!`, which panics on a closed stderr — see
-                // `telemetry::print_first_run_notice`.
-                let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                if local_json {
+                    local::output::print_error(&e);
+                } else {
+                    use std::io::Write;
+                    // Not `eprintln!`, which panics on a closed stderr — see
+                    // `telemetry::print_first_run_notice`.
+                    let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                }
             }
             (e.exit_code(), is_child_exit)
         }

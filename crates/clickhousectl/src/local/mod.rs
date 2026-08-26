@@ -84,7 +84,8 @@ async fn install(version: InstallVersionArg, force: bool, json: bool) -> Result<
     };
     let platform = version_manager::platform::Platform::detect()?;
 
-    let version = version_manager::install::install_local_first(&spec, &platform, force).await?;
+    let version =
+        version_manager::install::install_local_first(&spec, &platform, force, json).await?;
 
     // If this is the first installed version, set it as default
     let set_as_default = version_manager::get_default_version().is_err();
@@ -133,7 +134,9 @@ fn list_installed(json: bool) -> Result<()> {
 }
 
 async fn list_available(json: bool) -> Result<()> {
-    eprintln!("Checking available versions on builds.clickhouse.com...");
+    if !json {
+        eprintln!("Checking available versions on builds.clickhouse.com...");
+    }
     let versions = version_manager::list_available_versions_from_builds().await?;
 
     let installed = version_manager::list_installed_versions().unwrap_or_default();
@@ -165,7 +168,8 @@ async fn use_version(
 ) -> Result<()> {
     let platform = version_manager::platform::Platform::detect()?;
 
-    let version = version_manager::install::ensure_installed_local_first(&spec, &platform).await?;
+    let version =
+        version_manager::install::ensure_installed_local_first(&spec, &platform, json).await?;
 
     version_manager::set_default_version(&version)?;
 
@@ -400,7 +404,7 @@ async fn start_server(
     let version = if let Some(spec) = version_spec {
         let spec = spec.into_spec();
         let platform = version_manager::platform::Platform::detect()?;
-        version_manager::install::ensure_installed_local_first(&spec, &platform).await?
+        version_manager::install::ensure_installed_local_first(&spec, &platform, json).await?
     } else {
         match version_manager::get_default_version() {
             Ok(v) => v,
@@ -416,8 +420,11 @@ async fn start_server(
                 // Says "using", not "installing": on repeat starts the build is
                 // usually already installed and nothing is downloaded. The install
                 // path prints its own Resolving/Downloading/up-to-date messages.
-                eprintln!("No version specified and no default set; using latest");
-                version_manager::install::ensure_installed_local_first(&spec, &platform).await?
+                if !json {
+                    eprintln!("No version specified and no default set; using latest");
+                }
+                version_manager::install::ensure_installed_local_first(&spec, &platform, json)
+                    .await?
             }
             // A default pointing at a removed binary stays an error.
             Err(e) => return Err(e),
@@ -441,7 +448,7 @@ async fn start_server(
 
     // Show running server count
     let running = server::advisory_running_server_count_locked(&metadata_lock);
-    if running > 0 {
+    if !json && running > 0 {
         eprintln!(
             "Note: {} server{} already running (use `clickhousectl local server list` to see them)",
             running,
@@ -450,7 +457,7 @@ async fn start_server(
     }
 
     let (http_port, tcp_port, auto_assigned) = server::resolve_ports(http_port, tcp_port)?;
-    if auto_assigned {
+    if !json && auto_assigned {
         eprintln!(
             "Note: default ports in use, auto-assigned HTTP:{} TCP:{}",
             http_port, tcp_port

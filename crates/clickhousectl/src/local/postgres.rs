@@ -4,7 +4,7 @@
 //! `local::server` — Postgres entries land in the same metadata directory and
 //! show up alongside ClickHouse in `local server list`.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;
 use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
@@ -307,11 +307,12 @@ async fn start(
             if inspected.state.and_then(|state| state.running) == Some(true) {
                 return Err(Error::ServerAlreadyRunning(user_name));
             }
-            if port.is_some()
-                || user.is_some()
-                || password.is_some()
-                || database.is_some()
-                || has_extra_env
+            if !json
+                && (port.is_some()
+                    || user.is_some()
+                    || password.is_some()
+                    || database.is_some()
+                    || has_extra_env)
             {
                 eprintln!(
                     "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
@@ -871,7 +872,12 @@ fn format_postgres_readiness_error(
     failure: ReadinessFailure,
     logs: &str,
 ) -> Error {
-    let summary = match failure {
+    let diagnostics = |summary: &str| {
+        format!(
+            "{summary}\n--- last {READINESS_LOG_LINES} container log lines (maximum {READINESS_LOG_BYTES} bytes) ---\n{logs}"
+        )
+    };
+    match failure {
         ReadinessFailure::Exited {
             status,
             exit_code,
@@ -881,27 +887,38 @@ fn format_postgres_readiness_error(
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             let oom = if oom_killed { "; out of memory" } else { "" };
-            format!(
+            let summary = format!(
                 "Postgres container '{display_name}' exited before PostgreSQL became ready \
                  (status: {status}, exit code: {exit_code}{oom})."
-            )
+            );
+            Error::StartupExit {
+                kind: StartupKind::Postgres,
+                name: display_name.to_string(),
+                details: format!("Docker error: {}", diagnostics(&summary)),
+            }
         }
         ReadinessFailure::Probe(error) => {
-            format!("Could not check PostgreSQL readiness in container '{display_name}': {error}.")
+            let summary = format!(
+                "Could not check PostgreSQL readiness in container '{display_name}': {error}."
+            );
+            Error::DockerError(diagnostics(&summary))
         }
         ReadinessFailure::TimedOut { last_probe_error } => {
             let probe_context = last_probe_error
                 .map(|error| format!(" Last readiness probe error: {error}."))
                 .unwrap_or_default();
-            format!(
+            let summary = format!(
                 "PostgreSQL in container '{display_name}' did not become ready within {} seconds.{probe_context}",
                 timeout.as_secs()
-            )
+            );
+            Error::StartupTimeout {
+                kind: StartupKind::Postgres,
+                name: display_name.to_string(),
+                seconds: timeout.as_secs(),
+                details: format!("Docker error: {}", diagnostics(&summary)),
+            }
         }
-    };
-    Error::DockerError(format!(
-        "{summary}\n--- last {READINESS_LOG_LINES} container log lines (maximum {READINESS_LOG_BYTES} bytes) ---\n{logs}"
-    ))
+    }
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
@@ -915,9 +932,10 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(port);
         }
         Some(port) => {
-            return Err(Error::Postgres(format!(
-                "port {port} is already in use; choose another --port or omit --port to auto-select a free port"
-            )));
+            return Err(Error::PortInUse {
+                kind: PortKind::Postgres,
+                port,
+            });
         }
         None => {}
     }
@@ -929,9 +947,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(p);
         }
     }
-    Err(Error::Postgres(
-        "could not find a free TCP port for Postgres".into(),
-    ))
+    Err(Error::PortUnavailable(PortKind::Postgres))
 }
 
 fn generate_password() -> String {
@@ -1480,7 +1496,7 @@ mod tests {
 
         let err = resolve_port(Some(port)).unwrap_err();
         assert!(
-            matches!(err, Error::Postgres(msg) if msg.contains(&format!("port {port} is already in use")) && msg.contains("omit --port"))
+            matches!(err, Error::PortInUse { kind: PortKind::Postgres, port: error_port } if error_port == port)
         );
     }
 

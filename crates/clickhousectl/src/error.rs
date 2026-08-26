@@ -119,6 +119,47 @@ impl fmt::Display for NetworkFailure {
 
 impl std::error::Error for NetworkFailure {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortKind {
+    Http,
+    Tcp,
+    Postgres,
+}
+
+impl PortKind {
+    fn human_guidance(self) -> &'static str {
+        match self {
+            Self::Postgres => "; choose another --port or omit --port to auto-select a free port",
+            Self::Http | Self::Tcp => "",
+        }
+    }
+}
+
+impl fmt::Display for PortKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Http => "HTTP",
+            Self::Tcp => "TCP",
+            Self::Postgres => "Postgres",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupKind {
+    ClickHouse,
+    Postgres,
+}
+
+impl fmt::Display for StartupKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::ClickHouse => "ClickHouse",
+            Self::Postgres => "Postgres",
+        })
+    }
+}
+
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum Error {
@@ -218,6 +259,27 @@ pub enum Error {
 
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
+
+    #[error("{kind} port {port} is already in use{}", kind.human_guidance())]
+    PortInUse { kind: PortKind, port: u16 },
+
+    #[error("Could not find a free {0} port")]
+    PortUnavailable(PortKind),
+
+    #[error("{details}")]
+    StartupExit {
+        kind: StartupKind,
+        name: String,
+        details: String,
+    },
+
+    #[error("{details}")]
+    StartupTimeout {
+        kind: StartupKind,
+        name: String,
+        seconds: u64,
+        details: String,
+    },
 
     #[error("Postgres error: {0}")]
     Postgres(String),

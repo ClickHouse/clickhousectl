@@ -17,7 +17,7 @@ fn run_postgres_start(home: &Path, project: &Path, docker_host: &str) -> Output 
         .env("HOME", home)
         .env("DOCKER_HOST", docker_host)
         .current_dir(project)
-        .args(["local", "--json", "postgres", "start"])
+        .args(["local", "postgres", "start"])
         .output()
         .expect("run clickhousectl")
 }

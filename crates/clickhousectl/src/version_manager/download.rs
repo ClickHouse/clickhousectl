@@ -42,31 +42,51 @@ pub async fn download_from_source(
     source: &DownloadSource,
     platform: &Platform,
     dest_path: &Path,
+    structured_output: bool,
 ) -> Result<()> {
     let url = source.url(platform);
-    download_url(&url, dest_path).await
+    download_url_with_output(&url, dest_path, structured_output).await
 }
 
-/// Downloads a file with bounded connect, idle-read and total deadlines.
-/// Only the idempotent GET is retried, and every attempt truncates the partial
-/// destination before writing so bytes from failed streams cannot be mixed.
-pub async fn download_url(url: &str, dest_path: &Path) -> Result<()> {
-    download_url_with_policy(
+async fn download_url_with_output(
+    url: &str,
+    dest_path: &Path,
+    structured_output: bool,
+) -> Result<()> {
+    download_url_with_policy_and_output(
         url,
         dest_path,
         network::DOWNLOAD_POLICY,
         INSTALL_RETRY_POLICY,
+        structured_output,
     )
     .await
 }
 
+#[cfg(test)]
 async fn download_url_with_policy(
     url: &str,
     dest_path: &Path,
     request_policy: network::RequestPolicy,
     retry_policy: RetryPolicy,
 ) -> Result<()> {
-    let download = download_with_retries(url, dest_path, request_policy, retry_policy);
+    download_url_with_policy_and_output(url, dest_path, request_policy, retry_policy, false).await
+}
+
+async fn download_url_with_policy_and_output(
+    url: &str,
+    dest_path: &Path,
+    request_policy: network::RequestPolicy,
+    retry_policy: RetryPolicy,
+    structured_output: bool,
+) -> Result<()> {
+    let download = download_with_retries(
+        url,
+        dest_path,
+        request_policy,
+        retry_policy,
+        structured_output,
+    );
     match network::with_operation_timeout(
         retry_policy.operation_timeout,
         NetworkStage::Download,
@@ -88,10 +108,11 @@ async fn download_with_retries(
     dest_path: &Path,
     request_policy: network::RequestPolicy,
     retry_policy: RetryPolicy,
+    structured_output: bool,
 ) -> Result<()> {
     let client = network::client(request_policy, NetworkStage::DownloadHeaders, url)?;
     for attempt in 1..=retry_policy.max_attempts {
-        match download_once(&client, url, dest_path).await {
+        match download_once(&client, url, dest_path, structured_output).await {
             Ok(()) => return Ok(()),
             Err(DownloadAttemptError::Io(error)) => return Err(Error::Io(error)),
             Err(DownloadAttemptError::Network(error))
@@ -118,6 +139,7 @@ async fn download_once(
     client: &reqwest::Client,
     url: &str,
     dest_path: &Path,
+    structured_output: bool,
 ) -> std::result::Result<(), DownloadAttemptError> {
     let response = network::send(client.get(url), NetworkStage::DownloadHeaders, url)
         .await
@@ -146,6 +168,9 @@ async fn download_once(
 
     let total_size = response.content_length().unwrap_or(0);
     let pb = ProgressBar::new(total_size);
+    if structured_output {
+        pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+    }
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")

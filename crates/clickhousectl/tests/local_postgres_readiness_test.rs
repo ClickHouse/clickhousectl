@@ -774,10 +774,11 @@ fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(started.elapsed() < Duration::from_secs(4));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("did not become ready within 1 seconds"),
-        "{stderr}"
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "startup_timeout");
+    assert_eq!(
+        error["error"]["message"],
+        "Postgres server 'default' did not become ready within 1 seconds"
     );
     assert!(readiness_requests(&requests).len() >= 2);
     assert!(
@@ -797,7 +798,7 @@ fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
 }
 
 #[test]
-fn immediate_exit_reports_bounded_logs_and_error_telemetry_without_setup_success() {
+fn immediate_exit_redacts_bounded_logs_and_reports_error_telemetry_without_setup_success() {
     let mut logs: Vec<String> = (0..80)
         .map(|index| format!("startup line {index}: {}", "x".repeat(300)))
         .collect();
@@ -823,20 +824,13 @@ fn immediate_exit_reports_bounded_logs_and_error_telemetry_without_setup_success
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "setup success leaked to stdout");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains(r#""code": "startup_exit""#), "{stderr}");
     assert!(
-        stderr.contains("exited before PostgreSQL became ready"),
+        stderr.contains("Postgres server 'default' exited before becoming ready"),
         "{stderr}"
     );
-    assert!(stderr.contains("exit code: 1"), "{stderr}");
-    assert!(
-        stderr.contains("FATAL: startup failed before readiness"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("[earlier log output truncated]"),
-        "{stderr}"
-    );
-    assert!(stderr.len() < 18_000, "diagnostics were not byte-bounded");
+    assert!(!stderr.contains("FATAL: startup failed before readiness"));
+    assert!(!stderr.contains("[earlier log output truncated]"));
     assert!(
         stderr.contains(r#""command":"local postgres start""#),
         "{stderr}"
@@ -882,11 +876,10 @@ fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("directory contained data before this start attempt"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("recovery metadata retained"), "{stderr}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "startup_exit");
+    assert!(!stderr.contains("directory contained data before this start attempt"));
+    assert!(!stderr.contains("recovery metadata retained"));
     assert!(
         project
             .path()
@@ -932,8 +925,10 @@ fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("remove failed by test"), "{stderr}");
-    assert!(stderr.contains("recovery metadata retained"), "{stderr}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "startup_exit");
+    assert!(!stderr.contains("remove failed by test"));
+    assert!(!stderr.contains("recovery metadata retained"));
     assert!(
         project
             .path()
@@ -997,7 +992,9 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
     let requests = docker.requests();
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("start failed by test"));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "local_error");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("start failed by test"));
     let create = request_index(&requests, "POST", "/containers/create?");
     let start = request_index(&requests, "POST", "/containers/pg-id/start");
     let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
@@ -1032,8 +1029,13 @@ fn initialization_timeout_removes_partial_pgdata() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("did not become ready within 1 seconds"));
-    assert!(stderr.contains("database system is starting up"));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "startup_timeout");
+    assert_eq!(
+        error["error"]["message"],
+        "Postgres server 'default' did not become ready within 1 seconds"
+    );
+    assert!(!stderr.contains("database system is starting up"));
     request_index(&requests, "DELETE", "/containers/pg-id?");
     assert!(!fresh_instance_dir(project.path()).exists());
     assert!(!metadata_path(project.path()).exists());
@@ -1066,8 +1068,10 @@ fn metadata_failure_uses_the_fresh_start_rollback() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Failed to durably update server metadata"));
-    assert!(stderr.contains("failed to remove metadata"));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "io_error");
+    assert!(!stderr.contains("Failed to durably update server metadata"));
+    assert!(!stderr.contains("failed to remove metadata"));
     request_index(&requests, "DELETE", "/containers/pg-id?");
     assert!(readiness_requests(&requests).is_empty());
     assert!(!fresh_instance_dir(project.path()).exists());
@@ -1159,7 +1163,7 @@ fn resume_failure_preserves_existing_container_metadata_and_data() {
 }
 
 #[test]
-fn cleanup_failure_keeps_primary_start_error_and_adds_diagnostics() {
+fn cleanup_failure_preserves_rollback_behavior_but_redacts_json_diagnostics() {
     let home = tempfile::tempdir().expect("create home tempdir");
     let project = tempfile::tempdir().expect("create project tempdir");
     let socket_path = home.path().join("docker.sock");
@@ -1184,14 +1188,11 @@ fn cleanup_failure_keeps_primary_start_error_and_adds_diagnostics() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let primary = stderr
-        .find("start failed by test")
-        .unwrap_or_else(|| panic!("primary error missing: {stderr}"));
-    let rollback = stderr
-        .find("Postgres startup rollback incomplete")
-        .expect("rollback diagnostics");
-    let cleanup = stderr.find("remove failed by test").expect("cleanup error");
-    assert!(primary < rollback && rollback < cleanup, "{stderr}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "local_error");
+    assert!(!stderr.contains("start failed by test"));
+    assert!(!stderr.contains("Postgres startup rollback incomplete"));
+    assert!(!stderr.contains("remove failed by test"));
     request_index(&requests, "DELETE", "/containers/pg-id?");
     assert!(fresh_instance_dir(project.path()).exists());
     assert!(metadata_path(project.path()).is_file());

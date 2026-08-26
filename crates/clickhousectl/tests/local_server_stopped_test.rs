@@ -33,8 +33,10 @@ fn write_server_metadata(project: &Path, pid: u32) -> PathBuf {
 
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
         .current_dir(project)
         .args(args)
         .output()

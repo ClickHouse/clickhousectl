@@ -206,6 +206,7 @@ fn docker_guidance(platform: HostPlatform) -> &'static str {
 enum PullProgressMode {
     Interactive,
     Collapsed,
+    Silent,
 }
 
 fn pull_progress_mode(
@@ -213,7 +214,9 @@ fn pull_progress_mode(
     stderr_is_terminal: bool,
     structured_output: bool,
 ) -> PullProgressMode {
-    if stdout_is_terminal && stderr_is_terminal && !structured_output {
+    if structured_output {
+        PullProgressMode::Silent
+    } else if stdout_is_terminal && stderr_is_terminal {
         PullProgressMode::Interactive
     } else {
         PullProgressMode::Collapsed
@@ -239,6 +242,7 @@ impl PullReporter {
                 let _ = write!(output, "Pulling {}...", self.image);
                 let _ = output.flush();
             }
+            PullProgressMode::Silent => {}
         }
     }
 
@@ -275,6 +279,7 @@ impl PullReporter {
             PullProgressMode::Collapsed => {
                 let _ = writeln!(output, " done");
             }
+            PullProgressMode::Silent => {}
         }
     }
 
@@ -286,6 +291,7 @@ impl PullReporter {
             PullProgressMode::Collapsed => {
                 let _ = writeln!(output, " failed");
             }
+            PullProgressMode::Silent => {}
         }
     }
 }
@@ -313,7 +319,7 @@ pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> 
             Ok(info) => info,
             Err(error) => {
                 reporter.fail(&mut stderr.lock());
-                return Err(Error::DockerError(error.to_string()));
+                return Err(Error::Download(error.to_string()));
             }
         };
         reporter.event(&info, &mut stderr.lock());
@@ -1282,7 +1288,7 @@ mod tests {
         );
         assert_eq!(
             pull_progress_mode(true, true, true),
-            PullProgressMode::Collapsed
+            PullProgressMode::Silent
         );
     }
 

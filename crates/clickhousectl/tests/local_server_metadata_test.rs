@@ -17,8 +17,10 @@ fn clickhousectl_binary() -> PathBuf {
 fn command(project: &Path, home: &Path) -> Command {
     let mut command = Command::new(clickhousectl_binary());
     command
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
         .env(
             "FAKE_CLICKHOUSE_PID_FILE",
             project.join("fake-clickhouse-pids"),
@@ -186,7 +188,8 @@ fn list_ignores_stale_temp_but_rejects_corrupt_live_entry() {
         &["local", "--json", "server", "list"],
     );
     assert_eq!(corrupt.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&corrupt.stderr).contains("not valid JSON"));
+    let error: Value = serde_json::from_slice(&corrupt.stderr).expect("parse metadata error JSON");
+    assert_eq!(error["error"]["code"], "io_error");
 }
 
 #[test]
