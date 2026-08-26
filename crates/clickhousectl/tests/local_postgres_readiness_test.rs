@@ -32,6 +32,7 @@ struct DockerScenario {
     readiness_create_errors: usize,
     logs: Vec<String>,
     write_partial_data: bool,
+    create_metadata_directory_on_start: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -70,6 +71,7 @@ impl FakeDocker {
                 readiness_create_errors,
                 logs,
                 write_partial_data,
+                create_metadata_directory_on_start,
             } = scenario;
             let mut started = false;
             let mut next_exec = 0_usize;
@@ -137,6 +139,12 @@ impl FakeDocker {
                             if write_partial_data {
                                 std::fs::write(&partial_data_path, "partial PGDATA")
                                     .expect("write partial PGDATA marker");
+                            }
+                            if create_metadata_directory_on_start {
+                                let instance_dir =
+                                    partial_data_path.parent().unwrap().parent().unwrap();
+                                std::fs::create_dir(instance_dir.with_extension("json"))
+                                    .expect("create metadata failure directory");
                             }
                             write_response(&mut stream, 204, "application/json", b"");
                         } else {
@@ -454,6 +462,7 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
             readiness_create_errors: 1,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
         false,
         false,
@@ -502,6 +511,7 @@ fn resumed_start_also_waits_for_postgres_readiness() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
         true,
         false,
@@ -538,6 +548,7 @@ fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
         false,
         false,
@@ -585,6 +596,7 @@ fn immediate_exit_reports_bounded_logs_and_error_telemetry_without_setup_success
             readiness_create_errors: 0,
             logs,
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
         false,
         true,
@@ -644,6 +656,7 @@ fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
         false,
         false,
@@ -693,6 +706,7 @@ fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
         false,
         false,
@@ -759,6 +773,7 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
     );
 
@@ -792,6 +807,7 @@ fn initialization_timeout_removes_partial_pgdata() {
             readiness_create_errors: 0,
             logs: vec!["database system is starting up".to_string()],
             write_partial_data: true,
+            create_metadata_directory_on_start: false,
         },
     );
 
@@ -809,15 +825,8 @@ fn initialization_timeout_removes_partial_pgdata() {
 
 #[test]
 fn metadata_failure_uses_the_fresh_start_rollback() {
-    use std::os::unix::fs::symlink;
-
     let home = tempfile::tempdir().expect("create home tempdir");
     let project = tempfile::tempdir().expect("create project tempdir");
-    let servers = project.path().join(".clickhouse/servers");
-    let metadata_target = project.path().join("metadata-target-directory");
-    std::fs::create_dir_all(&servers).expect("create servers directory");
-    std::fs::create_dir(&metadata_target).expect("create metadata failure target");
-    symlink(&metadata_target, metadata_path(project.path())).expect("create metadata symlink");
 
     let socket_path = home.path().join("docker.sock");
     let docker = FakeDocker::start(
@@ -832,6 +841,7 @@ fn metadata_failure_uses_the_fresh_start_rollback() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: true,
+            create_metadata_directory_on_start: true,
         },
     );
 
@@ -839,10 +849,13 @@ fn metadata_failure_uses_the_fresh_start_rollback() {
     let requests = docker.requests();
 
     assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Failed to durably update server metadata"));
+    assert!(stderr.contains("failed to remove metadata"));
     request_index(&requests, "DELETE", "/containers/pg-id?");
     assert!(readiness_requests(&requests).is_empty());
     assert!(!fresh_instance_dir(project.path()).exists());
-    assert!(!metadata_path(project.path()).exists());
+    assert!(metadata_path(project.path()).is_dir());
 }
 
 #[test]
@@ -862,6 +875,7 @@ fn retry_after_rolled_back_start_failure_succeeds_cleanly() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
     );
 
@@ -912,6 +926,7 @@ fn resume_failure_preserves_existing_container_metadata_and_data() {
             readiness_create_errors: 0,
             logs: vec!["resume failed".to_string()],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
     );
 
@@ -944,6 +959,7 @@ fn cleanup_failure_keeps_primary_start_error_and_adds_diagnostics() {
             readiness_create_errors: 0,
             logs: vec![],
             write_partial_data: false,
+            create_metadata_directory_on_start: false,
         },
     );
 
@@ -952,7 +968,9 @@ fn cleanup_failure_keeps_primary_start_error_and_adds_diagnostics() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let primary = stderr.find("start failed by test").expect("primary error");
+    let primary = stderr
+        .find("start failed by test")
+        .unwrap_or_else(|| panic!("primary error missing: {stderr}"));
     let rollback = stderr
         .find("Postgres startup rollback incomplete")
         .expect("rollback diagnostics");

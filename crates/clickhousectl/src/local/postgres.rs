@@ -248,13 +248,14 @@ async fn start(
     let extra_env = preflight.extra_env;
     let password_from_env = preflight.password_from_env;
 
-    server::recover_current_project_servers();
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
 
     // User-facing name (no version suffix). Defaults to "default" when no
     // postgres "default" is currently running.
     let user_name = match name.as_deref() {
         Some(n) => n.to_string(),
-        None => default_pg_name(),
+        None => default_pg_name_locked(&metadata_lock)?,
     };
 
     // If `--version` is omitted but there's already exactly one instance for
@@ -265,7 +266,7 @@ async fn start(
     let (tag, major) = match version.as_deref() {
         Some(v) => (v.to_string(), pg_major_from_tag(v)),
         None => {
-            let existing = server::find_pg_instances(&user_name);
+            let existing = server::find_pg_instances_locked(&user_name, &metadata_lock)?;
             match existing.len() {
                 0 => (
                     DEFAULT_PG_TAG.to_string(),
@@ -305,12 +306,12 @@ async fn start(
         .unwrap_or_default();
 
     // Resume path: an instance for this exact (name, major) already exists.
-    if let Some(prior) = server::load_info(&key) {
+    if let Some(prior) = server::load_info_locked(&key, &metadata_lock)? {
         let cid = prior.container_id.as_deref().unwrap_or("");
         let container_present =
             !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
         if container_present {
-            if server::is_server_running(&key) {
+            if server::is_server_running_locked(&key, &metadata_lock)? {
                 return Err(Error::ServerAlreadyRunning(user_name));
             }
             if port.is_some()
@@ -325,7 +326,7 @@ async fn start(
                     user_name, user_name
                 );
             }
-            return resume_existing(&docker, prior, wait_timeout, json).await;
+            return resume_existing(&docker, prior, wait_timeout, json, &metadata_lock).await;
         }
         // Metadata orphaned — container removed externally. Force explicit
         // cleanup to avoid silently re-initing against potentially-stale data.
@@ -390,7 +391,7 @@ async fn start(
     };
     let startup_result = async {
         docker::start_existing(&docker, &container_id).await?;
-        server::save_server_info(&info)?;
+        server::save_server_info_locked(&info, &metadata_lock)?;
         if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
             return Err(postgres_readiness_error(
                 &docker,
@@ -412,6 +413,7 @@ async fn start(
             &info,
             remove_fresh_data_on_failure,
             primary,
+            &metadata_lock,
         )
         .await);
     }
@@ -460,9 +462,10 @@ async fn rollback_failed_fresh_start(
     info: &ServerInfo,
     remove_fresh_data_on_failure: bool,
     primary: Error,
+    metadata_lock: &server::MetadataLock,
 ) -> Error {
     let instance_dir = server::servers_dir_join(&info.name);
-    let metadata_path = server::server_meta_path_for_recovery(&info.name);
+    let metadata_path = server::servers_dir_join(&format!("{}.json", info.name));
     let mut diagnostics = Vec::new();
 
     let container_removed = match docker::remove_container(docker, container_id).await {
@@ -507,16 +510,15 @@ async fn rollback_failed_fresh_start(
     };
 
     if container_removed && instance_removed {
-        match std::fs::remove_file(&metadata_path) {
+        match server::try_remove_server_info_locked(&info.name, metadata_lock) {
             Ok(()) => return primary,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return primary,
             Err(error) => diagnostics.push(format!(
                 "failed to remove metadata '{}': {error}",
                 metadata_path.display()
             )),
         }
     } else {
-        match server::save_server_info(info) {
+        match server::save_server_info_locked(info, metadata_lock) {
             Ok(()) => diagnostics.push(format!(
                 "recovery metadata retained at '{}'; run `clickhousectl local postgres remove {}` to clean up",
                 metadata_path.display(),
@@ -537,35 +539,41 @@ async fn rollback_failed_fresh_start(
 
 /// Default user-facing name when `--name` is omitted: `"default"` if no
 /// postgres "default" is running, otherwise a random adjective-noun.
-fn default_pg_name() -> String {
-    let any_default_running = server::find_pg_instances("default").iter().any(|i| {
-        i.container_id
-            .as_deref()
-            .map(docker::is_container_running_blocking)
-            .unwrap_or(false)
-    });
+fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String> {
+    let any_default_running = server::find_pg_instances_locked("default", metadata_lock)?
+        .iter()
+        .any(|i| {
+            i.container_id
+                .as_deref()
+                .map(docker::is_container_running_blocking)
+                .unwrap_or(false)
+        });
     if any_default_running {
         // Fall back to the existing random-name generator, which checks
         // metadata file uniqueness across engines.
-        server::resolve_name(None).unwrap_or_else(|_| "default".into())
+        server::resolve_name_locked(None, metadata_lock)
     } else {
-        "default".into()
+        Ok("default".into())
     }
 }
 
 /// Resolve `--name <X> [--version <V>]` to a single Postgres instance on disk.
 /// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
 /// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
-fn resolve_pg_target(user_name: &str, version: Option<&str>) -> Result<server::ServerInfo> {
+fn resolve_pg_target_locked(
+    user_name: &str,
+    version: Option<&str>,
+    metadata_lock: &server::MetadataLock,
+) -> Result<server::ServerInfo> {
     if let Some(v) = version {
         validate_pg_tag(v)?;
         let major = pg_major_from_tag(v);
         let key = server::pg_instance_key(user_name, &major);
-        return server::load_info(&key)
+        return server::load_info_locked(&key, metadata_lock)?
             .filter(|i| i.engine == Engine::Postgres)
             .ok_or_else(|| Error::ServerNotFound(format!("{user_name} (postgres:{major})")));
     }
-    let instances = server::find_pg_instances(user_name);
+    let instances = server::find_pg_instances_locked(user_name, metadata_lock)?;
     match instances.len() {
         0 => Err(Error::ServerNotFound(user_name.to_string())),
         1 => Ok(instances.into_iter().next().unwrap()),
@@ -588,6 +596,7 @@ async fn resume_existing(
     prior: ServerInfo,
     wait_timeout: Duration,
     json: bool,
+    metadata_lock: &server::MetadataLock,
 ) -> Result<()> {
     let container_id = prior.container_id.clone().expect("checked by caller");
     let display_name = user_name_from_key(&prior.name).to_string();
@@ -608,7 +617,17 @@ async fn resume_existing(
         started_at: server::now_timestamp(),
         ..prior
     };
-    server::save_server_info(&info)?;
+    if let Err(primary) = server::save_server_info_locked(&info, metadata_lock) {
+        return match docker::stop_container(docker, &container_id).await {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(Error::PostgresStartupRollback {
+                primary: Box::new(primary),
+                cleanup: format!(
+                    "could not stop resumed container '{container_id}' after metadata failure: {cleanup}"
+                ),
+            }),
+        };
+    }
 
     let out = output::PostgresStartOutput {
         name: display_name,
@@ -902,13 +921,14 @@ fn generate_password() -> String {
 
 async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
-    server::recover_current_project_servers();
-    let target = resolve_pg_target(name, version)?;
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     if !json {
         let display = format!("{} ({})", user_name_from_key(&target.name), target.version);
         println!("Stopping Postgres {}...", display);
     }
-    server::kill_server(&target.name)?;
+    server::kill_server_locked(&target.name, &metadata_lock)?;
     let out = output::ServerStopOutput {
         name: user_name_from_key(&target.name).to_string(),
         already_stopped: false,
@@ -918,8 +938,9 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
 }
 
 async fn stop_all(json: bool) -> Result<()> {
-    server::recover_current_project_servers();
-    let servers: Vec<_> = server::list_running_servers()
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let servers: Vec<_> = server::list_running_servers_locked(&metadata_lock)?
         .into_iter()
         .filter(|s| s.engine == Engine::Postgres)
         .collect();
@@ -928,7 +949,9 @@ async fn stop_all(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    let out = super::stop_servers(&servers, json, server::kill_server);
+    let out = super::stop_servers(&servers, json, |name| {
+        server::kill_server_locked(name, &metadata_lock)
+    });
     if json {
         output::print_output(&out, json);
     } else {
@@ -939,11 +962,12 @@ async fn stop_all(json: bool) -> Result<()> {
 
 fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
-    server::recover_current_project_servers();
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
 
-    let target = resolve_pg_target(name, version)?;
+    let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     let key = target.name.clone();
-    if server::is_server_running(&key) {
+    if server::is_server_running_locked(&key, &metadata_lock)? {
         return Err(Error::ServerAlreadyRunning(name.to_string()));
     }
 
@@ -958,7 +982,7 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     // privileged container in that case.
     let pg_dir = server::servers_dir_join(&key);
     docker::remove_host_dir_blocking(&pg_dir)?;
-    server::remove_server_info(&key);
+    server::try_remove_server_info_locked(&key, &metadata_lock)?;
     let out = output::ServerRemoveOutput {
         name: name.to_string(),
     };
@@ -992,12 +1016,14 @@ async fn client(
         );
     }
 
-    server::recover_current_project_servers();
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = name.as_deref().unwrap_or("default");
-    let info = resolve_pg_target(server_name, version.as_deref())?;
-    if !server::is_server_running(&info.name) {
+    let info = resolve_pg_target_locked(server_name, version.as_deref(), &metadata_lock)?;
+    if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
+    drop(metadata_lock);
 
     let docker = docker::connect().await?;
     let container_id = info
@@ -1110,10 +1136,11 @@ fn exec_host_psql(
 }
 
 fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
-    server::recover_current_project_servers();
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = name.unwrap_or("default");
-    let info = resolve_pg_target(server_name, version)?;
-    if !server::is_server_running(&info.name) {
+    let info = resolve_pg_target_locked(server_name, version, &metadata_lock)?;
+    if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
 

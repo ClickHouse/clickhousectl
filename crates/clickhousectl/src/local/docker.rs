@@ -1085,13 +1085,16 @@ pub async fn start_existing(docker: &Docker, id: &str) -> Result<()> {
 /// Safe to call multiple times in one CLI invocation. When Docker isn't
 /// reachable, `connect()` fails fast (no socket → immediate error, no I/O
 /// timeout) and we return silently.
-pub fn recover_project_postgres_blocking(project_cwd: &str) {
+pub fn recover_project_postgres_blocking(
+    project_cwd: &str,
+    lock: &crate::local::server::MetadataLock,
+) -> Result<()> {
     use crate::local::server::{
-        Engine, ServerInfo, ensure_pg_data_dir, pg_instance_key, save_server_info,
-        server_meta_path_for_recovery,
+        Engine, ServerInfo, ensure_pg_data_dir, load_info_locked, pg_instance_key,
+        save_server_info_locked,
     };
     let cwd_owned = project_cwd.to_string();
-    let _ = block_on(async move {
+    block_on(async move {
         let docker = match connect().await {
             Ok(d) => d,
             Err(_) => return Ok::<(), Error>(()),
@@ -1102,10 +1105,10 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
         };
         for c in containers {
             let key = pg_instance_key(&c.user_name, &c.major);
-            if server_meta_path_for_recovery(&key).exists() {
+            if load_info_locked(&key, lock)?.is_some() {
                 continue;
             }
-            let _ = ensure_pg_data_dir(&c.user_name, &c.major);
+            ensure_pg_data_dir(&c.user_name, &c.major)?;
             let info = ServerInfo {
                 name: key,
                 pid: 0,
@@ -1117,10 +1120,10 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
                 engine: Engine::Postgres,
                 container_id: Some(c.container_id.clone()),
             };
-            let _ = save_server_info(&info);
+            save_server_info_locked(&info, lock)?;
         }
         Ok(())
-    });
+    })
 }
 
 #[cfg(test)]

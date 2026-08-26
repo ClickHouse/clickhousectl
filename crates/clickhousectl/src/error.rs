@@ -254,6 +254,43 @@ pub enum Error {
     #[error("Server '{0}' is running; stop it first with `clickhousectl local server stop {0}`")]
     ServerRunningCannotRemove(String),
 
+    #[error(
+        "Failed to read server metadata '{}': {source}. Check that the file is readable, then retry.",
+        path.display()
+    )]
+    ServerMetadataRead {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "Server metadata '{}' is not valid UTF-8: {source}. Repair or remove the metadata file, then retry.",
+        path.display()
+    )]
+    ServerMetadataUtf8 {
+        path: PathBuf,
+        #[source]
+        source: std::string::FromUtf8Error,
+    },
+
+    #[error(
+        "Server metadata '{}' is not valid JSON: {source}. Repair or remove the metadata file, then retry.",
+        path.display()
+    )]
+    ServerMetadataParse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error("Failed to durably update server metadata '{}': {source}", path.display())]
+    ServerMetadataWrite {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("{0}")]
     Cloud(String),
 

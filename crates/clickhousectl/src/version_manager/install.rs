@@ -152,7 +152,8 @@ pub async fn install_resolved(
 
     // Replacing a build on disk never affects already-running servers (they keep
     // executing the old binary) — just say so, so the swap isn't silent.
-    if is_master && replaced_existing && version_in_use_by_running_server(&exact_version) {
+    drop(commit_lock);
+    if is_master && replaced_existing && version_in_use_by_running_server(&exact_version)? {
         eprintln!(
             "Note: running servers keep using the previous {} build until restarted",
             exact_version
@@ -280,11 +281,11 @@ fn is_installed(binary_path: &Path) -> bool {
 /// Whether a running managed server (in the current project) was started from
 /// this version. Recovers orphans first (like `local remove`) so a server that
 /// lost its metadata file is still counted.
-fn version_in_use_by_running_server(version: &str) -> bool {
-    crate::local::server::recover_current_project_servers();
-    crate::local::server::list_running_servers()
+fn version_in_use_by_running_server(version: &str) -> Result<bool> {
+    crate::local::server::recover_current_project_servers()?;
+    Ok(crate::local::server::list_running_servers()?
         .iter()
-        .any(|s| s.version == version)
+        .any(|s| s.version == version))
 }
 
 /// Detect the version of a clickhouse binary by running `./clickhouse --version`

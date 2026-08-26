@@ -3,6 +3,8 @@ use crate::init;
 use crate::local::discovery;
 use crate::local::docker;
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,6 +15,8 @@ const SPAWN_HEALTH_DELAY: Duration = Duration::from_millis(300);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
 const STARTUP_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+const METADATA_LOCK_FILE: &str = ".metadata.lock";
+const METADATA_TEMP_PREFIX: &str = ".metadata-";
 
 const ADJECTIVES: &[&str] = &[
     "bold", "calm", "dark", "fast", "gold", "keen", "loud", "neat", "pale", "red", "slim", "tall",
@@ -100,14 +104,34 @@ fn servers_dir() -> PathBuf {
     init::local_dir().join("servers")
 }
 
-fn server_meta_path(name: &str) -> PathBuf {
-    servers_dir().join(format!("{}.json", name))
+/// The one project-wide metadata lock. Lifecycle operations hold this lock
+/// from their final state read through their state-determining write. No code
+/// holding it may acquire an install lock, and metadata helpers with a
+/// `_locked` suffix never acquire it again.
+pub(crate) struct MetadataLock {
+    _file: File,
+    dir: PathBuf,
 }
 
-/// Public alias used by `docker.rs` during orphan recovery — keeps the path
-/// computation in one place.
-pub fn server_meta_path_for_recovery(name: &str) -> PathBuf {
-    server_meta_path(name)
+impl MetadataLock {
+    fn acquire_at(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(METADATA_LOCK_FILE))?;
+        file.lock()?;
+        Ok(Self {
+            _file: file,
+            dir: dir.to_path_buf(),
+        })
+    }
+}
+
+pub(crate) fn lock_metadata() -> Result<MetadataLock> {
+    MetadataLock::acquire_at(&servers_dir())
 }
 
 /// Data directory for a ClickHouse server: .clickhouse/servers/<name>/data/.
@@ -179,29 +203,52 @@ pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<bool> {
     Ok(created)
 }
 
-/// Save server info to a metadata file.
-pub fn save_server_info(info: &ServerInfo) -> Result<()> {
-    let dir = servers_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = server_meta_path(&info.name);
-    let json = serde_json::to_string_pretty(info)?;
-    std::fs::write(path, json)?;
+fn metadata_write_error(path: &Path, source: std::io::Error) -> Error {
+    Error::ServerMetadataWrite {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+fn sync_directory(dir: &Path, metadata_path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    File::open(dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| metadata_write_error(metadata_path, error))?;
     Ok(())
 }
 
-/// Remove a server's metadata file.
-pub fn remove_server_info(name: &str) {
-    let _ = try_remove_server_info(name);
+fn save_server_info_at(dir: &Path, info: &ServerInfo) -> Result<()> {
+    let path = dir.join(format!("{}.json", info.name));
+    let json = serde_json::to_vec_pretty(info)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(METADATA_TEMP_PREFIX)
+        .tempfile_in(dir)
+        .map_err(|error| metadata_write_error(&path, error))?;
+    temporary
+        .write_all(&json)
+        .and_then(|()| temporary.flush())
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| metadata_write_error(&path, error))?;
+    temporary
+        .persist(&path)
+        .map_err(|error| metadata_write_error(&path, error.error))?;
+    sync_directory(dir, &path)
 }
 
-/// Remove a server's metadata file while retaining cleanup errors for callers
-/// that are rolling back a transaction.
-pub fn try_remove_server_info(name: &str) -> Result<()> {
-    match std::fs::remove_file(server_meta_path(name)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+pub(crate) fn save_server_info_locked(info: &ServerInfo, lock: &MetadataLock) -> Result<()> {
+    validate_server_name(&info.name)?;
+    save_server_info_at(&lock.dir, info)
+}
+
+pub(crate) fn try_remove_server_info_locked(name: &str, lock: &MetadataLock) -> Result<()> {
+    let path = lock.dir.join(format!("{name}.json"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(metadata_write_error(&path, error)),
     }
+    sync_directory(&lock.dir, &path)
 }
 
 /// Mark a ClickHouse server as stopped without discarding its metadata.
@@ -209,7 +256,12 @@ pub fn try_remove_server_info(name: &str) -> Result<()> {
 /// The PID match avoids overwriting metadata when a newer process was already
 /// recorded before this transition began.
 pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
-    let Some(mut info) = load_info(name) else {
+    let lock = lock_metadata()?;
+    mark_server_stopped_locked(name, pid, &lock)
+}
+
+pub(crate) fn mark_server_stopped_locked(name: &str, pid: u32, lock: &MetadataLock) -> Result<()> {
+    let Some(mut info) = load_info_locked(name, lock)? else {
         return Ok(());
     };
     if info.engine == Engine::Clickhouse && info.pid == pid {
@@ -217,7 +269,7 @@ pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
         info.version.clear();
         info.http_port = 0;
         info.tcp_port = 0;
-        save_server_info(&info)?;
+        save_server_info_locked(&info, lock)?;
     }
     Ok(())
 }
@@ -233,25 +285,45 @@ fn is_alive(info: &ServerInfo) -> bool {
     }
 }
 
-/// Load server metadata regardless of liveness. Returns None if no metadata
-/// file exists or it can't be parsed. `name` is the disk identifier — for
-/// ClickHouse this is just the user-facing name, for Postgres it's
-/// `<name>-pg<major>` (use `pg_instance_key`).
-pub fn load_info(name: &str) -> Option<ServerInfo> {
-    let content = std::fs::read_to_string(server_meta_path(name)).ok()?;
-    serde_json::from_str(&content).ok()
+fn load_info_at(path: &Path) -> Result<Option<ServerInfo>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::ServerMetadataRead {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let content = String::from_utf8(bytes).map_err(|source| Error::ServerMetadataUtf8 {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let info = serde_json::from_str(&content).map_err(|source| Error::ServerMetadataParse {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(Some(info))
+}
+
+pub(crate) fn load_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<ServerInfo>> {
+    validate_server_name(name)?;
+    load_info_at(&lock.dir.join(format!("{name}.json")))
 }
 
 /// Find every Postgres instance whose user-facing name is `name`. Returns
 /// one entry per major version that has a metadata file on disk.
-pub fn find_pg_instances(name: &str) -> Vec<ServerInfo> {
+pub(crate) fn find_pg_instances_locked(name: &str, lock: &MetadataLock) -> Result<Vec<ServerInfo>> {
     let prefix = format!("{}-pg", name);
-    let dir = match std::fs::read_dir(servers_dir()) {
+    let dir = match std::fs::read_dir(&lock.dir) {
         Ok(d) => d,
-        Err(_) => return Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
     };
     let mut out = Vec::new();
-    for entry in dir.flatten() {
+    for entry in dir {
+        let entry = entry?;
         let fname = match entry.file_name().into_string() {
             Ok(s) => s,
             Err(_) => continue,
@@ -269,22 +341,28 @@ pub fn find_pg_instances(name: &str) -> Vec<ServerInfo> {
         if major.is_empty() || !major.chars().all(|c| c.is_ascii_digit()) {
             continue;
         }
-        if let Some(info) = load_info(stem)
+        if let Some(info) = load_info_locked(stem, lock)?
             && info.engine == Engine::Postgres
         {
             out.push(info);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Load server metadata only if the underlying process/container is alive.
 /// Does not update stale metadata. `list_all_servers` is the single place that
 /// marks ClickHouse entries stopped when their PID is gone, so callers like
 /// `is_server_running` and `resolve_name` can read metadata without side effects.
-fn load_running_info(name: &str) -> Option<ServerInfo> {
-    let info = load_info(name)?;
-    if is_alive(&info) { Some(info) } else { None }
+fn load_running_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<ServerInfo>> {
+    let Some(info) = load_info_locked(name, lock)? else {
+        return Ok(None);
+    };
+    if is_alive(&info) {
+        Ok(Some(info))
+    } else {
+        Ok(None)
+    }
 }
 
 /// List all known servers (both running and stopped).
@@ -293,19 +371,24 @@ fn load_running_info(name: &str) -> Option<ServerInfo> {
 /// entry — for ClickHouse the disk id is the user-facing name; for Postgres
 /// it's `<name>-pg<major>`. Also runs process/container discovery so
 /// orphaned instances reappear.
-pub fn list_all_servers() -> Vec<ServerEntry> {
-    recover_current_project_servers();
+pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
+    let lock = lock_metadata()?;
+    recover_current_project_servers_locked(&lock)?;
+    list_all_servers_locked(&lock)
+}
 
-    let dir = servers_dir();
+pub(crate) fn list_all_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerEntry>> {
+    let dir = &lock.dir;
     let mut entries = Vec::new();
 
-    let dir_entries = match std::fs::read_dir(&dir) {
+    let dir_entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+        Err(error) => return Err(error.into()),
     };
 
-    for entry in dir_entries.flatten() {
-        let path = entry.path();
+    for entry in dir_entries {
+        let entry = entry?;
         let fname = match entry.file_name().into_string() {
             Ok(s) => s,
             Err(_) => continue,
@@ -314,60 +397,74 @@ pub fn list_all_servers() -> Vec<ServerEntry> {
             Some(s) => s,
             None => continue,
         };
-        if !path.is_file() {
+        let Some(entry) = server_entry_locked(stem, lock)? else {
+            // The file was removed after read_dir; absence is not corruption
+            // and must not produce a phantom stopped entry.
             continue;
-        }
-
-        let mut info = load_info(stem);
-        let mut running = match &info {
-            Some(i) => is_alive(i),
-            None => false,
         };
-
-        // A dead ClickHouse PID can result from a crash or a global stop. Keep
-        // the metadata and normalize it to the same stopped sentinel Postgres
-        // uses so the instance remains discoverable.
-        if let Some(i) = &info
-            && !running
-            && i.engine == Engine::Clickhouse
-            && i.pid != 0
-        {
-            let stale_pid = i.pid;
-            let _ = mark_server_stopped(stem, stale_pid);
-            // Reload because a concurrent restart may have replaced the stale
-            // PID before `mark_server_stopped` acquired the latest metadata.
-            info = load_info(stem);
-            running = info.as_ref().is_some_and(is_alive);
-        }
-
-        entries.push(ServerEntry {
-            name: stem.to_string(),
-            running,
-            info,
-        });
+        entries.push(entry);
     }
 
     entries.sort_by(|a, b| b.running.cmp(&a.running).then(a.name.cmp(&b.name)));
-    entries
+    Ok(entries)
+}
+
+pub(crate) fn server_entry_locked(name: &str, lock: &MetadataLock) -> Result<Option<ServerEntry>> {
+    server_entry_locked_with(name, lock, || {})
+}
+
+fn server_entry_locked_with(
+    name: &str,
+    lock: &MetadataLock,
+    before_stale_write: impl FnOnce(),
+) -> Result<Option<ServerEntry>> {
+    let Some(mut info) = load_info_locked(name, lock)? else {
+        return Ok(None);
+    };
+    let mut running = is_alive(&info);
+
+    // Keep the lock across liveness, comparison, and replacement. A restart
+    // either commits before this read or waits and commits after normalization.
+    if !running && info.engine == Engine::Clickhouse && info.pid != 0 {
+        before_stale_write();
+        mark_server_stopped_locked(name, info.pid, lock)?;
+        info =
+            load_info_locked(name, lock)?.ok_or_else(|| Error::ServerNotFound(name.to_string()))?;
+        running = is_alive(&info);
+    }
+
+    Ok(Some(ServerEntry {
+        name: name.to_string(),
+        running,
+        info: Some(info),
+    }))
 }
 
 /// List only currently running servers.
-pub fn list_running_servers() -> Vec<ServerInfo> {
-    list_all_servers()
+pub fn list_running_servers() -> Result<Vec<ServerInfo>> {
+    Ok(list_all_servers()?
         .into_iter()
         .filter(|e| e.running)
         .filter_map(|e| e.info)
-        .collect()
+        .collect())
+}
+
+pub(crate) fn list_running_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerInfo>> {
+    Ok(list_all_servers_locked(lock)?
+        .into_iter()
+        .filter(|entry| entry.running)
+        .filter_map(|entry| entry.info)
+        .collect())
 }
 
 /// Check if a named server is currently running.
-pub fn is_server_running(name: &str) -> bool {
-    load_running_info(name).is_some()
+pub fn is_server_running(name: &str) -> Result<bool> {
+    let lock = lock_metadata()?;
+    is_server_running_locked(name, &lock)
 }
 
-/// Count running servers.
-pub fn running_server_count() -> usize {
-    list_running_servers().len()
+pub(crate) fn is_server_running_locked(name: &str, lock: &MetadataLock) -> Result<bool> {
+    Ok(load_running_info_locked(name, lock)?.is_some())
 }
 
 fn is_process_alive(pid: u32) -> bool {
@@ -423,12 +520,18 @@ fn kill_process(pid: u32) -> Result<()> {
 ///   the metadata file so a subsequent `start` resumes the same container
 ///   (preserving the password and any other PGDATA-encoded settings).
 pub fn kill_server(name: &str) -> Result<()> {
-    let info = load_running_info(name).ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
+    let lock = lock_metadata()?;
+    kill_server_locked(name, &lock)
+}
+
+pub(crate) fn kill_server_locked(name: &str, lock: &MetadataLock) -> Result<()> {
+    let info = load_running_info_locked(name, lock)?
+        .ok_or_else(|| Error::ServerNotRunning(name.to_string()))?;
 
     match info.engine {
         Engine::Clickhouse => {
             kill_process(info.pid)?;
-            mark_server_stopped(name, info.pid)?;
+            mark_server_stopped_locked(name, info.pid, lock)?;
         }
         Engine::Postgres => {
             let id = info.container_id.as_deref().ok_or_else(|| {
@@ -448,14 +551,19 @@ pub fn kill_server(name: &str) -> Result<()> {
 /// or generate a random name if "default" is already running.
 /// Returns an error if the provided name contains path traversal characters.
 pub fn resolve_name(name: Option<&str>) -> Result<String> {
+    let lock = lock_metadata()?;
+    resolve_name_locked(name, &lock)
+}
+
+pub(crate) fn resolve_name_locked(name: Option<&str>, lock: &MetadataLock) -> Result<String> {
     match name {
         Some(n) => {
             validate_server_name(n)?;
             Ok(n.to_string())
         }
         None => {
-            if is_server_running("default") {
-                Ok(generate_random_name())
+            if is_server_running_locked("default", lock)? {
+                generate_random_name_locked(lock)
             } else {
                 Ok("default".to_string())
             }
@@ -463,7 +571,7 @@ pub fn resolve_name(name: Option<&str>) -> Result<String> {
     }
 }
 
-fn generate_random_name() -> String {
+fn generate_random_name_locked(lock: &MetadataLock) -> Result<String> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -473,15 +581,15 @@ fn generate_random_name() -> String {
     let noun = NOUNS[((mixed / ADJECTIVES.len() as u128) % NOUNS.len() as u128) as usize];
     let tag = format!("{}-{}", adj, noun);
 
-    if is_server_running(&tag) {
+    if is_server_running_locked(&tag, lock)? {
         for i in 2..100 {
             let candidate = format!("{}-{}", tag, i);
-            if !is_server_running(&candidate) {
-                return candidate;
+            if !is_server_running_locked(&candidate, lock)? {
+                return Ok(candidate);
             }
         }
     }
-    tag
+    Ok(tag)
 }
 
 /// Wait a moment after spawn and check if the child exited immediately.
@@ -492,13 +600,18 @@ pub async fn check_spawn_health(
 ) -> Result<()> {
     tokio::time::sleep(SPAWN_HEALTH_DELAY).await;
     if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
-        let _ = mark_server_stopped(name, child.id());
-        return Err(Error::Exec(format!(
+        let message = format!(
             "Server '{}' exited immediately after starting ({}). See server log: {}",
             name,
             status,
             log_path.display()
-        )));
+        );
+        return match mark_server_stopped(name, child.id()) {
+            Ok(()) => Err(Error::Exec(message)),
+            Err(metadata_error) => Err(Error::Exec(format!(
+                "{message}; additionally failed to record the stopped server: {metadata_error}"
+            ))),
+        };
     }
     Ok(())
 }
@@ -551,8 +664,7 @@ pub async fn wait_for_server_ready(
 
     loop {
         if let Some(status) = child.try_wait().map_err(|e| Error::Exec(e.to_string()))? {
-            let _ = mark_server_stopped(name, child.id());
-            return Err(Error::Exec(format!(
+            let message = format!(
                 "Server '{}' exited before becoming ready on HTTP port {} and TCP port {} ({}). \
                  See server log: {}",
                 name,
@@ -560,7 +672,13 @@ pub async fn wait_for_server_ready(
                 tcp_port,
                 status,
                 log_path.display()
-            )));
+            );
+            return match mark_server_stopped(name, child.id()) {
+                Ok(()) => Err(Error::Exec(message)),
+                Err(metadata_error) => Err(Error::Exec(format!(
+                    "{message}; additionally failed to record the stopped server: {metadata_error}"
+                ))),
+            };
         }
 
         let tcp_ready = matches!(
@@ -687,11 +805,16 @@ pub fn now_timestamp() -> String {
 /// `.clickhouse/servers/<name>/data/` path. If a process is found that has no
 /// metadata file, a new `ServerInfo` is saved so it appears in `server list`
 /// and can be managed normally.
-pub fn recover_current_project_servers() {
-    let current_dir = match std::env::current_dir().and_then(|p| p.canonicalize()) {
-        Ok(p) => p.display().to_string(),
-        Err(_) => return,
-    };
+pub fn recover_current_project_servers() -> Result<()> {
+    let lock = lock_metadata()?;
+    recover_current_project_servers_locked(&lock)
+}
+
+pub(crate) fn recover_current_project_servers_locked(lock: &MetadataLock) -> Result<()> {
+    let current_dir = std::env::current_dir()?
+        .canonicalize()?
+        .display()
+        .to_string();
 
     let processes = discovery::discover_clickhouse_processes();
     for proc in processes {
@@ -705,11 +828,7 @@ pub fn recover_current_project_servers() {
             continue;
         }
 
-        // Only recover if we don't already have metadata for this server
-        if load_running_info(&proc.server_name).is_some() {
-            continue;
-        }
-
+        validate_server_name(&proc.server_name)?;
         let info = ServerInfo {
             name: proc.server_name,
             pid: proc.pid,
@@ -721,11 +840,20 @@ pub fn recover_current_project_servers() {
             engine: Engine::Clickhouse,
             container_id: None,
         };
-        let _ = save_server_info(&info);
+        recover_clickhouse_info_locked(&info, lock)?;
     }
 
     // Also recover orphaned Postgres containers belonging to this project.
-    docker::recover_project_postgres_blocking(&current_dir);
+    docker::recover_project_postgres_blocking(&current_dir, lock)
+}
+
+fn recover_clickhouse_info_locked(info: &ServerInfo, lock: &MetadataLock) -> Result<()> {
+    // A corrupt existing file is an error, not an absent entry that recovery
+    // is allowed to overwrite.
+    if load_running_info_locked(&info.name, lock)?.is_none() {
+        save_server_info_locked(info, lock)?;
+    }
+    Ok(())
 }
 
 /// A server entry for global listing — always running (discovered via process inspection).
@@ -774,6 +902,20 @@ pub fn kill_server_by_pid(pid: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn test_info(pid: u32, version: &str) -> ServerInfo {
+        ServerInfo {
+            name: "default".into(),
+            pid,
+            version: version.into(),
+            http_port: 8123,
+            tcp_port: 9000,
+            started_at: "1700000000".into(),
+            cwd: "/tmp/project".into(),
+            engine: Engine::Clickhouse,
+            container_id: None,
+        }
+    }
+
     #[test]
     fn engine_serializes_lowercase() {
         assert_eq!(
@@ -821,6 +963,182 @@ mod tests {
         assert_eq!(parsed.engine, Engine::Postgres);
         assert_eq!(parsed.container_id.as_deref(), Some("abc123"));
         assert!(json.contains("\"engine\":\"postgres\""));
+    }
+
+    #[test]
+    fn selected_metadata_reports_partial_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.json");
+        std::fs::write(&path, br#"{"name":"default","pid":12"#).unwrap();
+
+        let error = load_info_at(&path).unwrap_err();
+        assert!(matches!(error, Error::ServerMetadataParse { .. }));
+        assert!(error.to_string().contains("not valid JSON"));
+        assert!(error.to_string().contains("default.json"));
+    }
+
+    #[test]
+    fn selected_metadata_reports_invalid_utf8() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.json");
+        std::fs::write(&path, [0xff, 0xfe, 0xfd]).unwrap();
+
+        let error = load_info_at(&path).unwrap_err();
+        assert!(matches!(error, Error::ServerMetadataUtf8 { .. }));
+        assert!(error.to_string().contains("not valid UTF-8"));
+    }
+
+    #[test]
+    fn selected_metadata_reports_read_io_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.json");
+        std::fs::create_dir(&path).unwrap();
+
+        let error = load_info_at(&path).unwrap_err();
+        assert!(matches!(error, Error::ServerMetadataRead { .. }));
+        assert!(error.to_string().contains("Failed to read server metadata"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_metadata_reports_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("default.json");
+        std::fs::write(&path, b"{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = load_info_at(&path).unwrap_err();
+        let Error::ServerMetadataRead { source, .. } = error else {
+            panic!("expected metadata read error");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn atomic_save_ignores_interrupted_sibling_temp_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let stale_temp = directory.path().join(".metadata-interrupted-write");
+        std::fs::write(&stale_temp, br#"{"name":"default""#).unwrap();
+
+        save_server_info_locked(&test_info(0, "25.12.1.1"), &lock).unwrap();
+        let entries = list_all_servers_locked(&lock).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "default");
+        assert_eq!(entries[0].info.as_ref().unwrap().version, "25.12.1.1");
+        assert_eq!(
+            std::fs::read_to_string(stale_temp).unwrap(),
+            r#"{"name":"default""#
+        );
+    }
+
+    #[test]
+    fn concurrent_unlocked_readers_never_observe_partial_json() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        save_server_info_locked(&test_info(0, "initial"), &lock).unwrap();
+        drop(lock);
+        let writer_dir = directory.path().to_path_buf();
+        let metadata_path = directory.path().join("default.json");
+
+        let writer = std::thread::spawn(move || {
+            for generation in 0..200 {
+                let lock = MetadataLock::acquire_at(&writer_dir).unwrap();
+                save_server_info_locked(&test_info(0, &format!("generation-{generation}")), &lock)
+                    .unwrap();
+            }
+        });
+        for _ in 0..1_000 {
+            let bytes = std::fs::read(&metadata_path).unwrap();
+            serde_json::from_slice::<ServerInfo>(&bytes).unwrap();
+        }
+        writer.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn metadata_write_permission_failure_is_not_discarded() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        save_server_info_locked(&test_info(0, "preserved"), &lock).unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let error = save_server_info_locked(&test_info(0, "blocked"), &lock).unwrap_err();
+        assert!(matches!(error, Error::ServerMetadataWrite { .. }));
+
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            load_info_locked("default", &lock).unwrap().unwrap().version,
+            "preserved"
+        );
+    }
+
+    #[test]
+    fn stale_pid_normalization_is_durable() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        save_server_info_locked(&test_info(u32::MAX, "25.12.1.1"), &lock).unwrap();
+
+        let entry = server_entry_locked("default", &lock).unwrap().unwrap();
+        let normalized = entry.info.unwrap();
+        assert!(!entry.running);
+        assert_eq!(normalized.pid, 0);
+        assert!(normalized.version.is_empty());
+        assert_eq!(load_info_locked("default", &lock).unwrap().unwrap().pid, 0);
+    }
+
+    #[test]
+    fn recovery_does_not_overwrite_corrupt_live_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let path = directory.path().join("default.json");
+        let partial = br#"{"name":"default""#;
+        std::fs::write(&path, partial).unwrap();
+
+        let error =
+            recover_clickhouse_info_locked(&test_info(std::process::id(), "recovered"), &lock)
+                .unwrap_err();
+
+        assert!(matches!(error, Error::ServerMetadataParse { .. }));
+        assert_eq!(std::fs::read(path).unwrap(), partial);
+    }
+
+    #[test]
+    fn restart_waiting_during_normalization_commits_last() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        save_server_info_locked(&test_info(u32::MAX, "stale"), &lock).unwrap();
+        let restart_dir = directory.path().to_path_buf();
+        let mut restart = None;
+
+        let normalized = server_entry_locked_with("default", &lock, || {
+            restart = Some(std::thread::spawn(move || {
+                let restart_lock = MetadataLock::acquire_at(&restart_dir).unwrap();
+                save_server_info_locked(&test_info(std::process::id(), "restarted"), &restart_lock)
+                    .unwrap();
+            }));
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(normalized.info.unwrap().pid, 0);
+        drop(lock);
+        restart.unwrap().join().unwrap();
+
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let final_info = load_info_locked("default", &lock).unwrap().unwrap();
+        assert_eq!(final_info.pid, std::process::id());
+        assert_eq!(final_info.version, "restarted");
     }
 
     #[test]
