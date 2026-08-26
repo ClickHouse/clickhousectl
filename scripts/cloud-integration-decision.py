@@ -241,7 +241,8 @@ def required_env(name: str) -> str:
 
 def waiting_decision(pull_request: dict[str, Any], repository: str) -> Decision:
     sha = pull_request["head"]["sha"]
-    is_fork = pull_request["head"]["repo"]["full_name"] != repository
+    head_repository = pull_request["head"].get("repo") or {}
+    is_fork = head_repository.get("full_name") != repository
     fork_note = (
         " This is a fork PR, so use a trusted same-repository mirror or a "
         "maintainer override; Cloud secrets are not available to the fork."
@@ -432,7 +433,12 @@ def current_run_is_safe(
     if len(source_prs) != 1:
         return False
     source_pr = source_prs[0]
+    source_head = source_pr.get("head") or {}
+    source_base = source_pr.get("base") or {}
     head_repository = run.get("head_repository") or {}
+    pull_head = pull_request.get("head") or {}
+    pull_head_repository = pull_head.get("repo") or {}
+    pull_base = pull_request.get("base") or {}
     return all(
         (
             run.get("path") == SOURCE_WORKFLOW_PATH,
@@ -441,13 +447,11 @@ def current_run_is_safe(
             head_repository.get("full_name") == repository,
             pull_request.get("state") == "open",
             source_pr.get("number") == pull_request.get("number"),
-            source_pr.get("head", {}).get("sha") == run.get("head_sha"),
-            pull_request.get("head", {}).get("sha") == run.get("head_sha"),
-            pull_request.get("head", {}).get("ref") == run.get("head_branch"),
-            pull_request.get("head", {}).get("repo", {}).get("full_name")
-            == repository,
-            source_pr.get("base", {}).get("sha")
-            == pull_request.get("base", {}).get("sha"),
+            source_head.get("sha") == run.get("head_sha"),
+            pull_head.get("sha") == run.get("head_sha"),
+            pull_head.get("ref") == run.get("head_branch"),
+            pull_head_repository.get("full_name") == repository,
+            source_base.get("sha") == pull_base.get("sha"),
         )
     )
 
@@ -602,21 +606,35 @@ def reconcile(api: GitHubAPI, event: dict[str, Any], repository: str) -> None:
 def record_override(
     api: GitHubAPI, event: dict[str, Any], repository: str
 ) -> None:
-    parsed = parse_override_command(event["comment"]["body"])
+    actor = event["sender"]["login"]
+    pull_number = event["issue"]["number"]
+    try:
+        parsed = parse_override_command(event["comment"]["body"])
+    except ControllerError as error:
+        post_override_rejection(api, pull_number, actor, str(error))
+        return
     if parsed is None:
         print("Ignoring unrelated PR comment")
         return
 
-    actor = event["sender"]["login"]
     permission = api.collaborator_permission(actor)
     if not permission_allows_override(permission):
         level = permission.get("permission", "none")
+        post_override_rejection(
+            api,
+            pull_number,
+            actor,
+            "override commands require `maintain` or `admin` permission",
+        )
         print(f"Ignoring override from @{actor} with {level!r} permission")
         return
 
-    pull_number = event["issue"]["number"]
     pull_request = api.get_pull(pull_number)
-    override = validate_override(event, pull_request, permission, repository)
+    try:
+        override = validate_override(event, pull_request, permission, repository)
+    except ControllerError as error:
+        post_override_rejection(api, pull_number, actor, str(error))
+        return
     if override is None:
         return
     decision = override_decision(override)
@@ -635,6 +653,20 @@ def record_override(
         ),
     )
     print(f"Override recorded in decision check {check['id']} for {override.sha}")
+
+
+def post_override_rejection(
+    api: GitHubAPI, pull_number: int, actor: str, reason: str
+) -> None:
+    api.post_comment(
+        pull_number,
+        (
+            f"Cloud integration override from `@{actor}` was not recorded.\n\n"
+            f"Reason: {reason}.\n\n"
+            "No decision check was changed."
+        ),
+    )
+    print(f"Override from @{actor} was not recorded: {reason}")
 
 
 def main() -> int:

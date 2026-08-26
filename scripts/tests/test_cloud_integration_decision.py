@@ -3,6 +3,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "cloud-integration-decision.py"
 SPEC = importlib.util.spec_from_file_location("cloud_integration_decision", SCRIPT)
@@ -17,6 +18,7 @@ BASE_SHA = "c" * 40
 
 
 def pull_request(*, head_sha=HEAD_SHA, head_repo=REPO, base_sha=BASE_SHA):
+    repo = None if head_repo is None else {"full_name": head_repo}
     return {
         "number": 410,
         "state": "open",
@@ -24,7 +26,7 @@ def pull_request(*, head_sha=HEAD_SHA, head_repo=REPO, base_sha=BASE_SHA):
         "head": {
             "sha": head_sha,
             "ref": "feature",
-            "repo": {"full_name": head_repo},
+            "repo": repo,
         },
         "base": {"sha": base_sha},
     }
@@ -72,6 +74,250 @@ def live_job(selected=(), conclusion="success"):
 
 def selection(*suites):
     return decision.classifier.Selection(tuple(suites))
+
+
+def override_event(*, actor="maintainer", sha=HEAD_SHA, body=None):
+    if body is None:
+        body = f"{decision.OVERRIDE_COMMAND} {sha} covered by stack run 123"
+    return {
+        "repository": {"full_name": REPO},
+        "issue": {"number": 410},
+        "sender": {"login": actor},
+        "comment": {
+            "body": body,
+            "created_at": "2026-08-26T12:00:00Z",
+            "html_url": "https://github.example/comment/1",
+            "user": {"login": actor},
+        },
+    }
+
+
+class GitHubAPITests(unittest.TestCase):
+    def setUp(self):
+        self.api = decision.GitHubAPI("https://api.github.example", REPO, "token")
+        self.result = decision.Decision(
+            conclusion="success",
+            title="Accepted",
+            summary="Exact SHA accepted",
+            details_url="https://github.example/run/1",
+        )
+
+    def test_find_decision_check_uses_external_id_app_and_latest_id(self):
+        external_id = decision.decision_external_id(HEAD_SHA)
+        response = {
+            "check_runs": [
+                {
+                    "id": 99,
+                    "external_id": "unrelated",
+                    "app": {"slug": "github-actions"},
+                },
+                {
+                    "id": 12,
+                    "external_id": external_id,
+                    "app": {"slug": "github-actions"},
+                },
+                {
+                    "id": 15,
+                    "external_id": external_id,
+                    "app": {"slug": "github-actions"},
+                },
+                {
+                    "id": 30,
+                    "external_id": external_id,
+                    "app": {"slug": "other-app"},
+                },
+            ]
+        }
+        with mock.patch.object(self.api, "request", return_value=response) as request:
+            result = self.api.find_decision_check(HEAD_SHA)
+
+        self.assertEqual(result["id"], 15)
+        method, path = request.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertIn(f"/commits/{HEAD_SHA}/check-runs?", path)
+        self.assertIn("check_name=Cloud+integration+decision", path)
+
+    def test_upsert_creates_once_then_updates_the_same_check(self):
+        existing = {"id": 42}
+        with (
+            mock.patch.object(
+                self.api, "find_decision_check", side_effect=(None, existing)
+            ),
+            mock.patch.object(
+                self.api,
+                "request",
+                side_effect=({"id": 42}, {"id": 42}),
+            ) as request,
+            mock.patch.object(
+                decision, "utc_now", return_value="2026-08-26T12:00:00Z"
+            ),
+        ):
+            self.api.upsert_decision(HEAD_SHA, self.result)
+            self.api.upsert_decision(HEAD_SHA, self.result)
+
+        create_method, create_path, create_payload = request.call_args_list[0].args
+        self.assertEqual(
+            (create_method, create_path),
+            ("POST", f"/repos/{REPO}/check-runs"),
+        )
+        self.assertEqual(create_payload["name"], decision.CHECK_NAME)
+        self.assertEqual(create_payload["head_sha"], HEAD_SHA)
+        self.assertEqual(
+            create_payload["external_id"], decision.decision_external_id(HEAD_SHA)
+        )
+
+        update_method, update_path, update_payload = request.call_args_list[1].args
+        self.assertEqual(
+            (update_method, update_path),
+            ("PATCH", f"/repos/{REPO}/check-runs/42"),
+        )
+        self.assertNotIn("name", update_payload)
+        self.assertNotIn("head_sha", update_payload)
+
+    def test_create_only_returns_existing_check_without_updating(self):
+        existing = {"id": 42, "conclusion": "success"}
+        with (
+            mock.patch.object(
+                self.api, "find_decision_check", return_value=existing
+            ),
+            mock.patch.object(self.api, "request") as request,
+        ):
+            result = self.api.upsert_decision(
+                HEAD_SHA, self.result, create_only=True
+            )
+
+        self.assertIs(result, existing)
+        request.assert_not_called()
+
+
+class ControllerFlowTests(unittest.TestCase):
+    def test_initialize_uses_create_only_for_the_exact_head(self):
+        api = mock.Mock()
+        api.upsert_decision.return_value = {"id": 42}
+
+        with mock.patch("builtins.print"):
+            decision.initialize(
+                api, {"pull_request": pull_request(head_repo=None)}, REPO
+            )
+
+        sha, result = api.upsert_decision.call_args.args
+        self.assertEqual(sha, HEAD_SHA)
+        self.assertEqual(result.conclusion, "action_required")
+        self.assertIn("fork PR", result.summary)
+        self.assertTrue(api.upsert_decision.call_args.kwargs["create_only"])
+
+    def test_reconcile_ignores_run_without_one_associated_pull(self):
+        api = mock.Mock()
+        run = workflow_run()
+        run["pull_requests"] = []
+
+        with mock.patch("builtins.print"):
+            decision.reconcile(api, {"workflow_run": run}, REPO)
+
+        api.get_pull.assert_not_called()
+        api.upsert_decision.assert_not_called()
+
+    def test_reconcile_ignores_deleted_fork_before_loading_jobs(self):
+        api = mock.Mock()
+        api.get_pull.return_value = pull_request(head_repo=None)
+
+        with mock.patch("builtins.print"):
+            decision.reconcile(api, {"workflow_run": workflow_run()}, REPO)
+
+        api.list_run_jobs.assert_not_called()
+        api.upsert_decision.assert_not_called()
+
+    def test_reconcile_ignores_run_with_skipped_planner(self):
+        api = mock.Mock()
+        api.get_pull.return_value = pull_request()
+        api.list_run_jobs.return_value = [plan_job("skipped")]
+
+        with mock.patch("builtins.print"):
+            decision.reconcile(api, {"workflow_run": workflow_run()}, REPO)
+
+        api.content_blob_sha.assert_not_called()
+        api.upsert_decision.assert_not_called()
+
+    def test_reconcile_updates_decision_from_trusted_evidence(self):
+        api = mock.Mock()
+        api.get_pull.return_value = pull_request()
+        api.list_run_jobs.return_value = [plan_job(), live_job(("service",))]
+        api.content_blob_sha.side_effect = ("workflow-blob", "workflow-blob")
+        api.list_pull_files.return_value = [
+            {"status": "modified", "filename": "README.md"}
+        ]
+        api.upsert_decision.return_value = {"id": 42}
+
+        with (
+            mock.patch.object(
+                decision,
+                "selection_from_pull_files",
+                return_value=selection("service"),
+            ),
+            mock.patch("builtins.print"),
+        ):
+            decision.reconcile(api, {"workflow_run": workflow_run()}, REPO)
+
+        sha, result = api.upsert_decision.call_args.args
+        self.assertEqual(sha, HEAD_SHA)
+        self.assertEqual(result.conclusion, "success")
+        self.assertEqual(
+            api.content_blob_sha.call_args_list,
+            [
+                mock.call(decision.SOURCE_WORKFLOW_PATH, BASE_SHA),
+                mock.call(decision.SOURCE_WORKFLOW_PATH, HEAD_SHA),
+            ],
+        )
+
+    def test_record_override_updates_check_and_posts_audit_comment(self):
+        api = mock.Mock()
+        api.collaborator_permission.return_value = {"permission": "maintain"}
+        api.get_pull.return_value = pull_request()
+        api.upsert_decision.return_value = {
+            "id": 42,
+            "html_url": "https://github.example/check/42",
+        }
+
+        with mock.patch("builtins.print"):
+            decision.record_override(api, override_event(), REPO)
+
+        sha, result = api.upsert_decision.call_args.args
+        self.assertEqual(sha, HEAD_SHA)
+        self.assertEqual(result.conclusion, "success")
+        pull_number, comment = api.post_comment.call_args.args
+        self.assertEqual(pull_number, 410)
+        self.assertIn("override recorded by `@maintainer`", comment)
+        self.assertIn("https://github.example/check/42", comment)
+
+    def test_record_override_posts_feedback_when_permission_is_insufficient(self):
+        api = mock.Mock()
+        api.collaborator_permission.return_value = {"permission": "write"}
+
+        with mock.patch("builtins.print"):
+            decision.record_override(api, override_event(actor="writer"), REPO)
+
+        api.get_pull.assert_not_called()
+        api.upsert_decision.assert_not_called()
+        pull_number, comment = api.post_comment.call_args.args
+        self.assertEqual(pull_number, 410)
+        self.assertIn("was not recorded", comment)
+        self.assertIn("`maintain` or `admin`", comment)
+        self.assertIn("No decision check was changed", comment)
+
+    def test_record_override_posts_feedback_for_stale_sha(self):
+        api = mock.Mock()
+        api.collaborator_permission.return_value = {"permission": "maintain"}
+        api.get_pull.return_value = pull_request(head_sha=NEW_HEAD_SHA)
+
+        with mock.patch("builtins.print"):
+            decision.record_override(api, override_event(), REPO)
+
+        api.upsert_decision.assert_not_called()
+        pull_number, comment = api.post_comment.call_args.args
+        self.assertEqual(pull_number, 410)
+        self.assertIn("was not recorded", comment)
+        self.assertIn("SHA is stale", comment)
+        self.assertIn("No decision check was changed", comment)
 
 
 class CloudIntegrationDecisionTests(unittest.TestCase):

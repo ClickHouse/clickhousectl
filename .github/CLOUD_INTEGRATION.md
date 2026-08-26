@@ -33,9 +33,18 @@ Use an override after a failed live run only as an explicit subsequent
 maintainer decision. Include why the failure is accepted or link the successful
 run that covers the change.
 
+An override is not sticky for the same SHA. A later admitted Cloud Integration
+run replaces it as the current decision. If that run fails, the decision stays
+failing until the run succeeds or a maintainer records a subsequent override.
+
 A PR that changes `.github/workflows/cloud-integration.yml` cannot use that
 modified workflow to attest itself. Its decision remains failing until a
 maintainer reviews the workflow change and records an exact-SHA override.
+
+A PR that changes `scripts/classify-cloud-integration.py` can select different
+suites in the PR run than the trusted default-branch controller derives. Review
+the classifier change and use an exact-SHA override when that expected mismatch
+prevents the run from satisfying the decision.
 
 ## Stacked pull requests
 
