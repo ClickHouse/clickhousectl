@@ -10,6 +10,7 @@ use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
 use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
+use std::collections::HashSet;
 use std::process::Command;
 
 const DEFAULT_PG_PORT: u16 = 5432;
@@ -26,19 +27,139 @@ pub(crate) fn pg_major_from_tag(tag: &str) -> String {
     tag.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
-/// Accept Postgres image tags whose major version is 17 or 18 — anything
-/// else is unsupported for now. Examples that pass: `17`, `17.0`, `17-alpine`,
-/// `18-bookworm`, `18.1-alpine3.20`. Examples that fail: `latest`, `16`, `19`.
+/// Accept Postgres image tags in the form `17|18[.<minor>][-<variant>]`.
+/// The variant follows Docker's tag character grammar. Examples that pass:
+/// `17`, `17.0`, `17-alpine`, `18-bookworm`, `18.1-alpine3.20`.
 pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
-    let major: String = tag.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !matches!(major.as_str(), "17" | "18") {
+    let valid = tag.len() <= 128 && tag.is_ascii() && {
+        let (version, variant) = match tag.split_once('-') {
+            Some((version, variant)) => (version, Some(variant)),
+            None => (tag, None),
+        };
+        let variant_valid = variant.is_none_or(|variant| {
+            let mut chars = variant.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        });
+        let (major, minor) = match version.split_once('.') {
+            Some((major, minor)) => (major, Some(minor)),
+            None => (version, None),
+        };
+        let minor_valid = minor
+            .is_none_or(|minor| !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit()));
+        matches!(major, "17" | "18") && minor_valid && variant_valid
+    };
+
+    if !valid {
         return Err(Error::Exec(format!(
-            "postgres version '{}' is not supported. Use a 17 or 18 image tag \
-             (for example: 17, 17-alpine, 18.1, 18-bookworm).",
+            "invalid or unsupported postgres version '{}'. Use 17 or 18, optionally followed \
+             by .<minor> and -<variant> (for example: 17, 17-alpine, 18.1, 18-bookworm).",
             tag
         )));
     }
     Ok(())
+}
+
+pub(crate) fn parse_pg_tag_arg(tag: &str) -> std::result::Result<String, String> {
+    validate_pg_tag(tag)
+        .map(|()| tag.to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn validate_pg_env_assignment(assignment: &str) -> std::result::Result<(&str, &str), String> {
+    let Some((key, value)) = assignment.split_once('=') else {
+        return Err(format!(
+            "invalid environment variable '{assignment}': expected KEY=VALUE"
+        ));
+    };
+    let mut chars = key.chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(format!(
+            "invalid environment variable key '{key}': use letters, digits, and underscores, and do not start with a digit"
+        ));
+    }
+    match key {
+        "POSTGRES_USER" => {
+            Err("POSTGRES_USER is managed by clickhousectl; use --user instead of --env".into())
+        }
+        "POSTGRES_DB" => {
+            Err("POSTGRES_DB is managed by clickhousectl; use --database instead of --env".into())
+        }
+        "PGDATA" => Err("PGDATA is managed by clickhousectl and cannot be set with --env".into()),
+        _ => Ok((key, value)),
+    }
+}
+
+pub(crate) fn parse_pg_env_arg(assignment: &str) -> std::result::Result<String, String> {
+    validate_pg_env_assignment(assignment).map(|_| assignment.to_string())
+}
+
+pub(crate) fn validate_pg_start_env_args(
+    password: Option<&str>,
+    extra_env: &[String],
+) -> std::result::Result<(), String> {
+    let mut seen = HashSet::new();
+    let mut has_password_env = false;
+    for assignment in extra_env {
+        let (key, _) = validate_pg_env_assignment(assignment)?;
+        if !seen.insert(key) {
+            return Err(format!(
+                "environment variable '{key}' was provided more than once; pass each --env key only once"
+            ));
+        }
+        has_password_env |= key == "POSTGRES_PASSWORD";
+    }
+    if password.is_some() && has_password_env {
+        return Err(
+            "POSTGRES_PASSWORD cannot be set with both --password and --env; choose one".into(),
+        );
+    }
+    Ok(())
+}
+
+struct StartPreflight {
+    host_port: u16,
+    extra_env: Vec<String>,
+    password_from_env: Option<String>,
+}
+
+fn validate_start_options(
+    name: Option<&str>,
+    version: Option<&str>,
+    port: Option<u16>,
+    password: Option<&str>,
+    extra_env: Vec<String>,
+) -> Result<StartPreflight> {
+    if let Some(name) = name {
+        server::validate_server_name(name)?;
+    }
+    if let Some(version) = version {
+        validate_pg_tag(version)?;
+    }
+
+    validate_pg_start_env_args(password, &extra_env).map_err(Error::Exec)?;
+    let password_from_env = extra_env.iter().find_map(|assignment| {
+        assignment
+            .strip_prefix("POSTGRES_PASSWORD=")
+            .map(str::to_string)
+    });
+    let validated_env = extra_env
+        .into_iter()
+        .filter(|assignment| !assignment.starts_with("POSTGRES_PASSWORD="))
+        .collect();
+
+    let host_port = resolve_port(port)?;
+    Ok(StartPreflight {
+        host_port,
+        extra_env: validated_env,
+        password_from_env,
+    })
 }
 
 pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
@@ -83,15 +204,23 @@ async fn start(
     extra_env: Vec<String>,
     json: bool,
 ) -> Result<()> {
+    let preflight = validate_start_options(
+        name.as_deref(),
+        version.as_deref(),
+        port,
+        password.as_deref(),
+        extra_env,
+    )?;
+    let host_port = preflight.host_port;
+    let extra_env = preflight.extra_env;
+    let password_from_env = preflight.password_from_env;
+
     server::recover_current_project_servers();
 
     // User-facing name (no version suffix). Defaults to "default" when no
     // postgres "default" is currently running.
     let user_name = match name.as_deref() {
-        Some(n) => {
-            server::validate_server_name(n)?;
-            n.to_string()
-        }
+        Some(n) => n.to_string(),
         None => default_pg_name(),
     };
 
@@ -101,10 +230,7 @@ async fn start(
     // instances, we ask them to disambiguate. Only when zero exist do we
     // default to DEFAULT_PG_TAG.
     let (tag, major) = match version.as_deref() {
-        Some(v) => {
-            validate_pg_tag(v)?;
-            (v.to_string(), pg_major_from_tag(v))
-        }
+        Some(v) => (v.to_string(), pg_major_from_tag(v)),
         None => {
             let existing = server::find_pg_instances(&user_name);
             match existing.len() {
@@ -183,8 +309,6 @@ async fn start(
         docker::pull_image(&docker, tag, json).await?;
     }
 
-    let host_port = resolve_port(port)?;
-
     server::ensure_pg_data_dir(&user_name, &major)?;
     let data_dir = server::pg_data_dir(&user_name, &major);
 
@@ -195,10 +319,6 @@ async fn start(
     let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
     let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
 
-    let password_from_env = extra_env
-        .iter()
-        .find_map(|kv| kv.strip_prefix("POSTGRES_PASSWORD="))
-        .map(|s| s.to_string());
     let password = password_from_env
         .or(password)
         .unwrap_or_else(generate_password);
@@ -367,13 +487,21 @@ async fn wait_running(docker: &bollard::Docker, id: &str, attempts: usize) -> bo
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
-    if let Some(p) = explicit {
-        if p == 0 {
+    match explicit {
+        Some(0) => {
             return Err(Error::Exec(
                 "--port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
-        return Ok(p);
+        Some(port) if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() => {
+            return Ok(port);
+        }
+        Some(port) => {
+            return Err(Error::Exec(format!(
+                "Postgres port {port} is already in use; choose another --port or omit --port to auto-select a free port"
+            )));
+        }
+        None => {}
     }
     if std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)).is_ok() {
         return Ok(DEFAULT_PG_PORT);
@@ -677,8 +805,21 @@ mod tests {
 
     #[test]
     fn resolve_port_passes_through_explicit_value() {
-        // Use a port unlikely to be bound; we just want the passthrough path.
-        assert_eq!(resolve_port(Some(54321)).unwrap(), 54321);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert_eq!(resolve_port(Some(port)).unwrap(), port);
+    }
+
+    #[test]
+    fn resolve_port_rejects_bound_explicit_value() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let err = resolve_port(Some(port)).unwrap_err();
+        assert!(
+            matches!(err, Error::Exec(msg) if msg.contains(&format!("port {port} is already in use")) && msg.contains("omit --port"))
+        );
     }
 
     #[test]
@@ -689,7 +830,9 @@ mod tests {
             "17-alpine",
             "17.0",
             "18-bookworm",
+            "18-alpine3.20",
             "18.1-alpine3.20",
+            "18.01-Custom_variant-1.0",
         ] {
             assert!(
                 validate_pg_tag(tag).is_ok(),
@@ -710,6 +853,17 @@ mod tests {
             "14-alpine",
             "alpine",
             "",
+            "18garbage",
+            "18.1garbage",
+            "18.",
+            "18..1",
+            "18.1.2",
+            "18-",
+            "18-.alpine",
+            "18_alpine",
+            "18 alpine",
+            "18/alpine",
+            "18:alpine",
         ] {
             assert!(
                 validate_pg_tag(tag).is_err(),
@@ -720,9 +874,128 @@ mod tests {
     }
 
     #[test]
+    fn validate_pg_tag_enforces_docker_tag_length() {
+        let max_length = format!("18-{}", "a".repeat(125));
+        let too_long = format!("18-{}", "a".repeat(126));
+
+        assert_eq!(max_length.len(), 128);
+        assert!(validate_pg_tag(&max_length).is_ok());
+        assert_eq!(too_long.len(), 129);
+        assert!(validate_pg_tag(&too_long).is_err());
+    }
+
+    #[test]
     fn generate_password_is_24_alphanumeric() {
         let p = generate_password();
         assert_eq!(p.len(), 24);
         assert!(p.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn start_env_accepts_unique_assignments_and_equals_in_values() {
+        let preflight = validate_start_options(
+            Some("dev"),
+            Some("18.1-alpine3.20"),
+            None,
+            None,
+            vec![
+                "APP_MODE=test".into(),
+                "DATABASE_URL=postgres://user:pass@host/db?sslmode=require".into(),
+                "POSTGRES_PASSWORD=a=b".into(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            preflight.extra_env,
+            [
+                "APP_MODE=test",
+                "DATABASE_URL=postgres://user:pass@host/db?sslmode=require"
+            ]
+        );
+        assert_eq!(preflight.password_from_env.as_deref(), Some("a=b"));
+    }
+
+    #[test]
+    fn start_env_rejects_malformed_assignments() {
+        for assignment in ["NO_EQUALS", "=value", "1KEY=value", "BAD-KEY=value"] {
+            let error = validate_start_options(
+                Some("dev"),
+                Some("18"),
+                None,
+                None,
+                vec![assignment.into()],
+            )
+            .err()
+            .expect("malformed environment variable should fail");
+            assert!(matches!(error, Error::Exec(_)), "{assignment}: {error}");
+        }
+    }
+
+    #[test]
+    fn start_env_rejects_duplicate_keys() {
+        let error = validate_start_options(
+            Some("dev"),
+            Some("18"),
+            None,
+            None,
+            vec!["APP_MODE=dev".into(), "APP_MODE=test".into()],
+        )
+        .err()
+        .expect("duplicate environment variable should fail");
+
+        assert!(
+            matches!(error, Error::Exec(msg) if msg.contains("APP_MODE") && msg.contains("more than once"))
+        );
+    }
+
+    #[test]
+    fn start_env_rejects_generated_keys_except_password() {
+        for assignment in [
+            "POSTGRES_USER=admin",
+            "POSTGRES_DB=app",
+            "PGDATA=/tmp/postgres",
+        ] {
+            let error = validate_start_options(
+                Some("dev"),
+                Some("18"),
+                None,
+                None,
+                vec![assignment.into()],
+            )
+            .err()
+            .expect("reserved environment variable should fail");
+            assert!(matches!(error, Error::Exec(msg) if msg.contains("managed by clickhousectl")));
+        }
+    }
+
+    #[test]
+    fn start_env_password_sources_are_unambiguous() {
+        let error = validate_start_options(
+            Some("dev"),
+            Some("18"),
+            None,
+            Some("from-flag"),
+            vec!["POSTGRES_PASSWORD=from-env".into()],
+        )
+        .err()
+        .expect("password sources should conflict");
+        assert!(matches!(error, Error::Exec(msg) if msg.contains("both --password and --env")));
+
+        let error = validate_start_options(
+            Some("dev"),
+            Some("18"),
+            None,
+            None,
+            vec![
+                "POSTGRES_PASSWORD=first".into(),
+                "POSTGRES_PASSWORD=second".into(),
+            ],
+        )
+        .err()
+        .expect("duplicate password should fail");
+        assert!(
+            matches!(error, Error::Exec(msg) if msg.contains("POSTGRES_PASSWORD") && msg.contains("more than once"))
+        );
     }
 }

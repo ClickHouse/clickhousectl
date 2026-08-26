@@ -2,6 +2,12 @@ use crate::version_manager::{self, VersionSpec};
 use clap::{Args, Subcommand};
 use std::str::FromStr;
 
+fn parse_server_name_arg(name: &str) -> Result<String, String> {
+    crate::local::server::validate_server_name(name)
+        .map(|()| name.to_string())
+        .map_err(|error| error.to_string())
+}
+
 const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   `clickhousectl local use <version>` auto-installs a missing version and sets it as default.
@@ -106,6 +112,18 @@ pub struct LocalArgs {
 
     #[command(subcommand)]
     pub command: LocalCommands,
+}
+
+impl LocalArgs {
+    pub(crate) fn postgres_start_validation_error(&self) -> Option<String> {
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Start { password, env, .. },
+        } = &self.command
+        else {
+            return None;
+        };
+        crate::local::postgres::validate_pg_start_env_args(password.as_deref(), env).err()
+    }
 }
 
 #[derive(Subcommand)]
@@ -446,20 +464,23 @@ CONTEXT FOR AGENTS:
   --port defaults to 5432; if taken, a free port is auto-assigned.
   Data persists at .clickhouse/servers/<name>/data/ and is bind-mounted into the container.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
+  POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
+  `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
+  be combined. Every --env key must be unique, so generated variables are never duplicated.
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
   `clickhousectl.project=<cwd>`, `created_by=clickhousectl_<version>` for safe discovery.
   Requires Docker to be installed and running.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_server_name_arg)]
         name: Option<String>,
 
         /// Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing.
-        #[arg(long, short = 'v')]
+        #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
 
         /// Host TCP port (default: 5432, auto-assigns a free port if in use)
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=65535))]
         port: Option<u16>,
 
         /// POSTGRES_USER (default: postgres)
@@ -474,8 +495,13 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         database: Option<String>,
 
-        /// Extra env vars for the container, repeatable: -e KEY=VALUE
-        #[arg(short = 'e', long = "env", value_name = "KEY=VALUE")]
+        /// Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
+        #[arg(
+            short = 'e',
+            long = "env",
+            value_name = "KEY=VALUE",
+            value_parser = crate::local::postgres::parse_pg_env_arg
+        )]
         env: Vec<String>,
     },
 
@@ -590,6 +616,14 @@ mod tests {
             .expect("invalid version should fail during clap parsing");
         assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
         assert!(error.to_string().contains(expected), "{error}");
+    }
+
+    fn postgres_start_parse_error(args: &[&str]) -> clap::Error {
+        let mut argv = vec!["clickhousectl", "local", "postgres", "start"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+            .err()
+            .expect("invalid postgres start arguments should fail during clap parsing")
     }
 
     #[test]
@@ -962,6 +996,85 @@ mod tests {
             panic!("expected postgres stop");
         };
         assert_eq!(name, "default");
+    }
+
+    #[test]
+    fn parses_postgres_start_validation_owned_options() {
+        let LocalCommands::Postgres {
+            command:
+                PostgresCommands::Start {
+                    name,
+                    version,
+                    port,
+                    password,
+                    env,
+                    ..
+                },
+        } = local_command(&[
+            "postgres",
+            "start",
+            "--name",
+            "analytics",
+            "--version",
+            "18.1-alpine3.20",
+            "--port",
+            "55432",
+            "--password",
+            "secret",
+            "-e",
+            "APP_MODE=test",
+            "--env",
+            "DATABASE_URL=postgres://localhost/db?option=a=b",
+        ])
+        else {
+            panic!("expected postgres start");
+        };
+
+        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(version.as_deref(), Some("18.1-alpine3.20"));
+        assert_eq!(port, Some(55432));
+        assert_eq!(password.as_deref(), Some("secret"));
+        assert_eq!(
+            env,
+            [
+                "APP_MODE=test",
+                "DATABASE_URL=postgres://localhost/db?option=a=b"
+            ]
+        );
+    }
+
+    #[test]
+    fn postgres_start_rejects_invalid_name_tag_port_and_env_at_clap_time() {
+        for (args, expected) in [
+            (vec!["--name", "../unsafe"], "Invalid server name"),
+            (
+                vec!["--version", "18garbage"],
+                "invalid or unsupported postgres version",
+            ),
+            (
+                vec!["--version", "18..1"],
+                "invalid or unsupported postgres version",
+            ),
+            (vec!["--port", "0"], "0 is not in 1..=65535"),
+            (vec!["--env", "NO_EQUALS"], "expected KEY=VALUE"),
+            (vec!["--env", "1KEY=value"], "do not start with a digit"),
+            (
+                vec!["--env", "POSTGRES_USER=admin"],
+                "use --user instead of --env",
+            ),
+            (
+                vec!["--env", "POSTGRES_DB=app"],
+                "use --database instead of --env",
+            ),
+            (
+                vec!["--env", "PGDATA=/tmp/postgres"],
+                "PGDATA is managed by clickhousectl",
+            ),
+        ] {
+            let error = postgres_start_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(error.to_string().contains(expected), "{error}");
+        }
     }
 
     #[test]

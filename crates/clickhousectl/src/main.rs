@@ -122,6 +122,18 @@ async fn main() {
 }
 
 fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Result<(), clap::Error> {
+    if let Commands::Local(args) = &cli.command {
+        let Some(message) = args.postgres_start_validation_error() else {
+            return Ok(());
+        };
+        let start = cmd
+            .find_subcommand_mut("local")
+            .and_then(|local| local.find_subcommand_mut("postgres"))
+            .and_then(|postgres| postgres.find_subcommand_mut("start"))
+            .expect("local postgres start command must exist");
+        return Err(start.error(ErrorKind::ArgumentConflict, message));
+    }
+
     let Commands::Cloud(args) = &cli.command else {
         return Ok(());
     };
@@ -409,6 +421,43 @@ mod tests {
             assert!(message.contains(diagnostic), "{message}");
             assert!(
                 message.contains("clickhousectl cloud clickpipe create postgres"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_postgres_start_env_relationship_errors_are_clap_usage_errors() {
+        for (extra, diagnostic) in [
+            (
+                ["--env", "APP_MODE=dev", "--env", "APP_MODE=test"].as_slice(),
+                "APP_MODE",
+            ),
+            (
+                [
+                    "--password",
+                    "from-flag",
+                    "--env",
+                    "POSTGRES_PASSWORD=from-env",
+                ]
+                .as_slice(),
+                "both --password and --env",
+            ),
+        ] {
+            let args: Vec<&str> = ["clickhousectl", "local", "postgres", "start"]
+                .iter()
+                .chain(extra)
+                .copied()
+                .collect();
+            let error = parse_and_validate(&args)
+                .err()
+                .expect("invalid environment relationship should fail validation");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains(diagnostic), "{message}");
+            assert!(
+                message.contains("clickhousectl local postgres start"),
                 "{message}"
             );
         }
