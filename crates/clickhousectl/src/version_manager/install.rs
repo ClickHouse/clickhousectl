@@ -6,7 +6,13 @@ use crate::version_manager::master;
 use crate::version_manager::platform::{DownloadSource, Platform};
 use crate::version_manager::resolve::{ResolvedVersion, resolve, try_resolve_local};
 use crate::version_manager::spec::VersionSpec;
+use flate2::read::GzDecoder;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::path::{Component, Path};
+use tar::Archive;
 
 /// Install a version spec, trying installed versions first before any remote call.
 /// An installed match is a successful no-op regardless of whether the spec is
@@ -103,7 +109,7 @@ pub async fn install_resolved(
     if temp_dir.exists() {
         std::fs::remove_dir_all(&temp_dir)?;
     }
-    std::fs::create_dir_all(&temp_dir)?;
+    paths::ensure_dir(&temp_dir)?;
 
     let binary_path = temp_dir.join("clickhouse");
 
@@ -147,7 +153,7 @@ pub async fn install_resolved(
     if replaced_existing {
         std::fs::remove_dir_all(&version_dir)?;
     }
-    std::fs::create_dir_all(&version_dir)?;
+    paths::ensure_dir(&version_dir)?;
     std::fs::rename(&binary_path, version_dir.join("clickhouse"))?;
 
     // Replacing a build on disk never affects already-running servers (they keep
@@ -271,49 +277,184 @@ fn parse_version_output(output: &str) -> Result<String> {
 /// Handles both packages.clickhouse.com layout (usr/bin/clickhouse inside subdir)
 /// and GitHub releases layout (same structure).
 fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Path) -> Result<()> {
-    let status = std::process::Command::new("tar")
-        .args(["xzf", &tarball_path.to_string_lossy()])
-        .current_dir(dest_dir)
-        .status()
-        .map_err(|e| Error::Extract(format!("Failed to run tar: {}", e)))?;
-
-    if !status.success() {
-        let _ = std::fs::remove_file(tarball_path);
-        return Err(Error::Extract("tar extraction failed".to_string()));
-    }
-
+    let archive_file = File::open(tarball_path).map_err(|source| {
+        Error::Extract(format!(
+            "Failed to open archive '{}': {}",
+            tarball_path.display(),
+            source
+        ))
+    })?;
+    let decoder = GzDecoder::new(archive_file);
+    let mut archive = Archive::new(decoder);
     let final_binary = dest_dir.join("clickhouse");
+    let partial_binary = dest_dir.join(".clickhouse.extracting");
 
-    // Search extracted directories for the binary
-    for entry in std::fs::read_dir(dest_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let candidate = path.join("usr/bin/clickhouse");
-            if candidate.exists() {
-                std::fs::rename(&candidate, &final_binary)?;
-                let _ = std::fs::remove_file(tarball_path);
-                let _ = std::fs::remove_dir_all(&path);
-                return Ok(());
+    let extraction_result = (|| -> Result<()> {
+        let entries = archive.entries().map_err(|source| {
+            Error::Extract(format!(
+                "Failed to read archive '{}': {}",
+                tarball_path.display(),
+                source
+            ))
+        })?;
+        let mut found_binary = false;
+
+        for entry in entries {
+            let mut entry = entry.map_err(|source| {
+                Error::Extract(format!(
+                    "Failed to read an entry from archive '{}': {}",
+                    tarball_path.display(),
+                    source
+                ))
+            })?;
+            let entry_path = entry
+                .path()
+                .map_err(|source| {
+                    Error::Extract(format!(
+                        "Failed to read an entry path from archive '{}': {}",
+                        tarball_path.display(),
+                        source
+                    ))
+                })?
+                .into_owned();
+
+            validate_archive_entry_path(tarball_path, &entry_path)?;
+            if !is_clickhouse_binary_path(&entry_path) {
+                continue;
             }
+            if found_binary {
+                return Err(Error::Extract(format!(
+                    "Archive '{}' contains more than one ClickHouse binary",
+                    tarball_path.display()
+                )));
+            }
+            if !entry.header().entry_type().is_file() {
+                return Err(Error::Extract(format!(
+                    "Archive '{}' entry '{}' is not a regular file; symbolic and hard links are not followed",
+                    tarball_path.display(),
+                    entry_path.display()
+                )));
+            }
+
+            let mut output = File::create(&partial_binary).map_err(|source| {
+                Error::Extract(format!(
+                    "Failed to create extraction file '{}' for archive '{}': {}",
+                    partial_binary.display(),
+                    tarball_path.display(),
+                    source
+                ))
+            })?;
+            io::copy(&mut entry, &mut output)
+                .and_then(|_| output.flush())
+                .map_err(|source| {
+                    Error::Extract(format!(
+                        "Failed to extract '{}' from archive '{}' to '{}': {}",
+                        entry_path.display(),
+                        tarball_path.display(),
+                        partial_binary.display(),
+                        source
+                    ))
+                })?;
+            found_binary = true;
         }
+
+        if !found_binary {
+            return Err(Error::Extract(format!(
+                "Archive '{}' does not contain a ClickHouse binary at 'clickhouse' or '*/usr/bin/clickhouse'",
+                tarball_path.display()
+            )));
+        }
+
+        Ok(())
+    })();
+
+    if let Err(error) = extraction_result {
+        let _ = std::fs::remove_file(&partial_binary);
+        return Err(error);
     }
 
-    // Binary might already be at top level
-    if final_binary.exists() {
-        let _ = std::fs::remove_file(tarball_path);
+    if let Err(source) = std::fs::rename(&partial_binary, &final_binary) {
+        let _ = std::fs::remove_file(&partial_binary);
+        return Err(Error::Extract(format!(
+            "Failed to move extracted ClickHouse binary from '{}' to '{}': {}",
+            partial_binary.display(),
+            final_binary.display(),
+            source
+        )));
+    }
+    let _ = std::fs::remove_file(tarball_path);
+    Ok(())
+}
+
+fn validate_archive_entry_path(archive_path: &Path, entry_path: &Path) -> Result<()> {
+    let safe = !entry_path.as_os_str().is_empty()
+        && entry_path
+            .components()
+            .all(|component| matches!(component, Component::CurDir | Component::Normal(_)));
+    if safe {
         return Ok(());
     }
 
-    let _ = std::fs::remove_file(tarball_path);
-    Err(Error::Extract(
-        "Could not find clickhouse binary in extracted tarball".to_string(),
-    ))
+    Err(Error::Extract(format!(
+        "Archive '{}' contains unsafe entry path '{}'",
+        archive_path.display(),
+        entry_path.display()
+    )))
+}
+
+fn is_clickhouse_binary_path(path: &Path) -> bool {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    (components.len() == 1 && components[0] == OsStr::new("clickhouse"))
+        || (components.len() >= 3
+            && components[components.len() - 3] == OsStr::new("usr")
+            && components[components.len() - 2] == OsStr::new("bin")
+            && components[components.len() - 1] == OsStr::new("clickhouse"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::fs;
+    use tar::{Builder, EntryType, Header};
+
+    fn write_archive(archive_path: &Path, entry_path: &str, contents: &[u8]) {
+        let archive_file = File::create(archive_path).unwrap();
+        let encoder = GzEncoder::new(archive_file, Compression::default());
+        let mut archive = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_path(entry_path).unwrap();
+        header.set_entry_type(EntryType::Regular);
+        header.set_mode(0o755);
+        header.set_size(contents.len() as u64);
+        header.set_cksum();
+        archive.append(&header, contents).unwrap();
+        let encoder = archive.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
+
+    fn write_symlink_archive(archive_path: &Path, entry_path: &str) {
+        let archive_file = File::create(archive_path).unwrap();
+        let encoder = GzEncoder::new(archive_file, Compression::default());
+        let mut archive = Builder::new(encoder);
+        let mut header = Header::new_gnu();
+        header.set_path(entry_path).unwrap();
+        header.set_entry_type(EntryType::Symlink);
+        header.set_link_name("../../outside").unwrap();
+        header.set_mode(0o777);
+        header.set_size(0);
+        header.set_cksum();
+        archive.append(&header, io::empty()).unwrap();
+        let encoder = archive.into_inner().unwrap();
+        encoder.finish().unwrap();
+    }
 
     #[test]
     fn test_parse_version_output_client() {
@@ -342,5 +483,112 @@ mod tests {
     #[test]
     fn test_parse_version_output_empty() {
         assert!(parse_version_output("").is_err());
+    }
+
+    #[test]
+    fn extracts_package_binary_without_host_tar() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("clickhouse.tgz");
+        write_archive(
+            &archive_path,
+            "clickhouse-common-static/usr/bin/clickhouse",
+            b"clickhouse binary",
+        );
+
+        extract_tarball_auto(&archive_path, temp.path()).unwrap();
+
+        assert_eq!(
+            fs::read(temp.path().join("clickhouse")).unwrap(),
+            b"clickhouse binary"
+        );
+        assert!(!archive_path.exists());
+        assert!(!temp.path().join(".clickhouse.extracting").exists());
+    }
+
+    #[test]
+    fn malformed_archive_error_includes_archive_path_and_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("broken.tgz");
+        fs::write(&archive_path, "not a gzip archive").unwrap();
+
+        let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains(&archive_path.display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("invalid gzip header"), "{message}");
+        assert_ne!(message, "Extraction failed: tar extraction failed");
+        assert!(!temp.path().join("clickhouse").exists());
+    }
+
+    #[test]
+    fn missing_binary_error_names_archive_and_expected_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("missing.tgz");
+        write_archive(&archive_path, "package/README.md", b"read me");
+
+        let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Extraction failed: Archive '{}' does not contain a ClickHouse binary at 'clickhouse' or '*/usr/bin/clickhouse'",
+                archive_path.display()
+            )
+        );
+    }
+
+    #[test]
+    fn extraction_destination_error_includes_path_and_os_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("clickhouse.tgz");
+        write_archive(&archive_path, "package/usr/bin/clickhouse", b"binary");
+        let destination = temp.path().join("not-a-directory");
+        fs::write(&destination, "content").unwrap();
+
+        let error = extract_tarball_auto(&archive_path, &destination).unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains(
+                &destination
+                    .join(".clickhouse.extracting")
+                    .display()
+                    .to_string()
+            ),
+            "{message}"
+        );
+        assert!(message.contains("Not a directory"), "{message}");
+    }
+
+    #[test]
+    fn refuses_link_for_clickhouse_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("linked.tgz");
+        write_symlink_archive(&archive_path, "package/usr/bin/clickhouse");
+
+        let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("is not a regular file; symbolic and hard links are not followed")
+        );
+        assert!(!temp.path().join("clickhouse").exists());
+    }
+
+    #[test]
+    fn refuses_archive_path_traversal() {
+        let archive_path = Path::new("/tmp/clickhouse.tgz");
+        let error =
+            validate_archive_entry_path(archive_path, Path::new("../package/usr/bin/clickhouse"))
+                .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Extraction failed: Archive '/tmp/clickhouse.tgz' contains unsafe entry path '../package/usr/bin/clickhouse'"
+        );
     }
 }

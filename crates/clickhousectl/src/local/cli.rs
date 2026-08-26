@@ -2,6 +2,25 @@ use crate::version_manager::{self, VersionSpec};
 use clap::{Args, Subcommand};
 use std::str::FromStr;
 
+const INSTALL_AFTER_HELP: &str = "\
+EXAMPLES:
+  clickhousectl local install latest
+  clickhousectl local install 26.8
+  clickhousectl local install 26.8.1.1760
+  clickhousectl local install postgres@18
+
+CLICKHOUSE DOWNLOAD:
+  Installs each binary at ~/.clickhouse/versions/<version>/clickhouse.
+  Expect an approximately 150 MB download from builds.clickhouse.com, with fallback downloads from
+  packages.clickhouse.com on Linux or github.com on macOS.
+
+BOOTSTRAP ALTERNATIVE:
+  `clickhousectl local server start` needs no separate install: it installs `latest` when needed and
+  starts a server without setting a default version.
+
+CONTEXT FOR AGENTS:
+  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallVersionArg {
     ClickHouse(VersionSpec),
@@ -95,9 +114,7 @@ pub struct LocalArgs {
 #[derive(Subcommand)]
 pub enum LocalCommands {
     /// Install a ClickHouse version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.")]
+    #[command(after_help = INSTALL_AFTER_HELP)]
     Install {
         /// Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", exact like "25.12.9.61", or a Postgres image selector like "postgres@18".
         version: InstallVersionArg,
@@ -663,6 +680,47 @@ mod tests {
         assert_version_rejected(
             &["server", "start", "--version", "  postgres@18  "],
             "only supported by `local install`; `local server start --version` requires a ClickHouse version",
+        );
+    }
+
+    #[test]
+    fn install_help_is_complete_and_stable() {
+        let error = Cli::try_parse_from(["clickhousectl", "local", "install", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        assert_eq!(
+            error.to_string(),
+            r#"Install a ClickHouse version
+
+Usage: clickhousectl local install [OPTIONS] <VERSION>
+
+Arguments:
+  <VERSION>  Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", exact like "25.12.9.61", or a Postgres image selector like "postgres@18"
+
+Options:
+      --force  Force re-install even if version is already installed
+      --json   Output as JSON
+  -h, --help   Print help
+
+EXAMPLES:
+  clickhousectl local install latest
+  clickhousectl local install 26.8
+  clickhousectl local install 26.8.1.1760
+  clickhousectl local install postgres@18
+
+CLICKHOUSE DOWNLOAD:
+  Installs each binary at ~/.clickhouse/versions/<version>/clickhouse.
+  Expect an approximately 150 MB download from builds.clickhouse.com, with fallback downloads from
+  packages.clickhouse.com on Linux or github.com on macOS.
+
+BOOTSTRAP ALTERNATIVE:
+  `clickhousectl local server start` needs no separate install: it installs `latest` when needed and
+  starts a server without setting a default version.
+
+CONTEXT FOR AGENTS:
+  `clickhousectl local use <version>` will auto-install if the version is missing and set as default.
+"#
         );
     }
 

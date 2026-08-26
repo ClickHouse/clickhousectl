@@ -33,8 +33,12 @@ pub enum Error {
     #[error("Unsupported platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
 
-    #[error("Failed to create directory: {0}")]
-    CreateDir(PathBuf),
+    #[error("Failed to create directory '{}': {source}", path.display())]
+    CreateDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("Download failed: {0}")]
     Download(String),
@@ -179,5 +183,21 @@ mod tests {
         assert_eq!(Error::Cloud("boom".into()).exit_code(), 1);
         assert_eq!(Error::Cancelled.exit_code(), 3);
         assert_eq!(Error::AuthRequired("nope".into()).exit_code(), 4);
+    }
+
+    #[test]
+    fn create_dir_error_includes_path_and_permission_cause() {
+        let error = Error::CreateDir {
+            path: PathBuf::from("/read-only/clickhouse/versions"),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "permission denied by test",
+            ),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Failed to create directory '/read-only/clickhouse/versions': permission denied by test"
+        );
     }
 }
