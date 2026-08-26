@@ -786,51 +786,10 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
         }
         ServerCommands::Stop {
             name,
+            name_flag,
             global,
             project,
-        } => {
-            if global {
-                stop_server_global(&name, project.as_deref(), json)
-            } else {
-                server::validate_server_name(&name)?;
-
-                // Recover orphaned servers so we can stop processes
-                // that lost their metadata files.
-                let metadata_lock = server::lock_metadata()?;
-                server::recover_current_project_servers_locked(&metadata_lock)?;
-
-                match classify_stop(
-                    server::is_server_running_locked(&name, &metadata_lock)?,
-                    server::server_data_dir(&name).exists(),
-                ) {
-                    StopOutcome::Stop => {
-                        if !json {
-                            println!("Stopping server '{}'...", name);
-                        }
-                        server::kill_server_locked(&name, &metadata_lock)?;
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: false,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    StopOutcome::AlreadyStopped => {
-                        // Server exists on disk but isn't running. `stop` is
-                        // idempotent: this is the desired end state, so succeed
-                        // instead of erroring.
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: true,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    // No such server in this project — surface the typo.
-                    StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
-                }
-            }
-        }
+        } => stop_server(name.or(name_flag), global, project, json),
         ServerCommands::StopAll { global } => {
             if global {
                 stop_all_servers_global(json)
@@ -845,30 +804,83 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             password,
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
-        ServerCommands::Remove { name } => {
-            server::validate_server_name(&name)?;
+        ServerCommands::Remove { name, name_flag } => remove_server(name.or(name_flag), json),
+    }
+}
 
-            // Recover orphaned servers so we correctly detect a running
-            // process even when its metadata file is missing.
-            let metadata_lock = server::lock_metadata()?;
-            server::recover_current_project_servers_locked(&metadata_lock)?;
+fn stop_server(
+    name: Option<String>,
+    global: bool,
+    project: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let name = name.unwrap_or_else(|| "default".to_string());
+    if global {
+        return stop_server_global(&name, project.as_deref(), json);
+    }
 
-            if server::is_server_running_locked(&name, &metadata_lock)? {
-                return Err(Error::ServerRunningCannotRemove(name));
+    server::validate_server_name(&name)?;
+
+    // Recover orphaned servers so we can stop processes
+    // that lost their metadata files.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+
+    match classify_stop(
+        server::is_server_running_locked(&name, &metadata_lock)?,
+        server::server_data_dir(&name).exists(),
+    ) {
+        StopOutcome::Stop => {
+            if !json {
+                println!("Stopping server '{}'...", name);
             }
-            let data_dir = server::server_data_dir(&name);
-            if !data_dir.exists() {
-                return Err(Error::ServerNotFound(name));
-            }
-            // Remove the whole server directory (parent of data/)
-            let server_dir = data_dir.parent().unwrap();
-            std::fs::remove_dir_all(server_dir)?;
-            server::try_remove_server_info_locked(&name, &metadata_lock)?;
-            let out = output::ServerRemoveOutput { name };
+            server::kill_server_locked(&name, &metadata_lock)?;
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: false,
+            };
             output::print_output(&out, json);
             Ok(())
         }
+        StopOutcome::AlreadyStopped => {
+            // Server exists on disk but isn't running. `stop` is
+            // idempotent: this is the desired end state, so succeed
+            // instead of erroring.
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: true,
+            };
+            output::print_output(&out, json);
+            Ok(())
+        }
+        // No such server in this project — surface the typo.
+        StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
     }
+}
+
+fn remove_server(name: Option<String>, json: bool) -> Result<()> {
+    let name = name.unwrap_or_else(|| "default".to_string());
+    server::validate_server_name(&name)?;
+
+    // Recover orphaned servers so we correctly detect a running
+    // process even when its metadata file is missing.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+
+    if server::is_server_running_locked(&name, &metadata_lock)? {
+        return Err(Error::ServerRunningCannotRemove(name));
+    }
+    let data_dir = server::server_data_dir(&name);
+    if !data_dir.exists() {
+        return Err(Error::ServerNotFound(name));
+    }
+    // Remove the whole server directory (parent of data/)
+    let server_dir = data_dir.parent().unwrap();
+    std::fs::remove_dir_all(server_dir)?;
+    server::try_remove_server_info_locked(&name, &metadata_lock)?;
+    let out = output::ServerRemoveOutput { name };
+    output::print_output(&out, json);
+    Ok(())
 }
 
 /// What a project-scoped `server stop <name>` should do, given whether the

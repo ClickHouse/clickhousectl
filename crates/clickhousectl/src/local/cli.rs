@@ -415,6 +415,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Stops a ClickHouse server. The name defaults to \"default\"; use `clickhousectl local server list`
   to find other server names.
+  Pass the name positionally (e.g. `server stop dev`). The compatibility form `--name dev`
+  remains accepted, but cannot be combined with a positional name.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
@@ -423,8 +425,12 @@ CONTEXT FOR AGENTS:
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop (default: "default")
-        #[arg(default_value = "default")]
-        name: String,
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        name: Option<String>,
+
+        /// Compatibility form for the server name; prefer positional NAME
+        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        name_flag: Option<String>,
 
         /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
         #[arg(long)]
@@ -455,12 +461,18 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
+  Pass the name positionally (e.g. `server remove dev`). The compatibility form `--name dev`
+  remains accepted, but cannot be combined with a positional name.
   The name defaults to \"default\".
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (default: "default")
-        #[arg(default_value = "default")]
-        name: String,
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        name: Option<String>,
+
+        /// Compatibility form for the server name; prefer positional NAME
+        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        name_flag: Option<String>,
     },
 
     /// Write ClickHouse connection env vars to a .env file
@@ -660,14 +672,18 @@ mod tests {
     use crate::version_manager::list::Channel;
     use clap::Parser;
 
-    fn local_command(args: &[&str]) -> LocalCommands {
+    fn local_args(args: &[&str]) -> LocalArgs {
         let mut argv = vec!["clickhousectl", "local"];
         argv.extend_from_slice(args);
         let cli = Cli::try_parse_from(argv).unwrap();
         let Commands::Local(local) = cli.command else {
             panic!("expected local command");
         };
-        local.command
+        local
+    }
+
+    fn local_command(args: &[&str]) -> LocalCommands {
+        local_args(args).command
     }
 
     fn assert_version_rejected(args: &[&str], expected: &str) {
@@ -1419,25 +1435,127 @@ mod tests {
     }
 
     #[test]
-    fn server_stop_name_defaults_to_default() {
+    fn server_stop_omitted_name_remains_distinguishable() {
         let LocalCommands::Server {
-            command: ServerCommands::Stop { name, .. },
+            command: ServerCommands::Stop {
+                name, name_flag, ..
+            },
         } = local_command(&["server", "stop"])
         else {
             panic!("expected server stop");
         };
-        assert_eq!(name, "default");
+        assert_eq!(name, None);
+        assert_eq!(name_flag, None);
     }
 
     #[test]
-    fn server_remove_name_defaults_to_default() {
+    fn server_remove_omitted_name_remains_distinguishable() {
         let LocalCommands::Server {
-            command: ServerCommands::Remove { name },
+            command: ServerCommands::Remove { name, name_flag },
         } = local_command(&["server", "remove"])
         else {
             panic!("expected server remove");
         };
-        assert_eq!(name, "default");
+        assert_eq!(name, None);
+        assert_eq!(name_flag, None);
+    }
+
+    #[test]
+    fn server_stop_name_forms_allow_trailing_options() {
+        for (command, expected_name, expected_name_flag) in [
+            (
+                &[
+                    "server",
+                    "stop",
+                    "analytics",
+                    "--global",
+                    "--project",
+                    "/tmp/project",
+                    "--json",
+                ][..],
+                Some("analytics"),
+                None,
+            ),
+            (
+                &[
+                    "server",
+                    "stop",
+                    "--name",
+                    "analytics",
+                    "--global",
+                    "--project",
+                    "/tmp/project",
+                    "--json",
+                ][..],
+                None,
+                Some("analytics"),
+            ),
+        ] {
+            let args = local_args(command);
+            assert!(args.json);
+            let LocalCommands::Server {
+                command:
+                    ServerCommands::Stop {
+                        name,
+                        name_flag,
+                        global,
+                        project,
+                    },
+            } = args.command
+            else {
+                panic!("expected server stop");
+            };
+            assert_eq!(name.as_deref(), expected_name);
+            assert_eq!(name_flag.as_deref(), expected_name_flag);
+            assert!(global);
+            assert_eq!(project.as_deref(), Some("/tmp/project"));
+        }
+    }
+
+    #[test]
+    fn server_remove_name_forms_allow_trailing_options() {
+        for (command, expected_name, expected_name_flag) in [
+            (
+                &["server", "remove", "analytics", "--json"][..],
+                Some("analytics"),
+                None,
+            ),
+            (
+                &["server", "remove", "--name", "analytics", "--json"][..],
+                None,
+                Some("analytics"),
+            ),
+        ] {
+            let args = local_args(command);
+            assert!(args.json);
+            let LocalCommands::Server {
+                command: ServerCommands::Remove { name, name_flag },
+            } = args.command
+            else {
+                panic!("expected server remove");
+            };
+            assert_eq!(name.as_deref(), expected_name);
+            assert_eq!(name_flag.as_deref(), expected_name_flag);
+        }
+    }
+
+    #[test]
+    fn server_teardown_name_forms_conflict() {
+        for command in ["stop", "remove"] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "local",
+                "server",
+                command,
+                "positional",
+                "--name",
+                "flagged",
+            ])
+            .err()
+            .expect("name forms should conflict");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(error.to_string().contains("cannot be used with"), "{error}");
+        }
     }
 
     #[test]
@@ -1578,20 +1696,24 @@ mod tests {
     #[test]
     fn teardown_commands_preserve_explicit_names() {
         let LocalCommands::Server {
-            command: ServerCommands::Stop { name, .. },
+            command: ServerCommands::Stop {
+                name, name_flag, ..
+            },
         } = local_command(&["server", "stop", "analytics"])
         else {
             panic!("expected server stop");
         };
-        assert_eq!(name, "analytics");
+        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(name_flag, None);
 
         let LocalCommands::Server {
-            command: ServerCommands::Remove { name },
+            command: ServerCommands::Remove { name, name_flag },
         } = local_command(&["server", "remove", "analytics"])
         else {
             panic!("expected server remove");
         };
-        assert_eq!(name, "analytics");
+        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(name_flag, None);
 
         let LocalCommands::Postgres {
             command: PostgresCommands::Stop { name, .. },
