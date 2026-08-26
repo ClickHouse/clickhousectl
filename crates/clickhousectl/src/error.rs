@@ -72,6 +72,18 @@ pub enum Error {
     #[error("Extraction failed: {0}")]
     Extract(String),
 
+    #[error(
+        "Failed to extract archive '{}' to '{}': {source}",
+        archive.display(),
+        destination.display()
+    )]
+    ExtractArchive {
+        archive: PathBuf,
+        destination: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("Server '{0}' is not running")]
     ServerNotRunning(String),
 

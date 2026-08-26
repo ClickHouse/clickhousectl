@@ -277,45 +277,29 @@ fn parse_version_output(output: &str) -> Result<String> {
 /// Handles both packages.clickhouse.com layout (usr/bin/clickhouse inside subdir)
 /// and GitHub releases layout (same structure).
 fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Path) -> Result<()> {
-    let archive_file = File::open(tarball_path).map_err(|source| {
-        Error::Extract(format!(
-            "Failed to open archive '{}': {}",
-            tarball_path.display(),
-            source
-        ))
-    })?;
-    let decoder = GzDecoder::new(archive_file);
-    let mut archive = Archive::new(decoder);
     let final_binary = dest_dir.join("clickhouse");
     let partial_binary = dest_dir.join(".clickhouse.extracting");
+    let extraction_error = |destination: &Path, source| Error::ExtractArchive {
+        archive: tarball_path.to_path_buf(),
+        destination: destination.to_path_buf(),
+        source,
+    };
+    let archive_file =
+        File::open(tarball_path).map_err(|source| extraction_error(&final_binary, source))?;
+    let decoder = GzDecoder::new(archive_file);
+    let mut archive = Archive::new(decoder);
 
     let extraction_result = (|| -> Result<()> {
-        let entries = archive.entries().map_err(|source| {
-            Error::Extract(format!(
-                "Failed to read archive '{}': {}",
-                tarball_path.display(),
-                source
-            ))
-        })?;
+        let entries = archive
+            .entries()
+            .map_err(|source| extraction_error(&final_binary, source))?;
         let mut found_binary = false;
 
         for entry in entries {
-            let mut entry = entry.map_err(|source| {
-                Error::Extract(format!(
-                    "Failed to read an entry from archive '{}': {}",
-                    tarball_path.display(),
-                    source
-                ))
-            })?;
+            let mut entry = entry.map_err(|source| extraction_error(&final_binary, source))?;
             let entry_path = entry
                 .path()
-                .map_err(|source| {
-                    Error::Extract(format!(
-                        "Failed to read an entry path from archive '{}': {}",
-                        tarball_path.display(),
-                        source
-                    ))
-                })?
+                .map_err(|source| extraction_error(&final_binary, source))?
                 .into_owned();
 
             validate_archive_entry_path(tarball_path, &entry_path)?;
@@ -336,25 +320,11 @@ fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Pa
                 )));
             }
 
-            let mut output = File::create(&partial_binary).map_err(|source| {
-                Error::Extract(format!(
-                    "Failed to create extraction file '{}' for archive '{}': {}",
-                    partial_binary.display(),
-                    tarball_path.display(),
-                    source
-                ))
-            })?;
+            let mut output = File::create(&partial_binary)
+                .map_err(|source| extraction_error(&partial_binary, source))?;
             io::copy(&mut entry, &mut output)
                 .and_then(|_| output.flush())
-                .map_err(|source| {
-                    Error::Extract(format!(
-                        "Failed to extract '{}' from archive '{}' to '{}': {}",
-                        entry_path.display(),
-                        tarball_path.display(),
-                        partial_binary.display(),
-                        source
-                    ))
-                })?;
+                .map_err(|source| extraction_error(&partial_binary, source))?;
             found_binary = true;
         }
 
@@ -364,6 +334,12 @@ fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Pa
                 tarball_path.display()
             )));
         }
+
+        // tar stops at its end-of-archive blocks. Read the gzip stream itself
+        // to EOF so GzDecoder validates the trailer CRC and uncompressed size.
+        let mut decoder = archive.into_inner();
+        io::copy(&mut decoder, &mut io::sink())
+            .map_err(|source| extraction_error(&final_binary, source))?;
 
         Ok(())
     })();
@@ -375,12 +351,7 @@ fn extract_tarball_auto(tarball_path: &std::path::Path, dest_dir: &std::path::Pa
 
     if let Err(source) = std::fs::rename(&partial_binary, &final_binary) {
         let _ = std::fs::remove_file(&partial_binary);
-        return Err(Error::Extract(format!(
-            "Failed to move extracted ClickHouse binary from '{}' to '{}': {}",
-            partial_binary.display(),
-            final_binary.display(),
-            source
-        )));
+        return Err(extraction_error(&final_binary, source));
     }
     let _ = std::fs::remove_file(tarball_path);
     Ok(())
@@ -456,6 +427,19 @@ mod tests {
         encoder.finish().unwrap();
     }
 
+    fn assert_invalid_gzip_is_not_committed(mutate: impl FnOnce(&Path)) {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("clickhouse.tgz");
+        write_archive(&archive_path, "clickhouse", b"clickhouse binary");
+        mutate(&archive_path);
+
+        let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
+
+        assert!(matches!(error, Error::ExtractArchive { .. }), "{error}");
+        assert!(!temp.path().join("clickhouse").exists());
+        assert!(!temp.path().join(".clickhouse.extracting").exists());
+    }
+
     #[test]
     fn test_parse_version_output_client() {
         let output = "ClickHouse client version 25.12.9.61 (official build).";
@@ -506,20 +490,46 @@ mod tests {
     }
 
     #[test]
-    fn malformed_archive_error_includes_archive_path_and_cause() {
+    fn corrupted_gzip_crc_is_not_committed() {
+        assert_invalid_gzip_is_not_committed(|archive_path| {
+            let mut bytes = fs::read(archive_path).unwrap();
+            let crc_offset = bytes.len() - 8;
+            bytes[crc_offset] ^= 0xff;
+            fs::write(archive_path, bytes).unwrap();
+        });
+    }
+
+    #[test]
+    fn truncated_gzip_trailer_is_not_committed() {
+        assert_invalid_gzip_is_not_committed(|archive_path| {
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .open(archive_path)
+                .unwrap();
+            file.set_len(file.metadata().unwrap().len() - 4).unwrap();
+        });
+    }
+
+    #[test]
+    fn malformed_archive_error_preserves_archive_destination_and_cause() {
         let temp = tempfile::tempdir().unwrap();
         let archive_path = temp.path().join("broken.tgz");
         fs::write(&archive_path, "not a gzip archive").unwrap();
+        let destination = temp.path().join("clickhouse");
 
         let error = extract_tarball_auto(&archive_path, temp.path()).unwrap_err();
-        let message = error.to_string();
+        let Error::ExtractArchive {
+            archive,
+            destination: error_destination,
+            source,
+        } = &error
+        else {
+            panic!("expected contextual archive error: {error}");
+        };
 
-        assert!(
-            message.contains(&archive_path.display().to_string()),
-            "{message}"
-        );
-        assert!(message.contains("invalid gzip header"), "{message}");
-        assert_ne!(message, "Extraction failed: tar extraction failed");
+        assert_eq!(archive, &archive_path);
+        assert_eq!(error_destination, &destination);
+        assert!(error.to_string().contains(&source.to_string()));
         assert!(!temp.path().join("clickhouse").exists());
     }
 
