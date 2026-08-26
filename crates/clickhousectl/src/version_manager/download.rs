@@ -1,7 +1,7 @@
 use crate::error::{Error, NetworkFailure, NetworkStage, Result};
 use crate::version_manager::network;
 use crate::version_manager::platform::{DownloadSource, Platform};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::StatusCode;
@@ -137,7 +137,9 @@ async fn download_once(
             .and_then(|value| parse_retry_after(value, Utc::now()));
         return Err(DownloadAttemptError::Network(DownloadAttemptFailure {
             failure: network::failure_from_status(NetworkStage::DownloadHeaders, url, status),
-            retryable: status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+            retryable: status == StatusCode::REQUEST_TIMEOUT
+                || status == StatusCode::TOO_MANY_REQUESTS
+                || status.is_server_error(),
             retry_after,
         }));
     }
@@ -195,8 +197,15 @@ fn parse_retry_after(value: &str, now: DateTime<Utc>) -> Option<Duration> {
         return Some(Duration::from_secs(seconds));
     }
     let deadline = DateTime::parse_from_rfc2822(value)
-        .ok()?
-        .with_timezone(&Utc);
+        .map(|date| date.with_timezone(&Utc))
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%A, %d-%b-%y %H:%M:%S GMT")
+                .map(|date| date.and_utc())
+        })
+        .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%a %b %e %H:%M:%S %Y").map(|date| date.and_utc())
+        })
+        .ok()?;
     (deadline - now).to_std().ok()
 }
 
@@ -254,15 +263,36 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_supports_seconds_and_http_dates() {
+    fn retry_after_supports_seconds_and_all_http_date_forms() {
         let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:28:00 GMT")
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(parse_retry_after("7", now), Some(Duration::from_secs(7)));
-        assert_eq!(
-            parse_retry_after("Wed, 21 Oct 2015 07:28:05 GMT", now),
-            Some(Duration::from_secs(5))
-        );
+        for value in [
+            "Wed, 21 Oct 2015 07:28:05 GMT",
+            "Wednesday, 21-Oct-15 07:28:05 GMT",
+            "Wed Oct 21 07:28:05 2015",
+        ] {
+            assert_eq!(
+                parse_retry_after(value, now),
+                Some(Duration::from_secs(5)),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn expired_retry_after_dates_are_ignored() {
+        let now = DateTime::parse_from_rfc2822("Wed, 21 Oct 2015 07:28:00 GMT")
+            .unwrap()
+            .with_timezone(&Utc);
+        for value in [
+            "Wed, 21 Oct 2015 07:27:59 GMT",
+            "Wednesday, 21-Oct-15 07:27:59 GMT",
+            "Wed Oct 21 07:27:59 2015",
+        ] {
+            assert_eq!(parse_retry_after(value, now), None, "{value}");
+        }
     }
 
     #[tokio::test]
@@ -313,6 +343,35 @@ mod tests {
         };
         assert_eq!(failure.stage, NetworkStage::DownloadHeaders);
         assert_eq!(failure.category, NetworkCategory::ServerError);
+        assert_eq!(failure.attempts, Some(3));
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_timeout_responses_stop_after_three_attempts() {
+        let (url, requests, server) = scripted_status_server(vec![
+            ("408 Request Timeout", None),
+            ("408 Request Timeout", None),
+            ("408 Request Timeout", None),
+        ])
+        .await;
+        let temp = tempfile::tempdir().unwrap();
+
+        let error = download_url_with_policy(
+            &url,
+            &temp.path().join("artifact"),
+            test_request_policy(),
+            test_retry_policy(3),
+        )
+        .await
+        .unwrap_err();
+
+        let Error::Network(failure) = error else {
+            panic!("expected network failure");
+        };
+        assert_eq!(failure.stage, NetworkStage::DownloadHeaders);
+        assert_eq!(failure.category, NetworkCategory::Timeout);
         assert_eq!(failure.attempts, Some(3));
         assert_eq!(requests.load(Ordering::SeqCst), 3);
         server.await.unwrap();

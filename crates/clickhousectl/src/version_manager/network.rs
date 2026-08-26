@@ -130,6 +130,7 @@ pub(crate) fn failure_from_status(
     let category = match status {
         StatusCode::FORBIDDEN => NetworkCategory::Forbidden,
         StatusCode::NOT_FOUND => NetworkCategory::NotFound,
+        StatusCode::REQUEST_TIMEOUT => NetworkCategory::Timeout,
         StatusCode::TOO_MANY_REQUESTS => NetworkCategory::RateLimited,
         status if status.is_client_error() => NetworkCategory::ClientError,
         status if status.is_server_error() => NetworkCategory::ServerError,
@@ -171,6 +172,7 @@ mod tests {
         let cases = [
             (StatusCode::FORBIDDEN, NetworkCategory::Forbidden),
             (StatusCode::NOT_FOUND, NetworkCategory::NotFound),
+            (StatusCode::REQUEST_TIMEOUT, NetworkCategory::Timeout),
             (StatusCode::TOO_MANY_REQUESTS, NetworkCategory::RateLimited),
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

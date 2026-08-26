@@ -134,7 +134,9 @@ async fn resolve_major(major: u32, platform: &Platform) -> Result<ResolvedVersio
     )
     .await;
 
-    if let Some(minor) = probe_summary.highest_available {
+    // A failed candidate leaves the highest minor unknown, so do not silently
+    // install a confirmed lower build from a partial probe set.
+    if let Some(minor) = probe_summary.highest_available_if_complete() {
         let version_path = format!("{}.{}", major, minor);
         return Ok(ResolvedVersion {
             source: DownloadSource::Builds {
@@ -206,6 +208,16 @@ fn preserve_probe_failure<T>(probe: Option<NetworkFailure>, fallback: Result<T>)
 struct ProbeSummary {
     highest_available: Option<u32>,
     failure: Option<NetworkFailure>,
+}
+
+impl ProbeSummary {
+    fn highest_available_if_complete(&self) -> Option<u32> {
+        if self.failure.is_none() {
+            self.highest_available
+        } else {
+            None
+        }
+    }
 }
 
 async fn probe_candidates(
@@ -634,6 +646,20 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(250));
         assert_eq!(summary.highest_available, None);
         assert_eq!(summary.failure.unwrap().category, NetworkCategory::Timeout);
+    }
+
+    #[test]
+    fn major_resolution_discards_partial_probe_results() {
+        let summary = ProbeSummary {
+            highest_available: Some(11),
+            failure: Some(NetworkFailure::new(
+                NetworkStage::BuildProbe,
+                "https://builds.example.test/25.12/clickhouse",
+                NetworkCategory::ServerError,
+            )),
+        };
+
+        assert_eq!(summary.highest_available_if_complete(), None);
     }
 
     #[test]
