@@ -8,6 +8,7 @@ on:
       - "crates/clickhouse-openapi-analyzer/**"
       - "scripts/check-openapi-drift.py"
       - "scripts/classify-cloud-integration.py"
+      - "scripts/test-postgres-integration.sh"
       - "scripts/tests/**"
       - "Cargo.toml"
       - "Cargo.lock"
