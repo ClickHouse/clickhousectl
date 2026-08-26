@@ -782,6 +782,7 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
 

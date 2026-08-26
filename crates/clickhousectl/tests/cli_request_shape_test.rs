@@ -2460,6 +2460,33 @@ async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint(
 }
 
 #[tokio::test]
+async fn postgres_hostname_mismatch_error_preserves_api_detail_and_adds_tls_host_hint() {
+    let mock = MockServer::start().await;
+    let api_error = "BAD_REQUEST: failed to establish connection: tls: failed to verify \
+                     certificate: x509: certificate is valid for postgres.internal.example.com, \
+                     not 10.0.0.8";
+    Mock::given(method("POST"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes$",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": api_error,
+        })))
+        .mount(&mock)
+        .await;
+
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(api_error), "{stderr}");
+    assert!(stderr.contains("--tls-host <HOSTNAME>"), "{stderr}");
+    assert!(stderr.contains("does not match `--host`"), "{stderr}");
+}
+
+#[tokio::test]
 async fn postgres_replication_mode_snapshot_serializes() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();

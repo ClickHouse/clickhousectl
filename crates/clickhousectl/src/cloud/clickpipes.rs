@@ -1980,6 +1980,8 @@ fn build_postgres_request(
 }
 
 fn postgres_tls_error_hint(message: &str) -> Option<&'static str> {
+    let message = message.to_ascii_lowercase();
+
     if message.contains("x509: certificate signed by unknown authority") {
         return Some(
             "The source certificate chain is not publicly trusted. For a private or \
@@ -1990,7 +1992,7 @@ fn postgres_tls_error_hint(message: &str) -> Option<&'static str> {
 
     if (message.contains("x509: certificate is valid for ") && message.contains(", not "))
         || (message.contains("x509: cannot validate certificate for ")
-            && message.contains("because it doesn't contain any IP SANs"))
+            && message.contains("because it doesn't contain any ip sans"))
     {
         return Some(
             "The source certificate does not match `--host`. Pass the certificate's \
@@ -3629,6 +3631,12 @@ mod tests {
                 "missing `{expected}`:\n{postgres}"
             );
         }
+
+        assert_eq!(
+            postgres.matches("--publication-name clickpipes").count(),
+            2,
+            "both PostgreSQL examples must use the publication created in the prerequisites"
+        );
     }
 
     #[test]
@@ -3644,6 +3652,11 @@ mod tests {
         )
         .expect("hostname mismatch hint");
         assert!(hostname.contains("--tls-host <HOSTNAME>"));
+        let ip_sans = postgres_tls_error_hint(
+            "x509: cannot validate certificate for 10.0.0.8 because it doesn't contain any IP Sans",
+        )
+        .expect("IP SAN hostname mismatch hint");
+        assert!(ip_sans.contains("--tls-host <HOSTNAME>"));
         assert!(
             postgres_tls_error_hint(
                 "BAD_REQUEST: failed to establish connection: connection refused"
