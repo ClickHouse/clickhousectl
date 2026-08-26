@@ -351,7 +351,7 @@ CONTEXT FOR AGENTS:
   Additional clickhouse-server arguments must follow `--`.
   Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop [name]` to stop one.")]
     Start {
-        /// Server name (default: \"default\", or random if default is already running)
+        /// Server name (default: "default", or random if default is already running)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
 
@@ -1309,6 +1309,20 @@ mod tests {
         assert_eq!(config_file, None);
         assert!(!no_wait);
         assert!(args.is_empty());
+    }
+
+    #[test]
+    fn server_start_help_renders_default_name_without_escaped_quotes() {
+        let error = Cli::try_parse_from(["clickhousectl", "local", "server", "start", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        assert!(help.lines().any(|line| {
+            line == r#"  [NAME]               Server name (default: "default", or random if default is already running)"#
+        }), "{help}");
+        assert!(!help.contains(r#"\"default\""#), "{help}");
     }
 
     #[test]
