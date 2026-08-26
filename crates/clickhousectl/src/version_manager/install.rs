@@ -498,8 +498,12 @@ mod tests {
     }
 
     fn signal(path: &Path, value: &str) {
-        fs::write(path, value).unwrap();
-        File::open(path).unwrap().sync_all().unwrap();
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = File::create(&temporary).unwrap();
+        file.write_all(value.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        fs::rename(temporary, path).unwrap();
     }
 
     fn wait_for_file(path: &Path) {
@@ -649,6 +653,7 @@ mod tests {
         let first_locked = temp.path().join("first-locked");
         let release_first = temp.path().join("release-first");
         let second_staged = temp.path().join("second-staged");
+        let release_second = temp.path().join("release-second");
 
         let mut first = helper_command(&versions_dir, "26.5.1.1", "master-a", "etag-a");
         first
@@ -659,7 +664,9 @@ mod tests {
         wait_for_file(&first_locked);
 
         let mut second = helper_command(&versions_dir, "26.5.1.1", "master-b", "etag-b");
-        second.env("CHCTL_ATOMIC_STAGED", &second_staged);
+        second
+            .env("CHCTL_ATOMIC_STAGED", &second_staged)
+            .env("CHCTL_ATOMIC_BEFORE_LOCK_RELEASE", &release_second);
         let second = second.spawn().unwrap();
         wait_for_file(&second_staged);
         let first_stage = PathBuf::from(fs::read_to_string(&first_staged).unwrap());
@@ -668,6 +675,7 @@ mod tests {
         assert!(first_stage.exists());
         assert!(second_stage.exists());
 
+        signal(&release_second, "release");
         signal(&release_first, "release");
         assert_child_success(first);
         assert_child_success(second);
