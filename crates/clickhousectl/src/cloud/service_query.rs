@@ -333,8 +333,10 @@ async fn fail_after_repair_binding<T>(
     {
         repair_error.message = format!(
             "{repair_error}; additionally, failed to restore the original query endpoint \
-             bindings: {rollback_error}"
+             bindings: {rollback_error}. Newly created API key {new_api_key_id} was retained \
+             because the endpoint may still reference it"
         );
+        return Err(repair_error);
     }
     if let Err(cleanup_error) = client
         .delete_api_key_if_exists(org_id, new_api_key_id)
@@ -348,16 +350,34 @@ async fn fail_after_repair_binding<T>(
     Err(repair_error)
 }
 
+fn repair_state_changed(expected: &ServiceQueryKey, current: &ServiceQueryKey) -> bool {
+    expected.organization_id != current.organization_id
+        || expected.api_key_id != current.api_key_id
+        || expected.key_id != current.key_id
+        || expected.key_secret != current.key_secret
+        || expected.endpoint_id != current.endpoint_id
+        || expected.pending_cleanup_api_key_ids != current.pending_cleanup_api_key_ids
+}
+
 pub async fn repair_service_query_key(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
 ) -> CloudResult<QueryKeyRepairResult> {
-    let provisioning_lock = credentials::lock_query_provisioning().await?;
-    let mut old_key = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
+    // Snapshot before waiting so a concurrent repair winner can be reused
+    // rather than immediately rotated again after the lock is acquired.
+    let expected_stale = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
         CloudError::new(format!(
             "no stored query key exists for service {service_id}; run a query normally before \
              requesting repair"
+        ))
+    })?;
+    require_owned_query_key(&expected_stale, org_id, service_id)?;
+
+    let provisioning_lock = credentials::lock_query_provisioning().await?;
+    let mut old_key = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
+        CloudError::new(format!(
+            "the stored query key for service {service_id} was removed while waiting to repair it"
         ))
     })?;
     let (old_api_key_id, expected_endpoint_id) =
@@ -386,6 +406,17 @@ pub async fn repair_service_query_key(
             service_id: service_id.to_string(),
             organization_id: org_id.to_string(),
             replaced_api_key_id: cleaned_ids.last().cloned(),
+            api_key_id: old_api_key_id,
+            endpoint_id: expected_endpoint_id,
+        });
+    }
+
+    if repair_state_changed(&expected_stale, &old_key) {
+        return Ok(QueryKeyRepairResult {
+            status: "already_repaired",
+            service_id: service_id.to_string(),
+            organization_id: org_id.to_string(),
+            replaced_api_key_id: None,
             api_key_id: old_api_key_id,
             endpoint_id: expected_endpoint_id,
         });
@@ -869,5 +900,26 @@ mod tests {
         };
         let error = require_owned_query_key(&key, "org-1", "service-1").unwrap_err();
         assert!(error.to_string().contains("legacy or non-owned"));
+    }
+
+    #[test]
+    fn repair_detects_a_concurrent_winner() {
+        let expected = ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: Some("stale-key".into()),
+            key_id: "stale-id".into(),
+            key_secret: "stale-secret".into(),
+            endpoint_id: Some("endpoint-1".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: Utc::now(),
+        };
+        let mut winner = expected.clone();
+        winner.api_key_id = Some("winner-key".into());
+        winner.key_id = "winner-id".into();
+        winner.key_secret = "winner-secret".into();
+
+        assert!(repair_state_changed(&expected, &winner));
+        assert!(!repair_state_changed(&winner, &winner));
     }
 }

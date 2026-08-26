@@ -3607,6 +3607,67 @@ async fn failed_repair_restores_bindings_deletes_new_key_and_preserves_records()
 }
 
 #[tokio::test]
+async fn failed_repair_retains_new_key_when_endpoint_rollback_fails() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let control = MockServer::start().await;
+    let endpoint_path = mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    let call_index = Arc::new(AtomicUsize::new(0));
+    let responder_index = Arc::clone(&call_index);
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(move |_: &wiremock::Request| {
+            let (error, request_id) = if responder_index.fetch_add(1, Ordering::SeqCst) == 0 {
+                ("binding replacement failed", "stub-repair-failure")
+            } else {
+                ("endpoint rollback failed", "stub-rollback-failure")
+            };
+            ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "error": error,
+                "status": 500,
+                "requestId": request_id
+            }))
+        })
+        .expect(2)
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("binding replacement failed"), "{stderr}");
+    assert!(stderr.contains("endpoint rollback failed"), "{stderr}");
+    assert!(stderr.contains(QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(stderr.contains("was retained"), "{stderr}");
+
+    let requests = control.received_requests().await.unwrap();
+    assert!(requests.iter().all(|request| {
+        request.url.path() != format!("/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}")
+    }));
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored, original);
+}
+
+#[tokio::test]
 async fn repair_cleanup_retry_deletes_only_pending_key_without_reprovisioning() {
     let control = MockServer::start().await;
     Mock::given(method("DELETE"))

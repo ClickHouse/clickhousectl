@@ -1745,19 +1745,26 @@ async fn service_query_key_repair(
         crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
-    } else if result.status == "cleanup_completed" {
-        println!(
-            "Finished query-key cleanup for service {} (active API key: {})",
-            result.service_id, result.api_key_id
-        );
     } else {
-        println!("Query key repaired for service {}", result.service_id);
-        println!(
-            "  Replaced API key: {}",
-            or_absent(result.replaced_api_key_id.as_deref())
-        );
-        println!("  New API key: {}", result.api_key_id);
-        println!("  Query endpoint: {}", result.endpoint_id);
+        match result.status {
+            "cleanup_completed" => println!(
+                "Finished query-key cleanup for service {} (active API key: {})",
+                result.service_id, result.api_key_id
+            ),
+            "already_repaired" => println!(
+                "Query key for service {} was already repaired by another process (active API key: {})",
+                result.service_id, result.api_key_id
+            ),
+            _ => {
+                println!("Query key repaired for service {}", result.service_id);
+                println!(
+                    "  Replaced API key: {}",
+                    or_absent(result.replaced_api_key_id.as_deref())
+                );
+                println!("  New API key: {}", result.api_key_id);
+                println!("  Query endpoint: {}", result.endpoint_id);
+            }
+        }
     }
     Ok(())
 }
