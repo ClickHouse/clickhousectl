@@ -7,7 +7,7 @@ pub mod postgres;
 pub mod server;
 pub mod symlink;
 
-use cli::{LocalCommands, ServerCommands};
+use cli::{InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
 use crate::error::{Error, Result};
 use crate::{init, paths, version_manager};
@@ -17,7 +17,7 @@ use std::process::Command;
 
 pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
     match cmd {
-        LocalCommands::Install { version, force } => install(&version, force, json).await,
+        LocalCommands::Install { version, force } => install(version, force, json).await,
         LocalCommands::List { remote } => {
             if remote {
                 list_available(json).await
@@ -25,7 +25,9 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
                 list_installed(json)
             }
         }
-        LocalCommands::Use { version, no_global } => use_version(&version, no_global, json).await,
+        LocalCommands::Use { version, no_global } => {
+            use_version(version.into_spec(), no_global, json).await
+        }
         LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
@@ -47,14 +49,6 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
-}
-
-/// If the version spec looks like `postgres@<tag>` or `postgres:<tag>`, extract
-/// the tag. The CLI accepts both `@` (more shell-friendly, no need to quote)
-/// and `:` (matches Docker image syntax).
-fn parse_postgres_install_spec(spec: &str) -> Option<&str> {
-    spec.strip_prefix("postgres@")
-        .or_else(|| spec.strip_prefix("postgres:"))
 }
 
 async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
@@ -82,11 +76,11 @@ async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
-    if let Some(tag) = parse_postgres_install_spec(version_spec) {
-        return install_postgres(tag, force, json).await;
-    }
-    let spec = version_manager::parse_version_spec(version_spec)?;
+async fn install(version: InstallVersionArg, force: bool, json: bool) -> Result<()> {
+    let spec = match version {
+        InstallVersionArg::ClickHouse(spec) => spec,
+        InstallVersionArg::Postgres(tag) => return install_postgres(&tag, force, json).await,
+    };
     let platform = version_manager::platform::Platform::detect()?;
 
     let version = version_manager::install::install_local_first(&spec, &platform, force).await?;
@@ -163,8 +157,11 @@ async fn list_available(json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<()> {
-    let spec = version_manager::parse_version_spec(version_spec)?;
+async fn use_version(
+    spec: version_manager::VersionSpec,
+    no_global: bool,
+    json: bool,
+) -> Result<()> {
     let platform = version_manager::platform::Platform::detect()?;
 
     let version = version_manager::install::ensure_installed_local_first(&spec, &platform).await?;
@@ -316,7 +313,7 @@ fn run_client(
 #[allow(clippy::too_many_arguments)]
 async fn start_server(
     name: Option<String>,
-    version_spec: Option<String>,
+    version_spec: Option<ServerVersionArg>,
     http_port: Option<u16>,
     tcp_port: Option<u16>,
     foreground: bool,
@@ -339,8 +336,8 @@ async fn start_server(
         return Err(Error::ServerAlreadyRunning(server_name));
     }
 
-    let version = if let Some(spec_str) = &version_spec {
-        let spec = version_manager::parse_version_spec(spec_str)?;
+    let version = if let Some(spec) = version_spec {
+        let spec = spec.into_spec();
         let platform = version_manager::platform::Platform::detect()?;
         version_manager::install::ensure_installed_local_first(&spec, &platform).await?
     } else {
@@ -353,7 +350,7 @@ async fn start_server(
                 // subsequent bare start too; `ensure_installed_local_first` returns the
                 // already-installed build silently if `latest` still resolves to it,
                 // otherwise it pulls the newer master build.
-                let spec = version_manager::parse_version_spec("latest")?;
+                let spec = version_manager::VersionSpec::Latest;
                 let platform = version_manager::platform::Platform::detect()?;
                 // Says "using", not "installing": on repeat starts the build is
                 // usually already installed and nothing is downloaded. The install
@@ -1145,17 +1142,6 @@ mod tests {
         assert_eq!(output.servers[2].version.as_deref(), Some("postgres:18"));
         assert!(output.servers[2].stopped);
         assert_eq!(output.servers[2].error, None);
-    }
-
-    #[test]
-    fn parse_postgres_install_spec_recognizes_at_and_colon() {
-        assert_eq!(parse_postgres_install_spec("postgres@17"), Some("17"));
-        assert_eq!(
-            parse_postgres_install_spec("postgres:17-alpine"),
-            Some("17-alpine")
-        );
-        assert_eq!(parse_postgres_install_spec("25.12"), None);
-        assert_eq!(parse_postgres_install_spec("stable"), None);
     }
 
     #[test]

@@ -490,6 +490,55 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
 }
 
 #[tokio::test]
+async fn invalid_local_versions_report_invalid_value_without_dispatch_side_effects() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["local", "install", "not.a.version"],
+            "local install",
+            "not.a.version",
+        ),
+        (&["local", "use", "25.12.9"], "local use", "25.12.9"),
+        (
+            &["local", "server", "start", "--version", "25.12.9.61.2"],
+            "local server start",
+            "25.12.9.61.2",
+        ),
+        (&["local", "use", "postgres@18"], "local use", "postgres@18"),
+    ];
+
+    for (index, (args, command, operand)) in cases.iter().enumerate() {
+        let output = sandbox
+            .command(args)
+            .current_dir(project.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{}", stderr_of(&output));
+        assert!(
+            stderr_of(&output).contains("error: invalid value"),
+            "{}",
+            stderr_of(&output)
+        );
+
+        let payloads = sandbox.wait_for_requests(index + 1).await;
+        let event = &payloads[index];
+        assert_eq!(event["command"], *command);
+        assert_eq!(event["exit_code"], 2);
+        assert_eq!(event["outcome"], "invalid_value");
+        let raw = serde_json::to_string(event).unwrap();
+        assert!(!raw.contains(operand), "version operand leaked: {raw}");
+    }
+
+    let home_state = sandbox.home.path().join(".clickhouse");
+    assert!(!home_state.join("versions").exists());
+    assert!(!home_state.join("default").exists());
+    assert!(!sandbox.home.path().join(".local").exists());
+    assert!(!project.path().join(".clickhouse").exists());
+}
+
+#[tokio::test]
 async fn typo_carries_definition_derived_suggestion() {
     let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
