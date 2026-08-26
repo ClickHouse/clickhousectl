@@ -5,8 +5,8 @@ use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
-use clap::Subcommand;
 use clap::builder::PossibleValuesParser;
+use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
     InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
@@ -402,7 +402,9 @@ CONTEXT FOR AGENTS:
     },
 
     /// Run a SQL query against a cloud service over HTTP via the Query API
-    #[command(after_help = "\
+    #[command(
+        group(ArgGroup::new("service_selector").required(true).args(["name", "id"])),
+        after_help = "\
 CONTEXT FOR AGENTS:
   Runs SQL over HTTP — no local clickhouse binary or service password required.
   With API key auth: first uses the authenticated key directly when the query
@@ -417,7 +419,8 @@ CONTEXT FOR AGENTS:
   SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
   on a TTY, TabSeparated when piped. --json selects JSONEachRow and cannot be
   combined with --format; an explicit --format takes precedence over agent
-  auto-JSON.")]
+  auto-JSON."
+    )]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
         #[arg(long, conflicts_with = "id")]
@@ -3149,7 +3152,14 @@ mod tests {
 
     #[test]
     fn parses_service_query_options() {
-        let command = parse_service(&["clickhousectl", "cloud", "service", "query"]);
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+        ]);
         let crate::cloud::cli::ServiceCommands::Query {
             name,
             id,
@@ -3164,7 +3174,7 @@ mod tests {
             panic!("expected service query");
         };
         assert!(name.is_none());
-        assert!(id.is_none());
+        assert_eq!(id.as_deref(), Some("svc-1"));
         assert!(query.is_none());
         assert!(queries_file.is_none());
         assert!(database.is_none());
@@ -3213,6 +3223,28 @@ mod tests {
         assert_eq!(format.as_deref(), Some("CSV"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert!(no_auto_enable);
+    }
+
+    #[test]
+    fn rejects_service_query_without_name_or_id() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--query",
+            "SELECT 1",
+        ])
+        .err()
+        .expect("service query without a selector should fail");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--name <NAME>"), "{message}");
+        assert!(message.contains("--id <ID>"), "{message}");
     }
 
     #[test]

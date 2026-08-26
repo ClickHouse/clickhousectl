@@ -2565,6 +2565,44 @@ async fn service_query_rejects_json_with_an_explicit_format_before_network_acces
 }
 
 #[tokio::test]
+async fn service_query_requires_a_selector_before_auth_input_or_network() {
+    let control = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = control.uri();
+    let missing_query_file = dir.path().join("must-not-be-read.sql");
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_agent_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--queries-file",
+            missing_query_file.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to spawn clickhousectl");
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--name <NAME>"), "{stderr}");
+    assert!(stderr.contains("--id <ID>"), "{stderr}");
+    assert!(
+        !stderr.contains("must-not-be-read.sql"),
+        "query input was read before selector validation: {stderr}"
+    );
+    assert!(control.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
     let control = start_mock_control_plane_with_service().await;
     let query_host = start_mock_query_host().await;
