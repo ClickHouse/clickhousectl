@@ -91,14 +91,15 @@ impl HostPlatform {
 
 fn docker_unavailable(stage: DockerConnectStage, error: &BollardError) -> Error {
     let kind = classify_docker_failure(error);
+    let platform = HostPlatform::current();
     let prefix = match stage {
         DockerConnectStage::Constructor => "could not initialize Docker client",
         DockerConnectStage::Ping => "Docker daemon is not reachable",
     };
     Error::DockerNotAvailable(format!(
         "{prefix}: {}.\n{}",
-        docker_failure_cause(stage, kind),
-        docker_guidance(HostPlatform::current())
+        docker_failure_cause(stage, kind, platform),
+        docker_guidance(platform)
     ))
 }
 
@@ -155,11 +156,19 @@ fn classify_docker_failure(error: &BollardError) -> DockerFailureKind {
     }
 }
 
-fn docker_failure_cause(stage: DockerConnectStage, kind: DockerFailureKind) -> String {
+fn docker_failure_cause(
+    stage: DockerConnectStage,
+    kind: DockerFailureKind,
+    platform: HostPlatform,
+) -> String {
+    let endpoint = match platform {
+        HostPlatform::Windows => "Docker named pipe",
+        _ => "Docker socket",
+    };
     match kind {
-        DockerFailureKind::MissingSocket => "Docker socket was not found".into(),
+        DockerFailureKind::MissingSocket => format!("{endpoint} was not found"),
         DockerFailureKind::PermissionDenied => {
-            "permission denied while opening the Docker socket".into()
+            format!("permission denied while opening the {endpoint}")
         }
         DockerFailureKind::ConnectionRefused => "the Docker daemon refused the connection".into(),
         DockerFailureKind::TimedOut => "the Docker daemon connection timed out".into(),
@@ -1033,6 +1042,59 @@ mod tests {
             );
             assert!(!message.contains("sensitive endpoint details"));
         }
+    }
+
+    #[test]
+    fn docker_endpoint_failure_causes_are_platform_aware() {
+        assert_eq!(
+            docker_failure_cause(
+                DockerConnectStage::Constructor,
+                DockerFailureKind::MissingSocket,
+                HostPlatform::Windows,
+            ),
+            "Docker named pipe was not found"
+        );
+        assert_eq!(
+            docker_failure_cause(
+                DockerConnectStage::Ping,
+                DockerFailureKind::PermissionDenied,
+                HostPlatform::Windows,
+            ),
+            "permission denied while opening the Docker named pipe"
+        );
+        assert_eq!(
+            docker_failure_cause(
+                DockerConnectStage::Constructor,
+                DockerFailureKind::MissingSocket,
+                HostPlatform::Linux,
+            ),
+            "Docker socket was not found"
+        );
+    }
+
+    #[test]
+    fn docker_timeout_and_http_status_failures_are_classified() {
+        let timeout = BollardError::RequestTimeoutError;
+        assert_eq!(
+            classify_docker_failure(&timeout),
+            DockerFailureKind::TimedOut
+        );
+
+        let response = BollardError::DockerResponseServerError {
+            status_code: 503,
+            message: "sensitive daemon response".into(),
+        };
+        assert_eq!(
+            classify_docker_failure(&response),
+            DockerFailureKind::HttpStatus(503)
+        );
+        let Error::DockerNotAvailable(message) =
+            docker_unavailable(DockerConnectStage::Ping, &response)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert!(message.contains("the Docker API returned HTTP status 503"));
+        assert!(!message.contains("sensitive daemon response"));
     }
 
     #[test]

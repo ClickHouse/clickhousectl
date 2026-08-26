@@ -308,7 +308,7 @@ async fn start(
         // Metadata orphaned — container removed externally. Force explicit
         // cleanup to avoid silently re-initing against potentially-stale data.
         return Err(Error::Postgres(format!(
-            "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
+            "server '{}' (postgres:{}) has metadata but the container is gone. \
              Run `clickhousectl local postgres remove {}` to clear the data dir \
              and start fresh.",
             user_name, major, user_name
@@ -513,7 +513,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
         }
         Some(port) => {
             return Err(Error::Postgres(format!(
-                "Postgres port {port} is already in use; choose another --port or omit --port to auto-select a free port"
+                "port {port} is already in use; choose another --port or omit --port to auto-select a free port"
             )));
         }
         None => {}
@@ -743,7 +743,7 @@ fn exec_host_psql(
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
-    Err(Error::Postgres(err.to_string()))
+    Err(Error::Postgres(format!("could not execute psql: {err}")))
 }
 
 fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
@@ -813,7 +813,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_port_rejects_zero() {
+    fn resolve_port_rejects_zero_for_non_clap_callers() {
         let err = resolve_port(Some(0)).unwrap_err();
         assert!(matches!(err, Error::Postgres(msg) if msg.contains("--port 0")));
     }
