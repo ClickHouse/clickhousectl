@@ -995,6 +995,10 @@ Distribution packagers can compile telemetry out entirely (including the `teleme
 
 ## Cloud integration testing
 
+Maintainer operation, exact-SHA overrides, stacked-PR policy, and the required
+check rollout procedure are documented in
+[`.github/CLOUD_INTEGRATION.md`](.github/CLOUD_INTEGRATION.md).
+
 Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests live in three binaries, each a single `#[tokio::test]` lifecycle:
 
 - [`tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs) — ClickHouse service CRUD + service-scoped endpoints
