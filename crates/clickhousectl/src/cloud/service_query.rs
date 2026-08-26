@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry, QueryEndpointRole,
+    ServiceQueryAPIEndpoint,
 };
 
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
@@ -144,10 +145,31 @@ pub async fn ensure_service_query_setup(
     if let Err(error) =
         credentials::set_service_query_key(service_id, stored.clone(), &provisioning_lock)
     {
-        return fail_after_key_creation(client, org_id, &api_key_uuid, error).await;
+        return fail_after_endpoint_binding(client, org_id, service_id, &api_key_uuid, error).await;
     }
 
     Ok(stored)
+}
+
+async fn fail_after_endpoint_binding<T>(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    persistence_error: CloudError,
+) -> CloudResult<T> {
+    if let Err(unbind_error) = unbind_query_endpoint(client, org_id, service_id, api_key_id).await {
+        return Err(CloudError {
+            message: format!(
+                "local credential persistence failed: {persistence_error}; additionally, failed \
+                 to remove API key {api_key_id} from the query endpoint: {unbind_error}. The key \
+                 was retained for recovery"
+            ),
+            kind: persistence_error.kind,
+        });
+    }
+
+    fail_after_key_creation(client, org_id, api_key_id, persistence_error).await
 }
 
 async fn fail_after_key_creation<T>(
@@ -173,15 +195,51 @@ async fn fail_after_key_creation<T>(
 /// `openApiKeys` cannot be read as "no keys bound": merging into an empty list
 /// would revoke every binding the response failed to report. An explicitly
 /// empty list is a real answer and merges normally.
-fn existing_open_api_keys(
-    endpoint: clickhouse_cloud_api::models::ServiceQueryAPIEndpoint,
-) -> CloudResult<Vec<String>> {
+fn existing_open_api_keys(endpoint: ServiceQueryAPIEndpoint) -> CloudResult<Vec<String>> {
     endpoint.open_api_keys.ok_or_else(|| {
         CloudError::new(
             "the query endpoint response is missing field 'openApiKeys', so the keys currently \
              bound to the endpoint are unknown; binding a new key would revoke them",
         )
     })
+}
+
+fn endpoint_without_key(
+    endpoint: ServiceQueryAPIEndpoint,
+    api_key_uuid: &str,
+) -> CloudResult<Option<InstanceServiceQueryApiEndpointsPostRequest>> {
+    let mut open_api_keys = existing_open_api_keys(endpoint.clone())?;
+    if !open_api_keys.iter().any(|key| key == api_key_uuid) {
+        return Ok(None);
+    }
+    open_api_keys.retain(|key| key != api_key_uuid);
+
+    Ok(Some(InstanceServiceQueryApiEndpointsPostRequest {
+        allowed_origins: require_field(endpoint.allowed_origins, "allowedOrigins")?,
+        open_api_keys,
+        roles: require_field(endpoint.roles, "roles")?,
+    }))
+}
+
+async fn unbind_query_endpoint(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_uuid: &str,
+) -> CloudResult<()> {
+    let Some(endpoint) = client
+        .get_query_endpoint_for_binding(org_id, service_id)
+        .await?
+    else {
+        return Ok(());
+    };
+    let Some(request) = endpoint_without_key(endpoint, api_key_uuid)? else {
+        return Ok(());
+    };
+    client
+        .create_query_endpoint(org_id, service_id, &request)
+        .await?;
+    Ok(())
 }
 
 /// Bind `api_key_uuid` to the service's query endpoint, merging into the
@@ -333,5 +391,24 @@ mod tests {
             err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
             "error should name the field and the consequence: {err}",
         );
+    }
+
+    #[test]
+    fn endpoint_unbind_preserves_current_settings_and_other_keys() {
+        let request = endpoint_without_key(
+            ServiceQueryAPIEndpoint {
+                allowed_origins: Some("https://example.com".into()),
+                id: Some("ep-1".into()),
+                open_api_keys: Some(vec!["other-key".into(), "new-key".into()]),
+                roles: Some(vec![QueryEndpointRole::SqlConsoleReadOnly]),
+            },
+            "new-key",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(request.allowed_origins, "https://example.com");
+        assert_eq!(request.open_api_keys, ["other-key"]);
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
     }
 }
