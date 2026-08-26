@@ -2431,6 +2431,35 @@ async fn postgres_ca_certificate_file_contents_flow_to_body() {
 }
 
 #[tokio::test]
+async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint() {
+    let mock = MockServer::start().await;
+    let api_error = "BAD_REQUEST: failed to establish connection: tls: failed to verify \
+                     certificate: x509: certificate signed by unknown authority";
+    Mock::given(method("POST"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes$",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": api_error,
+        })))
+        .mount(&mock)
+        .await;
+
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(api_error), "{stderr}");
+    assert!(stderr.contains("--ca-certificate <PATH>"), "{stderr}");
+    assert!(
+        stderr.contains("private or self-signed source CA"),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
 async fn postgres_replication_mode_snapshot_serializes() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();

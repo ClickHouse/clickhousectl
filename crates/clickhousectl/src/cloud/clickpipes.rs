@@ -346,7 +346,28 @@ POSTGRES INPUT RULES:
   At least one --table-mapping is required, in schema.table:target_table form.
   --auth IAM_ROLE requires --iam-role. With basic auth, --iam-role is rejected
   instead of being silently ignored.
-  --replication-slot-name is valid only with --replication-mode cdc_only.")]
+  --replication-slot-name is valid only with --replication-mode cdc_only.
+
+POSTGRES TLS:
+  TLS and certificate verification are enabled by default. A source whose
+  certificate chain is publicly trusted needs no CA file. For a private or
+  self-signed source CA, pass its PEM CA bundle with --ca-certificate <PATH>.
+  Certificate hostname verification uses --host unless --tls-host <HOSTNAME>
+  overrides it.
+
+PREREQUISITES:
+  ClickPipes must be able to reach the source; allow the ClickPipes static IPs
+  through its network controls. For CDC, enable logical replication, put every
+  mapped table in the publication, and grant the source user the required
+  schema, table, and replication privileges.
+
+DOCUMENTATION:
+  PostgreSQL ClickPipes setup:
+    https://clickhouse.com/docs/integrations/clickpipes/postgres
+  Generic PostgreSQL source setup:
+    https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic
+  ClickPipes networking and static IPs:
+    https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips")]
     Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
@@ -742,12 +763,12 @@ pub struct PostgresCreateArgs {
     #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
     pub iam_role: Option<String>,
 
-    /// TLS hostname
-    #[arg(long)]
+    /// Certificate hostname override (defaults to --host)
+    #[arg(long, value_name = "HOSTNAME")]
     pub tls_host: Option<String>,
 
-    /// Path to CA certificate file
-    #[arg(long)]
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
+    #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
 
     /// Postgres publication name
@@ -1958,6 +1979,36 @@ fn build_postgres_request(
     })
 }
 
+fn postgres_tls_error_hint(message: &str) -> Option<&'static str> {
+    if message.contains("x509: certificate signed by unknown authority") {
+        return Some(
+            "The source certificate chain is not publicly trusted. For a private or \
+             self-signed source CA, pass its PEM CA bundle with \
+             `--ca-certificate <PATH>`.",
+        );
+    }
+
+    if (message.contains("x509: certificate is valid for ") && message.contains(", not "))
+        || (message.contains("x509: cannot validate certificate for ")
+            && message.contains("because it doesn't contain any IP SANs"))
+    {
+        return Some(
+            "The source certificate does not match `--host`. Pass the certificate's \
+             hostname with `--tls-host <HOSTNAME>`.",
+        );
+    }
+
+    None
+}
+
+fn add_postgres_tls_error_hint(mut error: CloudError) -> CloudError {
+    if let Some(hint) = postgres_tls_error_hint(&error.message) {
+        error.message.push_str("\n\nHint: ");
+        error.message.push_str(hint);
+    }
+    error
+}
+
 async fn clickpipe_create_postgres(
     client: &CloudClient,
     args: &PostgresCreateArgs,
@@ -1968,7 +2019,8 @@ async fn clickpipe_create_postgres(
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
-        .await?;
+        .await
+        .map_err(add_postgres_tls_error_hint)?;
     print_created(&clickpipe, json)?;
     Ok(())
 }
@@ -3506,7 +3558,7 @@ mod tests {
     }
 
     #[test]
-    fn postgres_help_documents_conditional_input_rules() {
+    fn postgres_help_documents_input_tls_and_source_requirements() {
         let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
@@ -3520,6 +3572,88 @@ mod tests {
         );
         assert!(help.contains("silently ignored"), "{help}");
         assert!(help.contains("--replication-mode cdc_only"), "{help}");
+        assert!(
+            help.contains("TLS and certificate verification are enabled by default"),
+            "{help}"
+        );
+        assert!(help.contains("publicly trusted needs no CA file"), "{help}");
+        assert!(help.contains("PEM CA bundle"), "{help}");
+        assert!(help.contains("--ca-certificate <PATH>"), "{help}");
+        assert!(help.contains("--tls-host <HOSTNAME>"), "{help}");
+        assert!(help.contains("uses --host unless"), "{help}");
+        assert!(help.contains("enable logical replication"), "{help}");
+        assert!(help.contains("mapped table in the publication"), "{help}");
+        assert!(
+            help.contains("schema, table, and replication privileges"),
+            "{help}"
+        );
+        assert!(
+            help.contains("https://clickhouse.com/docs/integrations/clickpipes/postgres"),
+            "{help}"
+        );
+        assert!(
+            help.contains(
+                "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips"
+            ),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn readme_documents_postgres_tls_and_cdc_prerequisites() {
+        let readme = include_str!("../../../../README.md");
+        let postgres = readme
+            .split_once("### ClickPipes")
+            .expect("ClickPipes section")
+            .1
+            .split_once("#### Discovering a source schema")
+            .expect("next ClickPipes section")
+            .0;
+
+        for expected in [
+            "publicly trusted certificate",
+            "private or self-signed CA",
+            "--ca-certificate ./postgres-ca.pem",
+            "--tls-host postgres.internal.example.com",
+            "TLS and certificate verification are enabled by default",
+            "defaults to `--host`",
+            "ClickPipes static egress IPs",
+            "`wal_level=logical`",
+            "publication must contain every source table",
+            "`USAGE` on each mapped schema",
+            "https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic",
+            "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips",
+        ] {
+            assert!(
+                postgres.contains(expected),
+                "missing `{expected}`:\n{postgres}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_tls_error_hints_are_narrow_and_preserve_api_detail() {
+        let unknown_authority = "BAD_REQUEST: failed to establish connection: tls: failed to verify certificate: \
+             x509: certificate signed by unknown authority";
+        let error = add_postgres_tls_error_hint(CloudError::new(unknown_authority));
+        assert!(error.message.starts_with(unknown_authority));
+        assert!(error.message.contains("--ca-certificate <PATH>"));
+
+        let hostname = postgres_tls_error_hint(
+            "x509: certificate is valid for postgres.internal.example.com, not 10.0.0.8",
+        )
+        .expect("hostname mismatch hint");
+        assert!(hostname.contains("--tls-host <HOSTNAME>"));
+        assert!(
+            postgres_tls_error_hint(
+                "BAD_REQUEST: failed to establish connection: connection refused"
+            )
+            .is_none()
+        );
+        assert!(
+            postgres_tls_error_hint("tls: failed to verify certificate: certificate expired")
+                .is_none()
+        );
     }
 
     #[test]

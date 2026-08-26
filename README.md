@@ -777,13 +777,23 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
-# From PostgreSQL (CDC)
+# From PostgreSQL with a publicly trusted certificate (CDC)
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
+
+# From PostgreSQL with a private or self-signed CA (CDC)
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-private-pg-pipe \
+  --host 10.0.0.15 --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --ca-certificate ./postgres-ca.pem \
+  --tls-host postgres.internal.example.com \
+  --publication-name clickpipes \
+  --table-mapping "public.users:public_users"
 
 # From MySQL (CDC)
 # --server-id sets the replication server ID (useful when multiple pipes read
@@ -809,6 +819,36 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --staging-path gs://bucket/staging \
   --table-mapping "dataset.table:target_table"
 ```
+
+#### PostgreSQL ClickPipe prerequisites
+
+TLS and certificate verification are enabled by default. A source that serves a
+complete, publicly trusted certificate chain needs neither `--ca-certificate`
+nor `--tls-host`. If the source certificate uses a private or self-signed CA,
+pass the CA certificate or bundle as PEM with `--ca-certificate <PATH>`; the CLI
+reads that file and sends its contents in the create request. Certificate
+hostname verification defaults to `--host`. Use `--tls-host <HOSTNAME>` only
+when the certificate is issued for a different hostname, such as when `--host`
+is an IP address. These options preserve certificate verification; they do not
+disable it.
+
+Before creating a PostgreSQL CDC ClickPipe:
+
+- Make the PostgreSQL host and port reachable from ClickHouse Cloud. Allow the
+  [ClickPipes static egress IPs](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips)
+  in the source firewall, security group, and `pg_hba.conf`, or configure
+  supported private connectivity.
+- Enable logical replication (`wal_level=logical`) and provision sufficient WAL
+  senders and replication slots.
+- Create a publication. The publication must contain every source table named
+  by `--table-mapping`; each table must have a primary key or an appropriate
+  replica identity.
+- Give the source user permission to connect, `USAGE` on each mapped schema,
+  `SELECT` on each mapped table, and the PostgreSQL `REPLICATION` privilege.
+
+See the [PostgreSQL ClickPipes setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres),
+the [generic PostgreSQL source setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic),
+and the [ClickPipes networking and static IP documentation](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips).
 
 PostgreSQL ClickPipes require one or more complete
 `--table-mapping schema.table:target_table` values. Ports must be in
