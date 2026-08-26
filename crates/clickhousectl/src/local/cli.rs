@@ -245,7 +245,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Two connection modes:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
-     locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
+     locally managed server started via `clickhousectl local server start`. Lookup uses the exact
+     current project directory and does not search parents. Defaults to \"default\".
   2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
      ClickHouse server directly, bypassing local server lookup. Host-only uses port 9000; port-only
      connects to localhost. Direct selectors cannot be combined with --name.
@@ -1082,6 +1083,8 @@ mod tests {
         for text in [
             "Installed local client version for direct host/port mode",
             "Does not change the default",
+            "Lookup uses the exact",
+            "current project directory and does not search parents",
         ] {
             assert!(help.contains(text), "missing {text:?} in:\n{help}");
         }

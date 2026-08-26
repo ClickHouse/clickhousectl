@@ -160,6 +160,86 @@ impl fmt::Display for StartupKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedClientErrorKind {
+    ServerNotFound,
+    ServerNotRunning,
+    BinaryNotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedClientSelection {
+    Default,
+    Named,
+}
+
+impl ManagedClientSelection {
+    fn start_command(self) -> &'static str {
+        match self {
+            Self::Default => "clickhousectl local server start",
+            Self::Named => "clickhousectl local server start <name>",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedClientError {
+    pub kind: ManagedClientErrorKind,
+    pub project_dir: PathBuf,
+    pub selection: ManagedClientSelection,
+    pub server_name: String,
+    pub binary_version: Option<String>,
+}
+
+impl fmt::Display for ManagedClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            ManagedClientErrorKind::ServerNotFound => {
+                writeln!(
+                    f,
+                    "Managed client mode: server '{}' was not found in current project '{}'; parent projects are not searched.",
+                    self.server_name,
+                    self.project_dir.display()
+                )?;
+                write!(
+                    f,
+                    "Run `clickhousectl local server list`; return to the project root if needed; start it with `{}`, or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
+                    self.selection.start_command()
+                )
+            }
+            ManagedClientErrorKind::ServerNotRunning => {
+                writeln!(
+                    f,
+                    "Managed client mode: server '{}' is not running in current project '{}'.",
+                    self.server_name,
+                    self.project_dir.display()
+                )?;
+                write!(
+                    f,
+                    "Run `clickhousectl local server list`, then `{}`; or use direct mode with `clickhousectl local client --host <host> --port <port>`.",
+                    self.selection.start_command()
+                )
+            }
+            ManagedClientErrorKind::BinaryNotFound => {
+                let version = self.binary_version.as_deref().unwrap_or("unknown");
+                writeln!(
+                    f,
+                    "Managed client mode: server '{}' in current project '{}' selected ClickHouse version '{}', but its client binary is missing.",
+                    self.server_name,
+                    self.project_dir.display(),
+                    version
+                )?;
+                write!(
+                    f,
+                    "Run `clickhousectl local server list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`."
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ManagedClientError {}
+
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum Error {
@@ -309,6 +389,9 @@ pub enum Error {
 
     #[error("Server '{0}' not found")]
     ServerNotFound(String),
+
+    #[error("{0}")]
+    ManagedClient(ManagedClientError),
 
     #[error(
         "No server name was provided and multiple non-default ClickHouse servers exist (available: {available}). Pass a name with `clickhousectl local server stop <name>`, or stop every server with `clickhousectl local server stop-all`."

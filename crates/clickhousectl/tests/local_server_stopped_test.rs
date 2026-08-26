@@ -259,7 +259,13 @@ fn stopped_server_connection_commands_fail_without_using_saved_ports() {
         &["local", "client", "--name", "default"],
     );
     assert_eq!(client.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&client.stderr).contains("Server 'default' is not running"));
+    let client_stderr = String::from_utf8_lossy(&client.stderr);
+    assert!(client_stderr.contains("Managed client mode: server 'default' is not running"));
+    assert!(client_stderr.contains(&project.path().canonicalize().unwrap().display().to_string()));
+    assert!(client_stderr.contains("clickhousectl local server list"));
+    assert!(client_stderr.contains("clickhousectl local server start <name>"));
+    assert!(!client_stderr.contains("8123"));
+    assert!(!client_stderr.contains("9000"));
 
     let dotenv = run(
         project.path(),

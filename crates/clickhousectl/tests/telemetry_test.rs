@@ -310,6 +310,61 @@ async fn failure_reported_and_positional_value_never_leaks() {
     );
 }
 
+#[tokio::test]
+async fn managed_client_failure_details_never_reach_telemetry() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("project-private-token");
+    let server_name = "server-private-token";
+    let version = "99.99.1-version-private-token";
+    let servers = project.join(".clickhouse/servers");
+    std::fs::create_dir_all(&servers).unwrap();
+    std::fs::write(
+        servers.join(format!("{server_name}.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "name": server_name,
+            "pid": std::process::id(),
+            "version": version,
+            "http_port": 8123,
+            "tcp_port": 9000,
+            "started_at": "test",
+            "cwd": project,
+            "engine": "clickhouse"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = sandbox
+        .command(&["local", "client", "--name", server_name])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let raw_message = stderr_of(&output);
+    assert!(raw_message.contains(server_name));
+    assert!(raw_message.contains(version));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["flags"], serde_json::json!(["name"]));
+    assert_eq!(event["exit_code"], 1);
+    let raw_payload = serde_json::to_string(event).unwrap();
+    for sensitive in [
+        server_name,
+        version,
+        "project-private-token",
+        raw_message.as_str(),
+    ] {
+        assert!(
+            !raw_payload.contains(sensitive),
+            "managed client detail leaked into telemetry: {raw_payload}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {

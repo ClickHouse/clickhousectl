@@ -9,7 +9,9 @@ pub mod symlink;
 
 use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
-use crate::error::{Error, Result};
+use crate::error::{
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, Result,
+};
 use crate::{init, paths, version_manager};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -278,16 +280,43 @@ fn run_client(
         (h, p, v)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
+        let selection = if name.is_some() {
+            ManagedClientSelection::Named
+        } else {
+            ManagedClientSelection::Default
+        };
+        // Resolve symlinks so diagnostics identify the one physical directory
+        // whose project-local state was inspected.
+        let project_dir = std::env::current_dir()?.canonicalize()?;
+        let managed_error = |kind, binary_version| {
+            Error::ManagedClient(ManagedClientError {
+                kind,
+                project_dir: project_dir.clone(),
+                selection,
+                server_name: server_name.to_string(),
+                binary_version,
+            })
+        };
         let metadata_lock = server::lock_metadata()?;
         server::recover_current_project_servers_locked(&metadata_lock)?;
         let entry = server::server_entry_locked(server_name, &metadata_lock)?
-            .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+            .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotFound, None))?;
         if !entry.running {
-            return Err(Error::ServerNotRunning(server_name.to_string()));
+            return Err(managed_error(
+                ManagedClientErrorKind::ServerNotRunning,
+                None,
+            ));
         }
         let info = entry
             .info
-            .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
+            .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotRunning, None))?;
+        let binary = paths::binary_path(&info.version)?;
+        if !binary.exists() {
+            return Err(managed_error(
+                ManagedClientErrorKind::BinaryNotFound,
+                Some(info.version),
+            ));
+        }
         ("localhost".to_string(), info.tcp_port, info.version)
     };
 

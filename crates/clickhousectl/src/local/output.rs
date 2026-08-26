@@ -3,7 +3,10 @@
 //! Successful output types support both JSON serialization and human-readable
 //! display. Runtime failures use the redacted stable envelope below.
 
-use crate::error::{Error, NetworkStage, PortKind};
+use crate::error::{
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
+    PortKind,
+};
 use serde::Serialize;
 use std::fmt;
 use std::io::Write;
@@ -14,6 +17,9 @@ use tabled::{Table, Tabled, settings::Style};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum LocalErrorCode {
+    ManagedClientServerNotFound,
+    ManagedClientServerNotRunning,
+    ManagedClientBinaryNotFound,
     ServerNotFound,
     ServerSelectionRequired,
     ServerNotRunning,
@@ -36,13 +42,88 @@ struct LocalErrorDetail {
     command: Option<&'static str>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalClientMode {
+    Managed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalProjectScopeKind {
+    ExactCurrentProject,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalProjectScope {
+    kind: LocalProjectScopeKind,
+    path: String,
+    parent_projects_searched: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalServerSelection {
+    Default,
+    Named,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalManagedServer {
+    selection: LocalServerSelection,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalGuidanceAction {
+    ListProjectServers,
+    ReturnToProjectRoot,
+    StartDefaultServer,
+    StartNamedServer,
+    InstallSelectedVersion,
+    UseDirectHost,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalGuidance {
+    action: LocalGuidanceAction,
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ManagedClientErrorDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    mode: LocalClientMode,
+    project_scope: LocalProjectScope,
+    server: LocalManagedServer,
+    guidance: Vec<LocalGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum LocalErrorBody {
+    General(LocalErrorDetail),
+    ManagedClient(ManagedClientErrorDetail),
+}
+
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct LocalErrorOutput {
-    error: LocalErrorDetail,
+    error: LocalErrorBody,
 }
 
 impl LocalErrorOutput {
     fn from_error(error: &Error) -> Self {
+        if let Error::ManagedClient(error) = error {
+            return Self {
+                error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(error)),
+            };
+        }
         let detail = match error {
             Error::ServerNotFound(name) => LocalErrorDetail {
                 code: LocalErrorCode::ServerNotFound,
@@ -181,7 +262,94 @@ impl LocalErrorOutput {
                 command: None,
             },
         };
-        Self { error: detail }
+        Self {
+            error: LocalErrorBody::General(detail),
+        }
+    }
+}
+
+impl ManagedClientErrorDetail {
+    fn from_error(error: &ManagedClientError) -> Self {
+        let (code, message) = match error.kind {
+            ManagedClientErrorKind::ServerNotFound => (
+                LocalErrorCode::ManagedClientServerNotFound,
+                "Managed client server was not found in the current project",
+            ),
+            ManagedClientErrorKind::ServerNotRunning => (
+                LocalErrorCode::ManagedClientServerNotRunning,
+                "Managed client server is not running in the current project",
+            ),
+            ManagedClientErrorKind::BinaryNotFound => (
+                LocalErrorCode::ManagedClientBinaryNotFound,
+                "Managed client binary selected by server metadata is not installed",
+            ),
+        };
+        let selection = match error.selection {
+            ManagedClientSelection::Default => LocalServerSelection::Default,
+            ManagedClientSelection::Named => LocalServerSelection::Named,
+        };
+        let mut guidance = vec![LocalGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List managed servers in this exact project",
+            command: Some("clickhousectl local server list"),
+        }];
+        match error.kind {
+            ManagedClientErrorKind::ServerNotFound => {
+                guidance.push(LocalGuidance {
+                    action: LocalGuidanceAction::ReturnToProjectRoot,
+                    message: "Return to the project directory that owns the managed server",
+                    command: None,
+                });
+                guidance.push(start_guidance(error.selection));
+            }
+            ManagedClientErrorKind::ServerNotRunning => {
+                guidance.push(start_guidance(error.selection));
+            }
+            ManagedClientErrorKind::BinaryNotFound => {
+                guidance.push(LocalGuidance {
+                    action: LocalGuidanceAction::InstallSelectedVersion,
+                    message: "Install the version selected by the managed server metadata",
+                    command: Some("clickhousectl local install <version>"),
+                });
+            }
+        }
+        guidance.push(LocalGuidance {
+            action: LocalGuidanceAction::UseDirectHost,
+            message: "Bypass managed project lookup and connect directly",
+            command: Some("clickhousectl local client --host <host> --port <port>"),
+        });
+
+        Self {
+            code,
+            message,
+            mode: LocalClientMode::Managed,
+            project_scope: LocalProjectScope {
+                kind: LocalProjectScopeKind::ExactCurrentProject,
+                path: error.project_dir.display().to_string(),
+                parent_projects_searched: false,
+            },
+            server: LocalManagedServer {
+                selection,
+                name: error.server_name.clone(),
+                binary_version: error.binary_version.clone(),
+            },
+            guidance,
+        }
+    }
+}
+
+fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
+    match selection {
+        ManagedClientSelection::Default => LocalGuidance {
+            action: LocalGuidanceAction::StartDefaultServer,
+            message: "Start the default managed server in this project",
+            command: Some("clickhousectl local server start"),
+        },
+        ManagedClientSelection::Named => LocalGuidance {
+            action: LocalGuidanceAction::StartNamedServer,
+            message: "Start the selected named managed server in this project",
+            command: Some("clickhousectl local server start <name>"),
+        },
     }
 }
 
@@ -809,6 +977,36 @@ mod tests {
     #[test]
     fn local_error_codes_cover_the_stable_vocabulary() {
         let cases = [
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ServerNotFound,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Default,
+                    server_name: "default".into(),
+                    binary_version: None,
+                }),
+                "managed_client_server_not_found",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ServerNotRunning,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Named,
+                    server_name: "dev".into(),
+                    binary_version: None,
+                }),
+                "managed_client_server_not_running",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::BinaryNotFound,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Named,
+                    server_name: "dev".into(),
+                    binary_version: Some("25.12.9.61".into()),
+                }),
+                "managed_client_binary_not_found",
+            ),
             (Error::ServerNotFound("default".into()), "server_not_found"),
             (
                 Error::ServerStopSelectionRequired { available: 2 },
