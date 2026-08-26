@@ -478,6 +478,48 @@ fn list_all_servers_locked_inner(
     Ok(entries)
 }
 
+/// List persisted ClickHouse identities, including legacy stopped servers that
+/// have a data directory but predate retained metadata.
+pub(crate) fn list_clickhouse_server_names_locked(lock: &MetadataLock) -> Result<Vec<String>> {
+    let entries = list_all_servers_locked(lock)?;
+    let mut names: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .info
+                .as_ref()
+                .is_some_and(|info| info.engine == Engine::Clickhouse)
+        })
+        .map(|entry| entry.name.clone())
+        .collect();
+
+    for directory in std::fs::read_dir(&lock.dir)? {
+        let directory = directory?;
+        if !directory.file_type()?.is_dir() || !directory.path().join("data").is_dir() {
+            continue;
+        }
+        let Ok(name) = directory.file_name().into_string() else {
+            continue;
+        };
+        if validate_server_name(&name).is_err()
+            || entries.iter().any(|entry| {
+                entry.name == name
+                    && entry
+                        .info
+                        .as_ref()
+                        .is_some_and(|info| info.engine == Engine::Postgres)
+            })
+        {
+            continue;
+        }
+        names.push(name);
+    }
+
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 pub(crate) fn server_entry_locked(name: &str, lock: &MetadataLock) -> Result<Option<ServerEntry>> {
     server_entry_locked_with(name, lock, || {})
 }

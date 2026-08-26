@@ -969,6 +969,7 @@ async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     let out = output::ServerStopOutput {
         name: user_name_from_key(&target.name).to_string(),
         already_stopped: false,
+        selection: None,
     };
     output::print_output(&out, json);
     Ok(())
@@ -1022,6 +1023,7 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::try_remove_server_info_locked(&key, &metadata_lock)?;
     let out = output::ServerRemoveOutput {
         name: name.to_string(),
+        selection: None,
     };
     output::print_output(&out, json);
     Ok(())

@@ -15,6 +15,7 @@ use tabled::{Table, Tabled, settings::Style};
 #[serde(rename_all = "snake_case")]
 enum LocalErrorCode {
     ServerNotFound,
+    ServerSelectionRequired,
     ServerNotRunning,
     ServerRunning,
     InvalidVersion,
@@ -46,6 +47,20 @@ impl LocalErrorOutput {
             Error::ServerNotFound(name) => LocalErrorDetail {
                 code: LocalErrorCode::ServerNotFound,
                 message: format!("Server '{name}' not found"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerStopSelectionRequired { available } => LocalErrorDetail {
+                code: LocalErrorCode::ServerSelectionRequired,
+                message: format!(
+                    "Multiple non-default ClickHouse servers exist (available: {available}); specify a name or use stop-all"
+                ),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerRemoveSelectionRequired { available } => LocalErrorDetail {
+                code: LocalErrorCode::ServerSelectionRequired,
+                message: format!(
+                    "The default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed"
+                ),
                 command: Some("clickhousectl local server list"),
             },
             Error::ServerNotRunning(name) => LocalErrorDetail {
@@ -635,20 +650,46 @@ impl fmt::Display for PostgresDotenvOutput {
 
 // ── server stop ─────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerSelection {
+    Explicit,
+    Implicit,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopOutput {
     pub name: String,
     /// True when the server existed but was already stopped (idempotent noop).
     pub already_stopped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ServerSelection>,
 }
 
 impl fmt::Display for ServerStopOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.already_stopped {
-            write!(f, "Server '{}' is already stopped", self.name)
+            write!(f, "Server '{}' is already stopped", self.name)?;
         } else {
-            write!(f, "Server '{}' stopped", self.name)
+            write!(f, "Server '{}' stopped", self.name)?;
         }
+        if self.selection == Some(ServerSelection::Implicit) {
+            write!(f, " (selected automatically)")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerStopNoopOutput {
+    pub stopped: bool,
+    pub selection: ServerSelection,
+    pub reason: &'static str,
+}
+
+impl fmt::Display for ServerStopNoopOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "No ClickHouse servers found; nothing to stop")
     }
 }
 
@@ -704,11 +745,17 @@ impl fmt::Display for ServerStopAllOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerRemoveOutput {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ServerSelection>,
 }
 
 impl fmt::Display for ServerRemoveOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Server '{}' removed", self.name)
+        write!(f, "Server '{}' removed", self.name)?;
+        if self.selection == Some(ServerSelection::Implicit) {
+            write!(f, " (selected automatically)")?;
+        }
+        Ok(())
     }
 }
 
@@ -763,6 +810,10 @@ mod tests {
     fn local_error_codes_cover_the_stable_vocabulary() {
         let cases = [
             (Error::ServerNotFound("default".into()), "server_not_found"),
+            (
+                Error::ServerStopSelectionRequired { available: 2 },
+                "server_selection_required",
+            ),
             (
                 Error::ServerNotRunning("default".into()),
                 "server_not_running",
@@ -1059,12 +1110,14 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: false,
+            selection: Some(ServerSelection::Explicit),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "default");
         assert_eq!(json["already_stopped"], false);
+        assert_eq!(json["selection"], "explicit");
     }
 
     #[test]
@@ -1072,8 +1125,12 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: true,
+            selection: Some(ServerSelection::Implicit),
         };
-        assert_eq!(output.to_string(), "Server 'default' is already stopped");
+        assert_eq!(
+            output.to_string(),
+            "Server 'default' is already stopped (selected automatically)"
+        );
 
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -1164,11 +1221,13 @@ mod tests {
     fn server_remove_json() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
+            selection: Some(ServerSelection::Explicit),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "test");
+        assert_eq!(json["selection"], "explicit");
     }
 
     // ── Display (human-readable) tests ──────────────────────────────────
@@ -1388,6 +1447,7 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: false,
+            selection: Some(ServerSelection::Explicit),
         };
         assert_eq!(output.to_string(), "Server 'default' stopped");
     }
@@ -1432,6 +1492,7 @@ mod tests {
     fn server_remove_display() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
+            selection: Some(ServerSelection::Explicit),
         };
         assert_eq!(output.to_string(), "Server 'test' removed");
     }

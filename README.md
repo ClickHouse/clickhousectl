@@ -263,7 +263,7 @@ clickhousectl local server list
 clickhousectl local server list --global                  # List running ClickHouse servers across all projects
 
 # Stop servers
-clickhousectl local server stop                           # Stop "default"
+clickhousectl local server stop                           # Stop "default", or the sole ClickHouse server
 clickhousectl local server stop dev                       # Stop by name
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
@@ -271,7 +271,7 @@ clickhousectl local server stop-all                       # Stop all ClickHouse 
 clickhousectl local server stop-all --global              # Stop all ClickHouse servers system-wide
 
 # Remove a stopped server and its data
-clickhousectl local server remove                         # Remove "default"
+clickhousectl local server remove                         # Remove "default" only; never guesses a custom name
 clickhousectl local server remove test                    # Remove by name
 
 # Write connection env vars to .env file
@@ -282,6 +282,8 @@ clickhousectl local server dotenv --local --user default --database mydb  # Incl
 ```
 
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
+
+Without a name, `server stop` selects an existing `default`, then a sole known ClickHouse server. It succeeds without changing anything when none exist, and requires a name or `server stop-all` when multiple non-default servers exist. Bare `server remove` is deliberately stricter: it removes an existing `default` only and otherwise requires an explicit name, even when there is just one custom server.
 
 **Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 

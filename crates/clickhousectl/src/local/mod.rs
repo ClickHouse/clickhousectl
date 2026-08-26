@@ -796,50 +796,12 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             name_flag,
             global,
             project,
-        } => {
-            let name = name.or(name_flag).unwrap_or_else(|| "default".to_string());
-            if global {
-                stop_server_global(&name, project.as_deref(), json)
-            } else {
-                server::validate_server_name(&name)?;
-
-                // Recover orphaned servers so we can stop processes
-                // that lost their metadata files.
-                let metadata_lock = server::lock_metadata()?;
-                server::recover_current_project_servers_locked(&metadata_lock)?;
-
-                match classify_stop(
-                    server::is_server_running_locked(&name, &metadata_lock)?,
-                    server::server_data_dir(&name).exists(),
-                ) {
-                    StopOutcome::Stop => {
-                        if !json {
-                            println!("Stopping server '{}'...", name);
-                        }
-                        server::kill_server_locked(&name, &metadata_lock)?;
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: false,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    StopOutcome::AlreadyStopped => {
-                        // Server exists on disk but isn't running. `stop` is
-                        // idempotent: this is the desired end state, so succeed
-                        // instead of erroring.
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: true,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    // No such server in this project — surface the typo.
-                    StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
-                }
-            }
-        }
+        } => stop_server(
+            ServerNameInput::from_args(name, name_flag),
+            global,
+            project,
+            json,
+        ),
         ServerCommands::StopAll { global } => {
             if global {
                 stop_all_servers_global(json)
@@ -855,30 +817,165 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
         ServerCommands::Remove { name, name_flag } => {
-            let name = name.or(name_flag).unwrap_or_else(|| "default".to_string());
-            server::validate_server_name(&name)?;
+            remove_server(ServerNameInput::from_args(name, name_flag), json)
+        }
+    }
+}
 
-            // Recover orphaned servers so we correctly detect a running
-            // process even when its metadata file is missing.
-            let metadata_lock = server::lock_metadata()?;
-            server::recover_current_project_servers_locked(&metadata_lock)?;
+#[derive(Debug, PartialEq, Eq)]
+enum ServerNameInput {
+    Omitted,
+    Positional(String),
+    NameFlag(String),
+}
 
-            if server::is_server_running_locked(&name, &metadata_lock)? {
-                return Err(Error::ServerRunningCannotRemove(name));
+impl ServerNameInput {
+    fn from_args(positional: Option<String>, name_flag: Option<String>) -> Self {
+        match (positional, name_flag) {
+            (Some(name), None) => Self::Positional(name),
+            (None, Some(name)) => Self::NameFlag(name),
+            (None, None) => Self::Omitted,
+            (Some(_), Some(_)) => unreachable!("clap rejects conflicting server name forms"),
+        }
+    }
+}
+
+fn stop_server(
+    name_input: ServerNameInput,
+    global: bool,
+    project: Option<String>,
+    json: bool,
+) -> Result<()> {
+    if global {
+        return stop_server_global(name_input, project.as_deref(), json);
+    }
+
+    let explicit_name = match &name_input {
+        ServerNameInput::Omitted => None,
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => Some(name),
+    };
+    if let Some(name) = explicit_name {
+        server::validate_server_name(name)?;
+    }
+
+    // Recover orphaned servers so we can stop processes
+    // that lost their metadata files.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let (name, selection, known) = match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            (name, output::ServerSelection::Explicit, false)
+        }
+        ServerNameInput::Omitted => {
+            let names = server::list_clickhouse_server_names_locked(&metadata_lock)?;
+            if names.iter().any(|name| name == "default") {
+                (
+                    "default".to_string(),
+                    output::ServerSelection::Implicit,
+                    true,
+                )
+            } else {
+                match names.as_slice() {
+                    [] => {
+                        let out = output::ServerStopNoopOutput {
+                            stopped: false,
+                            selection: output::ServerSelection::Implicit,
+                            reason: "no_clickhouse_servers",
+                        };
+                        output::print_output(&out, json);
+                        return Ok(());
+                    }
+                    [name] => (name.clone(), output::ServerSelection::Implicit, true),
+                    names => {
+                        return Err(Error::ServerStopSelectionRequired {
+                            available: names.len(),
+                        });
+                    }
+                }
             }
-            let data_dir = server::server_data_dir(&name);
-            if !data_dir.exists() {
-                return Err(Error::ServerNotFound(name));
+        }
+    };
+
+    match classify_stop(
+        server::is_server_running_locked(&name, &metadata_lock)?,
+        known || server::server_data_dir(&name).exists(),
+    ) {
+        StopOutcome::Stop => {
+            if !json {
+                println!("Stopping server '{}'...", name);
             }
-            // Remove the whole server directory (parent of data/)
-            let server_dir = data_dir.parent().unwrap();
-            std::fs::remove_dir_all(server_dir)?;
-            server::try_remove_server_info_locked(&name, &metadata_lock)?;
-            let out = output::ServerRemoveOutput { name };
+            server::kill_server_locked(&name, &metadata_lock)?;
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: false,
+                selection: Some(selection),
+            };
             output::print_output(&out, json);
             Ok(())
         }
+        StopOutcome::AlreadyStopped => {
+            // Server exists on disk but isn't running. `stop` is
+            // idempotent: this is the desired end state, so succeed
+            // instead of erroring.
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: true,
+                selection: Some(selection),
+            };
+            output::print_output(&out, json);
+            Ok(())
+        }
+        // No such server in this project — surface the typo.
+        StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
     }
+}
+
+fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
+    let explicit_name = match &name_input {
+        ServerNameInput::Omitted => None,
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => Some(name),
+    };
+    if let Some(name) = explicit_name {
+        server::validate_server_name(name)?;
+    }
+
+    // Recover orphaned servers so we correctly detect a running
+    // process even when its metadata file is missing.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let (name, selection) = match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            (name, output::ServerSelection::Explicit)
+        }
+        ServerNameInput::Omitted => {
+            let names = server::list_clickhouse_server_names_locked(&metadata_lock)?;
+            if names.iter().any(|name| name == "default") {
+                ("default".to_string(), output::ServerSelection::Implicit)
+            } else {
+                return Err(Error::ServerRemoveSelectionRequired {
+                    available: names.len(),
+                });
+            }
+        }
+    };
+
+    if server::is_server_running_locked(&name, &metadata_lock)? {
+        return Err(Error::ServerRunningCannotRemove(name));
+    }
+    let data_dir = server::server_data_dir(&name);
+    if !data_dir.exists() {
+        return Err(Error::ServerNotFound(name));
+    }
+    // Remove the whole server directory (parent of data/)
+    let server_dir = data_dir.parent().unwrap();
+    std::fs::remove_dir_all(server_dir)?;
+    server::try_remove_server_info_locked(&name, &metadata_lock)?;
+    let out = output::ServerRemoveOutput {
+        name,
+        selection: Some(selection),
+    };
+    output::print_output(&out, json);
+    Ok(())
 }
 
 /// What a project-scoped `server stop <name>` should do, given whether the
@@ -1010,16 +1107,52 @@ fn list_servers_global(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<()> {
+fn stop_server_global(
+    name_input: ServerNameInput,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let all = server::list_all_servers_global();
-    let mut matches: Vec<_> = all.iter().filter(|e| e.name == name).collect();
-
-    if let Some(proj) = project {
-        matches.retain(|e| e.project == proj);
-    }
+    let candidates: Vec<_> = all
+        .iter()
+        .filter(|entry| project.is_none_or(|project| entry.project == project))
+        .collect();
+    let (name, selection) = match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            server::validate_server_name(&name)?;
+            (name, output::ServerSelection::Explicit)
+        }
+        ServerNameInput::Omitted => {
+            if candidates.iter().any(|entry| entry.name == "default") {
+                ("default".to_string(), output::ServerSelection::Implicit)
+            } else {
+                match candidates.as_slice() {
+                    [] => {
+                        let out = output::ServerStopNoopOutput {
+                            stopped: false,
+                            selection: output::ServerSelection::Implicit,
+                            reason: "no_clickhouse_servers",
+                        };
+                        output::print_output(&out, json);
+                        return Ok(());
+                    }
+                    [entry] => (entry.name.clone(), output::ServerSelection::Implicit),
+                    entries => {
+                        return Err(Error::ServerStopSelectionRequired {
+                            available: entries.len(),
+                        });
+                    }
+                }
+            }
+        }
+    };
+    let matches: Vec<_> = candidates
+        .into_iter()
+        .filter(|entry| entry.name == name)
+        .collect();
 
     if matches.is_empty() {
-        return Err(Error::ServerNotFound(name.to_string()));
+        return Err(Error::ServerNotFound(name));
     }
 
     if matches.len() > 1 {
@@ -1037,8 +1170,9 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
     }
     server::kill_server_by_pid(entry.pid)?;
     let out = output::ServerStopOutput {
-        name: name.to_string(),
+        name,
         already_stopped: false,
+        selection: Some(selection),
     };
     output::print_output(&out, json);
     Ok(())
@@ -1204,6 +1338,22 @@ mod tests {
     #[test]
     fn classify_stop_unknown_name_is_not_found() {
         assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
+
+    #[test]
+    fn server_name_input_preserves_cli_source() {
+        assert_eq!(
+            ServerNameInput::from_args(None, None),
+            ServerNameInput::Omitted
+        );
+        assert_eq!(
+            ServerNameInput::from_args(Some("positional".into()), None),
+            ServerNameInput::Positional("positional".into())
+        );
+        assert_eq!(
+            ServerNameInput::from_args(None, Some("flagged".into())),
+            ServerNameInput::NameFlag("flagged".into())
+        );
     }
 
     #[test]

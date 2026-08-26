@@ -413,8 +413,10 @@ CONTEXT FOR AGENTS:
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a ClickHouse server. The name defaults to \"default\"; pass it positionally to select
-  another server (e.g., `server stop dev`). Use `clickhousectl local server list` to find names.
+  Without a name, stops \"default\" when it exists; otherwise stops the sole known ClickHouse
+  server. With no ClickHouse servers this is a successful no-op. Multiple non-default servers
+  require an explicit name or `clickhousectl local server stop-all`.
+  Pass the name positionally (e.g., `server stop dev`).
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
@@ -422,7 +424,7 @@ CONTEXT FOR AGENTS:
   An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
-        /// Name of the server to stop (default: "default")
+        /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
 
@@ -459,10 +461,12 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  The name defaults to \"default\"; pass it positionally to select another server.
+  Without a name, removes \"default\" only when it exists. A custom server is never selected
+  implicitly; use `server list`, then pass its name explicitly.
+  Pass the name positionally (e.g., `server remove dev`).
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
-        /// Name of the server to remove (default: "default")
+        /// Name of the server to remove (only an existing "default" is selected when omitted)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
 

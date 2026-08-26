@@ -72,20 +72,20 @@ fn explicit_json_and_agent_mode_emit_the_same_exact_server_error() {
     let home = tempfile::tempdir().expect("create home");
     let expected = expected_error(
         "server_not_found",
-        "Server 'default' not found",
+        "Server 'missing' not found",
         Some("clickhousectl local server list"),
     );
 
     let explicit = run(
         project.path(),
         home.path(),
-        &["local", "--json", "server", "stop"],
+        &["local", "--json", "server", "stop", "missing"],
     );
     assert_structured_failure(&explicit, &expected);
 
     let agent = command(project.path(), home.path())
         .env("AGENT", "opencode")
-        .args(["local", "server", "stop"])
+        .args(["local", "server", "stop", "missing"])
         .output()
         .expect("run clickhousectl in agent mode");
     assert_structured_failure(&agent, &expected);
@@ -287,12 +287,16 @@ fn human_and_clap_errors_keep_their_existing_formats() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
 
-    let human = run(project.path(), home.path(), &["local", "server", "stop"]);
+    let human = run(
+        project.path(),
+        home.path(),
+        &["local", "server", "stop", "missing"],
+    );
     assert_eq!(human.status.code(), Some(1));
     assert!(human.stdout.is_empty());
     assert_eq!(
         String::from_utf8_lossy(&human.stderr),
-        "Error: Server 'default' not found\n"
+        "Error: Server 'missing' not found\n"
     );
 
     let clap = run(

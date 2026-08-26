@@ -47,6 +47,14 @@ fn assert_stop_dispatch(name_args: &[&str], expected: &str) {
     let body: Value = serde_json::from_slice(&output.stdout).expect("parse stop JSON");
     assert_eq!(body["name"], expected);
     assert_eq!(body["already_stopped"], true);
+    assert_eq!(
+        body["selection"],
+        if name_args.is_empty() {
+            "implicit"
+        } else {
+            "explicit"
+        }
+    );
     assert!(decoy.exists());
 }
 
@@ -64,6 +72,14 @@ fn assert_remove_dispatch(name_args: &[&str], expected: &str) {
     assert_success(&output);
     let body: Value = serde_json::from_slice(&output.stdout).expect("parse remove JSON");
     assert_eq!(body["name"], expected);
+    assert_eq!(
+        body["selection"],
+        if name_args.is_empty() {
+            "implicit"
+        } else {
+            "explicit"
+        }
+    );
     assert!(!selected.exists());
     assert!(decoy.exists());
 }
@@ -81,7 +97,7 @@ fn remove_dispatches_positional_and_compatibility_names_exactly() {
 }
 
 #[test]
-fn omitted_names_keep_the_current_default_runtime_behavior() {
+fn omitted_names_select_an_existing_default_implicitly() {
     assert_stop_dispatch(&[], "default");
     assert_remove_dispatch(&[], "default");
 }

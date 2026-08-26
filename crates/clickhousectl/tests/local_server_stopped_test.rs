@@ -142,6 +142,7 @@ fn stopping_clickhouse_retains_metadata_and_lists_it_as_stopped() {
     let body: Value = serde_json::from_slice(&stop.stdout).expect("parse stop JSON");
     assert_eq!(body["name"], "default");
     assert_eq!(body["already_stopped"], false);
+    assert_eq!(body["selection"], "implicit");
 
     let saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
     assert_eq!(saved["pid"], 0);
