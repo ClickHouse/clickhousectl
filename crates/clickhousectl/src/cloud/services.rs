@@ -423,6 +423,8 @@ CONTEXT FOR AGENTS:
   With API key auth: first uses the authenticated key directly when the query
   endpoint already authorizes it. Otherwise, a per-service read+write key is
   auto-provisioned and stored in .clickhouse/credentials.json.
+  A stored key rejected with HTTP 401/403 is never replaced automatically; use
+  `cloud service repair-query-key <service-id>` to repair only that credential.
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
@@ -468,6 +470,23 @@ CONTEXT FOR AGENTS:
         /// key auth only; with OAuth this flag has no effect)
         #[arg(long)]
         no_auto_enable: bool,
+    },
+
+    /// Safely replace clickhousectl's stored Query API key for one service
+    #[command(after_help = "\
+Repairs only the stored credential for SERVICE_ID. The command verifies the
+saved organization, exact management API key ID, and query endpoint ID; it
+then replaces only that key's endpoint binding while preserving all other
+bindings and project credentials. Legacy or non-owned records without this
+metadata are refused. This is an explicit write operation and is never run
+automatically after a query fails.")]
+    RepairQueryKey {
+        /// Service ID whose stored Query API key should be replaced
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
     },
 }
 
@@ -554,6 +573,7 @@ impl ServiceCommands {
             ServiceCommands::Get { .. } => false,
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
+            ServiceCommands::RepairQueryKey { .. } => true,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
@@ -804,6 +824,9 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 no_auto_enable,
             };
             service_query(client, options).await
+        }
+        ServiceCommands::RepairQueryKey { service_id, org_id } => {
+            service_query_key_repair(client, &service_id, org_id.as_deref(), json).await
         }
     }
 }
@@ -1392,7 +1415,7 @@ async fn service_delete(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let (query_key_id, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
+    let (query_key_ids, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
 
     if force {
         let service = client.get_service_if_exists(&org_id, service_id).await?;
@@ -1427,7 +1450,7 @@ async fn service_delete(
         .delete_service_if_exists(&org_id, service_id)
         .await
         .map_err(|error| service_delete_error(error, force, service_id))?;
-    cleanup_service_query_key(client, &org_id, service_id, query_key_id.as_deref()).await?;
+    cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
     if !retain_query_key {
         credentials::remove_service_query_key(service_id)?;
     }
@@ -1711,6 +1734,34 @@ async fn query_endpoint_delete(
     Ok(())
 }
 
+async fn service_query_key_repair(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let result =
+        crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if result.status == "cleanup_completed" {
+        println!(
+            "Finished query-key cleanup for service {} (active API key: {})",
+            result.service_id, result.api_key_id
+        );
+    } else {
+        println!("Query key repaired for service {}", result.service_id);
+        println!(
+            "  Replaced API key: {}",
+            or_absent(result.replaced_api_key_id.as_deref())
+        );
+        println!("  New API key: {}", result.api_key_id);
+        println!("  Query endpoint: {}", result.endpoint_id);
+    }
+    Ok(())
+}
+
 struct ServiceQueryOptions {
     name: Option<String>,
     id: Option<String>,
@@ -1852,6 +1903,24 @@ fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
     }
 }
 
+fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Option<u16> {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: status @ (401 | 403),
+            ..
+        } => Some(*status),
+        _ => None,
+    }
+}
+
+fn stale_stored_query_key_error(service_id: &str, org_id: &str, status: u16) -> CloudError {
+    CloudError::new(format!(
+        "the stored Query API key for service {service_id} was rejected with HTTP {status} and \
+         may be stale; no replacement was created. Repair only this service credential with \
+         `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}`"
+    ))
+}
+
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
     let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
@@ -1900,8 +1969,8 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             convert_query_error(client, error, &service_name, &service_id, &org_id)
         })?
     } else {
-        let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
-            run_basic_service_query(
+        let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)? {
+            match run_basic_service_query(
                 client,
                 &service_id,
                 &key.key_id,
@@ -1913,6 +1982,15 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 false,
             )
             .await
+            {
+                Err(error) => match stored_query_key_rejection_status(&error) {
+                    Some(status) => {
+                        return Err(stale_stored_query_key_error(&service_id, &org_id, status));
+                    }
+                    None => Err(error),
+                },
+                response => response,
+            }
         } else {
             let (key_id, key_secret) = client
                 .basic_auth_credentials()
@@ -2417,6 +2495,29 @@ mod tests {
             "{help}"
         );
         assert!(help.contains("SQL is read from stdin"), "{help}");
+        assert!(help.contains("repair-query-key <service-id>"), "{help}");
+        assert!(help.contains("never replaced automatically"), "{help}");
+    }
+
+    #[test]
+    fn repair_query_key_help_documents_safe_service_scope() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "repair-query-key",
+            "--help",
+        ])
+        .err()
+        .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(help.contains("SERVICE_ID"), "{help}");
+        assert!(help.contains("exact management API key ID"), "{help}");
+        assert!(help.contains("preserving all other"), "{help}");
+        assert!(help.contains("Legacy or non-owned records"), "{help}");
+        assert!(help.contains("is never run"), "{help}");
+        assert!(help.contains("automatically after a query fails"), "{help}");
     }
 
     #[test]
@@ -3340,6 +3441,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_service_query_key_repair_scope() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "repair-query-key",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::RepairQueryKey { service_id, org_id } = command else {
+            panic!("expected query-key repair");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let ServiceCommands::RepairQueryKey { org_id, .. } = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "repair-query-key",
+            "svc-1",
+        ]) else {
+            panic!("expected query-key repair");
+        };
+        assert!(org_id.is_none());
+    }
+
+    #[test]
+    fn stored_query_key_rejections_get_a_non_provisioning_repair_hint() {
+        for status in [401, 403] {
+            let error = clickhouse_cloud_api::Error::Api {
+                status,
+                message: "rejected".into(),
+            };
+            assert_eq!(stored_query_key_rejection_status(&error), Some(status));
+            let hint = stale_stored_query_key_error("svc-1", "org-1", status).to_string();
+            assert!(hint.contains("no replacement was created"), "{hint}");
+            assert!(
+                hint.contains("clickhousectl cloud service repair-query-key svc-1 --org-id org-1"),
+                "{hint}"
+            );
+        }
+        assert_eq!(
+            stored_query_key_rejection_status(&clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "missing".into(),
+            }),
+            None
+        );
+    }
+
+    #[test]
     fn parses_service_query_file_source() {
         let command = parse_service(&[
             "clickhousectl",
@@ -3626,6 +3780,16 @@ mod tests {
         assert_write(
             &["clickhousectl", "cloud", "service", "get", "svc-1"],
             false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "repair-query-key",
+                "svc-1",
+            ],
+            true,
         );
         assert_write(
             &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],

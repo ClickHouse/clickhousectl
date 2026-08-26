@@ -33,10 +33,13 @@ pub struct ServiceQueryKey {
     pub key_id: String,
     pub key_secret: String,
     /// The query endpoint the key is bound to, when the upsert echoed it.
-    /// Recorded for diagnostics only — authentication uses the key pair — so
-    /// an endpoint response that omits `id` still yields a usable record.
+    /// Authentication uses the key pair, so an omitted `id` still yields a
+    /// usable record, but exact endpoint ownership is required for repair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_id: Option<String>,
+    /// Exact superseded management key IDs whose deletion must be retried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_cleanup_api_key_ids: Vec<String>,
     pub service_name: String,
     pub created_at: DateTime<Utc>,
 }
@@ -193,11 +196,6 @@ fn sync_directory(_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
-    let creds = load_credentials()?;
-    creds.service_query_keys.get(service_id).cloned()
-}
-
 pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
     Ok(try_load_credentials()?
         .and_then(|credentials| credentials.service_query_keys.get(service_id).cloned()))
@@ -282,6 +280,7 @@ mod tests {
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: Some("ep".into()),
+                pending_cleanup_api_key_ids: vec![],
                 service_name: "demo".into(),
                 created_at: chrono::DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
                     .unwrap()
@@ -299,6 +298,7 @@ mod tests {
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
         assert_eq!(key.service_name, "demo");
     }
 
@@ -313,6 +313,7 @@ mod tests {
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: None,
+                pending_cleanup_api_key_ids: vec![],
                 service_name: "demo".into(),
                 created_at: chrono::DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
                     .unwrap()
@@ -327,6 +328,7 @@ mod tests {
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id, None);
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
     }
 
     #[test]
@@ -340,6 +342,7 @@ mod tests {
         assert_eq!(key.organization_id, None);
         assert_eq!(key.api_key_id, None);
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
         assert_eq!(key.key_id, "kid");
 
         let written = serde_json::to_string(&creds).unwrap();

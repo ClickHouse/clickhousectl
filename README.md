@@ -521,6 +521,9 @@ clickhousectl cloud service query --name my-service --queries-file schema.sql   
 clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 
+# Replace a stale clickhousectl-owned Query API key for exactly one service
+clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
@@ -604,6 +607,8 @@ Provisioning happens lazily (rather than at `service create` time) because the e
 Provisioning is single-flight for processes using the same project directory: the CLI serializes the create, bind, and credential-save transaction and reuses the result written by the first process. The endpoint upsert API replaces the complete `openApiKeys` list and does not currently support a conditional or idempotent key-binding operation. Provisioning the same service concurrently from different project directories can therefore still lose a binding if both projects read and replace that list at the same time.
 
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes an auto-provisioned key by its stored management and organization IDs, then removes the local record. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
+
+If a stored per-service key is revoked or its endpoint binding changes, a query that receives HTTP 401/403 reports the exact `repair-query-key` command and does not silently provision another key. Repair is an explicit API-key-authenticated write operation. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Legacy or incomplete records without exact ownership metadata are refused. If deletion of the superseded key fails after replacement, its exact ID stays in the service record so rerunning the repair command can finish cleanup without provisioning again.
 
 Querying an **idled** service wakes it automatically in both auth modes — under OAuth the Query API first asks for a wake confirmation, which the CLI sends after printing a notice to stderr (the first query may take a minute while the service wakes). A **stopped** service is never woken: the query fails with a hint to run `cloud service start`.
 
