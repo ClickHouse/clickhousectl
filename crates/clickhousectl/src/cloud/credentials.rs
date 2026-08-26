@@ -3,7 +3,10 @@ use crate::init;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+const QUERY_PROVISIONING_LOCK: &str = "query-provisioning.lock";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
@@ -41,43 +44,60 @@ pub fn credentials_path() -> PathBuf {
     init::local_dir().join("credentials.json")
 }
 
+fn ensure_local_dir() -> CloudResult<PathBuf> {
+    let dir = init::local_dir();
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(".gitignore"), "*\n")?;
+    }
+    Ok(dir)
+}
+
+/// Holds the project-wide provisioning lock for its lifetime.
+///
+/// The lock is owned by the open file handle, not by lock-file contents. If a
+/// process exits midway through provisioning, the OS releases the lock; the
+/// leftover file is safely opened and locked by the next process.
+pub(crate) struct QueryProvisioningLock {
+    _file: std::fs::File,
+}
+
+pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLock> {
+    let lock_path = ensure_local_dir()?.join(QUERY_PROVISIONING_LOCK);
+    let display_path = lock_path.clone();
+    let file = tokio::task::spawn_blocking(move || {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        file.lock()?;
+        Ok::<_, std::io::Error>(file)
+    })
+    .await
+    .map_err(|error| {
+        CloudError::new(format!(
+            "failed to wait for query provisioning lock {}: {error}",
+            display_path.display()
+        ))
+    })?
+    .map_err(|error| {
+        CloudError::new(format!(
+            "failed to lock query provisioning at {}: {error}",
+            display_path.display()
+        ))
+    })?;
+    Ok(QueryProvisioningLock { _file: file })
+}
+
 pub fn load_credentials() -> Option<Credentials> {
     let path = credentials_path();
     let data = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
-pub fn clear_credentials() {
-    let path = credentials_path();
-    let _ = std::fs::remove_file(path);
-}
-
-pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
-    let dir = init::local_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(".gitignore"), "*\n")?;
-    }
-
-    let path = credentials_path();
-    let json = serde_json::to_string_pretty(creds)?;
-    std::fs::write(&path, &json)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(())
-}
-
-pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
-    let creds = load_credentials()?;
-    creds.service_query_keys.get(service_id).cloned()
-}
-
-pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
+fn try_load_credentials() -> CloudResult<Option<Credentials>> {
     let path = credentials_path();
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
@@ -89,13 +109,73 @@ pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<Service
             )));
         }
     };
-    let creds: Credentials = serde_json::from_str(&data)
+    let credentials = serde_json::from_str(&data)
         .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))?;
-    Ok(creds.service_query_keys.get(service_id).cloned())
+    Ok(Some(credentials))
 }
 
-pub fn set_service_query_key(service_id: &str, key: ServiceQueryKey) -> CloudResult<()> {
-    let mut creds = load_credentials().unwrap_or_default();
+pub fn clear_credentials() {
+    let path = credentials_path();
+    let _ = std::fs::remove_file(path);
+}
+
+pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
+    let dir = ensure_local_dir()?;
+    let path = credentials_path();
+    let json = serde_json::to_string_pretty(creds)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".credentials.json.")
+        .tempfile_in(&dir)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    temporary.write_all(json.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&path).map_err(|error| {
+        CloudError::new(format!(
+            "failed to replace {}: {}",
+            path.display(),
+            error.error
+        ))
+    })?;
+    sync_directory(&dir)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> CloudResult<()> {
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_dir: &Path) -> CloudResult<()> {
+    Ok(())
+}
+
+pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
+    let creds = load_credentials()?;
+    creds.service_query_keys.get(service_id).cloned()
+}
+
+pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
+    Ok(try_load_credentials()?
+        .and_then(|credentials| credentials.service_query_keys.get(service_id).cloned()))
+}
+
+pub(crate) fn set_service_query_key(
+    service_id: &str,
+    key: ServiceQueryKey,
+    _lock: &QueryProvisioningLock,
+) -> CloudResult<()> {
+    let mut creds = try_load_credentials()?.unwrap_or_default();
     creds.service_query_keys.insert(service_id.to_string(), key);
     save_credentials(&creds)
 }

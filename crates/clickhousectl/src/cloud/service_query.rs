@@ -6,7 +6,6 @@
 //! `cloud service query` invocations can authenticate without contacting the
 //! control plane.
 
-use crate::cloud::api_keys::discard_api_key;
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::{DateTime, Utc};
@@ -39,7 +38,7 @@ fn require_credential_pair(key_response: &ApiKeyPostResponse) -> CloudResult<(St
 
 fn build_service_query_key(
     organization_id: &str,
-    api_key_id: String,
+    api_key_id: &str,
     key_id: String,
     key_secret: String,
     endpoint_id: Option<String>,
@@ -48,7 +47,7 @@ fn build_service_query_key(
 ) -> ServiceQueryKey {
     ServiceQueryKey {
         organization_id: Some(organization_id.to_string()),
-        api_key_id: Some(api_key_id),
+        api_key_id: Some(api_key_id.to_string()),
         key_id,
         key_secret,
         endpoint_id,
@@ -68,7 +67,16 @@ pub async fn ensure_service_query_setup(
     service_id: &str,
     service_name: &str,
 ) -> CloudResult<ServiceQueryKey> {
-    if let Some(existing) = credentials::get_service_query_key(service_id) {
+    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
+        return Ok(existing);
+    }
+
+    // Serialize the complete read-create-bind-save transaction across CLI
+    // processes in this project. A waiter must re-read after acquisition: the
+    // process that held the lock may have completed provisioning while it
+    // waited.
+    let provisioning_lock = credentials::lock_query_provisioning().await?;
+    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
         return Ok(existing);
     }
 
@@ -107,8 +115,7 @@ pub async fn ensure_service_query_setup(
         Err(e) => {
             // The key exists but we can't authenticate with it, so it is
             // dead weight in the org: discard it before failing.
-            discard_api_key(client, org_id, &api_key_uuid).await;
-            return Err(e);
+            return fail_after_key_creation(client, org_id, &api_key_uuid, e).await;
         }
     };
 
@@ -117,8 +124,7 @@ pub async fn ensure_service_query_setup(
         Err(e) => {
             // The key was created but never bound or persisted, so nothing
             // can use it.
-            discard_api_key(client, org_id, &api_key_uuid).await;
-            return Err(e);
+            return fail_after_key_creation(client, org_id, &api_key_uuid, e).await;
         }
     };
 
@@ -128,36 +134,54 @@ pub async fn ensure_service_query_setup(
     // dangling UUID in the endpoint's `openApiKeys`.
     let stored = build_service_query_key(
         org_id,
-        api_key_uuid,
+        &api_key_uuid,
         key_id,
         key_secret,
         endpoint.id,
         service_name,
         Utc::now(),
     );
-    credentials::set_service_query_key(service_id, stored.clone())?;
+    if let Err(error) =
+        credentials::set_service_query_key(service_id, stored.clone(), &provisioning_lock)
+    {
+        return fail_after_key_creation(client, org_id, &api_key_uuid, error).await;
+    }
 
     Ok(stored)
 }
 
+async fn fail_after_key_creation<T>(
+    client: &CloudClient,
+    org_id: &str,
+    api_key_id: &str,
+    provisioning_error: CloudError,
+) -> CloudResult<T> {
+    match client.delete_api_key_if_exists(org_id, api_key_id).await {
+        Ok(_) => Err(provisioning_error),
+        Err(cleanup_error) => Err(CloudError {
+            message: format!(
+                "{provisioning_error}; additionally, failed to delete newly created API key \
+                 {api_key_id}: {cleanup_error}"
+            ),
+            kind: provisioning_error.kind,
+        }),
+    }
+}
+
 /// The keys already bound to an existing query endpoint, taken from a
 /// successful GET. The upsert replaces `openApiKeys` wholesale, so an absent
-/// `result` or absent `openApiKeys` cannot be read as "no keys bound": merging
-/// into an empty list would revoke every binding the response failed to
-/// report. An explicitly empty list is a real answer and merges normally.
+/// `openApiKeys` cannot be read as "no keys bound": merging into an empty list
+/// would revoke every binding the response failed to report. An explicitly
+/// empty list is a real answer and merges normally.
 fn existing_open_api_keys(
-    endpoint: Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>,
+    endpoint: clickhouse_cloud_api::models::ServiceQueryAPIEndpoint,
 ) -> CloudResult<Vec<String>> {
-    let incomplete = |field: &str| {
-        CloudError::new(format!(
-            "the query endpoint response is missing field '{field}', so the keys currently bound \
-             to the endpoint are unknown; binding a new key would revoke them"
-        ))
-    };
-    endpoint
-        .ok_or_else(|| incomplete("result"))?
-        .open_api_keys
-        .ok_or_else(|| incomplete("openApiKeys"))
+    endpoint.open_api_keys.ok_or_else(|| {
+        CloudError::new(
+            "the query endpoint response is missing field 'openApiKeys', so the keys currently \
+             bound to the endpoint are unknown; binding a new key would revoke them",
+        )
+    })
 }
 
 /// Bind `api_key_uuid` to the service's query endpoint, merging into the
@@ -171,15 +195,11 @@ async fn bind_query_endpoint(
     api_key_uuid: &str,
 ) -> CloudResult<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
     let mut open_api_keys = match client
-        .api()
-        .instance_query_endpoint_get(org_id, service_id)
-        .await
+        .get_query_endpoint_for_binding(org_id, service_id)
+        .await?
     {
-        Ok(resp) => existing_open_api_keys(resp.result)?,
-        // Only a 404 means there is no endpoint yet, so this binding is the
-        // first one and starts from an empty list.
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error_for_organization(e, org_id)),
+        Some(endpoint) => existing_open_api_keys(endpoint)?,
+        None => Vec::new(),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
         open_api_keys.push(api_key_uuid.to_string());
@@ -196,6 +216,24 @@ async fn bind_query_endpoint(
     client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await
+}
+
+impl CloudClient {
+    async fn get_query_endpoint_for_binding(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>> {
+        match self
+            .api()
+            .instance_query_endpoint_get(org_id, service_id)
+            .await
+        {
+            Ok(response) => Self::unwrap_response(response).map(Some),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -243,7 +281,7 @@ mod tests {
             .with_timezone(&Utc);
         let key = build_service_query_key(
             "org-1",
-            "api-key-uuid".into(),
+            "api-key-uuid",
             "query-key-id".into(),
             "query-key-secret".into(),
             Some("endpoint-id".into()),
@@ -274,7 +312,7 @@ mod tests {
     #[test]
     fn existing_keys_are_returned_when_the_endpoint_reports_them() {
         assert_eq!(
-            existing_open_api_keys(Some(endpoint(Some(vec!["uuid-a", "uuid-b"])))).unwrap(),
+            existing_open_api_keys(endpoint(Some(vec!["uuid-a", "uuid-b"]))).unwrap(),
             vec!["uuid-a".to_string(), "uuid-b".to_string()],
         );
     }
@@ -282,7 +320,7 @@ mod tests {
     #[test]
     fn an_explicitly_empty_key_list_is_a_real_answer() {
         assert!(
-            existing_open_api_keys(Some(endpoint(Some(vec![]))))
+            existing_open_api_keys(endpoint(Some(vec![])))
                 .unwrap()
                 .is_empty()
         );
@@ -290,19 +328,10 @@ mod tests {
 
     #[test]
     fn absent_open_api_keys_is_refused_rather_than_treated_as_empty() {
-        let err = existing_open_api_keys(Some(endpoint(None))).unwrap_err();
+        let err = existing_open_api_keys(endpoint(None)).unwrap_err();
         assert!(
             err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
             "error should name the field and the consequence: {err}",
-        );
-    }
-
-    #[test]
-    fn absent_result_is_refused_rather_than_treated_as_empty() {
-        let err = existing_open_api_keys(None).unwrap_err();
-        assert!(
-            err.to_string().contains("'result'"),
-            "error should name the field: {err}",
         );
     }
 }

@@ -548,10 +548,6 @@ pub(crate) async fn cleanup_service_query_key(
     Ok(())
 }
 
-pub(crate) async fn discard_api_key(client: &CloudClient, org_id: &str, api_key_id: &str) {
-    let _ = client.delete_api_key(org_id, api_key_id).await;
-}
-
 impl CloudClient {
     pub async fn list_api_keys(
         &self,

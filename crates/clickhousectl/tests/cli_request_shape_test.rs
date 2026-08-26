@@ -2998,6 +2998,327 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
 // orphaned key in the org.
 
 const QUERY_TEST_KEY_UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const PRESERVED_QUERY_SERVICE_ID: &str = "preserved-service";
+
+fn service_query_process(
+    project_dir: &Path,
+    control: &MockServer,
+    query_host: &MockServer,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(clickhousectl_binary());
+    command
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project_dir.join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .current_dir(project_dir)
+        .args([
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ]);
+    command
+}
+
+async fn run_concurrent_service_queries(
+    count: usize,
+    project_dir: &Path,
+    control: &MockServer,
+    query_host: &MockServer,
+) -> Vec<std::process::Output> {
+    let tasks = (0..count)
+        .map(|_| {
+            let mut command = service_query_process(project_dir, control, query_host);
+            tokio::spawn(async move {
+                command
+                    .output()
+                    .await
+                    .expect("failed to spawn clickhousectl")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut outputs = Vec::with_capacity(count);
+    for task in tasks {
+        outputs.push(task.await.expect("clickhousectl task panicked"));
+    }
+    outputs
+}
+
+fn write_preserved_query_credentials(project_dir: &Path) -> Value {
+    let credentials = serde_json::json!({
+        "service_query_keys": {
+            PRESERVED_QUERY_SERVICE_ID: {
+                "organization_id": "org-1",
+                "api_key_id": "preserved-api-key-uuid",
+                "key_id": "preserved-key-id",
+                "key_secret": "preserved-key-secret",
+                "endpoint_id": "preserved-endpoint",
+                "service_name": "preserved",
+                "created_at": "2026-05-11T12:00:00Z"
+            }
+        }
+    });
+    let clickhouse_dir = project_dir.join(".clickhouse");
+    std::fs::create_dir_all(&clickhouse_dir).unwrap();
+    std::fs::write(
+        clickhouse_dir.join("credentials.json"),
+        serde_json::to_vec(&credentials).unwrap(),
+    )
+    .unwrap();
+    credentials
+}
+
+#[tokio::test]
+async fn concurrent_service_queries_provision_once_and_reuse_atomically_saved_credentials() {
+    const PROCESS_COUNT: usize = 6;
+
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+    let project = tempfile::tempdir().unwrap();
+    let original_credentials = write_preserved_query_credentials(project.path());
+    std::fs::create_dir(project.path().join("home")).unwrap();
+
+    // Lock ownership is held by the OS file handle. Contents left by a dead
+    // process must not make the lock stale or block the next provisioner.
+    std::fs::write(
+        project.path().join(".clickhouse/query-provisioning.lock"),
+        "stale owner metadata",
+    )
+    .unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(250))
+                .set_body_json(serde_json::json!({
+                    "result": {
+                        "key": { "id": QUERY_TEST_KEY_UUID },
+                        "keyId": "provisioned-key-id",
+                        "keySecret": "provisioned-key-secret"
+                    },
+                    "status": 200,
+                    "requestId": "stub-key-create"
+                })),
+        )
+        .mount(&control)
+        .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get"
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": [QUERY_TEST_KEY_UUID] },
+            "status": 200,
+            "requestId": "stub-endpoint-upsert"
+        })))
+        .mount(&control)
+        .await;
+
+    let outputs =
+        run_concurrent_service_queries(PROCESS_COUNT, project.path(), &control, &query_host).await;
+    for output in &outputs {
+        assert_success(output);
+        assert_eq!(output.stdout, b"1\n");
+    }
+
+    // A later process proves the persisted result is immediately reusable and
+    // does not enter provisioning again.
+    let reuse_output = service_query_process(project.path(), &control, &query_host)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&reuse_output);
+
+    let requests = control.received_requests().await.unwrap();
+    let key_creates = requests
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == "/v1/organizations/org-1/keys"
+        })
+        .count();
+    let endpoint_gets = requests
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::GET && request.url.path() == endpoint_path
+        })
+        .count();
+    let endpoint_upserts = requests
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(key_creates, 1, "only the lock holder may create a key");
+    assert_eq!(
+        endpoint_gets, 1,
+        "only the lock holder may inspect the endpoint"
+    );
+    assert_eq!(endpoint_upserts.len(), 1, "the endpoint must be bound once");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method != wiremock::http::Method::DELETE),
+        "successful provisioning must not delete a key",
+    );
+    let upsert_body: Value = serde_json::from_slice(&endpoint_upserts[0].body).unwrap();
+    assert_eq!(
+        upsert_body["openApiKeys"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+
+    let credentials_bytes =
+        std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap();
+    let credentials: Value = serde_json::from_slice(&credentials_bytes)
+        .expect("atomic replacement must leave valid credential JSON");
+    assert_eq!(
+        credentials["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
+        original_credentials["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
+        "the under-lock merge must preserve unrelated credentials",
+    );
+    let stored = &credentials["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(stored["organization_id"], "org-1");
+    assert_eq!(stored["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(stored["key_id"], "provisioned-key-id");
+    assert_eq!(stored["key_secret"], "provisioned-key-secret");
+    assert_eq!(stored["endpoint_id"], "ep-1");
+    assert!(stored["created_at"].is_string());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(project.path().join(".clickhouse/credentials.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_failed_provisioners_delete_only_their_exact_created_key() {
+    const PROCESS_COUNT: usize = 3;
+    const UNRELATED_BOUND_KEY: &str = "99999999-8888-7777-6666-555555555555";
+
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+    let project = tempfile::tempdir().unwrap();
+    let original_credentials = write_preserved_query_credentials(project.path());
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret"
+        }),
+    )
+    .await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": [UNRELATED_BOUND_KEY] },
+            "status": 200,
+            "requestId": "stub-endpoint-get"
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "upsert failed",
+            "status": 500,
+            "requestId": "stub-endpoint-upsert"
+        })))
+        .mount(&control)
+        .await;
+
+    let outputs =
+        run_concurrent_service_queries(PROCESS_COUNT, project.path(), &control, &query_host).await;
+    for output in &outputs {
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("upsert failed"),
+            "unexpected stderr: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    let requests = control.received_requests().await.unwrap();
+    let count = |request_method: wiremock::http::Method, request_path: &str| {
+        requests
+            .iter()
+            .filter(|request| {
+                request.method == request_method && request.url.path() == request_path
+            })
+            .count()
+    };
+    assert_eq!(
+        count(wiremock::http::Method::POST, "/v1/organizations/org-1/keys"),
+        PROCESS_COUNT
+    );
+    assert_eq!(
+        count(wiremock::http::Method::GET, &endpoint_path),
+        PROCESS_COUNT
+    );
+    assert_eq!(
+        count(wiremock::http::Method::POST, &endpoint_path),
+        PROCESS_COUNT
+    );
+    let deletes = requests
+        .iter()
+        .filter(|request| request.method == wiremock::http::Method::DELETE)
+        .collect::<Vec<_>>();
+    assert_eq!(deletes.len(), PROCESS_COUNT);
+    assert!(deletes.iter().all(|request| {
+        request.url.path() == format!("/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}")
+    }));
+    for upsert in requests.iter().filter(|request| {
+        request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
+    }) {
+        let body: Value = serde_json::from_slice(&upsert.body).unwrap();
+        assert_eq!(
+            body["openApiKeys"],
+            serde_json::json!([UNRELATED_BOUND_KEY, QUERY_TEST_KEY_UUID]),
+            "the unrelated endpoint binding must be preserved",
+        );
+    }
+
+    let credentials: Value = serde_json::from_slice(
+        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(credentials, original_credentials);
+    assert!(
+        credentials["service_query_keys"]
+            .get(QUERY_TEST_SERVICE_ID)
+            .is_none(),
+        "a failed provision must not leave an untracked local record",
+    );
+}
 
 /// Mount a key-creation POST returning `result`, plus a key DELETE, on the
 /// control plane. `result` lets each test omit exactly the field under test.
