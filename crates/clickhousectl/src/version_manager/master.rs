@@ -14,10 +14,13 @@
 
 use crate::error::{NetworkCategory, NetworkFailure, NetworkStage, Result};
 use crate::paths;
+use crate::version_manager::atomic::{CommitLock, sync_directory};
 use crate::version_manager::network;
 use crate::version_manager::platform::{DownloadSource, Platform};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// One installed master build's change-detection state, per platform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,15 +52,12 @@ struct Sidecar {
 }
 
 /// Path to the sidecar file (`~/.clickhouse/versions/.master-builds.json`).
-fn sidecar_path() -> Result<std::path::PathBuf> {
+fn sidecar_path() -> Result<PathBuf> {
     Ok(paths::versions_dir()?.join(".master-builds.json"))
 }
 
-fn load_sidecar() -> Sidecar {
-    let Ok(path) = sidecar_path() else {
-        return Sidecar::default();
-    };
-    let Ok(bytes) = std::fs::read(&path) else {
+fn load_sidecar_at(path: &Path) -> Sidecar {
+    let Ok(bytes) = std::fs::read(path) else {
         return Sidecar::default();
     };
     // A corrupt/old-format sidecar is treated as absent -- worst case is one
@@ -67,40 +67,59 @@ fn load_sidecar() -> Sidecar {
 
 /// Load the recorded master state for this platform, if any.
 fn load_record(platform: &Platform) -> Option<MasterRecord> {
-    load_sidecar().builds.remove(platform.builds_path())
-}
-
-/// Pure core of [`clear_record_for_version`]: drop the platform's record iff it
-/// records exactly `version`. Returns whether the sidecar changed.
-fn clear_version_from(sidecar: &mut Sidecar, platform_key: &str, version: &str) -> bool {
-    if sidecar
+    load_sidecar_at(&sidecar_path().ok()?)
         .builds
-        .get(platform_key)
-        .is_some_and(|r| r.version == version)
-    {
-        sidecar.builds.remove(platform_key);
-        true
-    } else {
-        false
-    }
+        .remove(platform.builds_path())
 }
 
-/// Invalidate the record when a non-master install overwrites `versions/<version>/`:
-/// the recorded etag no longer describes the binary on disk, and a stale match
-/// would make a later `latest` resolve silently reuse the wrong build.
-pub fn clear_record_for_version(platform: &Platform, version: &str) -> Result<()> {
-    let mut sidecar = load_sidecar();
-    if clear_version_from(&mut sidecar, platform.builds_path(), version) {
-        let json = serde_json::to_vec_pretty(&sidecar)?;
-        std::fs::write(sidecar_path()?, json)?;
+fn clear_version_from(sidecar: &mut Sidecar, version: &str) -> bool {
+    let previous_len = sidecar.builds.len();
+    sidecar.builds.retain(|_, record| record.version != version);
+    sidecar.builds.len() != previous_len
+}
+
+fn write_sidecar_atomic(versions_dir: &Path, scratch_dir: &Path, sidecar: &Sidecar) -> Result<()> {
+    let temporary_path = scratch_dir.join("master-builds.json.tmp");
+    let mut temporary = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary_path)?;
+    temporary.write_all(&serde_json::to_vec_pretty(sidecar)?)?;
+    temporary.sync_all()?;
+    drop(temporary);
+    std::fs::rename(&temporary_path, versions_dir.join(".master-builds.json"))?;
+    sync_directory(versions_dir)?;
+    Ok(())
+}
+
+/// Remove every record that points at a version about to be replaced. This is
+/// committed before the binary swap so an interruption can only cause an extra
+/// download, never reuse a binary that no longer matches its recorded etag.
+pub(crate) fn invalidate_version(
+    _lock: &CommitLock,
+    versions_dir: &Path,
+    scratch_dir: &Path,
+    version: &str,
+) -> Result<()> {
+    let path = versions_dir.join(".master-builds.json");
+    let mut sidecar = load_sidecar_at(&path);
+    if clear_version_from(&mut sidecar, version) {
+        write_sidecar_atomic(versions_dir, scratch_dir, &sidecar)?;
     }
     Ok(())
 }
 
 /// Persist the master state for this platform, merging into any existing
 /// sidecar so other platforms' records are preserved.
-pub fn record(platform: &Platform, head: &HeadInfo, version: &str) -> Result<()> {
-    let mut sidecar = load_sidecar();
+pub(crate) fn record_install(
+    _lock: &CommitLock,
+    versions_dir: &Path,
+    scratch_dir: &Path,
+    platform: &Platform,
+    head: &HeadInfo,
+    version: &str,
+) -> Result<()> {
+    let mut sidecar = load_sidecar_at(&versions_dir.join(".master-builds.json"));
     sidecar.builds.insert(
         platform.builds_path().to_string(),
         MasterRecord {
@@ -109,10 +128,7 @@ pub fn record(platform: &Platform, head: &HeadInfo, version: &str) -> Result<()>
             version: version.to_string(),
         },
     );
-    let path = sidecar_path()?;
-    let json = serde_json::to_vec_pretty(&sidecar)?;
-    std::fs::write(&path, json)?;
-    Ok(())
+    write_sidecar_atomic(versions_dir, scratch_dir, &sidecar)
 }
 
 /// HEAD the master URL and pull the change-detection headers.
@@ -349,11 +365,7 @@ mod tests {
         sidecar
             .builds
             .insert("macos-aarch64".to_string(), rec("\"x-1\"", "26.5.1.1"));
-        assert!(clear_version_from(
-            &mut sidecar,
-            "macos-aarch64",
-            "26.5.1.1"
-        ));
+        assert!(clear_version_from(&mut sidecar, "26.5.1.1"));
         assert!(!sidecar.builds.contains_key("macos-aarch64"));
     }
 
@@ -365,16 +377,12 @@ mod tests {
         sidecar
             .builds
             .insert("macos-aarch64".to_string(), rec("\"x-1\"", "26.5.1.1"));
-        assert!(!clear_version_from(
-            &mut sidecar,
-            "macos-aarch64",
-            "25.12.9.61"
-        ));
+        assert!(!clear_version_from(&mut sidecar, "25.12.9.61"));
         assert!(sidecar.builds.contains_key("macos-aarch64"));
     }
 
     #[test]
-    fn clear_version_keeps_other_platforms() {
+    fn clear_version_removes_every_platform_pointing_at_replaced_directory() {
         let mut sidecar = Sidecar::default();
         sidecar
             .builds
@@ -382,21 +390,13 @@ mod tests {
         sidecar
             .builds
             .insert("macos-aarch64".to_string(), rec("\"y-2\"", "26.5.1.1"));
-        assert!(clear_version_from(
-            &mut sidecar,
-            "macos-aarch64",
-            "26.5.1.1"
-        ));
-        assert!(sidecar.builds.contains_key("amd64"));
+        assert!(clear_version_from(&mut sidecar, "26.5.1.1"));
+        assert!(sidecar.builds.is_empty());
     }
 
     #[test]
     fn clear_version_no_record_is_noop() {
         let mut sidecar = Sidecar::default();
-        assert!(!clear_version_from(
-            &mut sidecar,
-            "macos-aarch64",
-            "26.5.1.1"
-        ));
+        assert!(!clear_version_from(&mut sidecar, "26.5.1.1"));
     }
 }

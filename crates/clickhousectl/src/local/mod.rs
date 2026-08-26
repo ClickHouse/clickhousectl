@@ -210,6 +210,20 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         }
     }
 
+    let versions_dir = paths::versions_dir()?;
+    let staging = version_manager::atomic::InstallStaging::create(&versions_dir)?;
+    let commit_lock = version_manager::atomic::CommitLock::acquire_blocking(&versions_dir)?;
+    if !version_dir.exists() {
+        return Err(Error::VersionNotFound(version.to_string()));
+    }
+
+    version_manager::master::invalidate_version(
+        &commit_lock,
+        &versions_dir,
+        staging.path(),
+        version,
+    )?;
+
     // Check if this is the default version
     if let Ok(default) = version_manager::get_default_version()
         && default == version
@@ -221,14 +235,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&version_dir)?;
-
-    // If the removed dir was recorded as the installed master build, clear the
-    // master sidecar record so a later `latest` resolve doesn't see a stale
-    // entry pointing at a now-deleted binary. Best-effort, like the install
-    // overwrite path: a sidecar failure must not fail a successful removal.
-    if let Ok(platform) = version_manager::platform::Platform::detect() {
-        let _ = version_manager::master::clear_record_for_version(&platform, version);
-    }
+    version_manager::atomic::sync_directory(&versions_dir)?;
 
     let out = output::RemoveOutput {
         version: version.to_string(),

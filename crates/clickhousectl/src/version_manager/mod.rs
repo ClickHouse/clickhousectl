@@ -1,3 +1,4 @@
+pub(crate) mod atomic;
 pub mod download;
 pub mod install;
 pub mod list;
