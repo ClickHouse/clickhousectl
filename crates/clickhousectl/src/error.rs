@@ -191,6 +191,9 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
+    #[error("Postgres error: {0}")]
+    Postgres(String),
+
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.
     #[error("child process exited with code {0}")]

@@ -461,14 +461,16 @@ CONTEXT FOR AGENTS:
   a random name is generated (e.g. \"bold-crane\").
   --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
   Defaults to 18. Image is pulled if not already present locally.
-  --port defaults to 5432; if taken, a free port is auto-assigned.
-  Data persists at .clickhouse/servers/<name>/data/ and is bind-mounted into the container.
+  When --port is omitted, port 5432 is used if free or another free port is auto-selected.
+  An explicitly requested port is rejected if it is occupied.
+  Data persists at .clickhouse/servers/<name>-pg<major>/data/ and is bind-mounted into the container.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
   POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
   `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
   be combined. Every --env key must be unique, so generated variables are never duplicated.
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
-  `clickhousectl.project=<cwd>`, `created_by=clickhousectl_<version>` for safe discovery.
+  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
+  `created_by=clickhousectl_<version>` for safe discovery.
   Requires Docker to be installed and running.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
@@ -479,7 +481,7 @@ CONTEXT FOR AGENTS:
         #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
 
-        /// Host TCP port (default: 5432, auto-assigns a free port if in use)
+        /// Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
         #[arg(long, value_parser = crate::local::postgres::parse_pg_port_arg)]
         port: Option<u16>,
 

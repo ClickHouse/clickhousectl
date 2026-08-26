@@ -233,8 +233,11 @@ fn bound_explicit_port_fails_locally_without_docker_or_project_state() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains(&format!("Postgres port {port} is already in use")));
+    assert!(stderr.contains(&format!(
+        "Postgres error: Postgres port {port} is already in use"
+    )));
     assert!(stderr.contains("omit --port to auto-select a free port"));
+    assert!(!stderr.contains("Failed to execute ClickHouse"));
     assert_eq!(requests, 0);
     assert!(!project_state_created);
 }
@@ -293,4 +296,70 @@ fn password_env_override_reports_stored_settings_on_resume() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
     assert!(stderr.contains("resuming with stored settings"), "{stderr}");
+}
+
+#[test]
+fn unsupported_version_diagnostic_is_postgres_specific() {
+    let (output, requests, project_state_created) = run_invalid_start(&["--version", "16"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(
+        stderr
+            .contains("Postgres error: invalid or unsupported postgres version '16'. Use 17 or 18")
+    );
+    assert!(!stderr.contains("Failed to execute ClickHouse"));
+    assert_eq!(requests, 0);
+    assert!(!project_state_created);
+}
+
+#[test]
+fn postgres_start_help_matches_managed_runtime_behavior() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home.path())
+        .args(["local", "postgres", "start", "--help"])
+        .output()
+        .expect("render postgres start help");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        r#"Start a Postgres container
+
+Usage: clickhousectl local postgres start [OPTIONS]
+
+Options:
+      --json                 Output as JSON
+      --name <NAME>          Server name (default: "default", or random if default is already running)
+  -v, --version <VERSION>    Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing
+      --port <PORT>          Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
+      --user <USER>          POSTGRES_USER (default: postgres)
+      --password <PASSWORD>  POSTGRES_PASSWORD (default: random 24-char alphanumeric)
+      --database <DATABASE>  POSTGRES_DB (default: postgres)
+  -e, --env <KEY=VALUE>      Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
+  -h, --help                 Print help
+
+CONTEXT FOR AGENTS:
+  Starts a named Postgres server backed by a Docker container.
+  Without --name, the first server is called "default"; if "default" is running,
+  a random name is generated (e.g. "bold-crane").
+  --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
+  Defaults to 18. Image is pulled if not already present locally.
+  When --port is omitted, port 5432 is used if free or another free port is auto-selected.
+  An explicitly requested port is rejected if it is occupied.
+  Data persists at .clickhouse/servers/<name>-pg<major>/data/ and is bind-mounted into the container.
+  A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
+  POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
+  `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
+  be combined. Every --env key must be unique, so generated variables are never duplicated.
+  Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
+  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
+  `created_by=clickhousectl_<version>` for safe discovery.
+  Requires Docker to be installed and running.
+"#
+    );
+    assert!(output.stderr.is_empty());
 }

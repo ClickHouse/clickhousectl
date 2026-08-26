@@ -10,13 +10,16 @@
 //!
 //!  * `clickhousectl.engine=postgres`
 //!  * `clickhousectl.name=<server-name>`
+//!  * `clickhousectl.major=<major-version>`
 //!  * `clickhousectl.project=<canonical project cwd>`
 //!  * `created_by=clickhousectl_<crate-version>`
 
 use crate::error::{Error, Result};
 use bollard::Docker;
+use bollard::errors::Error as BollardError;
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::io::{self, IsTerminal, Write};
 
 pub const LABEL_ENGINE: &str = "clickhousectl.engine";
@@ -38,15 +41,156 @@ pub fn pg_container_name(user_name: &str, major: &str) -> String {
 
 /// Connect to the local Docker daemon and verify it's reachable.
 pub async fn connect() -> Result<Docker> {
-    let docker = Docker::connect_with_local_defaults().map_err(|e| {
-        Error::DockerNotAvailable(format!("could not initialize docker client: {e}"))
-    })?;
-    docker.ping().await.map_err(|e| {
-        Error::DockerNotAvailable(format!(
-            "Docker daemon is not reachable ({e}). Install Docker Desktop or start the daemon."
-        ))
-    })?;
+    let docker = Docker::connect_with_defaults()
+        .map_err(|error| docker_unavailable(DockerConnectStage::Constructor, &error))?;
+    docker
+        .ping()
+        .await
+        .map_err(|error| docker_unavailable(DockerConnectStage::Ping, &error))?;
     Ok(docker)
+}
+
+#[derive(Clone, Copy)]
+enum DockerConnectStage {
+    Constructor,
+    Ping,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DockerFailureKind {
+    MissingSocket,
+    PermissionDenied,
+    ConnectionRefused,
+    TimedOut,
+    InvalidHost,
+    HttpStatus(u16),
+    Other,
+}
+
+#[derive(Clone, Copy)]
+enum HostPlatform {
+    MacOs,
+    Linux,
+    Windows,
+    Other,
+}
+
+impl HostPlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "linux") {
+            Self::Linux
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Other
+        }
+    }
+}
+
+fn docker_unavailable(stage: DockerConnectStage, error: &BollardError) -> Error {
+    let kind = classify_docker_failure(error);
+    let prefix = match stage {
+        DockerConnectStage::Constructor => "could not initialize Docker client",
+        DockerConnectStage::Ping => "Docker daemon is not reachable",
+    };
+    Error::DockerNotAvailable(format!(
+        "{prefix}: {}.\n{}",
+        docker_failure_cause(stage, kind),
+        docker_guidance(HostPlatform::current())
+    ))
+}
+
+fn classify_docker_failure(error: &BollardError) -> DockerFailureKind {
+    match error {
+        BollardError::SocketNotFoundError(_) => return DockerFailureKind::MissingSocket,
+        BollardError::UnsupportedURISchemeError { .. }
+        | BollardError::URLParseError { .. }
+        | BollardError::InvalidURIError { .. }
+        | BollardError::InvalidURIPartsError { .. } => return DockerFailureKind::InvalidHost,
+        BollardError::RequestTimeoutError => return DockerFailureKind::TimedOut,
+        BollardError::IOError { err } => match err.kind() {
+            io::ErrorKind::NotFound => return DockerFailureKind::MissingSocket,
+            io::ErrorKind::PermissionDenied => return DockerFailureKind::PermissionDenied,
+            io::ErrorKind::ConnectionRefused => return DockerFailureKind::ConnectionRefused,
+            io::ErrorKind::TimedOut => return DockerFailureKind::TimedOut,
+            _ => {}
+        },
+        BollardError::DockerResponseServerError { status_code, .. } => {
+            return DockerFailureKind::HttpStatus(*status_code);
+        }
+        _ => {}
+    }
+
+    let mut descriptions = Vec::new();
+    let mut source: Option<&(dyn StdError + 'static)> = Some(error);
+    while let Some(current) = source {
+        descriptions.push(current.to_string().to_ascii_lowercase());
+        if let Some(io_error) = current.downcast_ref::<io::Error>() {
+            match io_error.kind() {
+                io::ErrorKind::NotFound => return DockerFailureKind::MissingSocket,
+                io::ErrorKind::PermissionDenied => return DockerFailureKind::PermissionDenied,
+                io::ErrorKind::ConnectionRefused => return DockerFailureKind::ConnectionRefused,
+                io::ErrorKind::TimedOut => return DockerFailureKind::TimedOut,
+                _ => {}
+            }
+        }
+        source = current.source();
+    }
+
+    // Some connector errors do not expose their underlying io::Error through
+    // Error::source. Inspect their text only for classification; never render it.
+    let chain = descriptions.join(": ");
+    if chain.contains("permission denied") {
+        DockerFailureKind::PermissionDenied
+    } else if chain.contains("connection refused") {
+        DockerFailureKind::ConnectionRefused
+    } else if chain.contains("no such file") || chain.contains("not found") {
+        DockerFailureKind::MissingSocket
+    } else if chain.contains("timed out") || chain.contains("timeout") {
+        DockerFailureKind::TimedOut
+    } else {
+        DockerFailureKind::Other
+    }
+}
+
+fn docker_failure_cause(stage: DockerConnectStage, kind: DockerFailureKind) -> String {
+    match kind {
+        DockerFailureKind::MissingSocket => "Docker socket was not found".into(),
+        DockerFailureKind::PermissionDenied => {
+            "permission denied while opening the Docker socket".into()
+        }
+        DockerFailureKind::ConnectionRefused => "the Docker daemon refused the connection".into(),
+        DockerFailureKind::TimedOut => "the Docker daemon connection timed out".into(),
+        DockerFailureKind::InvalidHost => {
+            "DOCKER_HOST is invalid or uses an unsupported scheme".into()
+        }
+        DockerFailureKind::HttpStatus(status) => {
+            format!("the Docker API returned HTTP status {status}")
+        }
+        DockerFailureKind::Other => match stage {
+            DockerConnectStage::Constructor => "Docker client initialization failed".into(),
+            DockerConnectStage::Ping => "the Docker API ping failed".into(),
+        },
+    }
+}
+
+fn docker_guidance(platform: HostPlatform) -> &'static str {
+    match platform {
+        HostPlatform::MacOs => {
+            "On macOS, start Docker Desktop and check access to its socket. Verify the active context with `docker context show`; for a non-default context, set `DOCKER_HOST` to its endpoint."
+        }
+        HostPlatform::Linux => {
+            "On Linux, start Docker Engine or Docker Desktop and check that your user can access the Docker socket. Verify `docker context show`; for rootless Docker or a non-default context, set `DOCKER_HOST` to its Unix socket (rootless Engine commonly uses `unix://$XDG_RUNTIME_DIR/docker.sock`)."
+        }
+        HostPlatform::Windows => {
+            "On Windows, start Docker Desktop or Docker Engine and check named-pipe permissions. Verify `docker context show`; for a non-default context, set `DOCKER_HOST` to its endpoint."
+        }
+        HostPlatform::Other => {
+            "Start Docker Engine and check socket permissions. Verify `docker context show`; for rootless Docker or a non-default context, set `DOCKER_HOST` to its endpoint."
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -830,6 +974,88 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
 mod tests {
     use super::*;
     use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[test]
+    fn docker_failures_keep_safe_causes_without_endpoint_values() {
+        let secret_path = "/tmp/docker-password-secret.sock";
+        let missing = BollardError::SocketNotFoundError(secret_path.into());
+        let Error::DockerNotAvailable(message) =
+            docker_unavailable(DockerConnectStage::Constructor, &missing)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert!(
+            message
+                .starts_with("could not initialize Docker client: Docker socket was not found.\n")
+        );
+        assert!(!message.contains(secret_path));
+
+        let invalid = BollardError::UnsupportedURISchemeError {
+            uri: "tcp+secret://user:password@example.test".into(),
+        };
+        let Error::DockerNotAvailable(message) =
+            docker_unavailable(DockerConnectStage::Constructor, &invalid)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert!(message.contains("DOCKER_HOST is invalid or uses an unsupported scheme"));
+        assert!(!message.contains("user:password"));
+        assert!(!message.contains("example.test"));
+    }
+
+    #[test]
+    fn docker_ping_failures_preserve_actionable_io_causes() {
+        for (kind, expected) in [
+            (
+                io::ErrorKind::PermissionDenied,
+                "permission denied while opening the Docker socket",
+            ),
+            (
+                io::ErrorKind::ConnectionRefused,
+                "the Docker daemon refused the connection",
+            ),
+            (
+                io::ErrorKind::TimedOut,
+                "the Docker daemon connection timed out",
+            ),
+        ] {
+            let error = BollardError::IOError {
+                err: io::Error::new(kind, "sensitive endpoint details"),
+            };
+            let Error::DockerNotAvailable(message) =
+                docker_unavailable(DockerConnectStage::Ping, &error)
+            else {
+                panic!("expected DockerNotAvailable");
+            };
+            assert!(
+                message.starts_with(&format!("Docker daemon is not reachable: {expected}.\n")),
+                "{message}"
+            );
+            assert!(!message.contains("sensitive endpoint details"));
+        }
+    }
+
+    #[test]
+    fn docker_guidance_is_platform_aware() {
+        let macos = docker_guidance(HostPlatform::MacOs);
+        assert!(macos.contains("Docker Desktop"));
+        assert!(macos.contains("socket"));
+        assert!(macos.contains("docker context show"));
+        assert!(macos.contains("DOCKER_HOST"));
+
+        let linux = docker_guidance(HostPlatform::Linux);
+        assert!(linux.contains("Docker Engine or Docker Desktop"));
+        assert!(linux.contains("socket"));
+        assert!(linux.contains("docker context show"));
+        assert!(linux.contains("rootless Docker"));
+        assert!(linux.contains("DOCKER_HOST"));
+
+        let windows = docker_guidance(HostPlatform::Windows);
+        assert!(windows.contains("Docker Desktop or Docker Engine"));
+        assert!(windows.contains("named-pipe permissions"));
+        assert!(windows.contains("docker context show"));
+        assert!(windows.contains("DOCKER_HOST"));
+    }
 
     #[test]
     fn pull_progress_is_interactive_only_for_human_ttys() {

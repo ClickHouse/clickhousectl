@@ -53,7 +53,7 @@ pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
     };
 
     if !valid {
-        return Err(Error::Exec(format!(
+        return Err(Error::Postgres(format!(
             "invalid or unsupported postgres version '{}'. Use 17 or 18, optionally followed \
              by .<minor> and -<variant> (for example: 17, 17-alpine, 18.1, 18-bookworm).",
             tag
@@ -153,7 +153,7 @@ fn validate_start_options(
         validate_pg_tag(version)?;
     }
 
-    validate_pg_start_env_args(password, &extra_env).map_err(Error::Exec)?;
+    validate_pg_start_env_args(password, &extra_env).map_err(Error::Postgres)?;
     let password_from_env = extra_env.iter().find_map(|assignment| {
         assignment
             .strip_prefix("POSTGRES_PASSWORD=")
@@ -260,7 +260,7 @@ async fn start(
                 _ => {
                     let versions: Vec<String> =
                         existing.iter().map(|i| i.version.clone()).collect();
-                    return Err(Error::Exec(format!(
+                    return Err(Error::Postgres(format!(
                         "multiple postgres instances named '{}' ({}); pass --version to select one",
                         user_name,
                         versions.join(", ")
@@ -307,7 +307,7 @@ async fn start(
         }
         // Metadata orphaned — container removed externally. Force explicit
         // cleanup to avoid silently re-initing against potentially-stale data.
-        return Err(Error::Exec(format!(
+        return Err(Error::Postgres(format!(
             "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
              Run `clickhousectl local postgres remove {}` to clear the data dir \
              and start fresh.",
@@ -429,7 +429,7 @@ fn resolve_pg_target(user_name: &str, version: Option<&str>) -> Result<server::S
         1 => Ok(instances.into_iter().next().unwrap()),
         _ => {
             let versions: Vec<String> = instances.iter().map(|i| i.version.clone()).collect();
-            Err(Error::Exec(format!(
+            Err(Error::Postgres(format!(
                 "multiple postgres instances named '{}' ({}); pass --version to select one",
                 user_name,
                 versions.join(", ")
@@ -504,7 +504,7 @@ async fn wait_running(docker: &bollard::Docker, id: &str, attempts: usize) -> bo
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
     match explicit {
         Some(0) => {
-            return Err(Error::Exec(
+            return Err(Error::Postgres(
                 "--port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
@@ -512,7 +512,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(port);
         }
         Some(port) => {
-            return Err(Error::Exec(format!(
+            return Err(Error::Postgres(format!(
                 "Postgres port {port} is already in use; choose another --port or omit --port to auto-select a free port"
             )));
         }
@@ -526,7 +526,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(p);
         }
     }
-    Err(Error::Exec(
+    Err(Error::Postgres(
         "could not find a free TCP port for Postgres".into(),
     ))
 }
@@ -743,7 +743,7 @@ fn exec_host_psql(
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
-    Err(Error::Exec(err.to_string()))
+    Err(Error::Postgres(err.to_string()))
 }
 
 fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn resolve_port_rejects_zero() {
         let err = resolve_port(Some(0)).unwrap_err();
-        assert!(matches!(err, Error::Exec(msg) if msg.contains("--port 0")));
+        assert!(matches!(err, Error::Postgres(msg) if msg.contains("--port 0")));
     }
 
     #[test]
@@ -842,8 +842,22 @@ mod tests {
 
         let err = resolve_port(Some(port)).unwrap_err();
         assert!(
-            matches!(err, Error::Exec(msg) if msg.contains(&format!("port {port} is already in use")) && msg.contains("omit --port"))
+            matches!(err, Error::Postgres(msg) if msg.contains(&format!("port {port} is already in use")) && msg.contains("omit --port"))
         );
+    }
+
+    #[test]
+    fn resolve_port_auto_selects_when_omitted_default_is_bound() {
+        let default_listener = match std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)) {
+            Ok(listener) => Some(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => None,
+            Err(error) => panic!("bind default Postgres port: {error}"),
+        };
+
+        let port = resolve_port(None).unwrap();
+
+        assert_ne!(port, DEFAULT_PG_PORT);
+        drop(default_listener);
     }
 
     #[test]
@@ -953,7 +967,7 @@ mod tests {
             )
             .err()
             .expect("malformed environment variable should fail");
-            assert!(matches!(error, Error::Exec(_)), "{assignment}: {error}");
+            assert!(matches!(error, Error::Postgres(_)), "{assignment}: {error}");
         }
     }
 
@@ -970,7 +984,7 @@ mod tests {
         .expect("duplicate environment variable should fail");
 
         assert!(
-            matches!(error, Error::Exec(msg) if msg.contains("APP_MODE") && msg.contains("more than once"))
+            matches!(error, Error::Postgres(msg) if msg.contains("APP_MODE") && msg.contains("more than once"))
         );
     }
 
@@ -990,7 +1004,9 @@ mod tests {
             )
             .err()
             .expect("reserved environment variable should fail");
-            assert!(matches!(error, Error::Exec(msg) if msg.contains("managed by clickhousectl")));
+            assert!(
+                matches!(error, Error::Postgres(msg) if msg.contains("managed by clickhousectl"))
+            );
         }
     }
 
@@ -1005,7 +1021,7 @@ mod tests {
         )
         .err()
         .expect("password sources should conflict");
-        assert!(matches!(error, Error::Exec(msg) if msg.contains("both --password and --env")));
+        assert!(matches!(error, Error::Postgres(msg) if msg.contains("both --password and --env")));
 
         let error = validate_start_options(
             Some("dev"),
@@ -1020,7 +1036,7 @@ mod tests {
         .err()
         .expect("duplicate password should fail");
         assert!(
-            matches!(error, Error::Exec(msg) if msg.contains("POSTGRES_PASSWORD") && msg.contains("more than once"))
+            matches!(error, Error::Postgres(msg) if msg.contains("POSTGRES_PASSWORD") && msg.contains("more than once"))
         );
     }
 }
