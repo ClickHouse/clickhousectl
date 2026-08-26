@@ -154,10 +154,6 @@ fn run_invalid_start(args: &[&str], expected_error: &str) -> Output {
         stderr.contains(expected_error),
         "expected '{expected_error}' in stderr: {stderr}"
     );
-    assert!(
-        !stderr.contains("Failed to execute ClickHouse"),
-        "Postgres validation was reported as a ClickHouse execution failure: {stderr}"
-    );
     assert_eq!(requests, 0, "invalid start contacted Docker");
     assert!(
         !tempdir.path().join(".clickhouse/servers").exists(),
@@ -212,16 +208,48 @@ fn invalid_definition_options_make_zero_docker_requests() {
             "Postgres validation failed: invalid container environment variable #1: KEY must not be empty",
         ),
     ] {
-        run_invalid_start(&args, expected_error);
+        let output = run_invalid_start(&args, expected_error);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("Failed to execute ClickHouse"),
+            "Postgres validation was reported as a ClickHouse execution failure: {stderr}"
+        );
     }
 }
 
 #[test]
-fn bound_explicit_port_is_rejected_without_docker_requests() {
+fn bound_explicit_port_is_rejected_before_existing_instance_recovery() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind temporary port");
-    let port = listener.local_addr().unwrap().port().to_string();
+    let port = listener.local_addr().unwrap().port();
+    write_stopped_postgres_metadata(tempdir.path(), port);
 
-    run_invalid_start(&["--port", &port], "already in use");
+    let socket_path = tempdir.path().join("docker.sock");
+    let docker = FakeDocker::spawn(&socket_path);
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", tempdir.path())
+        .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
+        .current_dir(tempdir.path())
+        .args(["local", "postgres", "start", "--port", &port.to_string()])
+        .output()
+        .expect("run clickhousectl");
+
+    let requests = docker.finish();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        stderr,
+        format!(
+            "Error: Postgres validation failed: explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select\n"
+        )
+    );
+    assert_eq!(
+        requests, 0,
+        "occupied port triggered recovery or Docker work"
+    );
 }
 
 #[test]

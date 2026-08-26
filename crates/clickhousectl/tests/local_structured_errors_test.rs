@@ -156,6 +156,31 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
 }
 
 #[test]
+fn telemetry_debug_does_not_append_to_a_structured_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let state_path = home.path().join(".clickhouse/telemetry.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).expect("create telemetry directory");
+    std::fs::write(state_path, r#"{"disabled":false}"#).expect("enable telemetry");
+
+    let output = command(project.path(), home.path())
+        .env_remove("DO_NOT_TRACK")
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .args(["local", "--json", "server", "stop", "missing"])
+        .output()
+        .expect("run structured failure with telemetry debug");
+
+    assert_structured_error(
+        &output,
+        &expected_scoped_error(
+            "server_not_found",
+            "Server 'missing' not found",
+            project.path(),
+        ),
+    );
+}
+
+#[test]
 fn agent_mode_writes_the_same_structured_error_without_json_flag() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
@@ -262,6 +287,50 @@ fn occupied_port_has_an_exact_structured_error() {
             "port_in_use",
             &format!("HTTP port {port} is already in use"),
             "clickhousectl local server start --help",
+        ),
+    );
+}
+
+#[test]
+fn occupied_explicit_postgres_port_has_an_exact_structured_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("occupy port");
+    let port = listener.local_addr().unwrap().port().to_string();
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "start", "--port", &port],
+    );
+
+    assert_structured_error(
+        &output,
+        &expected_error(
+            "port_in_use",
+            &format!(
+                "explicit Postgres port {port} is already in use; choose a free --port or omit the flag to auto-select"
+            ),
+            "clickhousectl local server start --help",
+        ),
+    );
+}
+
+#[test]
+fn non_port_postgres_validation_remains_a_generic_structured_error() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "postgres", "start", "--version", "16"],
+    );
+
+    assert_structured_error(
+        &output,
+        &expected_error(
+            "local_error",
+            "Postgres validation failed",
+            "clickhousectl local postgres start --help",
         ),
     );
 }

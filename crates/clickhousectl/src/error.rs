@@ -104,6 +104,9 @@ pub enum Error {
     StartupTimeout(String),
 
     #[error("Docker error: {0}")]
+    DockerStartupExit(String),
+
+    #[error("Docker error: {0}")]
     DockerStartupTimeout(String),
 
     /// A child process whose status must be returned unchanged. This is
@@ -131,6 +134,15 @@ pub enum Error {
 
     #[error("Server '{0}' not found")]
     ServerNotFound(String),
+
+    #[error("Could not {operation} at {}: {source}. {remediation}", path.display())]
+    ServerLock {
+        operation: &'static str,
+        path: PathBuf,
+        remediation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error(
         "Could not read metadata for server '{name}' at .clickhouse/servers/{name}.json: {source}. Check that the file is readable and retry."
@@ -164,6 +176,17 @@ pub enum Error {
     )]
     ServerMetadataWrite {
         name: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "Could not verify process identity for server '{name}' (PID {pid}) while attempting to {operation}: {source}. Metadata was preserved. Check that process inspection tools are available and that you have permission to inspect the process, then retry."
+    )]
+    ServerProcessInspection {
+        name: String,
+        pid: u32,
+        operation: &'static str,
         #[source]
         source: std::io::Error,
     },
@@ -240,10 +263,13 @@ pub enum Error {
     #[error("Postgres validation failed: {0}")]
     PostgresValidation(String),
 
+    #[error("Postgres validation failed: {0}")]
+    PostgresPortInUse(String),
+
     #[error("Postgres operation failed: {0}")]
     PostgresRuntime(String),
 
-    #[error("{primary}\nPostgres startup rollback diagnostics: {cleanup}")]
+    #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
     PostgresStartupRollback {
         #[source]
         primary: Box<Error>,
@@ -334,10 +360,12 @@ impl Error {
                  with `clickhousectl local client --host localhost --version \
                  <installed-version>`."
             }
-            Error::ServerMetadataRead { .. }
+            Error::ServerLock { .. }
+            | Error::ServerMetadataRead { .. }
             | Error::ServerMetadataPermission { .. }
             | Error::ServerMetadataParse { .. }
-            | Error::ServerMetadataWrite { .. } => {
+            | Error::ServerMetadataWrite { .. }
+            | Error::ServerProcessInspection { .. } => {
                 "Run `clickhousectl local server list` to inspect the selected server, or use \
                  direct mode with `clickhousectl local client --host localhost`."
             }
@@ -476,6 +504,27 @@ mod tests {
                 ..
             } if project == "/tmp/project" && matches!(source.as_ref(), Error::VersionNotFound(_))
         ));
+
+        for error in [
+            Error::ServerLock {
+                operation: "open server lifecycle lock file",
+                path: "/tmp/project/.clickhouse/servers/.locks/default.lock".into(),
+                remediation: "Check access and retry.",
+                source: std::io::Error::other("lock failed"),
+            },
+            Error::ServerProcessInspection {
+                name: "default".into(),
+                pid: 12345,
+                operation: "read the recorded process working directory",
+                source: std::io::Error::other("inspection failed"),
+            },
+        ] {
+            assert!(matches!(
+                error.with_managed_client_scope(project.clone()),
+                Error::ManagedClientScope { .. }
+            ));
+        }
+
         assert_eq!(
             Error::ClientVersionNotInstalled("25.12.9.61".into())
                 .with_managed_client_scope(project)
@@ -486,8 +535,16 @@ mod tests {
 
     #[test]
     fn typed_local_boundaries_preserve_human_error_text() {
+        assert_eq!(
+            Error::PortInUse("HTTP port 8123 is already in use".into()).to_string(),
+            "Failed to execute ClickHouse: HTTP port 8123 is already in use"
+        );
+        assert_eq!(
+            Error::PostgresPortInUse("explicit Postgres port 5432 is already in use".into())
+                .to_string(),
+            "Postgres validation failed: explicit Postgres port 5432 is already in use"
+        );
         for error in [
-            Error::PortInUse("HTTP port 8123 is already in use".into()),
             Error::StartupExit("server exited".into()),
             Error::StartupTimeout("server timed out".into()),
         ] {
@@ -497,6 +554,10 @@ mod tests {
                     .starts_with("Failed to execute ClickHouse: ")
             );
         }
+        assert_eq!(
+            Error::DockerStartupExit("postgres exited".into()).to_string(),
+            "Docker error: postgres exited"
+        );
         assert_eq!(
             Error::DockerStartupTimeout("postgres timed out".into()).to_string(),
             "Docker error: postgres timed out"

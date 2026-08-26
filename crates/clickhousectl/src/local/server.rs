@@ -171,11 +171,23 @@ pub fn ensure_server_data_dir(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ensure the data directory for a Postgres instance exists.
-pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<()> {
+/// Ensure the data directory for a Postgres instance exists. Returns whether
+/// this call created the instance directory, for transactional startup cleanup.
+pub fn ensure_pg_data_dir(name: &str, major: &str) -> Result<bool> {
     ensure_servers_dir()?;
-    std::fs::create_dir_all(pg_data_dir(name, major))?;
-    Ok(())
+    let instance_dir = servers_dir().join(pg_instance_key(name, major));
+    let created = match std::fs::create_dir(&instance_dir) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(error.into()),
+    };
+    if let Err(error) = std::fs::create_dir_all(instance_dir.join("data")) {
+        if created {
+            let _ = std::fs::remove_dir(&instance_dir);
+        }
+        return Err(error.into());
+    }
+    Ok(created)
 }
 
 struct FileLock {
@@ -183,9 +195,16 @@ struct FileLock {
 }
 
 impl FileLock {
-    fn acquire(path: &Path, name: &str) -> Result<Self> {
+    fn acquire(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| metadata_write_error(name, source))?;
+            std::fs::create_dir_all(parent).map_err(|source| {
+                server_lock_error(
+                    "create server lifecycle lock directory",
+                    parent,
+                    "Check write access to the parent directory and retry.",
+                    source,
+                )
+            })?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -193,7 +212,14 @@ impl FileLock {
             .write(true)
             .truncate(false)
             .open(path)
-            .map_err(|source| metadata_access_error(name, source))?;
+            .map_err(|source| {
+                server_lock_error(
+                    "open server lifecycle lock file",
+                    path,
+                    "Check read and write access to the lock file and its parent directory, then retry.",
+                    source,
+                )
+            })?;
 
         loop {
             // SAFETY: `file` owns this descriptor for the lifetime of the lock.
@@ -203,7 +229,12 @@ impl FileLock {
             }
             let source = std::io::Error::last_os_error();
             if source.kind() != std::io::ErrorKind::Interrupted {
-                return Err(metadata_access_error(name, source));
+                return Err(server_lock_error(
+                    "acquire server lifecycle lock",
+                    path,
+                    "Check that the lock file's filesystem supports advisory locks, then retry.",
+                    source,
+                ));
             }
         }
     }
@@ -228,6 +259,20 @@ impl Drop for TemporaryMetadata {
         if !self.committed {
             let _ = std::fs::remove_file(&self.path);
         }
+    }
+}
+
+fn server_lock_error(
+    operation: &'static str,
+    path: &Path,
+    remediation: &'static str,
+    source: std::io::Error,
+) -> Error {
+    Error::ServerLock {
+        operation,
+        path: path.to_path_buf(),
+        remediation,
+        source,
     }
 }
 
@@ -259,6 +304,17 @@ fn metadata_write_error(name: &str, source: std::io::Error) -> Error {
     }
 }
 
+fn sync_metadata_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if std::env::var_os("CHCTL_TEST_METADATA_DIR_SYNC_FAILURE").is_some() {
+        return Err(std::io::Error::other(
+            "injected metadata directory sync failure",
+        ));
+    }
+
+    File::open(path)?.sync_all()
+}
+
 fn read_server_info(name: &str) -> Result<Option<ServerInfo>> {
     let content = match std::fs::read(server_meta_path(name)) {
         Ok(content) => content,
@@ -275,6 +331,9 @@ fn read_server_info(name: &str) -> Result<Option<ServerInfo>> {
 
 fn write_server_info(name: &str, info: &ServerInfo) -> Result<()> {
     let path = server_meta_path(name);
+    let directory = path
+        .parent()
+        .expect("server metadata path has a parent directory");
     let file_name = path
         .file_name()
         .expect("server metadata path has a file name")
@@ -301,6 +360,7 @@ fn write_server_info(name: &str, info: &ServerInfo) -> Result<()> {
         .map_err(|source| metadata_write_error(name, source))?;
     pause_before_metadata_rename_for_test();
     std::fs::rename(&temp_path, &path).map_err(|source| metadata_write_error(name, source))?;
+    sync_metadata_directory(directory).map_err(|source| metadata_write_error(name, source))?;
     temporary.committed = true;
     Ok(())
 }
@@ -319,7 +379,7 @@ impl ServerLock {
         ensure_servers_dir()?;
         Ok(Self {
             name: name.to_string(),
-            _file: FileLock::acquire(&server_lock_path(name), name)?,
+            _file: FileLock::acquire(&server_lock_path(name))?,
         })
     }
 
@@ -332,7 +392,10 @@ impl ServerLock {
     }
 
     pub fn load_running_info(&self) -> Result<Option<ServerInfo>> {
-        Ok(self.load_info()?.filter(is_alive))
+        let Some(info) = self.load_info()? else {
+            return Ok(None);
+        };
+        Ok(is_alive(&info)?.then_some(info))
     }
 
     pub fn is_running(&self) -> Result<bool> {
@@ -368,7 +431,7 @@ impl ServerLock {
             .ok_or_else(|| Error::ServerNotRunning(self.name.clone()))?;
         match info.engine {
             Engine::Clickhouse => {
-                kill_process(info.pid)?;
+                kill_clickhouse_process(&info)?;
                 self.mark_stopped(info.pid)?;
             }
             Engine::Postgres => {
@@ -403,13 +466,25 @@ pub fn mark_server_stopped(name: &str, pid: u32) -> Result<()> {
     ServerLock::acquire(name)?.mark_stopped(pid)
 }
 
-/// Engine-aware liveness check.
-fn is_alive(info: &ServerInfo) -> bool {
+/// Engine-aware liveness check. ClickHouse inspection failures remain unknown
+/// instead of being treated as proof that the recorded process is stale.
+fn is_alive(info: &ServerInfo) -> Result<bool> {
     match info.engine {
-        Engine::Clickhouse => is_process_alive(info.pid),
+        Engine::Clickhouse => {
+            match discovery::inspect_managed_clickhouse_process(info.pid, &info.cwd, &info.name) {
+                Ok(discovery::ManagedProcessIdentity::Managed) => Ok(true),
+                Ok(discovery::ManagedProcessIdentity::NotManaged) => Ok(false),
+                Err(error) => Err(Error::ServerProcessInspection {
+                    name: info.name.clone(),
+                    pid: info.pid,
+                    operation: error.operation,
+                    source: error.source,
+                }),
+            }
+        }
         Engine::Postgres => match info.container_id.as_deref() {
-            Some(id) => docker::is_container_running_blocking(id),
-            None => false,
+            Some(id) => Ok(docker::is_container_running_blocking(id)),
+            None => Ok(false),
         },
     }
 }
@@ -525,7 +600,7 @@ fn normalize_server_info(name: &str) -> Result<Option<(ServerInfo, bool)>> {
     let Some(mut info) = lock.load_info()? else {
         return Ok(None);
     };
-    let running = is_alive(&info);
+    let running = is_alive(&info)?;
     if !running && info.engine == Engine::Clickhouse && info.pid != 0 {
         pause_during_stale_normalization_for_test();
         set_stopped(&mut info);
@@ -610,23 +685,34 @@ fn send_signal(pid: u32, signal: i32) -> Result<()> {
     }
 }
 
+fn kill_clickhouse_process(info: &ServerInfo) -> Result<()> {
+    kill_process_while(info.pid, &info.name, || is_alive(info))
+}
+
 /// Attempt to terminate a process: SIGTERM, wait, SIGKILL if needed, then verify exit.
-fn kill_process(pid: u32) -> Result<()> {
+fn kill_process_while(
+    pid: u32,
+    identity: &str,
+    is_target_process: impl Fn() -> Result<bool>,
+) -> Result<()> {
+    if !is_target_process()? {
+        return Err(Error::ServerNotRunning(identity.to_string()));
+    }
     send_signal(pid, libc::SIGTERM)?;
 
     // Wait briefly for graceful shutdown
     std::thread::sleep(std::time::Duration::from_millis(500));
 
-    if is_process_alive(pid) {
+    if is_target_process()? {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        if is_process_alive(pid) {
+        if is_target_process()? {
             send_signal(pid, libc::SIGKILL)?;
             // Give the kernel a moment to reap the process
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
-    if is_process_alive(pid) {
+    if is_target_process()? {
         return Err(Error::Exec(format!(
             "Process {} did not exit after SIGKILL",
             pid
@@ -634,6 +720,10 @@ fn kill_process(pid: u32) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn kill_process(pid: u32) -> Result<()> {
+    kill_process_while(pid, &format!("PID {pid}"), || Ok(is_process_alive(pid)))
 }
 
 /// Stop a running server by name.
@@ -806,7 +896,8 @@ pub async fn wait_for_server_ready(
                 Err(error)
                     if matches!(
                         &error,
-                        Error::ServerMetadataRead { .. }
+                        Error::ServerLock { .. }
+                            | Error::ServerMetadataRead { .. }
                             | Error::ServerMetadataPermission { .. }
                             | Error::ServerMetadataParse { .. }
                             | Error::ServerMetadataWrite { .. }
@@ -964,7 +1055,7 @@ pub fn recover_current_project_servers() -> Result<()> {
 pub fn save_recovered_server_info(info: &ServerInfo, replace_stale: bool) -> Result<()> {
     let lock = ServerLock::acquire(&info.name)?;
     if let Some(existing) = lock.load_info()?
-        && (!replace_stale || existing.engine != Engine::Clickhouse || is_alive(&existing))
+        && (!replace_stale || existing.engine != Engine::Clickhouse || is_alive(&existing)?)
     {
         return Ok(());
     }
@@ -1070,6 +1161,7 @@ fn pause_during_stale_normalization_for_test() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};
     use std::time::Instant;
 
@@ -1082,6 +1174,60 @@ mod tests {
     const STRICT_LIST_HELPER: &str = "local::server::tests::strict_list_reports_corrupt_metadata";
     const POSTGRES_RECOVERY_HELPER: &str = "local::server::tests::postgres_recovery_subprocess";
     const CLICKHOUSE_RECOVERY_HELPER: &str = "local::server::tests::clickhouse_recovery_subprocess";
+    const MANAGED_PROCESS_HELPER: &str =
+        "local::server::tests::managed_clickhouse_process_subprocess";
+    const INSPECTION_FAILURE_HELPER: &str =
+        "local::server::tests::process_inspection_failure_subprocess";
+    const READINESS_LOCK_HELPER: &str =
+        "local::server::tests::readiness_timeout_lock_failure_subprocess";
+
+    #[test]
+    fn lock_directory_failure_preserves_operation_path_and_source() {
+        let project = tempfile::tempdir().unwrap();
+        let lock_directory = project.path().join(".clickhouse/servers/.locks");
+        std::fs::create_dir_all(lock_directory.parent().unwrap()).unwrap();
+        std::fs::write(&lock_directory, b"not a directory").unwrap();
+        let lock_path = lock_directory.join("default.lock");
+
+        let error = match FileLock::acquire(&lock_path) {
+            Ok(_) => panic!("lock acquisition unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(std::error::Error::source(&error).is_some());
+        assert_eq!(error.exit_code(), 1);
+        assert!(matches!(
+            error,
+            Error::ServerLock {
+                operation: "create server lifecycle lock directory",
+                path,
+                source,
+                ..
+            } if path == lock_directory
+                && source.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+    }
+
+    #[test]
+    fn flock_failure_context_identifies_the_lock_file() {
+        let path = PathBuf::from(".clickhouse/servers/.locks/default.lock");
+        let error = server_lock_error(
+            "acquire server lifecycle lock",
+            &path,
+            "Check that the lock file's filesystem supports advisory locks, then retry.",
+            std::io::Error::other("injected flock failure"),
+        );
+
+        assert!(std::error::Error::source(&error).is_some());
+        assert!(matches!(
+            error,
+            Error::ServerLock {
+                operation: "acquire server lifecycle lock",
+                path: error_path,
+                source,
+                ..
+            } if error_path == path && source.to_string() == "injected flock failure"
+        ));
+    }
 
     fn test_info(name: &str, pid: u32, version: &str) -> ServerInfo {
         ServerInfo {
@@ -1152,11 +1298,123 @@ mod tests {
         assert!(status.success(), "metadata helper failed with {status}");
     }
 
+    fn spawn_managed_clickhouse(project: &Path, name: &str) -> Child {
+        let data_dir = project.join(".clickhouse/servers").join(name).join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg0("clickhouse")
+            .args(["--exact", MANAGED_PROCESS_HELPER, "--nocapture"])
+            .env("CHCTL_TEST_MANAGED_PROCESS", "1")
+            .current_dir(data_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !matches!(
+            discovery::inspect_managed_clickhouse_process(
+                child.id(),
+                &project.display().to_string(),
+                name,
+            ),
+            Ok(discovery::ManagedProcessIdentity::Managed)
+        ) {
+            assert_eq!(child.try_wait().unwrap(), None, "test process exited");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for managed ClickHouse test process"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child
+    }
+
+    #[test]
+    fn managed_clickhouse_process_subprocess() {
+        if std::env::var_os("CHCTL_TEST_MANAGED_PROCESS").is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn process_inspection_failure_subprocess() {
+        let Some(project) = enter_helper_project() else {
+            return;
+        };
+        let name = "default";
+        let pid: u32 = std::env::var("CHCTL_TEST_METADATA_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let result = match std::env::var("CHCTL_TEST_METADATA_OPERATION")
+            .unwrap()
+            .as_str()
+        {
+            "normalize" => normalize_server_info(name).map(|_| ()),
+            "recover" => {
+                let mut replacement = test_info(name, std::process::id(), "replacement");
+                replacement.cwd = project.display().to_string();
+                save_recovered_server_info(&replacement, true)
+            }
+            "start" => is_server_running(name).map(|_| ()),
+            "remove" => ServerLock::acquire(name).and_then(|lock| lock.is_running().map(|_| ())),
+            "stop" => kill_server(name),
+            operation => panic!("unknown process inspection operation {operation}"),
+        };
+
+        assert!(matches!(
+            result,
+            Err(Error::ServerProcessInspection {
+                name: error_name,
+                pid: error_pid,
+                ..
+            }) if error_name == name && error_pid == pid
+        ));
+    }
+
     fn enter_helper_project() -> Option<PathBuf> {
         let project = std::env::var_os("CHCTL_TEST_METADATA_PROJECT")?;
         let project = PathBuf::from(project);
         std::env::set_current_dir(&project).unwrap();
         Some(project)
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_lock_failure_subprocess() {
+        if enter_helper_project().is_none() {
+            return;
+        }
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 10"])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        let error = wait_for_server_ready(
+            &mut child,
+            "readiness-lock-test",
+            0,
+            0,
+            Path::new("server.log"),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(&error, Error::ServerLock { .. }));
+        assert!(!is_process_alive(pid));
+        let structured = crate::local::output::LocalErrorOutput::from_error(&error);
+        std::fs::write(
+            std::env::var_os("CHCTL_TEST_STRUCTURED_ERROR").unwrap(),
+            serde_json::to_vec(&structured).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            std::env::var_os("CHCTL_TEST_HUMAN_ERROR").unwrap(),
+            format!("Error: {error}\n"),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1172,7 +1430,17 @@ mod tests {
         if let Some(attempt) = std::env::var_os("CHCTL_TEST_METADATA_ATTEMPT") {
             std::fs::write(attempt, b"attempt").unwrap();
         }
-        save_server_info(&test_info("default", pid, &version)).unwrap();
+        let result = save_server_info(&test_info("default", pid, &version));
+        if std::env::var_os("CHCTL_TEST_METADATA_DIR_SYNC_FAILURE").is_some() {
+            assert!(matches!(
+                result,
+                Err(Error::ServerMetadataWrite { name, source })
+                    if name == "default"
+                        && source.to_string() == "injected metadata directory sync failure"
+            ));
+        } else {
+            result.unwrap();
+        }
     }
 
     #[test]
@@ -1199,8 +1467,9 @@ mod tests {
             "lifecycle" => {
                 let lock = ServerLock::acquire("default").unwrap();
                 wait_for_test_release("CHCTL_TEST_LIFECYCLE_READY", "CHCTL_TEST_LIFECYCLE_RELEASE");
-                lock.save_info(&test_info("default", pid, "26.8.1.1"))
-                    .unwrap();
+                let mut info = test_info("default", pid, "26.8.1.1");
+                info.cwd = std::env::current_dir().unwrap().display().to_string();
+                lock.save_info(&info).unwrap();
             }
             "client" => {
                 std::fs::write(
@@ -1243,15 +1512,111 @@ mod tests {
 
     #[test]
     fn clickhouse_recovery_subprocess() {
-        if enter_helper_project().is_none() {
+        let Some(project) = enter_helper_project() else {
             return;
-        }
+        };
         let name = std::env::var("CHCTL_TEST_METADATA_NAME").unwrap();
-        save_recovered_server_info(
-            &test_info(&name, std::process::id(), "clickhouse-recovered"),
-            true,
-        )
-        .unwrap();
+        match std::env::var("CHCTL_TEST_METADATA_OPERATION").as_deref() {
+            Ok("stop") => kill_server(&name).unwrap(),
+            Ok("reject-stop") => assert!(matches!(
+                kill_server(&name),
+                Err(Error::ServerNotRunning(server)) if server == name
+            )),
+            _ => {
+                let pid = std::env::var("CHCTL_TEST_METADATA_PID")
+                    .ok()
+                    .and_then(|pid| pid.parse().ok())
+                    .unwrap_or_else(std::process::id);
+                let version = std::env::var("CHCTL_TEST_METADATA_VERSION")
+                    .unwrap_or_else(|_| "clickhouse-recovered".to_string());
+                let mut info = test_info(&name, pid, &version);
+                info.cwd = project.display().to_string();
+                save_recovered_server_info(&info, true).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn process_identity_distinguishes_managed_unrelated_and_dead_pids() {
+        let project = tempfile::tempdir().unwrap();
+        let mut managed = spawn_managed_clickhouse(project.path(), "default");
+        let mut unrelated = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let unrelated_pid = unrelated.id();
+
+        assert_eq!(
+            discovery::inspect_managed_clickhouse_process(
+                managed.id(),
+                &project.path().display().to_string(),
+                "default",
+            )
+            .unwrap(),
+            discovery::ManagedProcessIdentity::Managed
+        );
+        assert_eq!(
+            discovery::inspect_managed_clickhouse_process(
+                unrelated_pid,
+                &project.path().display().to_string(),
+                "default",
+            )
+            .unwrap(),
+            discovery::ManagedProcessIdentity::NotManaged
+        );
+
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
+        assert_eq!(
+            discovery::inspect_managed_clickhouse_process(
+                unrelated_pid,
+                &project.path().display().to_string(),
+                "default",
+            )
+            .unwrap(),
+            discovery::ManagedProcessIdentity::NotManaged
+        );
+
+        managed.kill().unwrap();
+        managed.wait().unwrap();
+    }
+
+    #[test]
+    fn unknown_process_identity_preserves_metadata_and_blocks_lifecycle_actions() {
+        let project = tempfile::tempdir().unwrap();
+        let mut managed = spawn_managed_clickhouse(project.path(), "default");
+        let mut existing = test_info("default", managed.id(), "clickhouse-existing");
+        existing.cwd = project.path().display().to_string();
+        write_initial_metadata(project.path(), &existing);
+
+        let cases = [
+            ("command", "normalize"),
+            ("cwd", "normalize"),
+            ("canonicalize", "normalize"),
+            ("canonicalize", "recover"),
+            ("canonicalize", "start"),
+            ("canonicalize", "remove"),
+            ("canonicalize", "stop"),
+        ];
+        for (failure, operation) in cases {
+            let status = helper(INSPECTION_FAILURE_HELPER, project.path())
+                .env("CHCTL_TEST_METADATA_PID", managed.id().to_string())
+                .env("CHCTL_TEST_METADATA_OPERATION", operation)
+                .env("CHCTL_TEST_PROCESS_INSPECTION_FAILURE", failure)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "{operation} helper with {failure} failure failed with {status}"
+            );
+
+            let preserved: ServerInfo =
+                serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap())
+                    .unwrap();
+            assert_eq!(preserved.pid, managed.id());
+            assert_eq!(preserved.version, "clickhouse-existing");
+            assert_eq!(managed.try_wait().unwrap(), None);
+        }
+
+        managed.kill().unwrap();
+        managed.wait().unwrap();
     }
 
     #[test]
@@ -1288,6 +1653,85 @@ mod tests {
         assert_eq!(live_clickhouse.version, "clickhouse-recovered");
         assert_eq!(live_clickhouse.engine, Engine::Clickhouse);
         assert!(live_clickhouse.container_id.is_none());
+    }
+
+    #[test]
+    fn recovery_replaces_reused_pid_and_stop_never_signals_unrelated_process() {
+        let project = tempfile::tempdir().unwrap();
+        let mut unrelated = Command::new("/bin/sleep")
+            .arg("30")
+            .current_dir(project.path())
+            .spawn()
+            .unwrap();
+        let mut discovered = spawn_managed_clickhouse(project.path(), "default");
+        let mut stale = test_info("default", unrelated.id(), "clickhouse-stale");
+        stale.cwd = project.path().display().to_string();
+        write_initial_metadata(project.path(), &stale);
+
+        let rejected_stop = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_OPERATION", "reject-stop")
+            .status()
+            .unwrap();
+        assert!(
+            rejected_stop.success(),
+            "stop helper failed with {rejected_stop}"
+        );
+        assert!(unrelated.try_wait().unwrap().is_none());
+
+        let recovered = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_PID", discovered.id().to_string())
+            .env("CHCTL_TEST_METADATA_VERSION", "clickhouse-recovered")
+            .status()
+            .unwrap();
+        assert!(
+            recovered.success(),
+            "recovery helper failed with {recovered}"
+        );
+
+        let live: ServerInfo =
+            serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+        assert_eq!(live.pid, discovered.id());
+        assert_eq!(live.version, "clickhouse-recovered");
+
+        let stopped = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_OPERATION", "stop")
+            .status()
+            .unwrap();
+        assert!(stopped.success(), "stop helper failed with {stopped}");
+        assert!(!discovered.wait().unwrap().success());
+        assert!(unrelated.try_wait().unwrap().is_none());
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
+    }
+
+    #[test]
+    fn recovery_preserves_existing_managed_clickhouse_identity() {
+        let project = tempfile::tempdir().unwrap();
+        let mut managed = spawn_managed_clickhouse(project.path(), "default");
+        let mut existing = test_info("default", managed.id(), "clickhouse-existing");
+        existing.cwd = project.path().display().to_string();
+        write_initial_metadata(project.path(), &existing);
+
+        let recovered = helper(CLICKHOUSE_RECOVERY_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_NAME", "default")
+            .env("CHCTL_TEST_METADATA_PID", managed.id().to_string())
+            .env("CHCTL_TEST_METADATA_VERSION", "clickhouse-recovered")
+            .status()
+            .unwrap();
+        assert!(
+            recovered.success(),
+            "recovery helper failed with {recovered}"
+        );
+
+        let live: ServerInfo =
+            serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+        assert_eq!(live.pid, managed.id());
+        assert_eq!(live.version, "clickhouse-existing");
+        managed.kill().unwrap();
+        managed.wait().unwrap();
     }
 
     #[test]
@@ -1370,10 +1814,12 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         let servers = project.path().join(".clickhouse/servers");
         std::fs::create_dir_all(&servers).unwrap();
+        let mut process = spawn_managed_clickhouse(project.path(), "healthy");
+        let mut healthy = test_info("healthy", process.id(), "26.8.1.1");
+        healthy.cwd = project.path().display().to_string();
         std::fs::write(
             servers.join("healthy.json"),
-            serde_json::to_vec_pretty(&test_info("healthy", std::process::id(), "26.8.1.1"))
-                .unwrap(),
+            serde_json::to_vec_pretty(&healthy).unwrap(),
         )
         .unwrap();
         std::fs::write(servers.join("corrupt.json"), b"not json").unwrap();
@@ -1385,6 +1831,8 @@ mod tests {
             status.success(),
             "advisory count helper failed with {status}"
         );
+        process.kill().unwrap();
+        process.wait().unwrap();
     }
 
     #[test]
@@ -1439,6 +1887,30 @@ mod tests {
     }
 
     #[test]
+    fn directory_sync_failure_is_reported_after_rename() {
+        let project = tempfile::tempdir().unwrap();
+        write_initial_metadata(project.path(), &test_info("default", 0, "old"));
+
+        let status = helper(WRITE_HELPER, project.path())
+            .env("CHCTL_TEST_METADATA_PID", "12345")
+            .env("CHCTL_TEST_METADATA_VERSION", "new")
+            .env("CHCTL_TEST_METADATA_DIR_SYNC_FAILURE", "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "metadata helper failed with {status}");
+
+        let live: ServerInfo =
+            serde_json::from_slice(&std::fs::read(metadata_path(project.path())).unwrap()).unwrap();
+        assert_eq!(live.version, "new");
+        let temporary_files = std::fs::read_dir(project.path().join(".clickhouse/servers"))
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(temporary_files, 0);
+    }
+
+    #[test]
     fn stale_normalizer_cannot_overwrite_a_concurrent_restart() {
         let project = tempfile::tempdir().unwrap();
         write_initial_metadata(project.path(), &test_info("default", u32::MAX, "stale"));
@@ -1476,10 +1948,7 @@ mod tests {
     fn concurrent_lifecycle_client_and_stop_observe_complete_metadata() {
         let project = tempfile::tempdir().unwrap();
         write_initial_metadata(project.path(), &test_info("default", 0, ""));
-        let mut process = Command::new("sh")
-            .args(["-c", "exec sleep 30"])
-            .spawn()
-            .unwrap();
+        let mut process = spawn_managed_clickhouse(project.path(), "default");
         let pid = process.id();
         let reaper = std::thread::spawn(move || process.wait().unwrap());
         let ready = project.path().join("lifecycle-ready");
@@ -1606,6 +2075,38 @@ mod tests {
         assert!(message.contains("did not become ready"));
         assert!(message.contains("server.log"));
         assert!(!is_process_alive(pid));
+    }
+
+    #[test]
+    fn readiness_timeout_preserves_lock_failure_output() {
+        let project = tempfile::tempdir().unwrap();
+        let lock_directory = project.path().join(".clickhouse/servers/.locks");
+        std::fs::create_dir_all(lock_directory.parent().unwrap()).unwrap();
+        std::fs::write(&lock_directory, b"not a directory").unwrap();
+        let structured_path = project.path().join("structured-error.json");
+        let human_path = project.path().join("human-error.txt");
+
+        let status = helper(READINESS_LOCK_HELPER, project.path())
+            .env("CHCTL_TEST_STRUCTURED_ERROR", &structured_path)
+            .env("CHCTL_TEST_HUMAN_ERROR", &human_path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "readiness helper failed with {status}");
+
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(structured_path).unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "server_lock");
+        assert_eq!(body["error"]["command"], "clickhousectl local server list");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("create server lifecycle lock directory"));
+        assert!(message.contains(&lock_directory.display().to_string()));
+        assert!(message.contains("Check write access to the parent directory and retry."));
+
+        let human = std::fs::read_to_string(human_path).unwrap();
+        assert!(human.starts_with("Error: Could not create server lifecycle lock directory"));
+        assert!(human.contains(&lock_directory.display().to_string()));
+        assert!(human.contains("Check write access to the parent directory and retry."));
+        assert!(!human.contains("did not become ready"));
     }
 
     #[test]

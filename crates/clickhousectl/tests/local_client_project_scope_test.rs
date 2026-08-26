@@ -1,8 +1,9 @@
 //! Exact project-scope diagnostics for managed local clients (issue #467).
 
 use serde_json::Value;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output};
 
 const VERSION: &str = "25.12.9.61";
 
@@ -45,6 +46,41 @@ fn write_server_metadata(project: &Path, name: &str, pid: u32, version: &str) {
         .unwrap(),
     )
     .expect("write server metadata");
+}
+
+struct ProcessGuard(Child);
+
+impl ProcessGuard {
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn_managed_clickhouse(project: &Path, name: &str) -> ProcessGuard {
+    let data = project.join(".clickhouse/servers").join(name).join("data");
+    std::fs::create_dir_all(&data).expect("create server data directory");
+    let binary = project.join("clickhouse");
+    std::fs::write(
+        &binary,
+        b"#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+    )
+    .expect("write fake ClickHouse binary");
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).expect("make fake ClickHouse executable");
+    ProcessGuard(
+        Command::new(binary)
+            .current_dir(data)
+            .spawn()
+            .expect("spawn fake managed ClickHouse"),
+    )
 }
 
 fn assert_managed_json_error(output: &Output, code: &str, project: &Path) -> Value {
@@ -165,7 +201,8 @@ fn explicit_wrong_name_and_stopped_metadata_have_distinct_codes() {
 fn selected_missing_binary_keeps_version_code_and_managed_scope() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
-    write_server_metadata(project.path(), "dev", std::process::id(), VERSION);
+    let process = spawn_managed_clickhouse(project.path(), "dev");
+    write_server_metadata(project.path(), "dev", process.id(), VERSION);
 
     let output = run(
         project.path(),
@@ -191,12 +228,12 @@ fn invalid_lock_directory_keeps_managed_scope_in_json_and_human_errors() {
     std::fs::write(servers.join(".locks"), b"not a directory").expect("create invalid locks path");
 
     let json = run(project.path(), home.path(), &["local", "--json", "client"]);
-    let body = assert_managed_json_error(&json, "server_metadata_write", project.path());
+    let body = assert_managed_json_error(&json, "server_lock", project.path());
     assert!(
         body["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("Could not update metadata for server 'default'"),
+            .contains("Could not create server lifecycle lock directory"),
         "{body}"
     );
 
@@ -206,7 +243,7 @@ fn invalid_lock_directory_keeps_managed_scope_in_json_and_human_errors() {
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(
         stderr.starts_with(
-            "Error: Managed local client: Could not update metadata for server 'default'"
+            "Error: Managed local client: Could not create server lifecycle lock directory"
         ),
         "{stderr}"
     );

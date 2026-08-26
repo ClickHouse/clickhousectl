@@ -3,7 +3,7 @@
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output};
 
 const VERSION_A: &str = "25.12.9.61";
 const VERSION_B: &str = "26.1.2.3";
@@ -35,14 +35,14 @@ fn set_default(home: &Path, version: &str) {
     std::fs::write(base.join("default"), version).expect("write default version");
 }
 
-fn write_server_metadata(project: &Path, name: &str, version: &str, tcp_port: u16) {
+fn write_server_metadata(project: &Path, name: &str, pid: u32, version: &str, tcp_port: u16) {
     let servers = project.join(".clickhouse/servers");
     std::fs::create_dir_all(&servers).expect("create servers dir");
     std::fs::write(
         servers.join(format!("{name}.json")),
         serde_json::to_vec_pretty(&json!({
             "name": name,
-            "pid": std::process::id(),
+            "pid": pid,
             "version": version,
             "http_port": 8123,
             "tcp_port": tcp_port,
@@ -53,6 +53,41 @@ fn write_server_metadata(project: &Path, name: &str, version: &str, tcp_port: u1
         .unwrap(),
     )
     .expect("write server metadata");
+}
+
+struct ProcessGuard(Child);
+
+impl ProcessGuard {
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn spawn_managed_clickhouse(project: &Path, name: &str) -> ProcessGuard {
+    let data = project.join(".clickhouse/servers").join(name).join("data");
+    std::fs::create_dir_all(&data).expect("create server data directory");
+    let binary = project.join("clickhouse");
+    std::fs::write(
+        &binary,
+        b"#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+    )
+    .expect("write fake managed ClickHouse");
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).expect("make fake ClickHouse executable");
+    ProcessGuard(
+        Command::new(binary)
+            .current_dir(data)
+            .spawn()
+            .expect("spawn fake managed ClickHouse"),
+    )
 }
 
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
@@ -457,7 +492,8 @@ fn named_client_uses_recorded_version_even_with_a_stale_default() {
     install_fake_clickhouse(home.path(), VERSION_A);
     install_fake_clickhouse(home.path(), VERSION_B);
     set_default(home.path(), MISSING_VERSION);
-    write_server_metadata(project.path(), "dev", VERSION_B, 9440);
+    let process = spawn_managed_clickhouse(project.path(), "dev");
+    write_server_metadata(project.path(), "dev", process.id(), VERSION_B, 9440);
 
     let output = run(
         project.path(),

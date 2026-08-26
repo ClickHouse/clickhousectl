@@ -403,6 +403,13 @@ impl CloudClient {
         &self.lib_client
     }
 
+    /// Override the Query API host for unit tests in other cloud modules.
+    #[cfg(test)]
+    pub(crate) fn with_query_host_for_tests(mut self, host: impl Into<String>) -> Self {
+        self.lib_client = self.lib_client.with_query_host(host);
+        self
+    }
+
     /// Unwrap an `ApiResponse<T>` into `T`, returning an error if the result is empty.
     pub fn unwrap_response<T>(response: clickhouse_cloud_api::models::ApiResponse<T>) -> Result<T> {
         response
