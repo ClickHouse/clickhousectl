@@ -330,15 +330,16 @@ fn postgres_start_help_matches_managed_runtime_behavior() {
 Usage: clickhousectl local postgres start [OPTIONS]
 
 Options:
-      --json                 Output as JSON
-      --name <NAME>          Server name (default: "default", or random if default is already running)
-  -v, --version <VERSION>    Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing
-      --port <PORT>          Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
-      --user <USER>          POSTGRES_USER (default: postgres)
-      --password <PASSWORD>  POSTGRES_PASSWORD (default: random 24-char alphanumeric)
-      --database <DATABASE>  POSTGRES_DB (default: postgres)
-  -e, --env <KEY=VALUE>      Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
-  -h, --help                 Print help
+      --json                         Output as JSON
+      --name <NAME>                  Server name (default: "default", or random if default is already running)
+  -v, --version <VERSION>            Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing
+      --port <PORT>                  Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
+      --user <USER>                  POSTGRES_USER (default: postgres)
+      --password <PASSWORD>          POSTGRES_PASSWORD (default: random 24-char alphanumeric)
+      --database <DATABASE>          POSTGRES_DB (default: postgres)
+  -e, --env <KEY=VALUE>              Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
+      --wait-timeout <WAIT_TIMEOUT>  Seconds to wait for PostgreSQL readiness (maximum: 600) [default: 60]
+  -h, --help                         Print help
 
 CONTEXT FOR AGENTS:
   Starts a named Postgres server backed by a Docker container.
@@ -352,6 +353,7 @@ CONTEXT FOR AGENTS:
   POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
   `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
   be combined. Every --env key must be unique, so generated variables are never duplicated.
+  Start waits for PostgreSQL to accept connections, up to --wait-timeout seconds (default: 60).
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
   `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
   `created_by=clickhousectl_<version>` for safe discovery.

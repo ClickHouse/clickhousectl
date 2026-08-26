@@ -467,6 +467,7 @@ CONTEXT FOR AGENTS:
   POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
   `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
   be combined. Every --env key must be unique, so generated variables are never duplicated.
+  Start waits for PostgreSQL to accept connections, up to --wait-timeout seconds (default: 60).
   Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
   `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
   `created_by=clickhousectl_<version>` for safe discovery.
@@ -504,6 +505,14 @@ CONTEXT FOR AGENTS:
             value_parser = crate::local::postgres::parse_pg_env_arg
         )]
         env: Vec<String>,
+
+        /// Seconds to wait for PostgreSQL readiness (maximum: 600)
+        #[arg(
+            long,
+            default_value_t = 60,
+            value_parser = clap::value_parser!(u16).range(1..=600)
+        )]
+        wait_timeout: u16,
     },
 
     /// Stop a running Postgres container by name
@@ -1009,6 +1018,7 @@ mod tests {
                     port,
                     password,
                     env,
+                    wait_timeout,
                     ..
                 },
         } = local_command(&[
@@ -1026,6 +1036,8 @@ mod tests {
             "APP_MODE=test",
             "--env",
             "DATABASE_URL=postgres://localhost/db?option=a=b",
+            "--wait-timeout",
+            "75",
         ])
         else {
             panic!("expected postgres start");
@@ -1035,6 +1047,7 @@ mod tests {
         assert_eq!(version.as_deref(), Some("18.1-alpine3.20"));
         assert_eq!(port, Some(55432));
         assert_eq!(password.as_deref(), Some("secret"));
+        assert_eq!(wait_timeout, 75);
         assert_eq!(
             env,
             [
@@ -1042,6 +1055,22 @@ mod tests {
                 "DATABASE_URL=postgres://localhost/db?option=a=b"
             ]
         );
+    }
+
+    #[test]
+    fn postgres_start_readiness_timeout_defaults_and_is_bounded() {
+        let LocalCommands::Postgres {
+            command: PostgresCommands::Start { wait_timeout, .. },
+        } = local_command(&["postgres", "start"])
+        else {
+            panic!("expected postgres start");
+        };
+        assert_eq!(wait_timeout, 60);
+
+        for timeout in ["0", "601"] {
+            let error = postgres_start_parse_error(&["--wait-timeout", timeout]);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
     }
 
     #[test]

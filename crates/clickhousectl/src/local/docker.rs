@@ -469,6 +469,100 @@ pub async fn is_container_running(docker: &Docker, id: &str) -> bool {
     }
 }
 
+pub struct ContainerState {
+    pub running: bool,
+    pub exited: bool,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub oom_killed: bool,
+}
+
+pub async fn container_state(docker: &Docker, id: &str) -> Result<ContainerState> {
+    use bollard::models::ContainerStateStatusEnum;
+
+    let inspect = docker
+        .inspect_container(id, None)
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    let state = inspect.state.unwrap_or_default();
+    let status = state
+        .status
+        .map(|status| status.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let exited = state.dead == Some(true)
+        || matches!(
+            state.status,
+            Some(ContainerStateStatusEnum::EXITED | ContainerStateStatusEnum::DEAD)
+        );
+    Ok(ContainerState {
+        running: state.running == Some(true) && state.paused != Some(true),
+        exited,
+        status,
+        exit_code: state.exit_code,
+        oom_killed: state.oom_killed == Some(true),
+    })
+}
+
+/// Run PostgreSQL's own readiness probe inside the container. The command uses
+/// container-local TCP and does not receive a username, database, or password.
+pub async fn postgres_is_ready(docker: &Docker, id: &str) -> Result<bool> {
+    use bollard::exec::{StartExecOptions, StartExecResults};
+    use bollard::models::ExecConfig;
+
+    let exec = docker
+        .create_exec(
+            id,
+            ExecConfig {
+                attach_stdout: Some(false),
+                attach_stderr: Some(false),
+                attach_stdin: Some(false),
+                tty: Some(false),
+                cmd: Some(vec![
+                    "pg_isready".to_string(),
+                    "--quiet".to_string(),
+                    "--host".to_string(),
+                    "127.0.0.1".to_string(),
+                    "--port".to_string(),
+                    "5432".to_string(),
+                    "--timeout".to_string(),
+                    "1".to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    let started = docker
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    if !matches!(started, StartExecResults::Detached) {
+        return Err(Error::DockerError(
+            "PostgreSQL readiness probe unexpectedly attached".to_string(),
+        ));
+    }
+
+    for _ in 0..75 {
+        let inspect = docker
+            .inspect_exec(&exec.id)
+            .await
+            .map_err(|error| Error::DockerError(error.to_string()))?;
+        if inspect.running != Some(true) {
+            return Ok(inspect.exit_code == Some(0));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(Error::DockerError(
+        "PostgreSQL readiness probe did not exit within 1.5 seconds".to_string(),
+    ))
+}
+
 pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
     use bollard::query_parameters::StopContainerOptionsBuilder;
     docker
@@ -493,7 +587,12 @@ pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn container_logs_tail(docker: &Docker, id: &str, n: usize) -> Result<String> {
+pub async fn container_logs_tail(
+    docker: &Docker,
+    id: &str,
+    n: usize,
+    max_bytes: usize,
+) -> Result<String> {
     use bollard::query_parameters::LogsOptionsBuilder;
     let opts = LogsOptionsBuilder::default()
         .stdout(true)
@@ -501,12 +600,43 @@ pub async fn container_logs_tail(docker: &Docker, id: &str, n: usize) -> Result<
         .tail(&n.to_string())
         .build();
     let mut stream = docker.logs(id, Some(opts));
-    let mut buf = String::new();
+    let mut buf = Vec::new();
+    let mut truncated = false;
     while let Some(line) = stream.next().await {
         let l = line.map_err(|e| Error::DockerError(e.to_string()))?;
-        buf.push_str(&l.to_string());
+        truncated |= append_bounded_tail(&mut buf, &l.into_bytes(), max_bytes);
     }
-    Ok(buf)
+    let logs = String::from_utf8_lossy(&buf);
+    if truncated {
+        Ok(format!("[earlier log output truncated]\n{logs}"))
+    } else if logs.is_empty() {
+        Ok("(no container logs)".to_string())
+    } else {
+        Ok(logs.into_owned())
+    }
+}
+
+fn append_bounded_tail(buffer: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) -> bool {
+    if max_bytes == 0 {
+        let truncated = !buffer.is_empty() || !chunk.is_empty();
+        buffer.clear();
+        return truncated;
+    }
+    if chunk.len() >= max_bytes {
+        buffer.clear();
+        buffer.extend_from_slice(&chunk[chunk.len() - max_bytes..]);
+        return true;
+    }
+
+    let overflow = buffer
+        .len()
+        .saturating_add(chunk.len())
+        .saturating_sub(max_bytes);
+    if overflow > 0 {
+        buffer.drain(..overflow);
+    }
+    buffer.extend_from_slice(chunk);
+    overflow > 0
 }
 
 pub struct DiscoveredContainer {
@@ -922,16 +1052,12 @@ pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
 }
 
 /// `docker start` an existing stopped container.
-pub fn start_existing_blocking(id: &str) -> Result<()> {
+pub async fn start_existing(docker: &Docker, id: &str) -> Result<()> {
     use bollard::query_parameters::StartContainerOptions;
-    let id = id.to_string();
-    block_on(async move {
-        let docker = connect().await?;
-        docker
-            .start_container(&id, None::<StartContainerOptions>)
-            .await
-            .map_err(|e| Error::DockerError(e.to_string()))
-    })
+    docker
+        .start_container(id, None::<StartContainerOptions>)
+        .await
+        .map_err(|e| Error::DockerError(e.to_string()))
 }
 
 /// Discover Postgres containers belonging to this project that don't yet have
@@ -1204,5 +1330,16 @@ mod tests {
             String::from_utf8(output).unwrap(),
             "Pulling postgres:missing... failed\n"
         );
+    }
+
+    #[test]
+    fn log_tail_is_bounded_by_bytes() {
+        let mut buffer = Vec::new();
+        assert!(!append_bounded_tail(&mut buffer, b"first\n", 10));
+        assert!(append_bounded_tail(&mut buffer, b"second\n", 10));
+        assert_eq!(buffer, b"st\nsecond\n");
+
+        assert!(append_bounded_tail(&mut buffer, b"0123456789abcdef", 10));
+        assert_eq!(buffer, b"6789abcdef");
     }
 }

@@ -11,7 +11,9 @@ use crate::local::output;
 use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashSet;
+use std::future::Future;
 use std::process::Command;
+use std::time::Duration;
 
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
@@ -19,6 +21,10 @@ const DEFAULT_DATABASE: &str = "postgres";
 /// Default image tag when `--version` is not given. Within the supported
 /// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const READINESS_LOG_LINES: usize = 50;
+const READINESS_LOG_BYTES: usize = 16 * 1024;
+const READINESS_LOG_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Extract the major-version digits from a Postgres image tag. `17-alpine` →
 /// `"17"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
@@ -182,7 +188,21 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             password,
             database,
             env,
-        } => start(name, version, port, user, password, database, env, json).await,
+            wait_timeout,
+        } => {
+            start(
+                name,
+                version,
+                port,
+                user,
+                password,
+                database,
+                env,
+                Duration::from_secs(wait_timeout.into()),
+                json,
+            )
+            .await
+        }
         PostgresCommands::Stop { name, version } => stop(&name, version.as_deref(), json).await,
         PostgresCommands::StopAll => stop_all(json).await,
         PostgresCommands::Remove { name, version } => remove(&name, version.as_deref(), json),
@@ -212,6 +232,7 @@ async fn start(
     password: Option<String>,
     database: Option<String>,
     extra_env: Vec<String>,
+    wait_timeout: Duration,
     json: bool,
 ) -> Result<()> {
     let has_extra_env = !extra_env.is_empty();
@@ -303,7 +324,7 @@ async fn start(
                     user_name, user_name
                 );
             }
-            return resume_existing(&docker, prior, json).await;
+            return resume_existing(&docker, prior, wait_timeout, json).await;
         }
         // Metadata orphaned — container removed externally. Force explicit
         // cleanup to avoid silently re-initing against potentially-stale data.
@@ -366,18 +387,14 @@ async fn start(
     };
     server::save_server_info(&info)?;
 
-    let healthy = wait_running(&docker, &container_id, 30).await;
-    if !healthy {
-        let logs = docker::container_logs_tail(&docker, &container_id, 50)
-            .await
-            .unwrap_or_default();
+    if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
+        let error =
+            postgres_readiness_error(&docker, &container_id, &user_name, wait_timeout, failure)
+                .await;
         let _ = docker::stop_container(&docker, &container_id).await;
         let _ = docker::remove_container(&docker, &container_id).await;
         server::remove_server_info(&key);
-        return Err(Error::DockerError(format!(
-            "Postgres container '{}' did not start.\n--- container logs ---\n{}",
-            user_name, logs
-        )));
+        return Err(error);
     }
 
     let out = output::PostgresStartOutput {
@@ -441,21 +458,23 @@ fn resolve_pg_target(user_name: &str, version: Option<&str>) -> Result<server::S
 /// Resume an existing stopped Postgres container. Reads credentials from the
 /// container's persisted env (the source of truth — PGDATA was initialized
 /// for them) and refreshes the metadata.
-async fn resume_existing(docker: &bollard::Docker, prior: ServerInfo, json: bool) -> Result<()> {
+async fn resume_existing(
+    docker: &bollard::Docker,
+    prior: ServerInfo,
+    wait_timeout: Duration,
+    json: bool,
+) -> Result<()> {
     let container_id = prior.container_id.clone().expect("checked by caller");
     let display_name = user_name_from_key(&prior.name).to_string();
 
-    docker::start_existing_blocking(&container_id)?;
+    docker::start_existing(docker, &container_id).await?;
 
-    let healthy = wait_running(docker, &container_id, 30).await;
-    if !healthy {
-        let logs = docker::container_logs_tail(docker, &container_id, 50)
-            .await
-            .unwrap_or_default();
-        return Err(Error::DockerError(format!(
-            "Postgres container '{}' did not resume.\n--- container logs ---\n{}",
-            display_name, logs
-        )));
+    if let Err(failure) = wait_for_postgres_ready(docker, &container_id, wait_timeout).await {
+        let error =
+            postgres_readiness_error(docker, &container_id, &display_name, wait_timeout, failure)
+                .await;
+        let _ = docker::stop_container(docker, &container_id).await;
+        return Err(error);
     }
 
     let (user, password, database) = read_pg_env(docker, &container_id).await;
@@ -491,14 +510,194 @@ pub(crate) fn user_name_from_key(key: &str) -> &str {
     key
 }
 
-async fn wait_running(docker: &bollard::Docker, id: &str, attempts: usize) -> bool {
-    for _ in 0..attempts {
-        if docker::is_container_running(docker, id).await {
-            return true;
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum ContainerReadinessState {
+    Pending,
+    Running,
+    Exited {
+        status: String,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+}
+
+#[derive(Debug)]
+enum ReadinessFailure {
+    Exited {
+        status: String,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+    Probe(Error),
+    TimedOut,
+}
+
+trait ReadinessProbe {
+    async fn container_state(&mut self) -> Result<ContainerReadinessState>;
+    async fn postgres_is_ready(&mut self) -> Result<bool>;
+}
+
+struct DockerReadinessProbe<'a> {
+    docker: &'a bollard::Docker,
+    container_id: &'a str,
+}
+
+impl ReadinessProbe for DockerReadinessProbe<'_> {
+    async fn container_state(&mut self) -> Result<ContainerReadinessState> {
+        let state = docker::container_state(self.docker, self.container_id).await?;
+        if state.running {
+            Ok(ContainerReadinessState::Running)
+        } else if state.exited {
+            Ok(ContainerReadinessState::Exited {
+                status: state.status,
+                exit_code: state.exit_code,
+                oom_killed: state.oom_killed,
+            })
+        } else {
+            Ok(ContainerReadinessState::Pending)
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    false
+
+    async fn postgres_is_ready(&mut self) -> Result<bool> {
+        docker::postgres_is_ready(self.docker, self.container_id).await
+    }
+}
+
+async fn poll_postgres_readiness<P, S, SFut>(
+    probe: &mut P,
+    max_checks: usize,
+    mut sleep: S,
+) -> std::result::Result<(), ReadinessFailure>
+where
+    P: ReadinessProbe,
+    S: FnMut() -> SFut,
+    SFut: Future<Output = ()>,
+{
+    for check in 0..max_checks {
+        match probe
+            .container_state()
+            .await
+            .map_err(ReadinessFailure::Probe)?
+        {
+            ContainerReadinessState::Exited {
+                status,
+                exit_code,
+                oom_killed,
+            } => {
+                return Err(ReadinessFailure::Exited {
+                    status,
+                    exit_code,
+                    oom_killed,
+                });
+            }
+            ContainerReadinessState::Running => match probe.postgres_is_ready().await {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    if let Ok(ContainerReadinessState::Exited {
+                        status,
+                        exit_code,
+                        oom_killed,
+                    }) = probe.container_state().await
+                    {
+                        return Err(ReadinessFailure::Exited {
+                            status,
+                            exit_code,
+                            oom_killed,
+                        });
+                    }
+                    return Err(ReadinessFailure::Probe(error));
+                }
+            },
+            ContainerReadinessState::Pending => {}
+        }
+
+        if check + 1 < max_checks {
+            sleep().await;
+        }
+    }
+    Err(ReadinessFailure::TimedOut)
+}
+
+async fn wait_for_postgres_ready(
+    docker: &bollard::Docker,
+    container_id: &str,
+    timeout: Duration,
+) -> std::result::Result<(), ReadinessFailure> {
+    let mut probe = DockerReadinessProbe {
+        docker,
+        container_id,
+    };
+    match tokio::time::timeout(
+        timeout,
+        poll_postgres_readiness(&mut probe, usize::MAX, || {
+            tokio::time::sleep(READINESS_POLL_INTERVAL)
+        }),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(ReadinessFailure::TimedOut),
+    }
+}
+
+async fn postgres_readiness_error(
+    docker: &bollard::Docker,
+    container_id: &str,
+    display_name: &str,
+    timeout: Duration,
+    failure: ReadinessFailure,
+) -> Error {
+    let logs = match tokio::time::timeout(
+        READINESS_LOG_TIMEOUT,
+        docker::container_logs_tail(
+            docker,
+            container_id,
+            READINESS_LOG_LINES,
+            READINESS_LOG_BYTES,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(logs)) => logs,
+        Ok(Err(_)) => "(container logs unavailable)".to_string(),
+        Err(_) => "(timed out reading container logs)".to_string(),
+    };
+    format_postgres_readiness_error(display_name, timeout, failure, &logs)
+}
+
+fn format_postgres_readiness_error(
+    display_name: &str,
+    timeout: Duration,
+    failure: ReadinessFailure,
+    logs: &str,
+) -> Error {
+    let summary = match failure {
+        ReadinessFailure::Exited {
+            status,
+            exit_code,
+            oom_killed,
+        } => {
+            let exit_code = exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let oom = if oom_killed { "; out of memory" } else { "" };
+            format!(
+                "Postgres container '{display_name}' exited before PostgreSQL became ready \
+                 (status: {status}, exit code: {exit_code}{oom})."
+            )
+        }
+        ReadinessFailure::Probe(error) => {
+            format!("Could not check PostgreSQL readiness in container '{display_name}': {error}.")
+        }
+        ReadinessFailure::TimedOut => format!(
+            "PostgreSQL in container '{display_name}' did not become ready within {} seconds.",
+            timeout.as_secs()
+        ),
+    };
+    Error::DockerError(format!(
+        "{summary}\n--- last {READINESS_LOG_LINES} container log lines (maximum {READINESS_LOG_BYTES} bytes) ---\n{logs}"
+    ))
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
@@ -811,6 +1010,133 @@ async fn read_pg_env_for_dotenv(container_id: &str) -> (String, String, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+
+    struct FakeReadinessProbe {
+        states: VecDeque<ContainerReadinessState>,
+        ready: VecDeque<bool>,
+        readiness_checks: usize,
+    }
+
+    impl FakeReadinessProbe {
+        fn new(states: Vec<ContainerReadinessState>, ready: Vec<bool>) -> Self {
+            Self {
+                states: states.into(),
+                ready: ready.into(),
+                readiness_checks: 0,
+            }
+        }
+    }
+
+    impl ReadinessProbe for FakeReadinessProbe {
+        async fn container_state(&mut self) -> Result<ContainerReadinessState> {
+            Ok(self
+                .states
+                .pop_front()
+                .expect("fake container state exhausted"))
+        }
+
+        async fn postgres_is_ready(&mut self) -> Result<bool> {
+            self.readiness_checks += 1;
+            Ok(self
+                .ready
+                .pop_front()
+                .expect("fake pg_isready result exhausted"))
+        }
+    }
+
+    #[tokio::test]
+    async fn running_container_is_not_postgres_readiness() {
+        let mut probe =
+            FakeReadinessProbe::new(vec![ContainerReadinessState::Running], vec![false]);
+
+        let result = poll_postgres_readiness(&mut probe, 1, || std::future::ready(())).await;
+
+        assert!(matches!(result, Err(ReadinessFailure::TimedOut)));
+        assert_eq!(probe.readiness_checks, 1);
+    }
+
+    #[tokio::test]
+    async fn delayed_postgres_readiness_succeeds_after_retries() {
+        let mut probe = FakeReadinessProbe::new(
+            vec![
+                ContainerReadinessState::Running,
+                ContainerReadinessState::Running,
+                ContainerReadinessState::Running,
+            ],
+            vec![false, false, true],
+        );
+        let sleeps = Cell::new(0);
+
+        let result = poll_postgres_readiness(&mut probe, 3, || {
+            sleeps.set(sleeps.get() + 1);
+            std::future::ready(())
+        })
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(probe.readiness_checks, 3);
+        assert_eq!(sleeps.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn immediate_container_exit_stops_readiness_checks() {
+        let mut probe = FakeReadinessProbe::new(
+            vec![ContainerReadinessState::Exited {
+                status: "exited".to_string(),
+                exit_code: Some(1),
+                oom_killed: false,
+            }],
+            vec![],
+        );
+        let sleeps = Cell::new(0);
+
+        let result = poll_postgres_readiness(&mut probe, 3, || {
+            sleeps.set(sleeps.get() + 1);
+            std::future::ready(())
+        })
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ReadinessFailure::Exited {
+                status,
+                exit_code: Some(1),
+                oom_killed: false,
+            }) if status == "exited"
+        ));
+        assert_eq!(probe.readiness_checks, 0);
+        assert_eq!(sleeps.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_uses_injected_timing() {
+        let mut probe =
+            FakeReadinessProbe::new(vec![ContainerReadinessState::Running; 4], vec![false; 4]);
+        let sleeps = Cell::new(0);
+
+        let result = poll_postgres_readiness(&mut probe, 4, || {
+            sleeps.set(sleeps.get() + 1);
+            std::future::ready(())
+        })
+        .await;
+
+        assert!(matches!(result, Err(ReadinessFailure::TimedOut)));
+        assert_eq!(probe.readiness_checks, 4);
+        assert_eq!(sleeps.get(), 3);
+
+        let error = format_postgres_readiness_error(
+            "test",
+            Duration::from_secs(12),
+            ReadinessFailure::TimedOut,
+            "FATAL: database system is not ready",
+        )
+        .to_string();
+        assert!(error.contains("did not become ready within 12 seconds"));
+        assert!(error.contains("last 50 container log lines"));
+        assert!(error.contains("FATAL: database system is not ready"));
+    }
 
     #[test]
     fn resolve_port_rejects_zero_for_non_clap_callers() {
