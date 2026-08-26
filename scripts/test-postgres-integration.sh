@@ -14,6 +14,8 @@
 # at target/debug/clickhousectl relative to the repo root.
 set -u
 
+export DO_NOT_TRACK=1
+
 CTL="${1:-${CLICKHOUSECTL:-}}"
 if [[ -z "$CTL" ]]; then
     repo_root=$(cd "$(dirname "$0")/.." && pwd)
