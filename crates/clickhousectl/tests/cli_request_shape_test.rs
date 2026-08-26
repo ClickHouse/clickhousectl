@@ -74,19 +74,7 @@ fn assert_success(output: &std::process::Output) {
 }
 
 fn clear_agent_env(command: &mut Command) {
-    for name in [
-        "AGENT",
-        "AI_AGENT",
-        "OPENCODE",
-        "OPENCODE_PID",
-        "OPENCODE_BIN_PATH",
-        "OPENCODE_SERVER",
-        "OPENCODE_APP_INFO",
-        "OPENCODE_MODES",
-        "OPENCODE_CLIENT",
-    ] {
-        command.env_remove(name);
-    }
+    command.env_clear();
 }
 
 /// Run the clickhousectl binary against the mock, returning the JSON body
@@ -1138,6 +1126,8 @@ fn invoke_org_usage(mock: &MockServer, json: bool) -> std::process::Output {
         "2025-01-31",
     ]);
     let mut command = Command::new(clickhousectl_binary());
+    // Keep the human-output assertion deterministic inside coding agents.
+    command.env("CLAUDECODE", "1");
     clear_agent_env(&mut command);
     command
         .env("DO_NOT_TRACK", "1")
