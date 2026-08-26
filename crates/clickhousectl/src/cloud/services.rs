@@ -20,9 +20,18 @@ use clickhouse_cloud_api::models::{
 use std::{io::IsTerminal, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
 
-const QUERY_ENDPOINT_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
-const QUERY_ENDPOINT_READINESS_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
-const QUERY_ENDPOINT_READINESS_MAX_BACKOFF: Duration = Duration::from_secs(5);
+#[derive(Clone, Copy)]
+struct QueryEndpointReadiness {
+    timeout: Duration,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
+    timeout: Duration::from_secs(120),
+    initial_backoff: Duration::from_millis(200),
+    max_backoff: Duration::from_secs(5),
+};
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -1724,18 +1733,70 @@ async fn run_basic_service_query(
     database: Option<&str>,
     format: &str,
     service_name: &str,
+    confirmed_idle: bool,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
     let run = |wake: bool| {
         client
             .api()
             .run_query(service_id, key_id, key_secret, sql, database, format, wake)
     };
+    if confirmed_idle {
+        eprint_waking_service(service_name);
+        return run(true).await;
+    }
+
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
             run(true).await
         }
         other => other,
+    }
+}
+
+fn query_readiness_timeout_error(timeout: Duration) -> clickhouse_cloud_api::Error {
+    clickhouse_cloud_api::Error::Api {
+        status: 408,
+        message: format!("Query API endpoint did not become ready within {timeout:?}"),
+    }
+}
+
+async fn wait_for_query_endpoint_readiness<T, F, Fut>(
+    readiness: QueryEndpointReadiness,
+    mut probe: F,
+) -> Result<bool, clickhouse_cloud_api::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+{
+    let deadline = tokio::time::Instant::now() + readiness.timeout;
+    let mut backoff = readiness.initial_backoff;
+    let mut waiting = false;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(query_readiness_timeout_error(readiness.timeout));
+        }
+
+        match tokio::time::timeout(remaining, probe()).await {
+            Ok(Ok(_)) => return Ok(false),
+            Ok(Err(clickhouse_cloud_api::Error::ServiceIdle)) => return Ok(true),
+            Ok(Err(error)) if query_endpoint_readiness_error(&error) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(query_readiness_timeout_error(readiness.timeout)),
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(query_readiness_timeout_error(readiness.timeout));
+        }
+        if !waiting {
+            eprintln!("Waiting for the Query API endpoint to become ready...");
+            waiting = true;
+        }
+        tokio::time::sleep(backoff.min(remaining)).await;
+        backoff = backoff.saturating_mul(2).min(readiness.max_backoff);
     }
 }
 
@@ -1749,35 +1810,33 @@ async fn run_just_provisioned_service_query(
     database: Option<&str>,
     format: &str,
     service_name: &str,
+    readiness: QueryEndpointReadiness,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let deadline = tokio::time::Instant::now() + QUERY_ENDPOINT_READINESS_TIMEOUT;
-    let mut backoff = QUERY_ENDPOINT_READINESS_INITIAL_BACKOFF;
-
-    loop {
-        match run_basic_service_query(
-            client,
+    let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
+        client.api().run_query(
             service_id,
             key_id,
             key_secret,
-            sql,
-            database,
-            format,
-            service_name,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
         )
-        .await
-        {
-            Err(error) if query_endpoint_readiness_error(&error) => {
-                if tokio::time::Instant::now() + backoff > deadline {
-                    return Err(error);
-                }
-                tokio::time::sleep(backoff).await;
-                backoff = backoff
-                    .saturating_mul(2)
-                    .min(QUERY_ENDPOINT_READINESS_MAX_BACKOFF);
-            }
-            result => return result,
-        }
-    }
+    })
+    .await?;
+
+    run_basic_service_query(
+        client,
+        service_id,
+        key_id,
+        key_secret,
+        sql,
+        database,
+        format,
+        service_name,
+        confirmed_idle,
+    )
+    .await
 }
 
 fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
@@ -1851,6 +1910,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 options.database.as_deref(),
                 &format,
                 &service_name,
+                false,
             )
             .await
         } else {
@@ -1866,6 +1926,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 options.database.as_deref(),
                 &format,
                 &service_name,
+                false,
             )
             .await
             {
@@ -1895,6 +1956,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         options.database.as_deref(),
                         &format,
                         &service_name,
+                        QUERY_ENDPOINT_READINESS,
                     )
                     .await
                 }
@@ -3871,24 +3933,80 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn query_endpoint_readiness_backoff_is_bounded() {
-        let mut elapsed = Duration::ZERO;
-        let mut backoff = QUERY_ENDPOINT_READINESS_INITIAL_BACKOFF;
-        let mut retry_count = 0;
+    #[tokio::test]
+    async fn query_readiness_deadline_bounds_a_stalled_attempt() {
+        let readiness = QueryEndpointReadiness {
+            timeout: Duration::from_millis(10),
+            initial_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_query_endpoint_readiness(readiness, || {
+                std::future::pending::<Result<(), clickhouse_cloud_api::Error>>()
+            }),
+        )
+        .await
+        .expect("stalled attempt exceeded the test guard");
 
-        while elapsed + backoff <= QUERY_ENDPOINT_READINESS_TIMEOUT {
-            elapsed += backoff;
-            backoff = backoff
-                .saturating_mul(2)
-                .min(QUERY_ENDPOINT_READINESS_MAX_BACKOFF);
-            retry_count += 1;
-        }
+        assert_query_readiness_timeout(result, readiness.timeout);
+    }
 
-        assert!(retry_count > 1);
-        assert!(elapsed <= QUERY_ENDPOINT_READINESS_TIMEOUT);
-        assert!(QUERY_ENDPOINT_READINESS_TIMEOUT - elapsed < backoff);
-        assert!(backoff <= QUERY_ENDPOINT_READINESS_MAX_BACKOFF);
+    #[tokio::test]
+    async fn query_readiness_exhaustion_is_not_an_auth_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let readiness = QueryEndpointReadiness {
+            timeout: Duration::from_millis(20),
+            initial_backoff: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(20),
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let probe_attempts = Arc::clone(&attempts);
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_query_endpoint_readiness(readiness, move || {
+                probe_attempts.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<(), _>(clickhouse_cloud_api::Error::Api {
+                    status: 401,
+                    message: "query endpoint is not ready".into(),
+                }))
+            }),
+        )
+        .await
+        .expect("readiness retries exceeded the test guard");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_query_readiness_timeout(result, readiness.timeout);
+    }
+
+    fn assert_query_readiness_timeout<T>(
+        result: Result<T, clickhouse_cloud_api::Error>,
+        timeout: Duration,
+    ) {
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("readiness should time out"),
+        };
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let converted = client.convert_error(error);
+
+        assert_eq!(
+            converted.kind,
+            crate::cloud::client::CloudErrorKind::Generic
+        );
+        assert_eq!(
+            converted.message,
+            format!("Query API endpoint did not become ready within {timeout:?}")
+        );
     }
 
     #[test]

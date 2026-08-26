@@ -3160,6 +3160,15 @@ fn service_query_process(
     control: &MockServer,
     query_host: &MockServer,
 ) -> tokio::process::Command {
+    service_query_process_with_sql(project_dir, control, query_host, "SELECT 1")
+}
+
+fn service_query_process_with_sql(
+    project_dir: &Path,
+    control: &MockServer,
+    query_host: &MockServer,
+    sql: &str,
+) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(clickhousectl_binary());
     command
         .env_clear()
@@ -3180,7 +3189,7 @@ fn service_query_process(
             "--org-id",
             "org-1",
             "--query",
-            "SELECT 1",
+            sql,
         ]);
     command
 }
@@ -3621,32 +3630,45 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
     Mock::given(method("POST"))
         .and(path(query_path))
         .and(header("authorization", provisioned_auth.as_str()))
-        .respond_with(move |_: &wiremock::Request| {
-            let index = responder_index.fetch_add(1, Ordering::SeqCst);
-            let status = [401, 403, 404, 200].get(index).copied().unwrap_or(500);
-            responder_statuses.lock().unwrap().push(status);
-            if status == 200 {
-                ResponseTemplate::new(status).set_body_string("1\n")
-            } else {
-                ResponseTemplate::new(status).set_body_string("query endpoint is not ready")
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            match body["sql"].as_str() {
+                Some("SELECT 1") => {
+                    let index = responder_index.fetch_add(1, Ordering::SeqCst);
+                    let status = [401, 403, 404, 206].get(index).copied().unwrap_or(500);
+                    responder_statuses.lock().unwrap().push(status);
+                    if status == 206 {
+                        ResponseTemplate::new(status)
+                            .set_body_string(r#"{"data":"Confirm wake service"}"#)
+                    } else {
+                        ResponseTemplate::new(status).set_body_string("query endpoint is not ready")
+                    }
+                }
+                Some("SELECT 42") => ResponseTemplate::new(200).set_body_string("42\n"),
+                sql => ResponseTemplate::new(400)
+                    .set_body_string(format!("unexpected SQL in readiness test: {sql:?}")),
             }
         })
-        .expect(4)
+        .expect(5)
         .mount(&query_host)
         .await;
 
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
     let started = Instant::now();
-    let output = service_query_process(project.path(), &control, &query_host)
+    let output = service_query_process_with_sql(project.path(), &control, &query_host, "SELECT 42")
         .output()
         .await
         .expect("failed to spawn clickhousectl");
     let elapsed = started.elapsed();
 
     assert_success(&output);
-    assert_eq!(output.stdout, b"1\n");
-    assert_eq!(*delivered_statuses.lock().unwrap(), [401, 403, 404, 200]);
+    assert_eq!(output.stdout, b"42\n");
+    assert_eq!(*delivered_statuses.lock().unwrap(), [401, 403, 404, 206]);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Waiting for the Query API endpoint to become ready")
+    );
     assert!(
         elapsed >= Duration::from_millis(1_200),
         "readiness retries did not back off: {elapsed:?}"
@@ -3657,8 +3679,8 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
     );
 
     let query_requests = query_host.received_requests().await.unwrap();
-    assert_eq!(query_requests.len(), 5);
-    let provisioned_requests = query_requests
+    assert_eq!(query_requests.len(), 6);
+    let provisioned_requests: Vec<_> = query_requests
         .iter()
         .filter(|request| {
             request
@@ -3666,11 +3688,29 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
                 .get("authorization")
                 .is_some_and(|value| value == provisioned_auth.as_str())
         })
-        .count();
+        .collect();
     assert_eq!(
-        provisioned_requests, 4,
+        provisioned_requests.len(),
+        5,
         "every retry must reuse the new key"
     );
+    let sql: Vec<_> = provisioned_requests
+        .iter()
+        .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap()["sql"].clone())
+        .collect();
+    assert_eq!(
+        sql.iter().filter(|value| **value == "SELECT 1").count(),
+        4,
+        "readiness retries must use the harmless probe"
+    );
+    let user_queries: Vec<_> = provisioned_requests
+        .iter()
+        .filter(|request| {
+            serde_json::from_slice::<Value>(&request.body).unwrap()["sql"] == "SELECT 42"
+        })
+        .collect();
+    assert_eq!(user_queries.len(), 1, "user SQL must run exactly once");
+    assert_eq!(user_queries[0].headers.get("wake-service").unwrap(), "true");
 
     let control_requests = control.received_requests().await.unwrap();
     let request_count = |request_method: wiremock::http::Method, request_path: &str| {
