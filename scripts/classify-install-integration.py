@@ -50,6 +50,7 @@ TEST_PATH_INSTALL = {
     "crates/clickhousectl/tests/local_docker_pull_progress_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_install_local_first_test.rs": INSTALL,
     "crates/clickhousectl/tests/local_postgres_diagnostics_test.rs": NO_INSTALL,
+    "crates/clickhousectl/tests/local_postgres_dotenv_lock_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_postgres_help_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_postgres_preflight_test.rs": NO_INSTALL,
     "crates/clickhousectl/tests/local_postgres_readiness_test.rs": NO_INSTALL,
