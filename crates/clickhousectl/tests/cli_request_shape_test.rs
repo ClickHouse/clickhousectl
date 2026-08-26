@@ -14,8 +14,9 @@
 //! Tests run as cargo integration tests:
 //!     cargo test -p clickhousectl --test cli_request_shape_test
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 use wiremock::matchers::{header, method, path, path_regex};
@@ -2651,6 +2652,80 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
 }
 
 #[tokio::test]
+async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = start_mock_query_host().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("query.sql"), "SELECT 2\n").unwrap();
+    let control_url = control.uri();
+    let query_host_url = query_host.uri();
+
+    let command = || {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        command
+            .env("DO_NOT_TRACK", "1")
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
+            .current_dir(dir.path())
+            .args([
+                "cloud",
+                "--url",
+                control_url.as_str(),
+                "service",
+                "query",
+                "--id",
+                QUERY_TEST_SERVICE_ID,
+                "--org-id",
+                "org-1",
+            ]);
+        command
+    };
+
+    let inline = command()
+        .args(["--query", "SELECT 1"])
+        .output()
+        .expect("failed to run inline query");
+    assert_success(&inline);
+
+    let file = command()
+        .args(["--queries-file", "query.sql"])
+        .output()
+        .expect("failed to run query file");
+    assert_success(&file);
+
+    let mut child = command()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run stdin query");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"SELECT 3\n")
+        .unwrap();
+    let stdin = child.wait_with_output().unwrap();
+    assert_success(&stdin);
+
+    let sql: Vec<String> = query_host
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            serde_json::from_slice::<Value>(&request.body).unwrap()["sql"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(sql, ["SELECT 1", "SELECT 2\n", "SELECT 3\n"]);
+}
+
+#[tokio::test]
 async fn service_query_rejects_conflicting_sql_sources_before_file_or_network_access() {
     let control = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
@@ -2658,7 +2733,7 @@ async fn service_query_rejects_conflicting_sql_sources_before_file_or_network_ac
     let url = control.uri();
 
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     let output = command
         .env("DO_NOT_TRACK", "1")
         .current_dir(dir.path())
