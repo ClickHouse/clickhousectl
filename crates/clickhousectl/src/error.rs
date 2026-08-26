@@ -160,6 +160,14 @@ pub enum Error {
     )]
     ClientVersionNotInstalled(String),
 
+    #[error(
+        "ClickHouse client version '{version}' does not support repeated --query values. Use ClickHouse {minimum} or newer, or send one --query value."
+    )]
+    RepeatedClientQueryUnsupported {
+        version: String,
+        minimum: &'static str,
+    },
+
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 

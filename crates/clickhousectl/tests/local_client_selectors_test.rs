@@ -6,6 +6,7 @@ use std::process::{Command, Output};
 
 const VERSION_A: &str = "25.12.9.61";
 const VERSION_B: &str = "26.8.1.1760";
+const VERSION_BEFORE_REPEATED_QUERY: &str = "23.8.1.2992";
 const MISSING_VERSION: &str = "27.1.2.3";
 
 fn clickhousectl_binary() -> PathBuf {
@@ -182,6 +183,186 @@ fn clickhouse_direct_default_and_single_installed_selection_reach_fake_child() {
         &["client", "--host", "localhost", "--port", "65535"],
     );
     assert_default(home.path(), None);
+}
+
+#[test]
+fn clickhouse_client_preserves_minimal_query_and_query_file_argv() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path(), VERSION_B);
+
+    assert_clickhouse_child(
+        run(
+            project.path(),
+            home.path(),
+            None,
+            &["local", "client", "--host", "remote", "--query", "SELECT 1"],
+        ),
+        VERSION_B,
+        &[
+            "client", "--host", "remote", "--port", "9000", "--query", "SELECT 1",
+        ],
+    );
+
+    assert_clickhouse_child(
+        run(
+            project.path(),
+            home.path(),
+            None,
+            &[
+                "local",
+                "client",
+                "--host",
+                "remote",
+                "--queries-file",
+                "queries.sql",
+            ],
+        ),
+        VERSION_B,
+        &[
+            "client",
+            "--host",
+            "remote",
+            "--port",
+            "9000",
+            "--queries-file",
+            "queries.sql",
+        ],
+    );
+}
+
+#[test]
+fn clickhouse_client_preserves_repeated_query_order_empty_values_and_passthrough() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path(), VERSION_B);
+
+    assert_clickhouse_child(
+        run(
+            project.path(),
+            home.path(),
+            None,
+            &[
+                "local", "client", "--host", "remote", "--query", "SELECT 1", "-q", "", "--query",
+                "SELECT 2", "--", "--query", "SELECT 3", "--format", "CSV",
+            ],
+        ),
+        VERSION_B,
+        &[
+            "client", "--host", "remote", "--port", "9000", "--query", "SELECT 1", "--query", "",
+            "--query", "SELECT 2", "--query", "SELECT 3", "--format", "CSV",
+        ],
+    );
+}
+
+#[test]
+fn clickhouse_client_preserves_repeated_query_file_order_empty_values_and_passthrough() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    // Repeated --queries-file already existed before repeated --query landed.
+    install_fake_clickhouse(home.path(), VERSION_BEFORE_REPEATED_QUERY);
+
+    assert_clickhouse_child(
+        run(
+            project.path(),
+            home.path(),
+            None,
+            &[
+                "local",
+                "client",
+                "--port",
+                "19000",
+                "--queries-file",
+                "schema.sql",
+                "--queries-file",
+                "",
+                "--queries-file",
+                "seed.sql",
+                "--",
+                "--queries-file",
+                "tail.sql",
+                "--format",
+                "CSV",
+            ],
+        ),
+        VERSION_BEFORE_REPEATED_QUERY,
+        &[
+            "client",
+            "--host",
+            "localhost",
+            "--port",
+            "19000",
+            "--queries-file",
+            "schema.sql",
+            "--queries-file",
+            "",
+            "--queries-file",
+            "seed.sql",
+            "--queries-file",
+            "tail.sql",
+            "--format",
+            "CSV",
+        ],
+    );
+}
+
+#[test]
+fn clickhouse_client_rejects_combined_query_sources_before_the_fake_child_in_every_order() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path(), VERSION_B);
+    write_default(home.path(), VERSION_B);
+
+    for inputs in [
+        ["--query", "SELECT 1", "--queries-file", "queries.sql"],
+        ["--queries-file", "queries.sql", "--query", "SELECT 1"],
+    ] {
+        let args: Vec<&str> = ["local", "client"].into_iter().chain(inputs).collect();
+        let output = run(project.path(), home.path(), None, &args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+        assert!(stderr.contains("--query <QUERY>"), "{stderr}");
+        assert!(stderr.contains("--queries-file <QUERIES_FILE>"), "{stderr}");
+        assert!(output.stdout.is_empty(), "fake child unexpectedly ran");
+    }
+}
+
+#[test]
+fn clickhouse_client_checks_native_repeated_query_version_support() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path(), VERSION_BEFORE_REPEATED_QUERY);
+    write_default(home.path(), VERSION_BEFORE_REPEATED_QUERY);
+
+    assert_clickhouse_child(
+        run(
+            project.path(),
+            home.path(),
+            None,
+            &["local", "client", "--host", "remote", "--query", "SELECT 1"],
+        ),
+        VERSION_BEFORE_REPEATED_QUERY,
+        &[
+            "client", "--host", "remote", "--port", "9000", "--query", "SELECT 1",
+        ],
+    );
+
+    let output = run(
+        project.path(),
+        home.path(),
+        None,
+        &[
+            "local", "client", "--host", "remote", "--query", "SELECT 1", "--query", "SELECT 2",
+        ],
+    );
+    assert_runtime_error(
+        output,
+        &[
+            "does not support repeated --query values",
+            VERSION_BEFORE_REPEATED_QUERY,
+            "23.9.1.1854 or newer",
+        ],
+    );
 }
 
 #[test]

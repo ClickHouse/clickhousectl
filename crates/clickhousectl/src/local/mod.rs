@@ -261,8 +261,8 @@ fn run_client(
     host: Option<String>,
     port: Option<u16>,
     version_spec: Option<ClientVersionArg>,
-    query: Option<String>,
-    queries_file: Option<String>,
+    query: Vec<String>,
+    queries_file: Vec<String>,
     args: Vec<String>,
 ) -> Result<()> {
     // If --host or --port is set, connect directly (bypass local server lookup).
@@ -295,6 +295,8 @@ fn run_client(
         return Err(Error::VersionNotFound(version));
     }
 
+    ensure_repeated_query_supported(&version, query.len())?;
+
     let mut cmd = Command::new(&binary);
     cmd.arg("client")
         .arg("--host")
@@ -302,11 +304,11 @@ fn run_client(
         .arg("--port")
         .arg(tcp_port.to_string());
 
-    if let Some(q) = &query {
+    for q in &query {
         cmd.arg("--query").arg(q);
     }
 
-    if let Some(f) = &queries_file {
+    for f in &queries_file {
         cmd.arg("--queries-file").arg(f);
     }
 
@@ -317,6 +319,21 @@ fn run_client(
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
+}
+
+const REPEATED_QUERY_MIN_VERSION: &str = "23.9.1.1854";
+
+fn ensure_repeated_query_supported(version: &str, query_count: usize) -> Result<()> {
+    if query_count > 1
+        && version_manager::list::compare_versions(version, REPEATED_QUERY_MIN_VERSION)
+            == std::cmp::Ordering::Less
+    {
+        return Err(Error::RepeatedClientQueryUnsupported {
+            version: version.to_string(),
+            minimum: REPEATED_QUERY_MIN_VERSION,
+        });
+    }
+    Ok(())
 }
 
 fn resolve_direct_client_version(version_spec: Option<ClientVersionArg>) -> Result<String> {
@@ -1103,6 +1120,17 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_query_support_matches_the_native_client_contract() {
+        // ClickHouse introduced repeatable --query in v23.9.1.1854. The pinned
+        // release evidence is linked from README.md; these tests need no live binary.
+        assert!(ensure_repeated_query_supported("23.8.1.2992", 1).is_ok());
+        assert!(ensure_repeated_query_supported("23.9.1.1853", 2).is_err());
+        assert!(ensure_repeated_query_supported(REPEATED_QUERY_MIN_VERSION, 2).is_ok());
+        assert!(ensure_repeated_query_supported("25.12.9.61", 3).is_ok());
+        assert!(ensure_repeated_query_supported("26.8.1.1760", usize::MAX).is_ok());
+    }
 
     fn server_info(name: &str, engine: server::Engine, version: &str) -> server::ServerInfo {
         server::ServerInfo {

@@ -222,7 +222,9 @@ postgres/
 clickhousectl local client                           # Connects to "default" server
 clickhousectl local client --name dev                # Connects to "dev" server
 clickhousectl local client --query "SHOW DATABASES"  # Run a query
+clickhousectl local client --query "SELECT 1" --query "SELECT 2" # Run queries in order
 clickhousectl local client --queries-file schema.sql # Run queries from a file
+clickhousectl local client --queries-file schema.sql --queries-file seed.sql # Run files in order
 clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
 clickhousectl local client --host remote-host         # Direct mode; port defaults to 9000
 clickhousectl local client --port 19000               # Direct mode; host defaults to localhost
@@ -234,6 +236,8 @@ clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an in
 In direct mode, `--host` and `--port` select the server connection while `--version` independently selects an already installed local client binary. Numeric selectors such as `26`, `26.8`, and `26.8.1.1760` select the newest installed match. This does not install a binary or change `~/.clickhouse/default`.
 
 Without `--version`, direct mode uses the valid default. If no default exists, zero installed versions is an error, one installed version is used without creating a default, and multiple installed versions require either `--version` or `local use`. A default that names a missing binary is an error; repair it with `local use`, or bypass it for one direct connection with `--version`.
+
+`--query` and `--queries-file` can each be repeated; values, including empty strings, are passed to the native client unchanged and in order. They cannot be combined because the native ClickHouse client rejects that combination, so clickhousectl reports a usage error before resolving a binary. Arguments after `--` are appended after all wrapper-generated arguments. Repeatable `--query` requires ClickHouse 23.9.1.1854 or newer, where [ClickHouse added the native behavior](https://github.com/ClickHouse/ClickHouse/blob/8f9a227de1f530cdbda52c145d41a6b0f1d29961/docs/changelogs/archive/v23.9.1.1854-stable.md); clickhousectl checks the selected client version before execution.
 
 ### Creating and managing ClickHouse servers
 

@@ -249,7 +249,8 @@ CONTEXT FOR AGENTS:
   2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
      ClickHouse server directly, bypassing local server lookup. Host-only uses port 9000; port-only
      connects to localhost. Direct selectors cannot be combined with --name.
-  --query and --queries-file execute SQL inline or from a file.
+  --query and --queries-file are repeatable and preserve every value. ClickHouse rejects using the
+  two options together, so clickhousectl reports that combination as a usage error.
   Additional clickhouse-client args can be passed after --.
   Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
     )]
@@ -274,13 +275,13 @@ CONTEXT FOR AGENTS:
         #[arg(long, short = 'v', requires = "direct", conflicts_with = "name")]
         version: Option<ClientVersionArg>,
 
-        /// Execute a SQL query
-        #[arg(long, short)]
-        query: Option<String>,
+        /// Execute a SQL query (repeatable; requires ClickHouse 23.9.1.1854+ when repeated)
+        #[arg(long, short, conflicts_with = "queries_file")]
+        query: Vec<String>,
 
-        /// Execute queries from a SQL file
-        #[arg(long)]
-        queries_file: Option<String>,
+        /// Execute queries from a SQL file (repeatable; cannot be combined with --query)
+        #[arg(long, conflicts_with = "query")]
+        queries_file: Vec<String>,
 
         /// Additional arguments to pass to clickhouse-client
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -937,6 +938,82 @@ mod tests {
             let error = local_parse_error(&["client", "--port", port]);
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
             assert!(error.to_string().contains("--port"), "{error}");
+        }
+    }
+
+    #[test]
+    fn clickhouse_client_parses_minimal_and_repeated_query_inputs_in_order() {
+        let LocalCommands::Client {
+            query,
+            queries_file,
+            args,
+            ..
+        } = local_command(&["client"])
+        else {
+            panic!("expected ClickHouse client");
+        };
+        assert!(query.is_empty());
+        assert!(queries_file.is_empty());
+        assert!(args.is_empty());
+
+        let LocalCommands::Client {
+            query,
+            queries_file,
+            args,
+            ..
+        } = local_command(&[
+            "client", "--query", "SELECT 1", "-q", "SELECT 2", "--query", "", "--", "--query",
+            "SELECT 3", "--format", "CSV",
+        ])
+        else {
+            panic!("expected ClickHouse client");
+        };
+        assert_eq!(query, ["SELECT 1", "SELECT 2", ""]);
+        assert!(queries_file.is_empty());
+        assert_eq!(args, ["--query", "SELECT 3", "--format", "CSV"]);
+    }
+
+    #[test]
+    fn clickhouse_client_parses_repeated_query_files_and_empty_values_in_order() {
+        let LocalCommands::Client {
+            query,
+            queries_file,
+            args,
+            ..
+        } = local_command(&[
+            "client",
+            "--queries-file",
+            "schema.sql",
+            "--queries-file",
+            "seed.sql",
+            "--queries-file",
+            "",
+            "--",
+            "--queries-file",
+            "tail.sql",
+        ])
+        else {
+            panic!("expected ClickHouse client");
+        };
+        assert!(query.is_empty());
+        assert_eq!(queries_file, ["schema.sql", "seed.sql", ""]);
+        assert_eq!(args, ["--queries-file", "tail.sql"]);
+    }
+
+    #[test]
+    fn clickhouse_client_rejects_combined_query_sources_in_every_order() {
+        for inputs in [
+            ["--query", "SELECT 1", "--queries-file", "queries.sql"],
+            ["--queries-file", "queries.sql", "--query", "SELECT 1"],
+        ] {
+            let args: Vec<&str> = ["client"].into_iter().chain(inputs).collect();
+            let error = local_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(error.to_string().contains("--query <QUERY>"), "{error}");
+            assert!(
+                error.to_string().contains("--queries-file <QUERIES_FILE>"),
+                "{error}"
+            );
         }
     }
 
