@@ -372,7 +372,7 @@ async fn start(
         extra_env,
     };
 
-    let container_id = docker::run_postgres(&docker, opts).await?;
+    let container_id = docker::create_postgres(&docker, opts).await?;
 
     let info = ServerInfo {
         name: key.clone(),
@@ -385,19 +385,30 @@ async fn start(
         engine: Engine::Postgres,
         container_id: Some(container_id.clone()),
     };
-    server::save_server_info(&info)?;
+    let startup_result = async {
+        docker::start_existing(&docker, &container_id).await?;
+        server::save_server_info(&info)?;
+        if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
+            return Err(postgres_readiness_error(
+                &docker,
+                &container_id,
+                &user_name,
+                wait_timeout,
+                failure,
+            )
+            .await);
+        }
+        Ok(())
+    }
+    .await;
 
-    if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
-        let error =
-            postgres_readiness_error(&docker, &container_id, &user_name, wait_timeout, failure)
-                .await;
-        let _ = docker::stop_container(&docker, &container_id).await;
+    if let Err(primary) = startup_result {
         return Err(rollback_failed_fresh_start(
             &docker,
             &container_id,
             &info,
             created_instance_dir,
-            error,
+            primary,
         )
         .await);
     }

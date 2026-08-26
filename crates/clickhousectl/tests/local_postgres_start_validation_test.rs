@@ -359,6 +359,7 @@ CONTEXT FOR AGENTS:
   Defaults to 18. Image is pulled if not already present locally.
   When --port is omitted, port 5432 is used if free or another free port is auto-selected.
   An explicitly requested port is rejected if it is occupied.
+  If a fresh startup fails, its new container and partial data are removed; resumed data is preserved.
   A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
   POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
   `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot

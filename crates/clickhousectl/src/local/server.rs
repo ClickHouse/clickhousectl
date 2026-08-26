@@ -191,7 +191,17 @@ pub fn save_server_info(info: &ServerInfo) -> Result<()> {
 
 /// Remove a server's metadata file.
 pub fn remove_server_info(name: &str) {
-    let _ = std::fs::remove_file(server_meta_path(name));
+    let _ = try_remove_server_info(name);
+}
+
+/// Remove a server's metadata file while retaining cleanup errors for callers
+/// that are rolling back a transaction.
+pub fn try_remove_server_info(name: &str) -> Result<()> {
+    match std::fs::remove_file(server_meta_path(name)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Mark a ClickHouse server as stopped without discarding its metadata.

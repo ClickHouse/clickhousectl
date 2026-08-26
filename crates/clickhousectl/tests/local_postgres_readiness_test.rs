@@ -24,10 +24,12 @@ enum ContainerOutcome {
 struct DockerScenario {
     existing: bool,
     outcome: ContainerOutcome,
+    start_statuses: Vec<u16>,
+    remove_statuses: Vec<u16>,
     readiness_exit_codes: Vec<i64>,
     readiness_create_errors: usize,
     logs: Vec<String>,
-    remove_fails: bool,
+    write_partial_data: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -44,7 +46,7 @@ struct FakeDocker {
 }
 
 impl FakeDocker {
-    fn start(socket_path: &Path, project: &Path, scenario: DockerScenario) -> Self {
+    fn start(socket_path: &Path, project_path: &Path, scenario: DockerScenario) -> Self {
         let listener = UnixListener::bind(socket_path).expect("bind fake Docker socket");
         listener
             .set_nonblocking(true)
@@ -53,18 +55,24 @@ impl FakeDocker {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_requests = Arc::clone(&requests);
-        let project = project.to_path_buf();
+        let project = project_path.to_path_buf();
+        let partial_data_path =
+            project_path.join(".clickhouse/servers/default-pg18/data/partial-init");
         let thread = thread::spawn(move || {
             let DockerScenario {
                 existing,
                 outcome,
+                start_statuses,
+                remove_statuses,
                 readiness_exit_codes,
                 readiness_create_errors,
                 logs,
-                remove_fails,
+                write_partial_data,
             } = scenario;
             let mut started = false;
             let mut next_exec = 0_usize;
+            let mut start_statuses: VecDeque<u16> = start_statuses.into();
+            let mut remove_statuses: VecDeque<u16> = remove_statuses.into();
             let mut readiness_create_errors = readiness_create_errors;
             let mut readiness_exit_codes: VecDeque<i64> = readiness_exit_codes.into();
             let mut exec_exit_codes = HashMap::new();
@@ -112,16 +120,30 @@ impl FakeDocker {
                             write_json(&mut stream, 201, r#"{"Id":"cleanup-id","Warnings":[]}"#);
                         } else {
                             assert!(!existing, "resumed start created a new container");
+                            started = false;
                             write_json(&mut stream, 201, r#"{"Id":"pg-id","Warnings":[]}"#);
                         }
                     }
                     ("POST", path) if path.starts_with("/containers/pg-id/start") => {
-                        started = true;
-                        let data_dir = project.join(".clickhouse/servers/default-pg18/data");
-                        std::fs::create_dir_all(&data_dir).expect("create simulated PGDATA");
-                        std::fs::write(data_dir.join("PG_VERSION"), "18")
-                            .expect("write simulated PGDATA marker");
-                        write_response(&mut stream, 204, "application/json", b"");
+                        let status = start_statuses.pop_front().unwrap_or(204);
+                        if status == 204 {
+                            started = true;
+                            let data_dir = project.join(".clickhouse/servers/default-pg18/data");
+                            std::fs::create_dir_all(&data_dir).expect("create simulated PGDATA");
+                            std::fs::write(data_dir.join("PG_VERSION"), "18")
+                                .expect("write simulated PGDATA marker");
+                            if write_partial_data {
+                                std::fs::write(&partial_data_path, "partial PGDATA")
+                                    .expect("write partial PGDATA marker");
+                            }
+                            write_response(&mut stream, 204, "application/json", b"");
+                        } else {
+                            write_json(
+                                &mut stream,
+                                status,
+                                r#"{"message":"start failed by test"}"#,
+                            );
+                        }
                     }
                     ("GET", path) if path.starts_with("/containers/pg-id/json") => {
                         let running = started && matches!(outcome, ContainerOutcome::Running);
@@ -187,14 +209,16 @@ impl FakeDocker {
                         write_json(&mut stream, 200, r#"{"StatusCode":0}"#)
                     }
                     ("DELETE", path) if path.starts_with("/containers/pg-id?") => {
-                        if remove_fails {
+                        let status = remove_statuses.pop_front().unwrap_or(204);
+                        if status == 204 {
+                            started = false;
+                            write_response(&mut stream, 204, "application/json", b"")
+                        } else {
                             write_json(
                                 &mut stream,
-                                500,
-                                r#"{"message":"simulated cleanup failure"}"#,
+                                status,
+                                r#"{"message":"remove failed by test"}"#,
                             )
-                        } else {
-                            write_response(&mut stream, 204, "application/json", b"")
                         }
                     }
                     _ => panic!("unexpected fake Docker request: {request:?}"),
@@ -270,6 +294,7 @@ fn write_response(stream: &mut UnixStream, status: u16, content_type: &str, body
         201 => "Created",
         204 => "No Content",
         404 => "Not Found",
+        500 => "Internal Server Error",
         _ => "Response",
     };
     let headers = format!(
@@ -355,14 +380,35 @@ fn run_start(
     }
     let socket_path = home.path().join("docker.sock");
     let docker = FakeDocker::start(&socket_path, project.path(), scenario);
+    let output = run_start_command(
+        home.path(),
+        project.path(),
+        &socket_path,
+        resumed,
+        telemetry_debug,
+        wait_timeout,
+    );
+    let requests = docker.requests();
+    drop(docker);
+    (output, requests, project)
+}
+
+fn run_start_command(
+    home: &Path,
+    project: &Path,
+    socket_path: &Path,
+    resumed: bool,
+    telemetry_debug: bool,
+    wait_timeout: u16,
+) -> Output {
     let port = reserve_port().to_string();
     let wait_timeout = wait_timeout.to_string();
     let mut command = Command::new(clickhousectl_binary());
     command
         .env_clear()
-        .env("HOME", home.path())
+        .env("HOME", home)
         .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
-        .current_dir(project.path())
+        .current_dir(project)
         .args([
             "local",
             "--json",
@@ -381,10 +427,7 @@ fn run_start(
     } else {
         command.env("DO_NOT_TRACK", "1");
     }
-    let output = command.output().expect("run clickhousectl");
-    let requests = docker.requests();
-    drop(docker);
-    (output, requests, project)
+    command.output().expect("run clickhousectl")
 }
 
 fn readiness_requests(requests: &[DockerRequest]) -> Vec<&DockerRequest> {
@@ -400,10 +443,12 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::Running,
+            start_statuses: vec![204],
+            remove_statuses: vec![],
             readiness_exit_codes: vec![1, 0],
             readiness_create_errors: 1,
             logs: vec![],
-            remove_fails: false,
+            write_partial_data: false,
         },
         false,
         false,
@@ -446,10 +491,12 @@ fn resumed_start_also_waits_for_postgres_readiness() {
         DockerScenario {
             existing: true,
             outcome: ContainerOutcome::Running,
+            start_statuses: vec![204],
+            remove_statuses: vec![],
             readiness_exit_codes: vec![1, 0],
             readiness_create_errors: 0,
             logs: vec![],
-            remove_fails: false,
+            write_partial_data: false,
         },
         true,
         false,
@@ -480,10 +527,12 @@ fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::Running,
+            start_statuses: vec![204],
+            remove_statuses: vec![204],
             readiness_exit_codes: vec![],
             readiness_create_errors: 0,
             logs: vec![],
-            remove_fails: false,
+            write_partial_data: false,
         },
         false,
         false,
@@ -525,10 +574,12 @@ fn immediate_exit_reports_bounded_logs_and_error_telemetry_without_setup_success
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::ImmediateExit,
+            start_statuses: vec![204],
+            remove_statuses: vec![204],
             readiness_exit_codes: vec![],
             readiness_create_errors: 0,
             logs,
-            remove_fails: false,
+            write_partial_data: false,
         },
         false,
         true,
@@ -582,10 +633,12 @@ fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::ImmediateExit,
+            start_statuses: vec![204],
+            remove_statuses: vec![204],
             readiness_exit_codes: vec![],
             readiness_create_errors: 0,
             logs: vec![],
-            remove_fails: false,
+            write_partial_data: false,
         },
         false,
         false,
@@ -629,10 +682,12 @@ fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::ImmediateExit,
+            start_statuses: vec![204],
+            remove_statuses: vec![500],
             readiness_exit_codes: vec![],
             readiness_create_errors: 0,
             logs: vec![],
-            remove_fails: true,
+            write_partial_data: false,
         },
         false,
         false,
@@ -642,7 +697,7 @@ fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("simulated cleanup failure"), "{stderr}");
+    assert!(stderr.contains("remove failed by test"), "{stderr}");
     assert!(stderr.contains("recovery metadata retained"), "{stderr}");
     assert!(
         project
@@ -665,4 +720,240 @@ fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
             .count(),
         1
     );
+}
+
+fn fresh_instance_dir(project: &Path) -> PathBuf {
+    project.join(".clickhouse/servers/default-pg18")
+}
+
+fn metadata_path(project: &Path) -> PathBuf {
+    project.join(".clickhouse/servers/default-pg18.json")
+}
+
+fn request_index(requests: &[DockerRequest], method: &str, path_fragment: &str) -> usize {
+    requests
+        .iter()
+        .position(|request| request.method == method && request.path.contains(path_fragment))
+        .unwrap_or_else(|| panic!("missing {method} request containing {path_fragment}"))
+}
+
+#[test]
+fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![500],
+            remove_statuses: vec![204],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: false,
+        },
+    );
+
+    let output = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("start failed by test"));
+    let create = request_index(&requests, "POST", "/containers/create?");
+    let start = request_index(&requests, "POST", "/containers/pg-id/start");
+    let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(create < start && start < remove);
+    assert!(!fresh_instance_dir(project.path()).exists());
+    assert!(!metadata_path(project.path()).exists());
+}
+
+#[test]
+fn initialization_timeout_removes_partial_pgdata() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![204],
+            remove_statuses: vec![204],
+            readiness_exit_codes: vec![1; 100],
+            readiness_create_errors: 0,
+            logs: vec!["database system is starting up".to_string()],
+            write_partial_data: true,
+        },
+    );
+
+    let output = run_start_command(home.path(), project.path(), &socket_path, false, false, 1);
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("did not become ready within 1 seconds"));
+    assert!(stderr.contains("database system is starting up"));
+    request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(!fresh_instance_dir(project.path()).exists());
+    assert!(!metadata_path(project.path()).exists());
+}
+
+#[test]
+fn metadata_failure_uses_the_fresh_start_rollback() {
+    use std::os::unix::fs::symlink;
+
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let servers = project.path().join(".clickhouse/servers");
+    let metadata_target = project.path().join("metadata-target-directory");
+    std::fs::create_dir_all(&servers).expect("create servers directory");
+    std::fs::create_dir(&metadata_target).expect("create metadata failure target");
+    symlink(&metadata_target, metadata_path(project.path())).expect("create metadata symlink");
+
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![204],
+            remove_statuses: vec![204],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: true,
+        },
+    );
+
+    let output = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(readiness_requests(&requests).is_empty());
+    assert!(!fresh_instance_dir(project.path()).exists());
+    assert!(!metadata_path(project.path()).exists());
+}
+
+#[test]
+fn retry_after_rolled_back_start_failure_succeeds_cleanly() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![500, 204],
+            remove_statuses: vec![204],
+            readiness_exit_codes: vec![0],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: false,
+        },
+    );
+
+    let first = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+    assert_eq!(first.status.code(), Some(1));
+    assert!(!fresh_instance_dir(project.path()).exists());
+
+    let second = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+    let requests = docker.requests();
+
+    assert!(
+        second.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "POST"
+                && request.path.starts_with("/containers/create?")
+                && request.body.contains(r#""Image":"postgres:18""#))
+            .count(),
+        2
+    );
+    assert!(fresh_instance_dir(project.path()).exists());
+    assert!(metadata_path(project.path()).is_file());
+}
+
+#[test]
+fn resume_failure_preserves_existing_container_metadata_and_data() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    write_resumed_server(project.path());
+    let marker = fresh_instance_dir(project.path()).join("data/user-data");
+    std::fs::create_dir_all(marker.parent().unwrap()).expect("create resumed data directory");
+    std::fs::write(&marker, "keep me").expect("write resumed data marker");
+
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: true,
+            outcome: ContainerOutcome::ImmediateExit,
+            start_statuses: vec![204],
+            remove_statuses: vec![],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec!["resume failed".to_string()],
+            write_partial_data: false,
+        },
+    );
+
+    let output = run_start_command(home.path(), project.path(), &socket_path, true, false, 2);
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(marker.is_file());
+    assert!(metadata_path(project.path()).is_file());
+    assert!(requests.iter().any(|request| {
+        request.method == "POST" && request.path.starts_with("/containers/pg-id/stop?")
+    }));
+    assert!(!requests.iter().any(|request| request.method == "DELETE"));
+}
+
+#[test]
+fn cleanup_failure_keeps_primary_start_error_and_adds_diagnostics() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![500],
+            remove_statuses: vec![500],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: false,
+        },
+    );
+
+    let output = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let primary = stderr.find("start failed by test").expect("primary error");
+    let rollback = stderr
+        .find("Postgres startup rollback incomplete")
+        .expect("rollback diagnostics");
+    let cleanup = stderr.find("remove failed by test").expect("cleanup error");
+    assert!(primary < rollback && rollback < cleanup, "{stderr}");
+    request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(fresh_instance_dir(project.path()).exists());
+    assert!(metadata_path(project.path()).is_file());
 }

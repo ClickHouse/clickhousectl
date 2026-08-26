@@ -350,10 +350,13 @@ pub struct PostgresRunOpts<'a> {
     pub extra_env: Vec<String>,
 }
 
-/// Create + start a Postgres container; return its ID.
-pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<String> {
+/// Create a Postgres container without starting it; return its ID.
+///
+/// Keeping creation separate gives the caller the exact container ID needed
+/// to roll back every later startup step.
+pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<String> {
     use bollard::models::{ContainerCreateBody, HostConfig, PortBinding};
-    use bollard::query_parameters::{CreateContainerOptionsBuilder, StartContainerOptions};
+    use bollard::query_parameters::CreateContainerOptionsBuilder;
 
     let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     port_bindings.insert(
@@ -413,12 +416,6 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
         .create_container(Some(create_opts), container_config)
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
-
-    docker
-        .start_container(&created.id, None::<StartContainerOptions>)
-        .await
-        .map_err(|e| Error::DockerError(e.to_string()))?;
-
     Ok(created.id)
 }
 
