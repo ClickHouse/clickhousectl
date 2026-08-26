@@ -1852,7 +1852,11 @@ fn parse_postgres_table_mapping_parts(mapping: &str) -> CloudResult<(String, Str
         )));
     }
 
-    Ok((schema.to_string(), table.to_string(), target.to_string()))
+    Ok((
+        schema.trim().to_string(),
+        table.trim().to_string(),
+        target.trim().to_string(),
+    ))
 }
 
 fn parse_postgres_table_mapping(mapping: &str) -> Result<String, String> {
@@ -4393,6 +4397,19 @@ mod tests {
         assert_eq!(source.table_mappings[1].source_schema_name, "audit");
         assert_eq!(source.table_mappings[1].source_table, "events");
         assert_eq!(source.table_mappings[1].target_table, "audit_events");
+    }
+
+    #[test]
+    fn build_postgres_request_trims_table_mapping_components() {
+        let mut args = postgres_builder_args();
+        args.table_mappings = vec![" public.events : events_raw ".into()];
+
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        let mapping = &source.table_mappings[0];
+        assert_eq!(mapping.source_schema_name, "public");
+        assert_eq!(mapping.source_table, "events");
+        assert_eq!(mapping.target_table, "events_raw");
     }
 
     #[test]

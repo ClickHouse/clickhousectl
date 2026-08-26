@@ -151,6 +151,8 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
         .and_then(|create| create.find_subcommand_mut("postgres"))
         .expect("clickpipe create postgres command must exist");
+    // ArgumentConflict is intentional for invalid relationships between valid
+    // values, matching existing CLI validation and preserving exit code 2.
     Err(postgres.error(ErrorKind::ArgumentConflict, message))
 }
 

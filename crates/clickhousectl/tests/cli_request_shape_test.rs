@@ -208,7 +208,7 @@ fn invoke_cli_without_cloud_credentials(
     let mut args = vec!["cloud".to_string(), "--url".to_string(), mock.uri()];
     args.extend_from_slice(cli_args);
     let mut command = Command::new(clickhousectl_binary());
-    clear_agent_env(&mut command);
+    clear_inherited_env(&mut command);
     command
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
