@@ -44,7 +44,10 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             "scripts/classify-install-integration.py": True,
             "crates/clickhousectl/src/local/postgres.rs": False,
             "crates/clickhousectl/src/local/docker.rs": False,
+            "crates/clickhousectl/tests/local_client_selectors_test.rs": False,
             "crates/clickhousectl/tests/local_docker_pull_progress_test.rs": False,
+            "crates/clickhousectl/tests/local_postgres_readiness_test.rs": False,
+            "crates/clickhousectl/tests/local_server_metadata_test.rs": False,
             "crates/clickhousectl/src/cloud/services.rs": False,
             "README.md": False,
         }
