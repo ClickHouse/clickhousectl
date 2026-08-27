@@ -256,7 +256,7 @@ fn clickhouse_client_preserves_repeated_query_order_empty_values_and_passthrough
 }
 
 #[test]
-fn clickhouse_client_preserves_repeated_query_file_order_empty_values_and_passthrough() {
+fn clickhouse_client_preserves_multi_value_and_repeated_query_file_order() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
     // Repeated --queries-file already existed before repeated --query landed.
@@ -274,10 +274,10 @@ fn clickhouse_client_preserves_repeated_query_file_order_empty_values_and_passth
                 "19000",
                 "--queries-file",
                 "schema.sql",
+                "seed.sql",
                 "--queries-file",
                 "",
-                "--queries-file",
-                "seed.sql",
+                "verify.sql",
                 "--",
                 "--queries-file",
                 "tail.sql",
@@ -295,9 +295,11 @@ fn clickhouse_client_preserves_repeated_query_file_order_empty_values_and_passth
             "--queries-file",
             "schema.sql",
             "--queries-file",
+            "seed.sql",
+            "--queries-file",
             "",
             "--queries-file",
-            "seed.sql",
+            "verify.sql",
             "--queries-file",
             "tail.sql",
             "--format",

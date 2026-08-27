@@ -249,8 +249,9 @@ CONTEXT FOR AGENTS:
   2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
      ClickHouse server directly, bypassing local server lookup. Host-only uses port 9000; port-only
      connects to localhost. Direct selectors cannot be combined with --name.
-  --query and --queries-file are repeatable and preserve every value. ClickHouse rejects using the
-  two options together, so clickhousectl reports that combination as a usage error.
+  Repeat --query to execute multiple inline queries. --queries-file accepts multiple paths after
+  one flag and can also be repeated. ClickHouse rejects combining the two options, so clickhousectl
+  reports that combination as a usage error.
   Additional clickhouse-client args can be passed after --.
   Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
     )]
@@ -275,12 +276,12 @@ CONTEXT FOR AGENTS:
         #[arg(long, short = 'v', requires = "direct", conflicts_with = "name")]
         version: Option<ClientVersionArg>,
 
-        /// Execute a SQL query (repeatable; requires ClickHouse 23.9.1.1854+ when repeated)
+        /// Execute a SQL query; repeat for multiple queries (requires ClickHouse 23.9.1.1854+)
         #[arg(long, short, conflicts_with = "queries_file")]
         query: Vec<String>,
 
-        /// Execute queries from a SQL file (repeatable; cannot be combined with --query)
-        #[arg(long, conflicts_with = "query")]
+        /// Execute queries from SQL files; accepts multiple paths or repeated flags
+        #[arg(long, num_args = 1.., conflicts_with = "query")]
         queries_file: Vec<String>,
 
         /// Additional arguments to pass to clickhouse-client
@@ -984,10 +985,10 @@ mod tests {
             "client",
             "--queries-file",
             "schema.sql",
-            "--queries-file",
             "seed.sql",
             "--queries-file",
             "",
+            "verify.sql",
             "--",
             "--queries-file",
             "tail.sql",
@@ -996,7 +997,7 @@ mod tests {
             panic!("expected ClickHouse client");
         };
         assert!(query.is_empty());
-        assert_eq!(queries_file, ["schema.sql", "seed.sql", ""]);
+        assert_eq!(queries_file, ["schema.sql", "seed.sql", "", "verify.sql"]);
         assert_eq!(args, ["--queries-file", "tail.sql"]);
     }
 
@@ -1062,6 +1063,21 @@ mod tests {
         ] {
             assert!(help.contains(text), "missing {text:?} in:\n{help}");
         }
+    }
+
+    #[test]
+    fn clickhouse_client_help_describes_query_multiplicity_and_exclusion() {
+        let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
+            .err()
+            .expect("help should exit through clap")
+            .to_string();
+
+        assert!(help.contains("repeat for multiple queries"), "{help}");
+        assert!(
+            help.contains("accepts multiple paths or repeated flags"),
+            "{help}"
+        );
+        assert!(help.contains("ClickHouse rejects combining"), "{help}");
     }
 
     #[test]
