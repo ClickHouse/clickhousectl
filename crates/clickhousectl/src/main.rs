@@ -42,15 +42,15 @@ async fn main() {
     let mut cmd = Cli::command();
 
     // Single-exit invariant (#320): every invocation — bare, help, version,
-    // typo, dispatched command — falls through to the common tail below, so
-    // the first-run telemetry notice and subsequent events cover all of them.
+    // typo, dispatched command — falls through to the common telemetry tail
+    // below.
     // The sole intended exemption is the hidden `telemetry send` child inside
     // `run_parsed`; the `exec()` handoffs (`local client`, host psql) record
     // their event via `telemetry::finalize_before_exec` just before the
     // process image is replaced. Child-process exit codes are returned as
     // `Error::ChildExit` so they also flow through this tail. Do not add exit
     // paths.
-    let (exit_code, telemetry_invocation) = match cmd.try_get_matches_from_mut(argv.iter()) {
+    let outcome = match cmd.try_get_matches_from_mut(argv.iter()) {
         Ok(matches) => {
             #[cfg(feature = "telemetry")]
             let mut invocation = telemetry::capture(&cmd, &matches);
@@ -64,20 +64,21 @@ async fn main() {
             // a clap derive bug, not a user error.
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
-            let (exit_code, is_child_exit) = match validate_post_parse(&cli, &mut cmd) {
+            let run_result = match validate_post_parse(&cli, &mut cmd) {
                 Ok(()) => run_parsed(cli).await,
                 Err(e) => {
                     let _ = e.print();
-                    (e.exit_code(), false)
+                    (e.exit_code(), false, false)
                 }
             };
+            let (exit_code, is_child_exit, defer_telemetry_notice) = run_result;
             #[cfg(feature = "telemetry")]
             if is_child_exit {
                 invocation.mark_child_exit();
             }
             #[cfg(not(feature = "telemetry"))]
             let _ = is_child_exit;
-            (exit_code, invocation)
+            (exit_code, invocation, defer_telemetry_notice)
         }
         Err(e) => {
             // clap keeps its own formatting and colors; help/version print to
@@ -107,48 +108,78 @@ async fn main() {
             // clap's own exit codes: 0 for help/version, 2 for usage errors.
             // Dispatched commands reserve 3 for cancellation, so 2 remains
             // unambiguous to shell callers.
-            (e.exit_code(), invocation)
+            (e.exit_code(), invocation, false)
         }
     };
+    let (exit_code, telemetry_invocation, defer_telemetry_notice) = outcome;
 
     // Consent is evaluated here, after the command ran, so `telemetry disable`
     // silences its own event and `telemetry enable` sends one.
     #[cfg(feature = "telemetry")]
-    telemetry::finalize(telemetry_invocation, exit_code);
+    telemetry::finalize(telemetry_invocation, exit_code, defer_telemetry_notice);
     #[cfg(not(feature = "telemetry"))]
-    let () = telemetry_invocation;
+    {
+        let () = telemetry_invocation;
+        let _ = defer_telemetry_notice;
+    }
 
     std::process::exit(exit_code);
 }
 
 fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Result<(), clap::Error> {
+    if let Commands::Local(args) = &cli.command {
+        let Some(message) = args.postgres_start_validation_error() else {
+            return Ok(());
+        };
+        let start = cmd
+            .find_subcommand_mut("local")
+            .and_then(|local| local.find_subcommand_mut("postgres"))
+            .and_then(|postgres| postgres.find_subcommand_mut("start"))
+            .expect("local postgres start command must exist");
+        return Err(start.error(ErrorKind::ArgumentConflict, message));
+    }
+
     let Commands::Cloud(args) = &cli.command else {
         return Ok(());
     };
-    if !args.has_explicit_json_format_conflict() {
-        return Ok(());
+    if args.has_explicit_json_format_conflict() {
+        // clap validates each subcommand before propagating values supplied for a
+        // global argument at a parent level, so this cross-level conflict needs a
+        // post-parse check. Format the error against the owning command.
+        let query = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("service"))
+            .and_then(|service| service.find_subcommand_mut("query"))
+            .expect("service query command must exist");
+        return Err(query.error(
+            ErrorKind::ArgumentConflict,
+            "the argument '--json' cannot be used with '--format <FORMAT>'",
+        ));
     }
 
-    // clap validates each subcommand before propagating values supplied for a
-    // global argument at a parent level, so this cross-level conflict needs a
-    // post-parse check. Format the error against the owning command.
-    let query = cmd
+    // clap can require --iam-role for one auth value, but cannot express the
+    // inverse conflict or condition --replication-slot-name on another value.
+    let Some(message) = args.postgres_clickpipe_validation_error() else {
+        return Ok(());
+    };
+    let postgres = cmd
         .find_subcommand_mut("cloud")
-        .and_then(|cloud| cloud.find_subcommand_mut("service"))
-        .and_then(|service| service.find_subcommand_mut("query"))
-        .expect("service query command must exist");
-    Err(query.error(
-        ErrorKind::ArgumentConflict,
-        "the argument '--json' cannot be used with '--format <FORMAT>'",
-    ))
+        .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+        .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
+        .and_then(|create| create.find_subcommand_mut("postgres"))
+        .expect("clickpipe create postgres command must exist");
+    // ArgumentConflict is intentional for invalid relationships between valid
+    // values, matching existing CLI validation and preserving exit code 2.
+    Err(postgres.error(ErrorKind::ArgumentConflict, message))
 }
 
 /// Run a successfully parsed invocation to completion and report the exit
-/// code for `main`'s single exit plus whether it came from a child process.
+/// code for `main`'s single exit, whether it came from a child process, and
+/// whether a structured error requires deferring the first-run telemetry notice.
 /// The hidden `telemetry send` child is the one deliberate early exit in the
 /// binary: it does exactly one POST — no update-cache refresh, no dispatch,
 /// and no telemetry hook of its own, so a send can never trigger another send.
-async fn run_parsed(cli: Cli) -> (i32, bool) {
+async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
     #[cfg(feature = "telemetry")]
     if matches!(
         cli.command,
@@ -173,6 +204,10 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
     // Decide whether to surface the update notice before `run` consumes the
     // command. Shown on every command that does not emit machine-readable JSON.
     let show_notice = should_show_update_notice(&cli.command);
+    let local_json = match &cli.command {
+        Commands::Local(args) => json_output(args.json),
+        _ => false,
+    };
 
     let result = run(cli.command).await;
 
@@ -183,17 +218,21 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
     }
 
-    let (exit_code, is_child_exit) = match result {
-        Ok(()) => (0, false),
+    let (exit_code, is_child_exit, defer_telemetry_notice) = match result {
+        Ok(()) => (0, false, false),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
             if !is_child_exit {
-                use std::io::Write;
-                // Not `eprintln!`, which panics on a closed stderr — see
-                // `telemetry::print_first_run_notice`.
-                let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                if local_json {
+                    local::output::print_error(&e);
+                } else {
+                    use std::io::Write;
+                    // Not `eprintln!`, which panics on a closed stderr — see
+                    // `telemetry::print_first_run_notice`.
+                    let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                }
             }
-            (e.exit_code(), is_child_exit)
+            (e.exit_code(), is_child_exit, local_json && !is_child_exit)
         }
     };
 
@@ -203,7 +242,7 @@ async fn run_parsed(cli: Cli) -> (i32, bool) {
         update::print_cached_update_notice();
     }
 
-    (exit_code, is_child_exit)
+    (exit_code, is_child_exit, defer_telemetry_notice)
 }
 
 /// The explicit `--json` flag for a command, or `None` for commands that never
@@ -337,6 +376,102 @@ mod tests {
             assert!(message.contains("--format"), "{message}");
             assert!(
                 message.contains("clickhousectl cloud service query"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_clickpipe_relationship_errors_are_clap_usage_errors() {
+        let base = [
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "public.events:events",
+        ];
+        let cases = [
+            (
+                ["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"].as_slice(),
+                "--iam-role cannot be used with --auth basic",
+            ),
+            (
+                ["--replication-slot-name", "existing_slot"].as_slice(),
+                "--replication-slot-name can only be used with --replication-mode cdc_only",
+            ),
+            (
+                [
+                    "--replication-mode",
+                    "snapshot",
+                    "--replication-slot-name",
+                    "existing_slot",
+                ]
+                .as_slice(),
+                "--replication-slot-name can only be used with --replication-mode cdc_only",
+            ),
+        ];
+
+        for (extra, diagnostic) in cases {
+            let args: Vec<&str> = base.iter().chain(extra).copied().collect();
+            let error = parse_and_validate(&args)
+                .err()
+                .expect("invalid postgres relationship should fail validation");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains(diagnostic), "{message}");
+            assert!(
+                message.contains("clickhousectl cloud clickpipe create postgres"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_postgres_start_env_relationship_errors_are_clap_usage_errors() {
+        for (extra, diagnostic) in [
+            (
+                ["--env", "APP_MODE=dev", "--env", "APP_MODE=test"].as_slice(),
+                "APP_MODE",
+            ),
+            (
+                [
+                    "--password",
+                    "from-flag",
+                    "--env",
+                    "POSTGRES_PASSWORD=from-env",
+                ]
+                .as_slice(),
+                "both --password and --env",
+            ),
+        ] {
+            let args: Vec<&str> = ["clickhousectl", "local", "postgres", "start"]
+                .iter()
+                .chain(extra)
+                .copied()
+                .collect();
+            let error = parse_and_validate(&args)
+                .err()
+                .expect("invalid environment relationship should fail validation");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            assert!(message.contains(diagnostic), "{message}");
+            assert!(
+                message.contains("clickhousectl local postgres start"),
                 "{message}"
             );
         }

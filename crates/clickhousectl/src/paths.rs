@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Returns the base directory for ClickHouse CLI (~/.clickhouse/)
 pub fn base_dir() -> Result<PathBuf> {
@@ -40,8 +40,14 @@ pub fn configs_dir() -> Result<PathBuf> {
 /// Ensures all necessary directories exist
 pub fn ensure_dirs() -> Result<()> {
     let versions = versions_dir()?;
-    std::fs::create_dir_all(&versions).map_err(|_| Error::CreateDir(versions))?;
-    Ok(())
+    ensure_dir(&versions)
+}
+
+pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(|source| Error::CreateDir {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Returns the user-local PATH-style bin directory (~/.local/bin/)
@@ -58,4 +64,33 @@ pub fn global_bin_dir() -> Result<PathBuf> {
 /// Returns the path to the global `clickhouse` symlink (~/.local/bin/clickhouse)
 pub fn global_clickhouse_symlink() -> Result<PathBuf> {
     Ok(global_bin_dir()?.join("clickhouse"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_dir_includes_path_and_not_a_directory_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("not-a-directory");
+        std::fs::write(&file, "content").unwrap();
+        let directory = file.join("versions");
+
+        let error = ensure_dir(&directory).unwrap_err();
+        let Error::CreateDir { path, source } = &error else {
+            panic!("expected create-directory error: {error}");
+        };
+
+        assert_eq!(path, &directory);
+        assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Failed to create directory '{}': {}",
+                directory.display(),
+                source
+            )
+        );
+    }
 }

@@ -222,9 +222,24 @@ postgres/
 clickhousectl local client                           # Connects to "default" server
 clickhousectl local client --name dev                # Connects to "dev" server
 clickhousectl local client --query "SHOW DATABASES"  # Run a query
+clickhousectl local client --query "SELECT 1" --query "SELECT 2" # Run queries in order
 clickhousectl local client --queries-file schema.sql # Run queries from a file
+clickhousectl local client --queries-file schema.sql seed.sql # Run files in order
 clickhousectl local client --host remote-host --port 9000  # Connect to a specific host/port
+clickhousectl local client --host remote-host         # Direct mode; port defaults to 9000
+clickhousectl local client --port 19000               # Direct mode; host defaults to localhost
+clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an installed client binary
 ```
+
+`--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
+
+Without `--host` or `--port`, managed client lookup uses `.clickhouse/servers` from the canonical current directory only. It does not search parent directories. If lookup fails, return to the project root that owns the server, inspect that project's servers with `local server list`, or use direct mode.
+
+In direct mode, `--host` and `--port` select the server connection while `--version` independently selects an already installed local client binary. Numeric selectors such as `26`, `26.8`, and `26.8.1.1760` select the newest installed match. This does not install a binary or change `~/.clickhouse/default`.
+
+Without `--version`, direct mode uses the valid default. If no default exists, zero installed versions is an error, one installed version is used without creating a default, and multiple installed versions require either `--version` or `local use`. A default that names a missing binary is an error; repair it with `local use`, or bypass it for one direct connection with `--version`.
+
+`--query` can be repeated, while each `--queries-file` accepts one or more paths and the flag itself can also be repeated. Values, including empty strings, are passed to the native client unchanged and in order. The two options cannot be combined because the native ClickHouse client rejects that combination, so clickhousectl reports a usage error before resolving a binary. Arguments after `--` are appended after all wrapper-generated arguments. Repeatable `--query` requires ClickHouse 23.9.1.1854 or newer, where [ClickHouse added the native behavior](https://github.com/ClickHouse/ClickHouse/blob/8f9a227de1f530cdbda52c145d41a6b0f1d29961/docs/changelogs/archive/v23.9.1.1854-stable.md); clickhousectl checks the selected client version before execution.
 
 ### Creating and managing ClickHouse servers
 
@@ -233,9 +248,14 @@ Start and manage ClickHouse server instances. Each server gets its own isolated 
 A bare `clickhousectl local server start` bootstraps from zero: if no version is installed and no default is set, it installs `latest` and starts with it (it does not set a default, so you keep tracking `latest` on subsequent starts). Pin a version with `--version`, or set a default with `local use`, to opt out. Because `latest` tracks the rolling master build, repeat `latest` installs/starts do a cheap `HEAD` against `builds.clickhouse.com` and skip the ~150 MB re-download when master hasn't changed (the build's `etag` is cached in `~/.clickhouse/versions/.master-builds.json`).
 
 ```bash
-# Start a server (runs in background by default)
+# Canonical named lifecycle
+clickhousectl local server start dev
+clickhousectl local server list
+clickhousectl local server stop dev
+clickhousectl local server remove dev
+
+# Other start options (servers run in background by default)
 clickhousectl local server start                          # Named "default" (installs latest if nothing is set up yet)
-clickhousectl local server start dev                      # Named "dev"
 clickhousectl local server start --version latest         # Use a specific version (installs if needed, doesn't change default)
 clickhousectl local server start --foreground             # Run in foreground (-F / --fg)
 clickhousectl local server start --no-wait                # Return after spawning without waiting for readiness
@@ -250,16 +270,14 @@ clickhousectl local server list
 clickhousectl local server list --global                  # List running ClickHouse servers across all projects
 
 # Stop servers
-clickhousectl local server stop                           # Stop "default"
-clickhousectl local server stop dev                       # Stop by name
+clickhousectl local server stop                           # Stop "default", or the sole ClickHouse server
 clickhousectl local server stop default --global          # Stop from any project
 clickhousectl local server stop default --global --project /path/to/project  # Disambiguate
 clickhousectl local server stop-all                       # Stop all ClickHouse and Postgres servers in this project
 clickhousectl local server stop-all --global              # Stop all ClickHouse servers system-wide
 
 # Remove a stopped server and its data
-clickhousectl local server remove                         # Remove "default"
-clickhousectl local server remove test                    # Remove by name
+clickhousectl local server remove                         # Remove "default" only; never guesses a custom name
 
 # Write connection env vars to .env file
 clickhousectl local server dotenv                        # From "default" server → .env
@@ -269,6 +287,17 @@ clickhousectl local server dotenv --local --user default --database mydb  # Incl
 ```
 
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
+
+Project-local server commands select `.clickhouse` under the exact current working directory. They do not search parent directories, so running `list`, `stop`, or `remove` from a child directory selects a different project scope. Change to the local project root where the server was started first; this is where `.clickhouse` typically lives. There is intentionally no project-path override for project-local commands; `server stop --global --project <project-root>` is only for an explicitly confirmed server found with `server list --global`.
+
+Without a name, `server stop` selects an existing `default`, then a sole known ClickHouse server. It succeeds without changing anything when none exist, and requires a name or `server stop-all` when multiple non-default servers exist. Bare `server remove` is deliberately stricter: it removes an existing `default` only and otherwise requires an explicit name, even when there is just one custom server.
+
+Version removal and server-data removal are separate operations:
+
+| Command | Removes |
+| --- | --- |
+| `clickhousectl local remove <exact-version>` | An installed ClickHouse binary from the global version store. |
+| `clickhousectl local server remove <server-name>` | A stopped named server and its data from the exact current project. |
 
 **Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 
@@ -315,6 +344,7 @@ clickhousectl local postgres start
 clickhousectl local postgres start --name dev --version 17 --port 5433
 clickhousectl local postgres start --user app --database myapp  # Generates a random password
 clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
+clickhousectl local postgres start --wait-timeout 120            # Default: 60s; maximum: 600s
 
 # List everything (ClickHouse + Postgres are merged in `server list`)
 clickhousectl local server list
@@ -322,6 +352,8 @@ clickhousectl local server list
 # Connect with psql (uses host psql if installed; otherwise falls back to docker exec)
 clickhousectl local postgres client --name dev
 clickhousectl local postgres client --name dev --query "SELECT 1"
+clickhousectl local postgres client --host remote-host       # Direct mode; port defaults to 5432
+clickhousectl local postgres client --port 55432             # Direct mode; connects locally
 
 # Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env.local
 clickhousectl local postgres dotenv --name dev --local
@@ -335,9 +367,15 @@ clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
 
+Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
+
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.
 
+`--env` accepts each valid `KEY=VALUE` key once. `POSTGRES_USER`, `POSTGRES_DB`, and `PGDATA` are generated by clickhousectl and cannot be supplied through `--env`; use `--user` or `--database` for the first two. For compatibility, `-e POSTGRES_PASSWORD=...` remains an alternative to `--password`, but combining the two or repeating `POSTGRES_PASSWORD` is an error. This guarantees that every generated variable appears exactly once in the container environment.
+
 `local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
+
+Fresh and resumed starts wait until `pg_isready` reports that PostgreSQL is accepting connections inside the container. The readiness timeout defaults to 60 seconds and can be set from 1 to 600 seconds with `--wait-timeout`. A timeout or early container exit fails the command and prints a bounded tail of the container logs instead of connection credentials. A failed fresh startup removes the newly created container, metadata, and PGDATA created by that attempt only when rollback completes. Pre-existing PGDATA is preserved, and recovery metadata is retained whenever cleanup is incomplete. A failed resume stops the existing container but preserves its metadata and data.
 
 Containers are tagged with `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`, `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and `created_by=clickhousectl_<version>` labels. `server list` recovers orphaned containers belonging to the current project via these labels, so deleting `.clickhouse/servers/<name>-pg<major>.json` is non-destructive — the next list/start rediscovers it.
 
@@ -521,6 +559,9 @@ clickhousectl cloud service query --name my-service --queries-file schema.sql   
 clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 
+# Replace a stale clickhousectl-owned Query API key for exactly one service
+clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
@@ -590,6 +631,8 @@ clickhousectl cloud service delete <service-id> --force
 
 Use `clickhousectl cloud service create --help` for the complete option list. If omitted, `--provider` defaults to `aws`, `--region` defaults to `us-east-1`, and the IP allowlist defaults to `0.0.0.0/0`; production workflows should normally set all three explicitly. When the create response includes an initial password, it is shown only once.
 
+`--query` and `--queries-file` are mutually exclusive. If neither is supplied, `cloud service query` reads SQL from stdin; `--queries-file -` also reads stdin explicitly.
+
 #### Query API auth modes
 
 `cloud service query` is the canonical way to run SQL against a cloud service — over HTTP, with no `clickhouse` binary and no service password required. It works with both credential modes:
@@ -599,7 +642,13 @@ Use `clickhousectl cloud service create --help` for the complete option list. If
 
 Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it.
 
+Provisioning is single-flight for processes using the same project directory: the CLI serializes the create, bind, and credential-save transaction and reuses the result written by the first process. The endpoint upsert API replaces the complete `openApiKeys` list and does not currently support a conditional or idempotent key-binding operation. Provisioning the same service concurrently from different project directories can therefore still lose a binding if both projects read and replace that list at the same time.
+
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes an auto-provisioned key by its stored management and organization IDs, then removes the local record. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
+
+If a stored per-service key is revoked or its endpoint binding changes, a query that receives HTTP 401/403 reports the exact `repair-query-key` command and does not silently provision another key. Repair is an explicit API-key-authenticated write operation. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Concurrent repairs in the same project reuse the first process's replacement instead of rotating it again. Legacy or incomplete records without exact ownership metadata are refused. If deletion of the superseded key fails after replacement, its exact ID stays in the service record so rerunning the repair command can finish cleanup without provisioning again.
+
+The Query API endpoint does not support conditional updates, so repair reads and rewrites the complete endpoint configuration while replacing the owned key binding. Do not modify the same endpoint concurrently with a repair because an update made after that read can be overwritten. Also wait for a first-use query's provisioning and readiness attempt to finish before running repair: its newly stored key can receive a temporary 401/403 while the endpoint binding converges, and an explicitly started repair can rotate that still-valid key.
 
 Querying an **idled** service wakes it automatically in both auth modes — under OAuth the Query API first asks for a wake confirmation, which the CLI sends after printing a notice to stderr (the first query may take a minute while the service wakes). A **stopped** service is never woken: the query fails with a hint to run `cloud service start`.
 
@@ -766,13 +815,24 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
-# From PostgreSQL (CDC)
+# From PostgreSQL with a publicly trusted certificate (CDC)
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
+
+# From PostgreSQL with a private or self-signed CA (CDC)
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-private-pg-pipe \
+  --host 10.0.0.15 --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --ca-certificate ./postgres-ca.pem \
+  --tls-host postgres.internal.example.com \
+  --publication-name clickpipes \
+  --table-mapping "public.users:public_users"
 
 # From MySQL (CDC)
 # --server-id sets the replication server ID (useful when multiple pipes read
@@ -798,6 +858,42 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --staging-path gs://bucket/staging \
   --table-mapping "dataset.table:target_table"
 ```
+
+#### PostgreSQL ClickPipe prerequisites
+
+TLS and certificate verification are enabled by default. A source that serves a
+complete, publicly trusted certificate chain needs neither `--ca-certificate`
+nor `--tls-host`. If the source certificate uses a private or self-signed CA,
+pass the CA certificate or bundle as PEM with `--ca-certificate <PATH>`; the CLI
+reads that file and sends its contents in the create request. Certificate
+hostname verification defaults to `--host`. Use `--tls-host <HOSTNAME>` only
+when the certificate is issued for a different hostname, such as when `--host`
+is an IP address. These options preserve certificate verification; they do not
+disable it.
+
+Before creating a PostgreSQL CDC ClickPipe:
+
+- Make the PostgreSQL host and port reachable from ClickHouse Cloud. Allow the
+  [ClickPipes static egress IPs](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips)
+  in the source firewall, security group, and `pg_hba.conf`, or configure
+  supported private connectivity.
+- Enable logical replication (`wal_level=logical`) and provision sufficient WAL
+  senders and replication slots.
+- Create a publication. The publication must contain every source table named
+  by `--table-mapping`; each table must have a primary key or an appropriate
+  replica identity.
+- Give the source user permission to connect, `USAGE` on each mapped schema,
+  `SELECT` on each mapped table, and the PostgreSQL `REPLICATION` privilege.
+
+See the [PostgreSQL ClickPipes setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres),
+the [generic PostgreSQL source setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic),
+and the [ClickPipes networking and static IP documentation](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips).
+
+PostgreSQL ClickPipes require one or more complete
+`--table-mapping schema.table:target_table` values. Ports must be in
+`1..=65535`. `--auth IAM_ROLE` requires `--iam-role`; the CLI rejects
+`--iam-role` with basic auth rather than silently ignoring it.
+`--replication-slot-name` is valid only with `--replication-mode cdc_only`.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
@@ -877,6 +973,74 @@ clickhousectl cloud --json service get <service-id>
 ```
 
 `clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: Prometheus commands emit text, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+
+Local runtime failures also use structured output when `local --json` is set or a coding agent is detected. The CLI writes exactly one error object to stderr and preserves the documented exit code:
+
+```json
+{
+  "error": {
+    "code": "server_not_found",
+    "message": "Server 'default' was not found in the current project",
+    "project_scope": {
+      "kind": "exact_current_project",
+      "path": "/path/to/project",
+      "parent_projects_searched": false
+    },
+    "server": {
+      "name": "default"
+    },
+    "guidance": [
+      {
+        "action": "return_to_project_root",
+        "message": "Change to the local project root where the server was started",
+        "command": "cd <project-root>"
+      },
+      {
+        "action": "list_project_servers",
+        "message": "List servers after returning to that exact project",
+        "command": "clickhousectl local server list"
+      },
+      {
+        "action": "list_global_servers",
+        "message": "Locate running ClickHouse servers across projects",
+        "command": "clickhousectl local server list --global"
+      },
+      {
+        "action": "stop_global_project_server",
+        "message": "After confirming the project, stop the server with explicit global project selection",
+        "command": "clickhousectl local server stop <name> --global --project <project-root>"
+      }
+    ]
+  }
+}
+```
+
+`error.code` and `error.message` are always present. General errors can include an optional top-level `error.command` safe recovery command. Project-local `server stop` and `server remove` not-found errors instead include `project_scope`, `server`, and ordered `guidance`; their top-level `command` field is absent. Messages are built from allowlisted fields and never serialize raw I/O errors, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+
+When `.clickhouse` is absent from the current directory, bare `server stop` includes the same `project_scope` and `guidance` in its successful no-op output, while bare `server remove` includes them in its `server_selection_required` error. This distinguishes a missing project root from an initialized project that has no matching ClickHouse server.
+
+Managed `local client` failures deliberately use dedicated `managed_client_*` codes rather than the general server codes. Their error object includes `project_scope.path` (the canonical directory inspected), `server.selection` and `server.name`, an optional `server.binary_version`, and ordered `guidance` entries with allowlisted messages and optional commands. No raw lock, metadata, or I/O error is included in JSON. The nested shape distinguishes this exact-project lookup contract from failures in other local commands without changing those commands' stable envelopes.
+
+The schema and meanings of existing codes are stable. New optional fields or codes may be added compatibly; unclassified local failures use the bounded `local_error` fallback.
+
+| Code | Meaning |
+| ---- | ------- |
+| `server_not_found` | The selected local server does not exist |
+| `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
+| `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
+| `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
+| `managed_client_project_state_unavailable` | Managed client lookup could not read or lock current-project server state |
+| `server_selection_required` | A server name is required because omission is ambiguous or unsafe |
+| `server_not_running` | The selected local server exists but is stopped |
+| `server_running` | The operation requires a stopped server |
+| `invalid_version` | The version selector is invalid |
+| `version_unavailable` | The requested or configured version is unavailable |
+| `port_in_use` | A requested port is occupied or no managed port is available |
+| `startup_exit` | A managed server exited before it became ready |
+| `startup_timeout` | A managed server did not become ready before its deadline |
+| `download_failed` | An artifact or image download failed |
+| `io_error` | A local filesystem, metadata, or serialization operation failed |
+| `local_error` | A redacted fallback for other local runtime failures |
 
 ### Exit codes
 
@@ -994,6 +1158,10 @@ To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG
 Distribution packagers can compile telemetry out entirely (including the `telemetry` subcommand) with `cargo build --no-default-features`.
 
 ## Cloud integration testing
+
+Maintainer operation, exact-SHA overrides, stacked-PR policy, and the required
+check rollout procedure are documented in
+[`.github/CLOUD_INTEGRATION.md`](.github/CLOUD_INTEGRATION.md).
 
 Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests live in three binaries, each a single `#[tokio::test]` lifecycle:
 

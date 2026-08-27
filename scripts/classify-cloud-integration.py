@@ -98,6 +98,9 @@ TEST_PATH_SUITES = {
     "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cdc_test.rs": frozenset(
         {"clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cli_cdc_test.rs": frozenset(
+        {"clickpipes"}
+    ),
     "crates/clickhouse-cloud-api/tests/clickpipes/postgres_ec2_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/s3_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/smoke_test.rs": frozenset(

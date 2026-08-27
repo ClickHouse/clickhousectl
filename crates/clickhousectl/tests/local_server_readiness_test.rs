@@ -124,7 +124,7 @@ fn background_start_waits_for_http_and_tcp_readiness() {
 }
 
 #[test]
-fn failed_start_points_to_captured_server_log() {
+fn failed_start_captures_log_without_exposing_its_path_in_json() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");
     install_fake_clickhouse(
@@ -134,9 +134,13 @@ fn failed_start_points_to_captured_server_log() {
 
     let output = run_start(project.path(), home.path(), unused_port(), unused_port());
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("exited"), "stderr: {stderr}");
-    assert!(stderr.contains("server.log"), "stderr: {stderr}");
+    let error: Value = serde_json::from_slice(&output.stderr).expect("parse startup error JSON");
+    assert_eq!(error["error"]["code"], "startup_exit");
+    assert_eq!(
+        error["error"]["message"],
+        "ClickHouse server 'default' exited before becoming ready"
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("server.log"));
 
     let log = project
         .path()

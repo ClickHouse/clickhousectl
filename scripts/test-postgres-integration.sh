@@ -14,6 +14,8 @@
 # at target/debug/clickhousectl relative to the repo root.
 set -u
 
+export DO_NOT_TRACK=1
+
 CTL="${1:-${CLICKHOUSECTL:-}}"
 if [[ -z "$CTL" ]]; then
     repo_root=$(cd "$(dirname "$0")/.." && pwd)
@@ -157,7 +159,7 @@ case_path_traversal_name() {
 # ── 7. install postgres@latest rejected ──
 case_install_rejects_latest() {
     local out; out=$("$CTL" local install postgres@latest 2>&1) || true
-    echo "$out" | grep -q "not supported" || { die "no rejection: $out"; return 1; }
+    echo "$out" | grep -Fq "invalid or unsupported postgres version 'latest'" || { die "no rejection: $out"; return 1; }
 }
 
 # ── 8. Cross-engine name reuse coexists (CH and PG can share a name) ──
@@ -215,7 +217,7 @@ EOF
 # ── 11. --port 0 rejected ──
 case_port_zero_rejected() {
     local out; out=$("$CTL" local postgres start --name z --port 0 2>&1) || true
-    echo "$out" | grep -q -- "--port 0 is not allowed" || { die "no rejection: $out"; return 1; }
+    echo "$out" | grep -Fq -- "invalid value '0' for '--port <PORT>': --port 0 is not allowed; pick a specific port or omit the flag" || { die "no rejection: $out"; return 1; }
 }
 
 # ── 12. Non-TTY query path returns query result ──
@@ -296,9 +298,9 @@ case_unsupported_majors() {
     o14=$("$CTL" local postgres start --name t --version 14-alpine 2>&1) || true
     o16=$("$CTL" local postgres start --name t --version 16-alpine 2>&1) || true
     o19=$("$CTL" local postgres start --name t --version 19 2>&1) || true
-    echo "$o14" | grep -q "not supported" || { die "14 not rejected: $o14"; return 1; }
-    echo "$o16" | grep -q "not supported" || { die "16 not rejected: $o16"; return 1; }
-    echo "$o19" | grep -q "not supported" || { die "19 not rejected: $o19"; return 1; }
+    echo "$o14" | grep -q "invalid or unsupported postgres version" || { die "14 not rejected: $o14"; return 1; }
+    echo "$o16" | grep -q "invalid or unsupported postgres version" || { die "16 not rejected: $o16"; return 1; }
+    echo "$o19" | grep -q "invalid or unsupported postgres version" || { die "19 not rejected: $o19"; return 1; }
 }
 
 # ── Run all ──

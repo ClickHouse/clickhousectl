@@ -27,6 +27,12 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhouse-cloud-api/src/new_domain.rs": None,
             "crates/clickhouse-cloud-api/src/template.txt": None,
             "crates/clickhouse-cloud-api/tests/new_live_test.rs": None,
+            "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cdc_test.rs": frozenset(
+                {"clickpipes"}
+            ),
+            "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cli_cdc_test.rs": frozenset(
+                {"clickpipes"}
+            ),
             "crates/clickhouse-cloud-api/build.rs": None,
         }
         for path, expected in cases.items():
@@ -135,7 +141,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/tests/integration_org_test.rs"
             },
             frozenset({"clickpipes"}): {
-                "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cdc_test.rs",
+                "crates/clickhouse-cloud-api/tests/clickpipes/postgres_cli_cdc_test.rs",
                 "crates/clickhouse-cloud-api/tests/clickpipes/smoke_test.rs",
                 "crates/clickhouse-cloud-api/tests/clickpipes/support.rs",
             },

@@ -3,7 +3,11 @@ use crate::init;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+const QUERY_PROVISIONING_LOCK: &str = "query-provisioning.lock";
+const CREDENTIALS_LOCK: &str = "credentials.lock";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Credentials {
@@ -29,10 +33,13 @@ pub struct ServiceQueryKey {
     pub key_id: String,
     pub key_secret: String,
     /// The query endpoint the key is bound to, when the upsert echoed it.
-    /// Recorded for diagnostics only — authentication uses the key pair — so
-    /// an endpoint response that omits `id` still yields a usable record.
+    /// Authentication uses the key pair, so an omitted `id` still yields a
+    /// usable record, but exact endpoint ownership is required for repair.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint_id: Option<String>,
+    /// Exact superseded management key IDs whose deletion must be retried.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_cleanup_api_key_ids: Vec<String>,
     pub service_name: String,
     pub created_at: DateTime<Utc>,
 }
@@ -41,43 +48,73 @@ pub fn credentials_path() -> PathBuf {
     init::local_dir().join("credentials.json")
 }
 
+fn ensure_local_dir() -> CloudResult<PathBuf> {
+    let dir = init::local_dir();
+    std::fs::create_dir_all(&dir)?;
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
+        std::fs::write(gitignore, "*\n")?;
+    }
+    Ok(dir)
+}
+
+fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+fn lock_credentials_mutation() -> CloudResult<std::fs::File> {
+    let path = ensure_local_dir()?.join(CREDENTIALS_LOCK);
+    open_lock_file(&path).map_err(|error| {
+        CloudError::new(format!(
+            "failed to lock credential mutations at {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+/// Holds the project-wide provisioning lock for its lifetime.
+///
+/// The lock is owned by the open file handle, not by lock-file contents. If a
+/// process exits midway through provisioning, the OS releases the lock; the
+/// leftover file is safely opened and locked by the next process.
+pub(crate) struct QueryProvisioningLock {
+    _file: std::fs::File,
+}
+
+pub(crate) async fn lock_query_provisioning() -> CloudResult<QueryProvisioningLock> {
+    let lock_path = ensure_local_dir()?.join(QUERY_PROVISIONING_LOCK);
+    let display_path = lock_path.clone();
+    let file = tokio::task::spawn_blocking(move || open_lock_file(&lock_path))
+        .await
+        .map_err(|error| {
+            CloudError::new(format!(
+                "failed to wait for query provisioning lock {}: {error}",
+                display_path.display()
+            ))
+        })?
+        .map_err(|error| {
+            CloudError::new(format!(
+                "failed to lock query provisioning at {}: {error}",
+                display_path.display()
+            ))
+        })?;
+    Ok(QueryProvisioningLock { _file: file })
+}
+
 pub fn load_credentials() -> Option<Credentials> {
     let path = credentials_path();
     let data = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
-pub fn clear_credentials() {
-    let path = credentials_path();
-    let _ = std::fs::remove_file(path);
-}
-
-pub fn save_credentials(creds: &Credentials) -> CloudResult<()> {
-    let dir = init::local_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(".gitignore"), "*\n")?;
-    }
-
-    let path = credentials_path();
-    let json = serde_json::to_string_pretty(creds)?;
-    std::fs::write(&path, &json)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    Ok(())
-}
-
-pub fn get_service_query_key(service_id: &str) -> Option<ServiceQueryKey> {
-    let creds = load_credentials()?;
-    creds.service_query_keys.get(service_id).cloned()
-}
-
-pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
+fn try_load_credentials() -> CloudResult<Option<Credentials>> {
     let path = credentials_path();
     let data = match std::fs::read_to_string(&path) {
         Ok(data) => data,
@@ -89,19 +126,103 @@ pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<Service
             )));
         }
     };
-    let creds: Credentials = serde_json::from_str(&data)
+    let credentials = serde_json::from_str(&data)
         .map_err(|error| CloudError::new(format!("failed to parse {}: {error}", path.display())))?;
-    Ok(creds.service_query_keys.get(service_id).cloned())
+    Ok(Some(credentials))
 }
 
-pub fn set_service_query_key(service_id: &str, key: ServiceQueryKey) -> CloudResult<()> {
-    let mut creds = load_credentials().unwrap_or_default();
+pub fn clear_credentials() -> CloudResult<()> {
+    let _lock = lock_credentials_mutation()?;
+    let path = credentials_path();
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn save_credentials(creds: &Credentials) -> CloudResult<()> {
+    ensure_local_dir()?;
+    let path = credentials_path();
+    save_credentials_to(&path, creds, sync_directory)
+}
+
+fn save_credentials_to(
+    path: &Path,
+    creds: &Credentials,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> CloudResult<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| CloudError::new(format!("{} has no parent directory", path.display())))?;
+    let json = serde_json::to_string_pretty(creds)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".credentials.json.")
+        .tempfile_in(dir)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    temporary.write_all(json.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| {
+        CloudError::new(format!(
+            "failed to replace {}: {}",
+            path.display(),
+            error.error
+        ))
+    })?;
+
+    // The replacement is already authoritative. Reporting a later directory
+    // fsync failure as an unsuccessful save can make callers delete a live key
+    // whose credentials are present in this file.
+    let _ = sync_parent(dir);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+pub fn try_get_service_query_key(service_id: &str) -> CloudResult<Option<ServiceQueryKey>> {
+    Ok(try_load_credentials()?
+        .and_then(|credentials| credentials.service_query_keys.get(service_id).cloned()))
+}
+
+pub(crate) fn set_service_query_key(
+    service_id: &str,
+    key: ServiceQueryKey,
+    _lock: &QueryProvisioningLock,
+) -> CloudResult<()> {
+    let _mutation_lock = lock_credentials_mutation()?;
+    let mut creds = try_load_credentials()?.unwrap_or_default();
     creds.service_query_keys.insert(service_id.to_string(), key);
     save_credentials(&creds)
 }
 
+pub(crate) fn set_api_credentials(api_key: String, api_secret: String) -> CloudResult<()> {
+    let _lock = lock_credentials_mutation()?;
+    let mut creds = try_load_credentials()?.unwrap_or_default();
+    creds.api_key = Some(api_key);
+    creds.api_secret = Some(api_secret);
+    save_credentials(&creds)
+}
+
 pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
-    let Some(mut creds) = load_credentials() else {
+    let _lock = lock_credentials_mutation()?;
+    let Some(mut creds) = try_load_credentials()? else {
         return Ok(());
     };
     if creds.service_query_keys.remove(service_id).is_some() {
@@ -113,6 +234,26 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_credentials_succeed_when_directory_sync_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("credentials.json");
+        let creds = Credentials {
+            api_key: Some("key".into()),
+            api_secret: Some("secret".into()),
+            ..Credentials::default()
+        };
+
+        save_credentials_to(&path, &creds, |_| {
+            Err(std::io::Error::other("directory sync failed"))
+        })
+        .unwrap();
+
+        let stored: Credentials = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(stored.api_key.as_deref(), Some("key"));
+        assert_eq!(stored.api_secret.as_deref(), Some("secret"));
+    }
 
     #[test]
     fn legacy_credentials_round_trip() {
@@ -139,6 +280,7 @@ mod tests {
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: Some("ep".into()),
+                pending_cleanup_api_key_ids: vec![],
                 service_name: "demo".into(),
                 created_at: chrono::DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
                     .unwrap()
@@ -156,6 +298,7 @@ mod tests {
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
         assert_eq!(key.service_name, "demo");
     }
 
@@ -170,6 +313,7 @@ mod tests {
                 key_id: "kid".into(),
                 key_secret: "sec".into(),
                 endpoint_id: None,
+                pending_cleanup_api_key_ids: vec![],
                 service_name: "demo".into(),
                 created_at: chrono::DateTime::parse_from_rfc3339("2026-05-11T12:00:00Z")
                     .unwrap()
@@ -184,6 +328,7 @@ mod tests {
         assert_eq!(key.key_id, "kid");
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id, None);
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
     }
 
     #[test]
@@ -197,6 +342,7 @@ mod tests {
         assert_eq!(key.organization_id, None);
         assert_eq!(key.api_key_id, None);
         assert_eq!(key.endpoint_id.as_deref(), Some("ep"));
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
         assert_eq!(key.key_id, "kid");
 
         let written = serde_json::to_string(&creds).unwrap();

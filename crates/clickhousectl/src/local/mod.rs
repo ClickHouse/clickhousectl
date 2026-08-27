@@ -7,9 +7,12 @@ pub mod postgres;
 pub mod server;
 pub mod symlink;
 
-use cli::{LocalCommands, ServerCommands};
+use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
-use crate::error::{Error, Result};
+use crate::error::{
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
+    ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing, Result,
+};
 use crate::{init, paths, version_manager};
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -17,7 +20,7 @@ use std::process::Command;
 
 pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
     match cmd {
-        LocalCommands::Install { version, force } => install(&version, force, json).await,
+        LocalCommands::Install { version, force } => install(version, force, json).await,
         LocalCommands::List { remote } => {
             if remote {
                 list_available(json).await
@@ -25,7 +28,9 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
                 list_installed(json)
             }
         }
-        LocalCommands::Use { version, no_global } => use_version(&version, no_global, json).await,
+        LocalCommands::Use { version, no_global } => {
+            use_version(version.into_spec(), no_global, json).await
+        }
         LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
@@ -40,21 +45,14 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             name,
             host,
             port,
+            version,
             query,
             queries_file,
             args,
-        } => run_client(name, host, port, query, queries_file, args),
+        } => run_client(name, host, port, version, query, queries_file, args),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
-}
-
-/// If the version spec looks like `postgres@<tag>` or `postgres:<tag>`, extract
-/// the tag. The CLI accepts both `@` (more shell-friendly, no need to quote)
-/// and `:` (matches Docker image syntax).
-fn parse_postgres_install_spec(spec: &str) -> Option<&str> {
-    spec.strip_prefix("postgres@")
-        .or_else(|| spec.strip_prefix("postgres:"))
 }
 
 async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
@@ -82,14 +80,15 @@ async fn install_postgres(tag: &str, force: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn install(version_spec: &str, force: bool, json: bool) -> Result<()> {
-    if let Some(tag) = parse_postgres_install_spec(version_spec) {
-        return install_postgres(tag, force, json).await;
-    }
-    let spec = version_manager::parse_version_spec(version_spec)?;
+async fn install(version: InstallVersionArg, force: bool, json: bool) -> Result<()> {
+    let spec = match version {
+        InstallVersionArg::ClickHouse(spec) => spec,
+        InstallVersionArg::Postgres(tag) => return install_postgres(&tag, force, json).await,
+    };
     let platform = version_manager::platform::Platform::detect()?;
 
-    let version = version_manager::install::install_local_first(&spec, &platform, force).await?;
+    let version =
+        version_manager::install::install_local_first(&spec, &platform, force, json).await?;
 
     // If this is the first installed version, set it as default
     let set_as_default = version_manager::get_default_version().is_err();
@@ -138,7 +137,9 @@ fn list_installed(json: bool) -> Result<()> {
 }
 
 async fn list_available(json: bool) -> Result<()> {
-    eprintln!("Checking available versions on builds.clickhouse.com...");
+    if !json {
+        eprintln!("Checking available versions on builds.clickhouse.com...");
+    }
     let versions = version_manager::list_available_versions_from_builds().await?;
 
     let installed = version_manager::list_installed_versions().unwrap_or_default();
@@ -163,11 +164,15 @@ async fn list_available(json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn use_version(version_spec: &str, no_global: bool, json: bool) -> Result<()> {
-    let spec = version_manager::parse_version_spec(version_spec)?;
+async fn use_version(
+    spec: version_manager::VersionSpec,
+    no_global: bool,
+    json: bool,
+) -> Result<()> {
     let platform = version_manager::platform::Platform::detect()?;
 
-    let version = version_manager::install::ensure_installed_local_first(&spec, &platform).await?;
+    let version =
+        version_manager::install::ensure_installed_local_first(&spec, &platform, json).await?;
 
     version_manager::set_default_version(&version)?;
 
@@ -192,8 +197,8 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     // Recover orphaned servers so we detect a running process even when its
     // metadata file is missing, then refuse to pull the binary out from under
     // a server running on this version.
-    server::recover_current_project_servers();
-    let in_use: Vec<String> = server::list_running_servers()
+    server::recover_current_project_servers()?;
+    let in_use: Vec<String> = server::list_running_servers()?
         .into_iter()
         .filter(|i| i.version == version)
         .map(|i| i.name)
@@ -213,6 +218,20 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         }
     }
 
+    let versions_dir = paths::versions_dir()?;
+    let staging = version_manager::atomic::InstallStaging::create(&versions_dir)?;
+    let commit_lock = version_manager::atomic::CommitLock::acquire_blocking(&versions_dir)?;
+    if !version_dir.exists() {
+        return Err(Error::VersionNotFound(version.to_string()));
+    }
+
+    version_manager::master::invalidate_version(
+        &commit_lock,
+        &versions_dir,
+        staging.path(),
+        version,
+    )?;
+
     // Check if this is the default version
     if let Ok(default) = version_manager::get_default_version()
         && default == version
@@ -224,14 +243,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     }
 
     std::fs::remove_dir_all(&version_dir)?;
-
-    // If the removed dir was recorded as the installed master build, clear the
-    // master sidecar record so a later `latest` resolve doesn't see a stale
-    // entry pointing at a now-deleted binary. Best-effort, like the install
-    // overwrite path: a sidecar failure must not fail a successful removal.
-    if let Ok(platform) = version_manager::platform::Platform::detect() {
-        let _ = version_manager::master::clear_record_for_version(&platform, version);
-    }
+    version_manager::atomic::sync_directory(&versions_dir)?;
 
     let out = output::RemoveOutput {
         version: version.to_string(),
@@ -255,39 +267,73 @@ fn run_client(
     name: Option<String>,
     host: Option<String>,
     port: Option<u16>,
-    query: Option<String>,
-    queries_file: Option<String>,
+    version_spec: Option<ClientVersionArg>,
+    query: Vec<String>,
+    queries_file: Vec<String>,
     args: Vec<String>,
 ) -> Result<()> {
     // If --host or --port is set, connect directly (bypass local server lookup).
     // Otherwise, look up the named server for port and version.
-    let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
+    let (resolved_host, tcp_port, version, binary) = if host.is_some() || port.is_some() {
         let h = host.unwrap_or_else(|| "localhost".to_string());
         let p = port.unwrap_or(9000);
-        let v = version_manager::get_default_version()?;
-        (h, p, v)
+        let v = resolve_direct_client_version(version_spec)?;
+        let binary = paths::binary_path(&v)?;
+        if !binary.exists() {
+            return Err(Error::VersionNotFound(v));
+        }
+        (h, p, v, binary)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
-        let entries = server::list_all_servers();
-        let entry = entries
-            .iter()
-            .find(|e| e.name == server_name)
-            .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
+        let selection = if name.is_some() {
+            ManagedClientSelection::Named
+        } else {
+            ManagedClientSelection::Default
+        };
+        // Resolve symlinks so diagnostics identify the one physical directory
+        // whose project-local state was inspected.
+        let project_dir = init::canonical_project_dir()?;
+        let managed_error = |kind, binary_version| {
+            Error::ManagedClient(ManagedClientError {
+                kind,
+                project_dir: project_dir.clone(),
+                selection,
+                server_name: server_name.to_string(),
+                binary_version,
+            })
+        };
+        let project_state_error = |source| {
+            managed_error(
+                ManagedClientErrorKind::ProjectStateUnavailable(Box::new(source)),
+                None,
+            )
+        };
+        let metadata_lock = server::lock_metadata().map_err(&project_state_error)?;
+        server::recover_current_project_servers_locked(&metadata_lock)
+            .map_err(&project_state_error)?;
+        let entry = server::server_entry_locked(server_name, &metadata_lock)
+            .map_err(&project_state_error)?
+            .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotFound, None))?;
         if !entry.running {
-            return Err(Error::ServerNotRunning(server_name.to_string()));
+            return Err(managed_error(
+                ManagedClientErrorKind::ServerNotRunning,
+                None,
+            ));
         }
         let info = entry
             .info
-            .as_ref()
-            .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
-        ("localhost".to_string(), info.tcp_port, info.version.clone())
+            .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotRunning, None))?;
+        let binary = paths::binary_path(&info.version)?;
+        if !binary.exists() {
+            return Err(managed_error(
+                ManagedClientErrorKind::BinaryNotFound,
+                Some(info.version),
+            ));
+        }
+        ("localhost".to_string(), info.tcp_port, info.version, binary)
     };
 
-    let binary = paths::binary_path(&version)?;
-
-    if !binary.exists() {
-        return Err(Error::VersionNotFound(version));
-    }
+    ensure_repeated_query_supported(&version, query.len())?;
 
     let mut cmd = Command::new(&binary);
     cmd.arg("client")
@@ -296,11 +342,11 @@ fn run_client(
         .arg("--port")
         .arg(tcp_port.to_string());
 
-    if let Some(q) = &query {
+    for q in &query {
         cmd.arg("--query").arg(q);
     }
 
-    if let Some(f) = &queries_file {
+    for f in &queries_file {
         cmd.arg("--queries-file").arg(f);
     }
 
@@ -313,10 +359,62 @@ fn run_client(
     Err(Error::Exec(err.to_string()))
 }
 
+const REPEATED_QUERY_MIN_VERSION: &str = "23.9.1.1854";
+
+fn ensure_repeated_query_supported(version: &str, query_count: usize) -> Result<()> {
+    if query_count > 1
+        && version_manager::list::compare_versions(version, REPEATED_QUERY_MIN_VERSION)
+            == std::cmp::Ordering::Less
+    {
+        return Err(Error::RepeatedClientQueryUnsupported {
+            version: version.to_string(),
+            minimum: REPEATED_QUERY_MIN_VERSION,
+        });
+    }
+    Ok(())
+}
+
+fn resolve_direct_client_version(version_spec: Option<ClientVersionArg>) -> Result<String> {
+    if let Some(version_spec) = version_spec {
+        let spec = version_spec.into_spec();
+        return version_manager::resolve::try_resolve_local(&spec)?
+            .ok_or_else(|| Error::ClientVersionNotInstalled(spec.to_string()));
+    }
+
+    match version_manager::get_default_version() {
+        Ok(version) => Ok(version),
+        Err(Error::NoDefaultVersion) => {
+            let installed = version_manager::list_installed_versions()?;
+            match installed.as_slice() {
+                [] => Err(Error::NoClientVersionInstalled),
+                [version] => Ok(version.clone()),
+                _ => Err(Error::AmbiguousClientVersion),
+            }
+        }
+        Err(Error::VersionNotFound(version)) => Err(Error::StaleDefaultVersion(version)),
+        Err(error) => Err(error),
+    }
+}
+
+fn clean_up_untracked_child(child: &mut std::process::Child, primary: Error) -> Error {
+    let cleanup = match child.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => child.kill().and_then(|()| child.wait()).map(|_| ()),
+        Err(error) => Err(error),
+    };
+    match cleanup {
+        Ok(()) => primary,
+        Err(error) => Error::Exec(format!(
+            "{primary}; additionally failed to stop untracked PID {}: {error}",
+            child.id()
+        )),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn start_server(
     name: Option<String>,
-    version_spec: Option<String>,
+    version_spec: Option<ServerVersionArg>,
     http_port: Option<u16>,
     tcp_port: Option<u16>,
     foreground: bool,
@@ -330,19 +428,19 @@ async fn start_server(
 
     // Recover any orphaned servers so name resolution and collision checks
     // see processes that lost their metadata files.
-    server::recover_current_project_servers();
+    server::recover_current_project_servers()?;
 
     // Resolve server name and check for collisions before any downloads
     let server_name = server::resolve_name(name.as_deref())?;
 
-    if name.is_some() && server::is_server_running(&server_name) {
+    if name.is_some() && server::is_server_running(&server_name)? {
         return Err(Error::ServerAlreadyRunning(server_name));
     }
 
-    let version = if let Some(spec_str) = &version_spec {
-        let spec = version_manager::parse_version_spec(spec_str)?;
+    let version = if let Some(spec) = version_spec {
+        let spec = spec.into_spec();
         let platform = version_manager::platform::Platform::detect()?;
-        version_manager::install::ensure_installed_local_first(&spec, &platform).await?
+        version_manager::install::ensure_installed_local_first(&spec, &platform, json).await?
     } else {
         match version_manager::get_default_version() {
             Ok(v) => v,
@@ -353,13 +451,16 @@ async fn start_server(
                 // subsequent bare start too; `ensure_installed_local_first` returns the
                 // already-installed build silently if `latest` still resolves to it,
                 // otherwise it pulls the newer master build.
-                let spec = version_manager::parse_version_spec("latest")?;
+                let spec = version_manager::VersionSpec::Latest;
                 let platform = version_manager::platform::Platform::detect()?;
                 // Says "using", not "installing": on repeat starts the build is
                 // usually already installed and nothing is downloaded. The install
                 // path prints its own Resolving/Downloading/up-to-date messages.
-                eprintln!("No version specified and no default set; using latest");
-                version_manager::install::ensure_installed_local_first(&spec, &platform).await?
+                if !json {
+                    eprintln!("No version specified and no default set; using latest");
+                }
+                version_manager::install::ensure_installed_local_first(&spec, &platform, json)
+                    .await?
             }
             // A default pointing at a removed binary stays an error.
             Err(e) => return Err(e),
@@ -371,9 +472,19 @@ async fn start_server(
         return Err(Error::VersionNotFound(version));
     }
 
+    // Metadata locking is always acquired after version installation locks.
+    // Hold it from the final collision check through the process metadata
+    // commit so concurrent start/stop/client commands see one lifecycle state.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let server_name = server::resolve_name_locked(name.as_deref(), &metadata_lock)?;
+    if name.is_some() && server::is_server_running_locked(&server_name, &metadata_lock)? {
+        return Err(Error::ServerAlreadyRunning(server_name));
+    }
+
     // Show running server count
-    let running = server::running_server_count();
-    if running > 0 {
+    let running = server::advisory_running_server_count_locked(&metadata_lock);
+    if !json && running > 0 {
         eprintln!(
             "Note: {} server{} already running (use `clickhousectl local server list` to see them)",
             running,
@@ -382,7 +493,7 @@ async fn start_server(
     }
 
     let (http_port, tcp_port, auto_assigned) = server::resolve_ports(http_port, tcp_port)?;
-    if auto_assigned {
+    if !json && auto_assigned {
         eprintln!(
             "Note: default ports in use, auto-assigned HTTP:{} TCP:{}",
             http_port, tcp_port
@@ -464,7 +575,10 @@ async fn start_server(
             engine: server::Engine::Clickhouse,
             container_id: None,
         };
-        server::save_server_info(&info)?;
+        if let Err(error) = server::save_server_info_locked(&info, &metadata_lock) {
+            return Err(clean_up_untracked_child(&mut child, error));
+        }
+        drop(metadata_lock);
 
         if no_wait {
             server::check_spawn_health(&mut child, &server_name, &log_path).await?;
@@ -504,7 +618,10 @@ async fn start_server(
             engine: server::Engine::Clickhouse,
             container_id: None,
         };
-        server::save_server_info(&info)?;
+        if let Err(error) = server::save_server_info_locked(&info, &metadata_lock) {
+            return Err(clean_up_untracked_child(&mut child, error));
+        }
+        drop(metadata_lock);
 
         eprintln!(
             "Server '{}' running (PID: {}, HTTP: {}, TCP: {})",
@@ -542,17 +659,15 @@ fn dotenv_server(
     json: bool,
 ) -> Result<()> {
     let server_name = name.unwrap_or("default");
-    let entries = server::list_all_servers();
-    let entry = entries
-        .iter()
-        .find(|e| e.name == server_name)
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let entry = server::server_entry_locked(server_name, &metadata_lock)?
         .ok_or_else(|| Error::ServerNotFound(server_name.to_string()))?;
     if !entry.running {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
     let info = entry
         .info
-        .as_ref()
         .ok_or_else(|| Error::ServerNotRunning(server_name.to_string()))?;
 
     // Only write vars we actually know from server metadata.
@@ -714,50 +829,15 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
         }
         ServerCommands::Stop {
             name,
+            name_flag,
             global,
             project,
-        } => {
-            if global {
-                stop_server_global(&name, project.as_deref(), json)
-            } else {
-                server::validate_server_name(&name)?;
-
-                // Recover orphaned servers so we can stop processes
-                // that lost their metadata files.
-                server::recover_current_project_servers();
-
-                match classify_stop(
-                    server::is_server_running(&name),
-                    server::server_data_dir(&name).exists(),
-                ) {
-                    StopOutcome::Stop => {
-                        if !json {
-                            println!("Stopping server '{}'...", name);
-                        }
-                        server::kill_server(&name)?;
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: false,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    StopOutcome::AlreadyStopped => {
-                        // Server exists on disk but isn't running. `stop` is
-                        // idempotent: this is the desired end state, so succeed
-                        // instead of erroring.
-                        let out = output::ServerStopOutput {
-                            name,
-                            already_stopped: true,
-                        };
-                        output::print_output(&out, json);
-                        Ok(())
-                    }
-                    // No such server in this project — surface the typo.
-                    StopOutcome::NotFound => Err(Error::ServerNotFound(name)),
-                }
-            }
-        }
+        } => stop_server(
+            ServerNameInput::from_args(name, name_flag),
+            global,
+            project,
+            json,
+        ),
         ServerCommands::StopAll { global } => {
             if global {
                 stop_all_servers_global(json)
@@ -772,29 +852,193 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
             password,
             database,
         } => dotenv_server(name.as_deref(), local, user, password, database, json),
-        ServerCommands::Remove { name } => {
-            server::validate_server_name(&name)?;
+        ServerCommands::Remove { name, name_flag } => {
+            remove_server(ServerNameInput::from_args(name, name_flag), json)
+        }
+    }
+}
 
-            // Recover orphaned servers so we correctly detect a running
-            // process even when its metadata file is missing.
-            server::recover_current_project_servers();
+#[derive(Debug, PartialEq, Eq)]
+enum ServerNameInput {
+    Omitted,
+    Positional(String),
+    NameFlag(String),
+}
 
-            if server::is_server_running(&name) {
-                return Err(Error::ServerRunningCannotRemove(name));
+impl ServerNameInput {
+    fn from_args(positional: Option<String>, name_flag: Option<String>) -> Self {
+        match (positional, name_flag) {
+            (Some(name), None) => Self::Positional(name),
+            (None, Some(name)) => Self::NameFlag(name),
+            (None, None) => Self::Omitted,
+            (Some(_), Some(_)) => unreachable!("clap rejects conflicting server name forms"),
+        }
+    }
+}
+
+fn stop_server(
+    name_input: ServerNameInput,
+    global: bool,
+    project: Option<String>,
+    json: bool,
+) -> Result<()> {
+    if global {
+        return stop_server_global(name_input, project.as_deref(), json);
+    }
+
+    let explicit_name = match &name_input {
+        ServerNameInput::Omitted => None,
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => Some(name),
+    };
+    if let Some(name) = explicit_name {
+        server::validate_server_name(name)?;
+    }
+    let project_dir = init::canonical_project_dir()?;
+    let project_state_missing = !init::local_dir().is_dir();
+
+    // Recover orphaned servers so we can stop processes
+    // that lost their metadata files.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let (name, selection, known) = match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            (name, output::ServerSelection::Explicit, false)
+        }
+        ServerNameInput::Omitted => {
+            let names = server::list_clickhouse_server_names_locked(&metadata_lock)?;
+            if names.iter().any(|name| name == "default") {
+                (
+                    "default".to_string(),
+                    output::ServerSelection::Implicit,
+                    true,
+                )
+            } else {
+                match names.as_slice() {
+                    [] => {
+                        let out = output::ServerStopNoopOutput {
+                            stopped: false,
+                            selection: output::ServerSelection::Implicit,
+                            reason: "no_clickhouse_servers",
+                            project_scope: project_state_missing
+                                .then(|| output::exact_current_project_scope(&project_dir)),
+                            guidance: if project_state_missing {
+                                output::project_scope_guidance(Some(ProjectServerCommand::Stop))
+                            } else {
+                                Vec::new()
+                            },
+                        };
+                        output::print_output(&out, json);
+                        return Ok(());
+                    }
+                    [name] => (name.clone(), output::ServerSelection::Implicit, true),
+                    names => {
+                        return Err(Error::ServerStopSelectionRequired {
+                            available: names.len(),
+                        });
+                    }
+                }
             }
-            let data_dir = server::server_data_dir(&name);
-            if !data_dir.exists() {
-                return Err(Error::ServerNotFound(name));
+        }
+    };
+
+    match classify_stop(
+        server::is_server_running_locked(&name, &metadata_lock)?,
+        known || server::server_data_dir(&name).exists(),
+    ) {
+        StopOutcome::Stop => {
+            if !json {
+                println!("Stopping server '{}'...", name);
             }
-            // Remove the whole server directory (parent of data/)
-            let server_dir = data_dir.parent().unwrap();
-            std::fs::remove_dir_all(server_dir)?;
-            server::remove_server_info(&name);
-            let out = output::ServerRemoveOutput { name };
+            server::kill_server_locked(&name, &metadata_lock)?;
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: false,
+                selection: Some(selection),
+            };
             output::print_output(&out, json);
             Ok(())
         }
+        StopOutcome::AlreadyStopped => {
+            // Server exists on disk but isn't running. `stop` is
+            // idempotent: this is the desired end state, so succeed
+            // instead of erroring.
+            let out = output::ServerStopOutput {
+                name,
+                already_stopped: true,
+                selection: Some(selection),
+            };
+            output::print_output(&out, json);
+            Ok(())
+        }
+        // No such server in this project — surface the typo.
+        StopOutcome::NotFound => Err(Error::ProjectServerNotFound(ProjectServerNotFound {
+            command: ProjectServerCommand::Stop,
+            project_dir,
+            server_name: name,
+        })),
     }
+}
+
+fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
+    let explicit_name = match &name_input {
+        ServerNameInput::Omitted => None,
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => Some(name),
+    };
+    if let Some(name) = explicit_name {
+        server::validate_server_name(name)?;
+    }
+    let project_dir = init::canonical_project_dir()?;
+    let project_state_missing = !init::local_dir().is_dir();
+
+    // Recover orphaned servers so we correctly detect a running
+    // process even when its metadata file is missing.
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let (name, selection) = match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            (name, output::ServerSelection::Explicit)
+        }
+        ServerNameInput::Omitted => {
+            let names = server::list_clickhouse_server_names_locked(&metadata_lock)?;
+            if names.iter().any(|name| name == "default") {
+                ("default".to_string(), output::ServerSelection::Implicit)
+            } else {
+                if project_state_missing && names.is_empty() {
+                    return Err(Error::ProjectServerStateMissing(
+                        ProjectServerStateMissing {
+                            command: ProjectServerCommand::Remove,
+                            project_dir,
+                        },
+                    ));
+                }
+                return Err(Error::ServerRemoveSelectionRequired {
+                    available: names.len(),
+                });
+            }
+        }
+    };
+
+    if server::is_server_running_locked(&name, &metadata_lock)? {
+        return Err(Error::ServerRunningCannotRemove(name));
+    }
+    let data_dir = server::server_data_dir(&name);
+    if !data_dir.exists() {
+        return Err(Error::ProjectServerNotFound(ProjectServerNotFound {
+            command: ProjectServerCommand::Remove,
+            project_dir,
+            server_name: name,
+        }));
+    }
+    // Remove the whole server directory (parent of data/)
+    let server_dir = data_dir.parent().unwrap();
+    std::fs::remove_dir_all(server_dir)?;
+    server::try_remove_server_info_locked(&name, &metadata_lock)?;
+    let out = output::ServerRemoveOutput {
+        name,
+        selection: Some(selection),
+    };
+    output::print_output(&out, json);
+    Ok(())
 }
 
 /// What a project-scoped `server stop <name>` should do, given whether the
@@ -818,7 +1062,8 @@ fn classify_stop(running: bool, exists_on_disk: bool) -> StopOutcome {
 }
 
 fn list_servers_local(json: bool) -> Result<()> {
-    let entries = server::list_all_servers();
+    let project_dir = init::canonical_project_dir()?;
+    let entries = server::list_all_servers()?;
     let running_count = entries.iter().filter(|e| e.running).count();
     let total = entries.len();
 
@@ -895,6 +1140,12 @@ fn list_servers_local(json: bool) -> Result<()> {
             .collect(),
         total_servers: total,
         total_running_servers: running_count,
+        project_scope: Some(output::exact_current_project_scope(&project_dir)),
+        guidance: if total == 0 {
+            output::project_scope_guidance(None)
+        } else {
+            Vec::new()
+        },
     };
     output::print_output(&out, json);
     Ok(())
@@ -921,21 +1172,28 @@ fn list_servers_global(json: bool) -> Result<()> {
             .collect(),
         total_servers: total,
         total_running_servers: total,
+        project_scope: None,
+        guidance: Vec::new(),
     };
     output::print_output(&out, json);
     Ok(())
 }
 
-fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<()> {
+fn stop_server_global(
+    name_input: ServerNameInput,
+    project: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let all = server::list_all_servers_global();
-    let mut matches: Vec<_> = all.iter().filter(|e| e.name == name).collect();
-
-    if let Some(proj) = project {
-        matches.retain(|e| e.project == proj);
-    }
+    let (name, selection) = global_stop_target(name_input)?;
+    let matches: Vec<_> = all
+        .iter()
+        .filter(|entry| entry.name == name)
+        .filter(|entry| project.is_none_or(|project| entry.project == project))
+        .collect();
 
     if matches.is_empty() {
-        return Err(Error::ServerNotFound(name.to_string()));
+        return Err(Error::ServerNotFound(name));
     }
 
     if matches.len() > 1 {
@@ -953,16 +1211,31 @@ fn stop_server_global(name: &str, project: Option<&str>, json: bool) -> Result<(
     }
     server::kill_server_by_pid(entry.pid)?;
     let out = output::ServerStopOutput {
-        name: name.to_string(),
+        name,
         already_stopped: false,
+        selection: Some(selection),
     };
     output::print_output(&out, json);
     Ok(())
 }
 
+fn global_stop_target(name_input: ServerNameInput) -> Result<(String, output::ServerSelection)> {
+    match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            server::validate_server_name(&name)?;
+            Ok((name, output::ServerSelection::Explicit))
+        }
+        ServerNameInput::Omitted => Ok(("default".to_string(), output::ServerSelection::Implicit)),
+    }
+}
+
 fn stop_all_servers_local(json: bool) -> Result<()> {
-    let servers = server::list_running_servers();
-    let out = stop_servers(&servers, json, server::kill_server);
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let servers = server::list_running_servers_locked(&metadata_lock)?;
+    let out = stop_servers(&servers, json, |name| {
+        server::kill_server_locked(name, &metadata_lock)
+    });
     if json {
         output::print_output(&out, json);
     } else if servers.is_empty() {
@@ -1076,6 +1349,17 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn repeated_query_support_matches_the_native_client_contract() {
+        // ClickHouse introduced repeatable --query in v23.9.1.1854. The pinned
+        // release evidence is linked from README.md; these tests need no live binary.
+        assert!(ensure_repeated_query_supported("23.8.1.2992", 1).is_ok());
+        assert!(ensure_repeated_query_supported("23.9.1.1853", 2).is_err());
+        assert!(ensure_repeated_query_supported(REPEATED_QUERY_MIN_VERSION, 2).is_ok());
+        assert!(ensure_repeated_query_supported("25.12.9.61", 3).is_ok());
+        assert!(ensure_repeated_query_supported("26.8.1.1760", usize::MAX).is_ok());
+    }
+
     fn server_info(name: &str, engine: server::Engine, version: &str) -> server::ServerInfo {
         server::ServerInfo {
             name: name.to_string(),
@@ -1105,6 +1389,30 @@ mod tests {
     #[test]
     fn classify_stop_unknown_name_is_not_found() {
         assert_eq!(classify_stop(false, false), StopOutcome::NotFound);
+    }
+
+    #[test]
+    fn server_name_input_preserves_cli_source() {
+        assert_eq!(
+            ServerNameInput::from_args(None, None),
+            ServerNameInput::Omitted
+        );
+        assert_eq!(
+            ServerNameInput::from_args(Some("positional".into()), None),
+            ServerNameInput::Positional("positional".into())
+        );
+        assert_eq!(
+            ServerNameInput::from_args(None, Some("flagged".into())),
+            ServerNameInput::NameFlag("flagged".into())
+        );
+    }
+
+    #[test]
+    fn omitted_global_stop_keeps_the_literal_default_target() {
+        assert_eq!(
+            global_stop_target(ServerNameInput::Omitted).unwrap(),
+            ("default".to_string(), output::ServerSelection::Implicit)
+        );
     }
 
     #[test]
@@ -1145,17 +1453,6 @@ mod tests {
         assert_eq!(output.servers[2].version.as_deref(), Some("postgres:18"));
         assert!(output.servers[2].stopped);
         assert_eq!(output.servers[2].error, None);
-    }
-
-    #[test]
-    fn parse_postgres_install_spec_recognizes_at_and_colon() {
-        assert_eq!(parse_postgres_install_spec("postgres@17"), Some("17"));
-        assert_eq!(
-            parse_postgres_install_spec("postgres:17-alpine"),
-            Some("17-alpine")
-        );
-        assert_eq!(parse_postgres_install_spec("25.12"), None);
-        assert_eq!(parse_postgres_install_spec("stable"), None);
     }
 
     #[test]

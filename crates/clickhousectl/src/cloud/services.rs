@@ -5,8 +5,8 @@ use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
-use clap::Subcommand;
 use clap::builder::PossibleValuesParser;
+use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
     InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
@@ -17,8 +17,21 @@ use clickhouse_cloud_api::models::{
     ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
-use std::io::IsTerminal;
+use std::{io::IsTerminal, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
+
+#[derive(Clone, Copy)]
+struct QueryEndpointReadiness {
+    timeout: Duration,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+}
+
+const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
+    timeout: Duration::from_secs(120),
+    initial_backoff: Duration::from_millis(200),
+    max_backoff: Duration::from_secs(5),
+};
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
@@ -402,22 +415,27 @@ CONTEXT FOR AGENTS:
     },
 
     /// Run a SQL query against a cloud service over HTTP via the Query API
-    #[command(after_help = "\
+    #[command(
+        group(ArgGroup::new("service_selector").required(true).args(["name", "id"])),
+        after_help = "\
 CONTEXT FOR AGENTS:
   Runs SQL over HTTP — no local clickhouse binary or service password required.
   With API key auth: first uses the authenticated key directly when the query
   endpoint already authorizes it. Otherwise, a per-service read+write key is
   auto-provisioned and stored in .clickhouse/credentials.json.
+  A stored key rejected with HTTP 401/403 is never replaced automatically; use
+  `cloud service repair-query-key <service-id>` to repair only that credential.
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
   For queries that may exceed Query API timeouts, `clickhousectl local use latest`
   puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
   to the service instead.
-  SQL precedence: --query > --queries-file > stdin. Default format: PrettyCompact
-  on a TTY, TabSeparated when piped. --json selects JSONEachRow and cannot be
-  combined with --format; an explicit --format takes precedence over agent
-  auto-JSON.")]
+  SQL sources: --query and --queries-file are mutually exclusive. When neither
+  is supplied, SQL is read from stdin. Default format: PrettyCompact on a TTY,
+  TabSeparated when piped. --json selects JSONEachRow and cannot be combined
+  with --format; an explicit --format takes precedence over agent auto-JSON."
+    )]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
         #[arg(long, conflicts_with = "id")]
@@ -428,11 +446,11 @@ CONTEXT FOR AGENTS:
         id: Option<String>,
 
         /// Execute a SQL query
-        #[arg(long, short)]
+        #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
         /// Execute queries from a SQL file (use "-" for stdin)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "query")]
         queries_file: Option<String>,
 
         /// Target database
@@ -452,6 +470,23 @@ CONTEXT FOR AGENTS:
         /// key auth only; with OAuth this flag has no effect)
         #[arg(long)]
         no_auto_enable: bool,
+    },
+
+    /// Safely replace clickhousectl's stored Query API key for one service
+    #[command(after_help = "\
+Repairs only the stored credential for SERVICE_ID. The command verifies the
+saved organization, exact management API key ID, and query endpoint ID; it
+then replaces only that key's endpoint binding while preserving all other
+bindings and project credentials. Legacy or non-owned records without this
+metadata are refused. This is an explicit write operation and is never run
+automatically after a query fails.")]
+    RepairQueryKey {
+        /// Service ID whose stored Query API key should be replaced
+        service_id: String,
+
+        /// Organization ID (auto-detected if not specified)
+        #[arg(long)]
+        org_id: Option<String>,
     },
 }
 
@@ -538,6 +573,7 @@ impl ServiceCommands {
             ServiceCommands::Get { .. } => false,
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
+            ServiceCommands::RepairQueryKey { .. } => true,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
@@ -789,6 +825,9 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             };
             service_query(client, options).await
         }
+        ServiceCommands::RepairQueryKey { service_id, org_id } => {
+            service_query_key_repair(client, &service_id, org_id.as_deref(), json).await
+        }
     }
 }
 
@@ -837,6 +876,7 @@ async fn resolve_service(
         }
         (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
         (Some(_), Some(_)) => Err(CloudError::new("specify either --name or --id, not both")),
+        // Clap rejects this state; retain the check for any future non-CLI caller.
         (None, None) => Err(CloudError::new(
             "specify --name or --id to identify the service",
         )),
@@ -1375,7 +1415,7 @@ async fn service_delete(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let (query_key_id, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
+    let (query_key_ids, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
 
     if force {
         let service = client.get_service_if_exists(&org_id, service_id).await?;
@@ -1410,7 +1450,7 @@ async fn service_delete(
         .delete_service_if_exists(&org_id, service_id)
         .await
         .map_err(|error| service_delete_error(error, force, service_id))?;
-    cleanup_service_query_key(client, &org_id, service_id, query_key_id.as_deref()).await?;
+    cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
     if !retain_query_key {
         credentials::remove_service_query_key(service_id)?;
     }
@@ -1694,6 +1734,41 @@ async fn query_endpoint_delete(
     Ok(())
 }
 
+async fn service_query_key_repair(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let result =
+        crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        match result.status {
+            "cleanup_completed" => println!(
+                "Finished query-key cleanup for service {} (active API key: {})",
+                result.service_id, result.api_key_id
+            ),
+            "already_repaired" => println!(
+                "Query key for service {} was already repaired by another process (active API key: {})",
+                result.service_id, result.api_key_id
+            ),
+            _ => {
+                println!("Query key repaired for service {}", result.service_id);
+                println!(
+                    "  Replaced API key: {}",
+                    or_absent(result.replaced_api_key_id.as_deref())
+                );
+                println!("  New API key: {}", result.api_key_id);
+                println!("  Query endpoint: {}", result.endpoint_id);
+            }
+        }
+    }
+    Ok(())
+}
+
 struct ServiceQueryOptions {
     name: Option<String>,
     id: Option<String>,
@@ -1716,12 +1791,18 @@ async fn run_basic_service_query(
     database: Option<&str>,
     format: &str,
     service_name: &str,
+    confirmed_idle: bool,
 ) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
     let run = |wake: bool| {
         client
             .api()
             .run_query(service_id, key_id, key_secret, sql, database, format, wake)
     };
+    if confirmed_idle {
+        eprint_waking_service(service_name);
+        return run(true).await;
+    }
+
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
@@ -1731,14 +1812,120 @@ async fn run_basic_service_query(
     }
 }
 
-fn query_requires_provisioning(error: &clickhouse_cloud_api::Error) -> bool {
-    matches!(
-        error,
-        clickhouse_cloud_api::Error::Api {
-            status: 401 | 403 | 404,
-            ..
+fn query_readiness_timeout_error(timeout: Duration) -> clickhouse_cloud_api::Error {
+    clickhouse_cloud_api::Error::Api {
+        status: 408,
+        message: format!("Query API endpoint did not become ready within {timeout:?}"),
+    }
+}
+
+async fn wait_for_query_endpoint_readiness<T, F, Fut>(
+    readiness: QueryEndpointReadiness,
+    mut probe: F,
+) -> Result<bool, clickhouse_cloud_api::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+{
+    let deadline = tokio::time::Instant::now() + readiness.timeout;
+    let mut backoff = readiness.initial_backoff;
+    let mut waiting = false;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(query_readiness_timeout_error(readiness.timeout));
         }
+
+        match tokio::time::timeout(remaining, probe()).await {
+            Ok(Ok(_)) => return Ok(false),
+            Ok(Err(clickhouse_cloud_api::Error::ServiceIdle)) => return Ok(true),
+            Ok(Err(error)) if query_endpoint_readiness_error(&error) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(query_readiness_timeout_error(readiness.timeout)),
+        }
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(query_readiness_timeout_error(readiness.timeout));
+        }
+        if !waiting {
+            eprintln!("Waiting for the Query API endpoint to become ready...");
+            waiting = true;
+        }
+        tokio::time::sleep(backoff.min(remaining)).await;
+        backoff = backoff.saturating_mul(2).min(readiness.max_backoff);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_just_provisioned_service_query(
+    client: &CloudClient,
+    service_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    service_name: &str,
+    readiness: QueryEndpointReadiness,
+) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+    let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
+        client.api().run_query(
+            service_id,
+            key_id,
+            key_secret,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
+        )
+    })
+    .await?;
+
+    run_basic_service_query(
+        client,
+        service_id,
+        key_id,
+        key_secret,
+        sql,
+        database,
+        format,
+        service_name,
+        confirmed_idle,
     )
+    .await
+}
+
+fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: 401 | 403, ..
+        } => true,
+        clickhouse_cloud_api::Error::Api {
+            status: 404,
+            message,
+        } => !message.starts_with("SQL error "),
+        _ => false,
+    }
+}
+
+fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Option<u16> {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: status @ (401 | 403),
+            ..
+        } => Some(*status),
+        _ => None,
+    }
+}
+
+fn stale_stored_query_key_error(service_id: &str, org_id: &str, status: u16) -> CloudError {
+    CloudError::new(format!(
+        "the stored Query API key for service {service_id} was rejected with HTTP {status} and \
+         may be stale; no replacement was created. Repair only this service credential with \
+         `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}`"
+    ))
 }
 
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
@@ -1789,8 +1976,8 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             convert_query_error(client, error, &service_name, &service_id, &org_id)
         })?
     } else {
-        let result = if let Some(key) = credentials::get_service_query_key(&service_id) {
-            run_basic_service_query(
+        let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)? {
+            match run_basic_service_query(
                 client,
                 &service_id,
                 &key.key_id,
@@ -1799,8 +1986,18 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 options.database.as_deref(),
                 &format,
                 &service_name,
+                false,
             )
             .await
+            {
+                Err(error) => match stored_query_key_rejection_status(&error) {
+                    Some(status) => {
+                        return Err(stale_stored_query_key_error(&service_id, &org_id, status));
+                    }
+                    None => Err(error),
+                },
+                response => response,
+            }
         } else {
             let (key_id, key_secret) = client
                 .basic_auth_credentials()
@@ -1814,10 +2011,11 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 options.database.as_deref(),
                 &format,
                 &service_name,
+                false,
             )
             .await
             {
-                Err(error) if query_requires_provisioning(&error) => {
+                Err(error) if query_endpoint_readiness_error(&error) => {
                     if options.no_auto_enable {
                         return Err(CloudError::new(format!(
                             "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
@@ -1834,7 +2032,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         &service_name,
                     )
                     .await?;
-                    run_basic_service_query(
+                    run_just_provisioned_service_query(
                         client,
                         &service_id,
                         &key.key_id,
@@ -1843,6 +2041,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         options.database.as_deref(),
                         &format,
                         &service_name,
+                        QUERY_ENDPOINT_READINESS,
                     )
                     .await
                 }
@@ -2288,7 +2487,7 @@ mod tests {
     }
 
     #[test]
-    fn service_query_help_documents_native_client_for_long_queries() {
+    fn service_query_help_documents_query_behavior() {
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
             .err()
             .expect("--help should stop parsing");
@@ -2298,6 +2497,34 @@ mod tests {
         assert!(help.contains("Query API timeouts"), "{help}");
         assert!(help.contains("`clickhousectl local use latest`"), "{help}");
         assert!(help.contains("`clickhouse client`"), "{help}");
+        assert!(
+            help.contains("--query and --queries-file are mutually exclusive"),
+            "{help}"
+        );
+        assert!(help.contains("SQL is read from stdin"), "{help}");
+        assert!(help.contains("repair-query-key <service-id>"), "{help}");
+        assert!(help.contains("never replaced automatically"), "{help}");
+    }
+
+    #[test]
+    fn repair_query_key_help_documents_safe_service_scope() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "repair-query-key",
+            "--help",
+        ])
+        .err()
+        .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(help.contains("SERVICE_ID"), "{help}");
+        assert!(help.contains("exact management API key ID"), "{help}");
+        assert!(help.contains("preserving all other"), "{help}");
+        assert!(help.contains("Legacy or non-owned records"), "{help}");
+        assert!(help.contains("is never run"), "{help}");
+        assert!(help.contains("automatically after a query fails"), "{help}");
     }
 
     #[test]
@@ -3149,7 +3376,14 @@ mod tests {
 
     #[test]
     fn parses_service_query_options() {
-        let command = parse_service(&["clickhousectl", "cloud", "service", "query"]);
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+        ]);
         let crate::cloud::cli::ServiceCommands::Query {
             name,
             id,
@@ -3164,7 +3398,7 @@ mod tests {
             panic!("expected service query");
         };
         assert!(name.is_none());
-        assert!(id.is_none());
+        assert_eq!(id.as_deref(), Some("svc-1"));
         assert!(query.is_none());
         assert!(queries_file.is_none());
         assert!(database.is_none());
@@ -3181,8 +3415,6 @@ mod tests {
             "analytics",
             "--query",
             "SELECT 1",
-            "--queries-file",
-            "queries.sql",
             "--database",
             "default",
             "--format",
@@ -3208,11 +3440,137 @@ mod tests {
         assert_eq!(name.as_deref(), Some("analytics"));
         assert!(id.is_none());
         assert_eq!(query.as_deref(), Some("SELECT 1"));
-        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
+        assert!(queries_file.is_none());
         assert_eq!(database.as_deref(), Some("default"));
         assert_eq!(format.as_deref(), Some("CSV"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert!(no_auto_enable);
+    }
+
+    #[test]
+    fn parses_service_query_key_repair_scope() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "repair-query-key",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::RepairQueryKey { service_id, org_id } = command else {
+            panic!("expected query-key repair");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let ServiceCommands::RepairQueryKey { org_id, .. } = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "repair-query-key",
+            "svc-1",
+        ]) else {
+            panic!("expected query-key repair");
+        };
+        assert!(org_id.is_none());
+    }
+
+    #[test]
+    fn stored_query_key_rejections_get_a_non_provisioning_repair_hint() {
+        for status in [401, 403] {
+            let error = clickhouse_cloud_api::Error::Api {
+                status,
+                message: "rejected".into(),
+            };
+            assert_eq!(stored_query_key_rejection_status(&error), Some(status));
+            let hint = stale_stored_query_key_error("svc-1", "org-1", status).to_string();
+            assert!(hint.contains("no replacement was created"), "{hint}");
+            assert!(
+                hint.contains("clickhousectl cloud service repair-query-key svc-1 --org-id org-1"),
+                "{hint}"
+            );
+        }
+        assert_eq!(
+            stored_query_key_rejection_status(&clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "missing".into(),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_service_query_file_source() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--name",
+            "analytics",
+            "--queries-file",
+            "queries.sql",
+        ]);
+        let ServiceCommands::Query {
+            query,
+            queries_file,
+            ..
+        } = command
+        else {
+            panic!("expected service query");
+        };
+
+        assert!(query.is_none());
+        assert_eq!(queries_file.as_deref(), Some("queries.sql"));
+    }
+
+    #[test]
+    fn rejects_service_query_with_inline_and_file_sources() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--id",
+            "svc-1",
+            "--query",
+            "SELECT 1",
+            "--queries-file",
+            "queries.sql",
+        ])
+        .err()
+        .expect("service query with conflicting SQL sources should fail");
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let message = error.to_string();
+        assert!(message.contains("--query <QUERY>"), "{message}");
+        assert!(
+            message.contains("--queries-file <QUERIES_FILE>"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_service_query_without_name_or_id() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query",
+            "--query",
+            "SELECT 1",
+        ])
+        .err()
+        .expect("service query without a selector should fail");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--name <NAME>"), "{message}");
+        assert!(message.contains("--id <ID>"), "{message}");
     }
 
     #[test]
@@ -3429,6 +3787,16 @@ mod tests {
         assert_write(
             &["clickhousectl", "cloud", "service", "get", "svc-1"],
             false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "repair-query-key",
+                "svc-1",
+            ],
+            true,
         );
         assert_write(
             &["clickhousectl", "cloud", "service", "prometheus", "svc-1"],
@@ -3696,9 +4064,9 @@ mod tests {
     }
 
     #[test]
-    fn query_provisions_only_for_endpoint_or_auth_rejections() {
+    fn query_readiness_is_only_auth_or_generic_not_found() {
         for status in [401, 403, 404] {
-            assert!(query_requires_provisioning(
+            assert!(query_endpoint_readiness_error(
                 &clickhouse_cloud_api::Error::Api {
                     status,
                     message: "rejected".into(),
@@ -3706,16 +4074,110 @@ mod tests {
             ));
         }
         for status in [400, 408, 429, 500] {
-            assert!(!query_requires_provisioning(
+            assert!(!query_endpoint_readiness_error(
                 &clickhouse_cloud_api::Error::Api {
                     status,
                     message: "query failed".into(),
                 }
             ));
         }
-        assert!(!query_requires_provisioning(
+        assert!(!query_endpoint_readiness_error(
+            &clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "SQL error 60: Unknown table".into(),
+            }
+        ));
+        assert!(!query_endpoint_readiness_error(
             &clickhouse_cloud_api::Error::ServiceStopped
         ));
+    }
+
+    #[tokio::test]
+    async fn query_does_not_provision_or_retry_transport_errors() {
+        let transport_error = reqwest::Client::new()
+            .get("not a url")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(!query_endpoint_readiness_error(
+            &clickhouse_cloud_api::Error::Http(transport_error)
+        ));
+    }
+
+    #[tokio::test]
+    async fn query_readiness_deadline_bounds_a_stalled_attempt() {
+        let readiness = QueryEndpointReadiness {
+            timeout: Duration::from_millis(10),
+            initial_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_query_endpoint_readiness(readiness, || {
+                std::future::pending::<Result<(), clickhouse_cloud_api::Error>>()
+            }),
+        )
+        .await
+        .expect("stalled attempt exceeded the test guard");
+
+        assert_query_readiness_timeout(result, readiness.timeout);
+    }
+
+    #[tokio::test]
+    async fn query_readiness_exhaustion_is_not_an_auth_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let readiness = QueryEndpointReadiness {
+            timeout: Duration::from_millis(20),
+            initial_backoff: Duration::from_millis(20),
+            max_backoff: Duration::from_millis(20),
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let probe_attempts = Arc::clone(&attempts);
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_query_endpoint_readiness(readiness, move || {
+                probe_attempts.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<(), _>(clickhouse_cloud_api::Error::Api {
+                    status: 401,
+                    message: "query endpoint is not ready".into(),
+                }))
+            }),
+        )
+        .await
+        .expect("readiness retries exceeded the test guard");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_query_readiness_timeout(result, readiness.timeout);
+    }
+
+    fn assert_query_readiness_timeout<T>(
+        result: Result<T, clickhouse_cloud_api::Error>,
+        timeout: Duration,
+    ) {
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("readiness should time out"),
+        };
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let converted = client.convert_error(error);
+
+        assert_eq!(
+            converted.kind,
+            crate::cloud::client::CloudErrorKind::Generic
+        );
+        assert_eq!(
+            converted.message,
+            format!("Query API endpoint did not become ready within {timeout:?}")
+        );
     }
 
     #[test]

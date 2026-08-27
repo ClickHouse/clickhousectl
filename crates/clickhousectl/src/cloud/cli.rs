@@ -57,6 +57,13 @@ impl CloudArgs {
                 }
             )
     }
+
+    pub fn postgres_clickpipe_validation_error(&self) -> Option<String> {
+        let CloudCommands::ClickPipe { command } = &self.command else {
+            return None;
+        };
+        command.postgres_create_validation_error()
+    }
 }
 
 #[derive(Subcommand)]

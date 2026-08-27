@@ -490,22 +490,23 @@ async fn key_delete(
     Ok(())
 }
 
-/// Return a query API key only when its exact resource and organization IDs
-/// were saved during provisioning. The boolean indicates that partial cleanup
-/// metadata must remain on disk because discarding it would lose the key ID.
+/// Return query API keys only when their exact resource and organization IDs
+/// were saved during provisioning or repair. The boolean indicates that
+/// partial cleanup metadata must remain on disk because discarding it would
+/// lose the key ID.
 pub(crate) fn service_query_key_cleanup(
     org_id: &str,
     service_id: &str,
-) -> CloudResult<(Option<String>, bool)> {
+) -> CloudResult<(Vec<String>, bool)> {
     let Some(key) = credentials::try_get_service_query_key(service_id)? else {
-        return Ok((None, false));
+        return Ok((vec![], false));
     };
     let Some(api_key_id) = key.api_key_id else {
         eprintln!(
             "Warning: the stored query key for service {service_id} predates exact management \
              API key IDs; service deletion will continue without unsafe cloud key cleanup."
         );
-        return Ok((None, false));
+        return Ok((vec![], false));
     };
     let Some(key_org_id) = key.organization_id else {
         eprintln!(
@@ -513,7 +514,7 @@ pub(crate) fn service_query_key_cleanup(
              but no provisioning organization; cloud key cleanup was skipped and the local \
              record was retained."
         );
-        return Ok((None, true));
+        return Ok((vec![], true));
     };
     if key_org_id != org_id {
         return Err(CloudError::new(format!(
@@ -521,35 +522,33 @@ pub(crate) fn service_query_key_cleanup(
              not {org_id}; refusing to delete either resource"
         )));
     }
-    Ok((Some(api_key_id), false))
+    let mut api_key_ids = key.pending_cleanup_api_key_ids;
+    if !api_key_ids.iter().any(|key_id| key_id == &api_key_id) {
+        api_key_ids.push(api_key_id);
+    }
+    Ok((api_key_ids, false))
 }
 
 pub(crate) async fn cleanup_service_query_key(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
-    api_key_id: Option<&str>,
+    api_key_ids: &[String],
 ) -> CloudResult<()> {
-    let Some(api_key_id) = api_key_id else {
-        return Ok(());
-    };
-
-    client
-        .delete_api_key_if_exists(org_id, api_key_id)
-        .await
-        .map_err(|mut error| {
-            error.message = format!(
-                "failed to delete the auto-provisioned query API key for service \
-                 {service_id}: {}",
-                error.message
-            );
-            error
-        })?;
+    for api_key_id in api_key_ids {
+        client
+            .delete_api_key_if_exists(org_id, api_key_id)
+            .await
+            .map_err(|mut error| {
+                error.message = format!(
+                    "failed to delete the auto-provisioned query API key for service \
+                     {service_id}: {}",
+                    error.message
+                );
+                error
+            })?;
+    }
     Ok(())
-}
-
-pub(crate) async fn discard_api_key(client: &CloudClient, org_id: &str, api_key_id: &str) {
-    let _ = client.delete_api_key(org_id, api_key_id).await;
 }
 
 impl CloudClient {

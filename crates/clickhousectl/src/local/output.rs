@@ -1,11 +1,481 @@
 //! Structured output types for local commands.
 //!
-//! Each type supports both JSON serialization (via serde) and human-readable
-//! display (via `fmt::Display`). The `--json` flag switches between the two.
+//! Successful output types support both JSON serialization and human-readable
+//! display. Runtime failures use the redacted stable envelope below.
 
+use crate::error::{
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
+    PortKind, ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing,
+};
 use serde::Serialize;
 use std::fmt;
+use std::io::Write;
+use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
+
+/// Stable codes for local runtime failures. New codes may be added, but
+/// existing spellings and meanings are part of the machine-output contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalErrorCode {
+    ManagedClientServerNotFound,
+    ManagedClientServerNotRunning,
+    ManagedClientBinaryNotFound,
+    ManagedClientProjectStateUnavailable,
+    ServerNotFound,
+    ServerSelectionRequired,
+    ServerNotRunning,
+    ServerRunning,
+    InvalidVersion,
+    VersionUnavailable,
+    PortInUse,
+    StartupExit,
+    StartupTimeout,
+    DownloadFailed,
+    IoError,
+    LocalError,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalErrorDetail {
+    code: LocalErrorCode,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalProjectScope {
+    path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalProjectScopeKind {
+    ExactCurrentProject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ServerProjectScope {
+    kind: LocalProjectScopeKind,
+    path: String,
+    parent_projects_searched: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalServerSelection {
+    Default,
+    Named,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalManagedServer {
+    selection: LocalServerSelection,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_version: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalGuidance {
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalGuidanceAction {
+    ListProjectServers,
+    ListGlobalServers,
+    ReturnToProjectRoot,
+    StopGlobalProjectServer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ProjectServerGuidance {
+    action: LocalGuidanceAction,
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ManagedClientErrorDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    project_scope: LocalProjectScope,
+    server: LocalManagedServer,
+    guidance: Vec<LocalGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ProjectServerErrorDetail {
+    code: LocalErrorCode,
+    message: String,
+    project_scope: ServerProjectScope,
+    server: LocalProjectServer,
+    guidance: Vec<ProjectServerGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ProjectServerStateMissingDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    project_scope: ServerProjectScope,
+    guidance: Vec<ProjectServerGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalProjectServer {
+    name: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum LocalErrorBody {
+    General(LocalErrorDetail),
+    ManagedClient(ManagedClientErrorDetail),
+    ProjectServer(ProjectServerErrorDetail),
+    ProjectServerStateMissing(ProjectServerStateMissingDetail),
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalErrorOutput {
+    error: LocalErrorBody,
+}
+
+impl LocalErrorOutput {
+    fn from_error(error: &Error) -> Self {
+        if let Error::ManagedClient(error) = error {
+            return Self {
+                error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(error)),
+            };
+        }
+        if let Error::ProjectServerNotFound(error) = error {
+            return Self {
+                error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(error)),
+            };
+        }
+        if let Error::ProjectServerStateMissing(error) = error {
+            return Self {
+                error: LocalErrorBody::ProjectServerStateMissing(
+                    ProjectServerStateMissingDetail::from_error(error),
+                ),
+            };
+        }
+        let detail = match error {
+            Error::ServerNotFound(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerNotFound,
+                message: format!("Server '{name}' not found"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerStopSelectionRequired { available } => LocalErrorDetail {
+                code: LocalErrorCode::ServerSelectionRequired,
+                message: format!(
+                    "Multiple non-default ClickHouse servers exist (available: {available}); specify a name or use stop-all"
+                ),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerRemoveSelectionRequired { available } => LocalErrorDetail {
+                code: LocalErrorCode::ServerSelectionRequired,
+                message: format!(
+                    "The default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed"
+                ),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerNotRunning(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerNotRunning,
+                message: format!("Server '{name}' is not running"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerAlreadyRunning(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerRunning,
+                message: format!("Server '{name}' is already running"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::ServerRunningCannotRemove(name) => LocalErrorDetail {
+                code: LocalErrorCode::ServerRunning,
+                message: format!("Server '{name}' is running"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::VersionInUse { .. } => LocalErrorDetail {
+                code: LocalErrorCode::ServerRunning,
+                message: "A running server is using this version".to_string(),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::InvalidVersion(_) => LocalErrorDetail {
+                code: LocalErrorCode::InvalidVersion,
+                message: "Invalid version".to_string(),
+                command: Some("clickhousectl local install --help"),
+            },
+            Error::VersionNotFound(_)
+            | Error::NoVersionsInstalled
+            | Error::NoDefaultVersion
+            | Error::NoClientVersionInstalled
+            | Error::AmbiguousClientVersion
+            | Error::StaleDefaultVersion(_)
+            | Error::ClientVersionNotInstalled(_)
+            | Error::RepeatedClientQueryUnsupported { .. }
+            | Error::NoMatchingVersion(_)
+            | Error::ExactVersionUnavailable { .. }
+            | Error::UnknownVersionChannel(_)
+            | Error::VersionResolutionFallback { .. } => LocalErrorDetail {
+                code: LocalErrorCode::VersionUnavailable,
+                message: "Requested version is unavailable".to_string(),
+                command: Some("clickhousectl local list --remote"),
+            },
+            Error::PortInUse { kind, port } => LocalErrorDetail {
+                code: LocalErrorCode::PortInUse,
+                message: format!("{kind} port {port} is already in use"),
+                command: Some(match kind {
+                    PortKind::Postgres => "clickhousectl local postgres start --help",
+                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
+                }),
+            },
+            Error::PortUnavailable(kind) => LocalErrorDetail {
+                code: LocalErrorCode::PortInUse,
+                message: format!("No free {kind} port is available"),
+                command: Some(match kind {
+                    PortKind::Postgres => "clickhousectl local postgres start --help",
+                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
+                }),
+            },
+            Error::StartupExit { kind, name, .. } => LocalErrorDetail {
+                code: LocalErrorCode::StartupExit,
+                message: format!("{kind} server '{name}' exited before becoming ready"),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::StartupTimeout {
+                kind,
+                name,
+                seconds,
+                ..
+            } => LocalErrorDetail {
+                code: LocalErrorCode::StartupTimeout,
+                message: format!(
+                    "{kind} server '{name}' did not become ready within {seconds} seconds"
+                ),
+                command: Some("clickhousectl local server list"),
+            },
+            Error::Download(_) | Error::Extract(_) => LocalErrorDetail {
+                code: LocalErrorCode::DownloadFailed,
+                message: "Download failed".to_string(),
+                command: None,
+            },
+            Error::Network(failure)
+                if matches!(
+                    failure.stage,
+                    NetworkStage::DownloadHeaders
+                        | NetworkStage::DownloadBody
+                        | NetworkStage::Download
+                ) =>
+            {
+                LocalErrorDetail {
+                    code: LocalErrorCode::DownloadFailed,
+                    message: "Download failed".to_string(),
+                    command: None,
+                }
+            }
+            Error::Network(_) => LocalErrorDetail {
+                code: LocalErrorCode::VersionUnavailable,
+                message: "Requested version is unavailable".to_string(),
+                command: Some("clickhousectl local list --remote"),
+            },
+            Error::Io(_)
+            | Error::Json(_)
+            | Error::CreateDir { .. }
+            | Error::ServerMetadataRead { .. }
+            | Error::ServerMetadataUtf8 { .. }
+            | Error::ServerMetadataParse { .. }
+            | Error::ServerMetadataWrite { .. } => LocalErrorDetail {
+                code: LocalErrorCode::IoError,
+                message: "Local I/O operation failed".to_string(),
+                command: None,
+            },
+            Error::PostgresStartupRollback { primary, .. } => {
+                return Self::from_error(primary);
+            }
+            _ => LocalErrorDetail {
+                code: LocalErrorCode::LocalError,
+                message: "Local command failed".to_string(),
+                command: None,
+            },
+        };
+        Self {
+            error: LocalErrorBody::General(detail),
+        }
+    }
+}
+
+impl ManagedClientErrorDetail {
+    fn from_error(error: &ManagedClientError) -> Self {
+        let (code, message) = match &error.kind {
+            ManagedClientErrorKind::ServerNotFound => (
+                LocalErrorCode::ManagedClientServerNotFound,
+                "Managed client server was not found in the current project",
+            ),
+            ManagedClientErrorKind::ServerNotRunning => (
+                LocalErrorCode::ManagedClientServerNotRunning,
+                "Managed client server is not running in the current project",
+            ),
+            ManagedClientErrorKind::BinaryNotFound => (
+                LocalErrorCode::ManagedClientBinaryNotFound,
+                "Managed client binary selected by server metadata is not installed",
+            ),
+            ManagedClientErrorKind::ProjectStateUnavailable(_) => (
+                LocalErrorCode::ManagedClientProjectStateUnavailable,
+                "Managed client project state is unavailable",
+            ),
+        };
+        let selection = match error.selection {
+            ManagedClientSelection::Default => LocalServerSelection::Default,
+            ManagedClientSelection::Named => LocalServerSelection::Named,
+        };
+        let mut guidance = vec![LocalGuidance {
+            message: "List managed servers in this exact project",
+            command: Some("clickhousectl local server list"),
+        }];
+        match &error.kind {
+            ManagedClientErrorKind::ServerNotFound => {
+                guidance.push(LocalGuidance {
+                    message: "Return to the project directory that owns the managed server",
+                    command: None,
+                });
+                guidance.push(start_guidance(error.selection));
+            }
+            ManagedClientErrorKind::ServerNotRunning => {
+                guidance.push(start_guidance(error.selection));
+            }
+            ManagedClientErrorKind::BinaryNotFound => {
+                guidance.push(LocalGuidance {
+                    message: "Install the version selected by the managed server metadata",
+                    command: Some("clickhousectl local install <version>"),
+                });
+            }
+            ManagedClientErrorKind::ProjectStateUnavailable(_) => {
+                guidance.insert(
+                    0,
+                    LocalGuidance {
+                        message: "Repair the reported project state error before retrying",
+                        command: None,
+                    },
+                );
+            }
+        }
+        guidance.push(LocalGuidance {
+            message: "Bypass managed project lookup and connect directly",
+            command: Some("clickhousectl local client --host <host> --port <port>"),
+        });
+
+        Self {
+            code,
+            message,
+            project_scope: LocalProjectScope {
+                path: error.project_dir.display().to_string(),
+            },
+            server: LocalManagedServer {
+                selection,
+                name: error.server_name.clone(),
+                binary_version: error.binary_version.clone(),
+            },
+            guidance,
+        }
+    }
+}
+
+impl ProjectServerErrorDetail {
+    fn from_error(error: &ProjectServerNotFound) -> Self {
+        Self {
+            code: LocalErrorCode::ServerNotFound,
+            message: format!(
+                "Server '{}' was not found in the current project",
+                error.server_name
+            ),
+            project_scope: exact_current_project_scope(&error.project_dir),
+            server: LocalProjectServer {
+                name: error.server_name.clone(),
+            },
+            guidance: project_scope_guidance(Some(error.command)),
+        }
+    }
+}
+
+impl ProjectServerStateMissingDetail {
+    fn from_error(error: &ProjectServerStateMissing) -> Self {
+        Self {
+            code: LocalErrorCode::ServerSelectionRequired,
+            message: "No project-local server state was found in the current directory; no server was removed",
+            project_scope: exact_current_project_scope(&error.project_dir),
+            guidance: project_scope_guidance(Some(error.command)),
+        }
+    }
+}
+
+pub(crate) fn exact_current_project_scope(project_dir: &Path) -> ServerProjectScope {
+    ServerProjectScope {
+        kind: LocalProjectScopeKind::ExactCurrentProject,
+        path: project_dir.display().to_string(),
+        parent_projects_searched: false,
+    }
+}
+
+pub(crate) fn project_scope_guidance(
+    command: Option<ProjectServerCommand>,
+) -> Vec<ProjectServerGuidance> {
+    let mut guidance = vec![
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ReturnToProjectRoot,
+            message: "Change to the local project root where the server was started",
+            command: Some("cd <project-root>"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List servers after returning to that exact project",
+            command: Some("clickhousectl local server list"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListGlobalServers,
+            message: "Locate running ClickHouse servers across projects",
+            command: Some("clickhousectl local server list --global"),
+        },
+    ];
+    if command == Some(ProjectServerCommand::Stop) {
+        guidance.push(ProjectServerGuidance {
+            action: LocalGuidanceAction::StopGlobalProjectServer,
+            message: "After confirming the project, stop the server with explicit global project selection",
+            command: Some(
+                "clickhousectl local server stop <name> --global --project <project-root>",
+            ),
+        });
+    }
+    guidance
+}
+
+fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
+    match selection {
+        ManagedClientSelection::Default => LocalGuidance {
+            message: "Start the default managed server in this project",
+            command: Some("clickhousectl local server start"),
+        },
+        ManagedClientSelection::Named => LocalGuidance {
+            message: "Start the selected named managed server in this project",
+            command: Some("clickhousectl local server start <name>"),
+        },
+    }
+}
+
+/// Write exactly one local runtime error object to stderr. The serialized DTO
+/// is allowlisted above and never includes an error source or arbitrary detail.
+pub fn print_error(error: &Error) {
+    let output = LocalErrorOutput::from_error(error);
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if serde_json::to_writer_pretty(&mut stderr, &output).is_ok() {
+        let _ = writeln!(stderr);
+    }
+}
 
 // ── list (installed) ────────────────────────────────────────────────────────
 
@@ -254,6 +724,10 @@ pub struct ServerListOutput {
     pub servers: Vec<ServerListEntry>,
     pub total_servers: usize,
     pub total_running_servers: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_scope: Option<ServerProjectScope>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guidance: Vec<ProjectServerGuidance>,
 }
 
 #[derive(Tabled)]
@@ -311,6 +785,17 @@ struct ServerListRowGlobal {
 impl fmt::Display for ServerListOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.servers.is_empty() {
+            if let Some(scope) = &self.project_scope {
+                writeln!(f, "No servers found in project '{}'.", scope.path)?;
+                writeln!(
+                    f,
+                    "Project-local server list uses the exact current working directory; parent `.clickhouse` directories are not searched."
+                )?;
+                return write!(
+                    f,
+                    "Return to the local project root where the server was started and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+                );
+            }
             write!(f, "No servers")?;
             return Ok(());
         }
@@ -461,20 +946,67 @@ impl fmt::Display for PostgresDotenvOutput {
 
 // ── server stop ─────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerSelection {
+    Explicit,
+    Implicit,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopOutput {
     pub name: String,
     /// True when the server existed but was already stopped (idempotent noop).
     pub already_stopped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ServerSelection>,
 }
 
 impl fmt::Display for ServerStopOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.already_stopped {
-            write!(f, "Server '{}' is already stopped", self.name)
+            write!(f, "Server '{}' is already stopped", self.name)?;
         } else {
-            write!(f, "Server '{}' stopped", self.name)
+            write!(f, "Server '{}' stopped", self.name)?;
         }
+        if self.selection == Some(ServerSelection::Implicit) {
+            write!(f, " (selected automatically)")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerStopNoopOutput {
+    pub stopped: bool,
+    pub selection: ServerSelection,
+    pub reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_scope: Option<ServerProjectScope>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guidance: Vec<ProjectServerGuidance>,
+}
+
+impl fmt::Display for ServerStopNoopOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "No ClickHouse servers found; nothing to stop")?;
+        if let Some(scope) = &self.project_scope {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "No `.clickhouse` directory existed under project '{}' when the command started.",
+                scope.path
+            )?;
+            writeln!(
+                f,
+                "Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched."
+            )?;
+            write!(
+                f,
+                "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -530,11 +1062,17 @@ impl fmt::Display for ServerStopAllOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerRemoveOutput {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ServerSelection>,
 }
 
 impl fmt::Display for ServerRemoveOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Server '{}' removed", self.name)
+        write!(f, "Server '{}' removed", self.name)?;
+        if self.selection == Some(ServerSelection::Implicit) {
+            write!(f, " (selected automatically)")?;
+        }
+        Ok(())
     }
 }
 
@@ -580,6 +1118,173 @@ pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn error_json(error: &Error) -> serde_json::Value {
+        serde_json::to_value(LocalErrorOutput::from_error(error)).unwrap()
+    }
+
+    #[test]
+    fn local_error_codes_cover_the_stable_vocabulary() {
+        let cases = [
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ServerNotFound,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Default,
+                    server_name: "default".into(),
+                    binary_version: None,
+                }),
+                "managed_client_server_not_found",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ServerNotRunning,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Named,
+                    server_name: "dev".into(),
+                    binary_version: None,
+                }),
+                "managed_client_server_not_running",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::BinaryNotFound,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Named,
+                    server_name: "dev".into(),
+                    binary_version: Some("25.12.9.61".into()),
+                }),
+                "managed_client_binary_not_found",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ProjectStateUnavailable(Box::new(
+                        Error::ServerLock {
+                            operation: "open the server metadata lock file",
+                            path: "/project/.clickhouse/servers/.metadata.lock".into(),
+                            remediation: "Check access, then retry.",
+                            source: std::io::Error::other("lock failed"),
+                        },
+                    )),
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Default,
+                    server_name: "default".into(),
+                    binary_version: None,
+                }),
+                "managed_client_project_state_unavailable",
+            ),
+            (
+                Error::ProjectServerNotFound(ProjectServerNotFound {
+                    command: ProjectServerCommand::Stop,
+                    project_dir: "/project".into(),
+                    server_name: "default".into(),
+                }),
+                "server_not_found",
+            ),
+            (
+                Error::ProjectServerStateMissing(ProjectServerStateMissing {
+                    command: ProjectServerCommand::Remove,
+                    project_dir: "/project".into(),
+                }),
+                "server_selection_required",
+            ),
+            (Error::ServerNotFound("default".into()), "server_not_found"),
+            (
+                Error::ServerStopSelectionRequired { available: 2 },
+                "server_selection_required",
+            ),
+            (
+                Error::ServerNotRunning("default".into()),
+                "server_not_running",
+            ),
+            (
+                Error::ServerAlreadyRunning("default".into()),
+                "server_running",
+            ),
+            (
+                Error::VersionInUse {
+                    version: "25.12.9.61".into(),
+                    servers: "default".into(),
+                },
+                "server_running",
+            ),
+            (
+                Error::InvalidVersion("unsafe input".into()),
+                "invalid_version",
+            ),
+            (
+                Error::VersionNotFound("25.12.9.61".into()),
+                "version_unavailable",
+            ),
+            (
+                Error::PortInUse {
+                    kind: PortKind::Http,
+                    port: 8123,
+                },
+                "port_in_use",
+            ),
+            (
+                Error::StartupExit {
+                    kind: crate::error::StartupKind::ClickHouse,
+                    name: "default".into(),
+                    details: "raw startup details".into(),
+                },
+                "startup_exit",
+            ),
+            (
+                Error::StartupTimeout {
+                    kind: crate::error::StartupKind::Postgres,
+                    name: "default".into(),
+                    seconds: 60,
+                    details: "raw timeout details".into(),
+                },
+                "startup_timeout",
+            ),
+            (
+                Error::Download("raw download details".into()),
+                "download_failed",
+            ),
+            (
+                Error::Io(std::io::Error::other("raw I/O details")),
+                "io_error",
+            ),
+            (Error::Exec("raw fallback details".into()), "local_error"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error_json(&error)["error"]["code"], expected);
+        }
+    }
+
+    #[test]
+    fn structured_fallback_and_wrapped_errors_never_serialize_raw_details() {
+        let sensitive =
+            "SELECT * FROM private_table; password=hunter2; /Users/al/secret; container=abc";
+        let fallback = serde_json::to_string(&LocalErrorOutput::from_error(&Error::Exec(
+            sensitive.to_string(),
+        )))
+        .unwrap();
+        assert_eq!(
+            fallback,
+            r#"{"error":{"code":"local_error","message":"Local command failed"}}"#
+        );
+        assert!(!fallback.contains(sensitive));
+
+        let wrapped = Error::PostgresStartupRollback {
+            primary: Box::new(Error::StartupExit {
+                kind: crate::error::StartupKind::Postgres,
+                name: "default".into(),
+                details: sensitive.into(),
+            }),
+            cleanup: sensitive.into(),
+        };
+        let wrapped = serde_json::to_string(&LocalErrorOutput::from_error(&wrapped)).unwrap();
+        assert_eq!(
+            wrapped,
+            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local server list"}}"#
+        );
+        assert!(!wrapped.contains("hunter2"));
+    }
 
     // ── JSON serialization tests ────────────────────────────────────────
 
@@ -747,6 +1452,8 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: Vec::new(),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -762,6 +1469,8 @@ mod tests {
         assert!(json["servers"][1].get("version").is_none());
         assert_eq!(json["total_servers"], 2);
         assert_eq!(json["total_running_servers"], 1);
+        assert_eq!(json["project_scope"]["path"], "/project");
+        assert_eq!(json["project_scope"]["parent_projects_searched"], false);
     }
 
     #[test]
@@ -770,6 +1479,8 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: project_scope_guidance(None),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -777,6 +1488,8 @@ mod tests {
         assert_eq!(json["servers"].as_array().unwrap().len(), 0);
         assert_eq!(json["total_servers"], 0);
         assert_eq!(json["total_running_servers"], 0);
+        assert_eq!(json["project_scope"]["kind"], "exact_current_project");
+        assert_eq!(json["guidance"][2]["action"], "list_global_servers");
     }
 
     #[test]
@@ -784,12 +1497,14 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: false,
+            selection: Some(ServerSelection::Explicit),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "default");
         assert_eq!(json["already_stopped"], false);
+        assert_eq!(json["selection"], "explicit");
     }
 
     #[test]
@@ -797,8 +1512,12 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: true,
+            selection: Some(ServerSelection::Implicit),
         };
-        assert_eq!(output.to_string(), "Server 'default' is already stopped");
+        assert_eq!(
+            output.to_string(),
+            "Server 'default' is already stopped (selected automatically)"
+        );
 
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -889,11 +1608,13 @@ mod tests {
     fn server_remove_json() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
+            selection: Some(ServerSelection::Explicit),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "test");
+        assert_eq!(json["selection"], "explicit");
     }
 
     // ── Display (human-readable) tests ──────────────────────────────────
@@ -1059,6 +1780,8 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         let text = output.to_string();
         assert!(text.contains("Name"));
@@ -1083,8 +1806,26 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         assert_eq!(output.to_string(), "No servers");
+    }
+
+    #[test]
+    fn server_list_display_empty_project_explains_exact_scope() {
+        let output = ServerListOutput {
+            servers: vec![],
+            total_servers: 0,
+            total_running_servers: 0,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: project_scope_guidance(None),
+        };
+        let text = output.to_string();
+        assert!(text.contains("No servers found in project '/project'"));
+        assert!(text.contains("exact current working directory"));
+        assert!(text.contains("parent `.clickhouse` directories are not searched"));
+        assert!(text.contains("clickhousectl local server list --global"));
     }
 
     #[test]
@@ -1103,6 +1844,8 @@ mod tests {
             }],
             total_servers: 1,
             total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         let text = output.to_string();
         assert!(text.contains("1 server, 1 running"));
@@ -1113,6 +1856,7 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: false,
+            selection: Some(ServerSelection::Explicit),
         };
         assert_eq!(output.to_string(), "Server 'default' stopped");
     }
@@ -1157,6 +1901,7 @@ mod tests {
     fn server_remove_display() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
+            selection: Some(ServerSelection::Explicit),
         };
         assert_eq!(output.to_string(), "Server 'test' removed");
     }

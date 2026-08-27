@@ -6,6 +6,9 @@ on:
     paths:
       - "crates/clickhousectl/**"
       - "Cargo.lock"
+      - "scripts/classify-install-integration.py"
+      - "scripts/tests/test_classify_install_integration.py"
+      - ".github/workflows/test-install.yml"
       - ".github/workflows/test-cli.yml"
 
 permissions:
@@ -41,3 +44,6 @@ jobs:
 
       - name: Test
         run: cargo test -p clickhousectl
+
+      - name: Verify install workflow path mapping
+        run: python3 scripts/tests/test_classify_install_integration.py

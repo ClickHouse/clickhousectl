@@ -34,20 +34,31 @@ fn clickhousectl_binary() -> PathBuf {
 struct Sandbox {
     home: tempfile::TempDir,
     mock: MockServer,
+    endpoint_path: String,
 }
 
 impl Sandbox {
     async fn new() -> Self {
+        let home = tempfile::tempdir().unwrap();
+        let endpoint_path = format!(
+            "/v1/telemetry/{}",
+            home.path().file_name().unwrap().to_string_lossy()
+        );
         let mock = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/telemetry"))
+            .and(path(endpoint_path.clone()))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&mock)
             .await;
         Sandbox {
-            home: tempfile::tempdir().unwrap(),
+            home,
             mock,
+            endpoint_path,
         }
+    }
+
+    fn telemetry_url(&self) -> String {
+        format!("{}{}", self.mock.uri(), self.endpoint_path)
     }
 
     fn state_path(&self) -> PathBuf {
@@ -68,10 +79,7 @@ impl Sandbox {
         let mut cmd = Command::new(clickhousectl_binary());
         cmd.args(args)
             .env("HOME", self.home.path())
-            .env(
-                "CHCTL_TELEMETRY_URL",
-                format!("{}/v1/telemetry", self.mock.uri()),
-            )
+            .env("CHCTL_TELEMETRY_URL", self.telemetry_url())
             .env_remove("DO_NOT_TRACK")
             .env_remove("CHCTL_TELEMETRY_DEBUG")
             .env_remove("CHCTL_TELEMETRY_PAYLOAD")
@@ -100,7 +108,7 @@ impl Sandbox {
     async fn wait_for_requests(&self, n: usize) -> Vec<Value> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let requests = self.mock.received_requests().await.unwrap_or_default();
+            let requests = self.received_requests().await;
             if requests.len() >= n {
                 return requests
                     .iter()
@@ -120,12 +128,22 @@ impl Sandbox {
     /// moment to fire first.
     async fn assert_no_requests(&self) {
         tokio::time::sleep(Duration::from_millis(750)).await;
-        let requests = self.mock.received_requests().await.unwrap_or_default();
+        let requests = self.received_requests().await;
         assert!(
             requests.is_empty(),
             "expected no telemetry, saw: {:?}",
             requests.iter().map(|r| &r.body).collect::<Vec<_>>()
         );
+    }
+
+    async fn received_requests(&self) -> Vec<wiremock::Request> {
+        self.mock
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|request| request.url.path() == self.endpoint_path.as_str())
+            .collect()
     }
 }
 
@@ -140,7 +158,23 @@ fn stdout_of(output: &Output) -> String {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn first_run_writes_marker_prints_notice_sends_nothing() {
+async fn sandbox_ignores_requests_for_another_endpoint_path() {
+    let sandbox = Sandbox::new().await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/telemetry/stale", sandbox.mock.uri()))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(sandbox.mock.received_requests().await.unwrap().len(), 1);
+    assert!(sandbox.received_requests().await.is_empty());
+}
+
+#[tokio::test]
+async fn first_run_sends_nothing_then_second_run_sends_event() {
     let sandbox = Sandbox::new().await;
 
     let output = sandbox.run(&["local", "list"]);
@@ -159,7 +193,10 @@ async fn first_run_writes_marker_prints_notice_sends_nothing() {
 
     // Second run: the notice appears exactly once, ever.
     let output = sandbox.run(&["local", "list"]);
+    assert!(output.status.success());
     assert!(!stderr_of(&output).contains("anonymous usage data"));
+    let payloads = sandbox.wait_for_requests(1).await;
+    assert_eq!(payloads[0]["command"], "local list");
 }
 
 #[tokio::test]
@@ -193,7 +230,7 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     // User-Agent as every other outbound request. The ingest worker relies on
     // the `clickhousectl/<version>` prefix to reject non-CLI traffic (an
     // ` (agent=...)` comment may follow).
-    let requests = sandbox.mock.received_requests().await.unwrap();
+    let requests = sandbox.received_requests().await;
     let ua = requests[0]
         .headers
         .get("user-agent")
@@ -238,7 +275,7 @@ async fn no_agent_correlation_headers_on_the_wire() {
     assert_eq!(event["agent"], "claude-code");
 
     // ...but no correlation headers accompany it.
-    let requests = sandbox.mock.received_requests().await.unwrap();
+    let requests = sandbox.received_requests().await;
     let headers = &requests[0].headers;
     assert!(
         headers.get("agent-session-id").is_none(),
@@ -271,6 +308,97 @@ async fn failure_reported_and_positional_value_never_leaks() {
         !raw.contains("no-such-version-xyz"),
         "positional argument leaked into the payload: {raw}"
     );
+}
+
+#[tokio::test]
+async fn managed_client_failure_details_never_reach_telemetry() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("project-private-token");
+    let server_name = "server-private-token";
+    let version = "99.99.1-version-private-token";
+    let servers = project.join(".clickhouse/servers");
+    std::fs::create_dir_all(&servers).unwrap();
+    std::fs::write(
+        servers.join(format!("{server_name}.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "name": server_name,
+            "pid": std::process::id(),
+            "version": version,
+            "http_port": 8123,
+            "tcp_port": 9000,
+            "started_at": "test",
+            "cwd": project,
+            "engine": "clickhouse"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = sandbox
+        .command(&["local", "client", "--name", server_name])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let raw_message = stderr_of(&output);
+    assert!(raw_message.contains(server_name));
+    assert!(raw_message.contains(version));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["flags"], serde_json::json!(["name"]));
+    assert_eq!(event["exit_code"], 1);
+    let raw_payload = serde_json::to_string(event).unwrap();
+    for sensitive in [
+        server_name,
+        version,
+        "project-private-token",
+        raw_message.as_str(),
+    ] {
+        assert!(
+            !raw_payload.contains(sensitive),
+            "managed client detail leaked into telemetry: {raw_payload}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn server_scope_failure_paths_never_reach_telemetry() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let root = tempfile::tempdir().unwrap();
+    let project = root.path().join("server-project-private-token");
+    let server_name = "server-name-private-token";
+    std::fs::create_dir(&project).unwrap();
+
+    let output = sandbox
+        .command(&["local", "server", "stop", server_name])
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let raw_message = stderr_of(&output);
+    assert!(raw_message.contains(server_name));
+    assert!(raw_message.contains("server-project-private-token"));
+
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "local server stop");
+    assert_eq!(event["exit_code"], 1);
+    let raw_payload = serde_json::to_string(event).unwrap();
+    for sensitive in [
+        server_name,
+        "server-project-private-token",
+        raw_message.as_str(),
+    ] {
+        assert!(
+            !raw_payload.contains(sensitive),
+            "server scope detail leaked into telemetry: {raw_payload}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -310,10 +438,7 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
         ])
         .env_clear()
         .env("HOME", sandbox.home.path())
-        .env(
-            "CHCTL_TELEMETRY_URL",
-            format!("{}/v1/telemetry", sandbox.mock.uri()),
-        )
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
         .current_dir(project.path())
         .output()
         .unwrap();
@@ -453,6 +578,55 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
     assert_eq!(event["outcome"], "invalid_value");
     let raw = serde_json::to_string(event).unwrap();
     assert!(!raw.contains("SECRET"), "argument value leaked: {raw}");
+}
+
+#[tokio::test]
+async fn invalid_local_versions_report_invalid_value_without_dispatch_side_effects() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["local", "install", "not.a.version"],
+            "local install",
+            "not.a.version",
+        ),
+        (&["local", "use", "25.12.9"], "local use", "25.12.9"),
+        (
+            &["local", "server", "start", "--version", "25.12.9.61.2"],
+            "local server start",
+            "25.12.9.61.2",
+        ),
+        (&["local", "use", "postgres@18"], "local use", "postgres@18"),
+    ];
+
+    for (index, (args, command, operand)) in cases.iter().enumerate() {
+        let output = sandbox
+            .command(args)
+            .current_dir(project.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{}", stderr_of(&output));
+        assert!(
+            stderr_of(&output).contains("error: invalid value"),
+            "{}",
+            stderr_of(&output)
+        );
+
+        let payloads = sandbox.wait_for_requests(index + 1).await;
+        let event = &payloads[index];
+        assert_eq!(event["command"], *command);
+        assert_eq!(event["exit_code"], 2);
+        assert_eq!(event["outcome"], "invalid_value");
+        let raw = serde_json::to_string(event).unwrap();
+        assert!(!raw.contains(operand), "version operand leaked: {raw}");
+    }
+
+    let home_state = sandbox.home.path().join(".clickhouse");
+    assert!(!home_state.join("versions").exists());
+    assert!(!home_state.join("default").exists());
+    assert!(!sandbox.home.path().join(".local").exists());
+    assert!(!project.path().join(".clickhouse").exists());
 }
 
 #[tokio::test]
@@ -643,14 +817,14 @@ async fn unwritable_home_fails_open_to_silent() {
 
 #[tokio::test]
 async fn parent_never_waits_for_a_slow_endpoint() {
+    let sandbox = Sandbox::new().await;
     let mock = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/v1/telemetry"))
+        .and(path(sandbox.endpoint_path.clone()))
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)))
         .mount(&mock)
         .await;
 
-    let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
 
     let started = Instant::now();
@@ -658,7 +832,7 @@ async fn parent_never_waits_for_a_slow_endpoint() {
         .command(&["local", "list"])
         .env(
             "CHCTL_TELEMETRY_URL",
-            format!("{}/v1/telemetry", mock.uri()),
+            format!("{}{}", mock.uri(), sandbox.endpoint_path),
         )
         .output()
         .unwrap();
@@ -676,11 +850,12 @@ async fn parent_never_waits_for_a_slow_endpoint() {
     // its port can be reused by another parallel test before the child sends.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if !mock
+        if mock
             .received_requests()
             .await
             .unwrap_or_default()
-            .is_empty()
+            .iter()
+            .any(|request| request.url.path() == sandbox.endpoint_path.as_str())
         {
             break;
         }

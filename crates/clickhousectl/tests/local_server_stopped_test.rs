@@ -33,8 +33,10 @@ fn write_server_metadata(project: &Path, pid: u32) -> PathBuf {
 
 fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
+        .env("PATH", "/usr/bin:/bin")
         .current_dir(project)
         .args(args)
         .output()
@@ -140,6 +142,7 @@ fn stopping_clickhouse_retains_metadata_and_lists_it_as_stopped() {
     let body: Value = serde_json::from_slice(&stop.stdout).expect("parse stop JSON");
     assert_eq!(body["name"], "default");
     assert_eq!(body["already_stopped"], false);
+    assert_eq!(body["selection"], "implicit");
 
     let saved: Value = serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
     assert_eq!(saved["pid"], 0);
@@ -256,7 +259,13 @@ fn stopped_server_connection_commands_fail_without_using_saved_ports() {
         &["local", "client", "--name", "default"],
     );
     assert_eq!(client.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&client.stderr).contains("Server 'default' is not running"));
+    let client_stderr = String::from_utf8_lossy(&client.stderr);
+    assert!(client_stderr.contains("Managed client mode: server 'default' is not running"));
+    assert!(client_stderr.contains(&project.path().canonicalize().unwrap().display().to_string()));
+    assert!(client_stderr.contains("clickhousectl local server list"));
+    assert!(client_stderr.contains("clickhousectl local server start <name>"));
+    assert!(!client_stderr.contains("8123"));
+    assert!(!client_stderr.contains("9000"));
 
     let dotenv = run(
         project.path(),

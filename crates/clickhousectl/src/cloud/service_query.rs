@@ -6,14 +6,15 @@
 //! `cloud service query` invocations can authenticate without contacting the
 //! control plane.
 
-use crate::cloud::api_keys::discard_api_key;
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry, QueryEndpointRole,
+    ServiceQueryAPIEndpoint,
 };
+use serde::Serialize;
 
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
 /// caller so CORS doesn't apply, but the API still requires a value.
@@ -39,7 +40,7 @@ fn require_credential_pair(key_response: &ApiKeyPostResponse) -> CloudResult<(St
 
 fn build_service_query_key(
     organization_id: &str,
-    api_key_id: String,
+    api_key_id: &str,
     key_id: String,
     key_secret: String,
     endpoint_id: Option<String>,
@@ -48,12 +49,31 @@ fn build_service_query_key(
 ) -> ServiceQueryKey {
     ServiceQueryKey {
         organization_id: Some(organization_id.to_string()),
-        api_key_id: Some(api_key_id),
+        api_key_id: Some(api_key_id.to_string()),
         key_id,
         key_secret,
         endpoint_id,
+        pending_cleanup_api_key_ids: vec![],
         service_name: service_name.to_string(),
         created_at,
+    }
+}
+
+fn build_query_api_key_request(service_name: &str) -> ApiKeyPostRequest {
+    ApiKeyPostRequest {
+        name: format!("clickhousectl-query-{service_name}"),
+        assigned_role_ids: vec![],
+        expire_at: None,
+        hash_data: None,
+        ip_access_list: vec![IpAccessListEntry {
+            source: "0.0.0.0/0".to_string(),
+            description: Some(format!(
+                "clickhousectl auto-provisioned key for service {service_name}"
+            )),
+        }],
+        #[cfg(feature = "deprecated-fields")]
+        roles: None,
+        state: ApiKeyPostRequestState::Enabled,
     }
 }
 
@@ -68,25 +88,20 @@ pub async fn ensure_service_query_setup(
     service_id: &str,
     service_name: &str,
 ) -> CloudResult<ServiceQueryKey> {
-    if let Some(existing) = credentials::get_service_query_key(service_id) {
+    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
         return Ok(existing);
     }
 
-    let key_request = ApiKeyPostRequest {
-        name: format!("clickhousectl-query-{service_name}"),
-        assigned_role_ids: vec![],
-        expire_at: None,
-        hash_data: None,
-        ip_access_list: vec![IpAccessListEntry {
-            source: "0.0.0.0/0".to_string(),
-            description: Some(format!(
-                "clickhousectl auto-provisioned key for service {service_name}"
-            )),
-        }],
-        #[cfg(feature = "deprecated-fields")]
-        roles: None,
-        state: ApiKeyPostRequestState::Enabled,
-    };
+    // Serialize the complete read-create-bind-save transaction across CLI
+    // processes in this project. A waiter must re-read after acquisition: the
+    // process that held the lock may have completed provisioning while it
+    // waited.
+    let provisioning_lock = credentials::lock_query_provisioning().await?;
+    if let Some(existing) = credentials::try_get_service_query_key(service_id)? {
+        return Ok(existing);
+    }
+
+    let key_request = build_query_api_key_request(service_name);
 
     let key_response = client.create_api_key(org_id, &key_request).await?;
     // `key_id`/`key_secret` are the credential pair used for query auth.
@@ -107,8 +122,7 @@ pub async fn ensure_service_query_setup(
         Err(e) => {
             // The key exists but we can't authenticate with it, so it is
             // dead weight in the org: discard it before failing.
-            discard_api_key(client, org_id, &api_key_uuid).await;
-            return Err(e);
+            return fail_after_key_creation(client, org_id, &api_key_uuid, e).await;
         }
     };
 
@@ -117,8 +131,7 @@ pub async fn ensure_service_query_setup(
         Err(e) => {
             // The key was created but never bound or persisted, so nothing
             // can use it.
-            discard_api_key(client, org_id, &api_key_uuid).await;
-            return Err(e);
+            return fail_after_key_creation(client, org_id, &api_key_uuid, e).await;
         }
     };
 
@@ -128,36 +141,473 @@ pub async fn ensure_service_query_setup(
     // dangling UUID in the endpoint's `openApiKeys`.
     let stored = build_service_query_key(
         org_id,
-        api_key_uuid,
+        &api_key_uuid,
         key_id,
         key_secret,
         endpoint.id,
         service_name,
         Utc::now(),
     );
-    credentials::set_service_query_key(service_id, stored.clone())?;
+    if let Err(error) =
+        credentials::set_service_query_key(service_id, stored.clone(), &provisioning_lock)
+    {
+        return fail_after_endpoint_binding(client, org_id, service_id, &api_key_uuid, error).await;
+    }
 
     Ok(stored)
 }
 
+async fn fail_after_endpoint_binding<T>(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    persistence_error: CloudError,
+) -> CloudResult<T> {
+    if let Err(unbind_error) = unbind_query_endpoint(client, org_id, service_id, api_key_id).await {
+        return Err(CloudError {
+            message: format!(
+                "local credential persistence failed: {persistence_error}; additionally, failed \
+                 to remove API key {api_key_id} from the query endpoint: {unbind_error}. The key \
+                 was retained for recovery"
+            ),
+            kind: persistence_error.kind,
+        });
+    }
+
+    fail_after_key_creation(client, org_id, api_key_id, persistence_error).await
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryKeyRepairResult {
+    pub(crate) status: &'static str,
+    pub(crate) service_id: String,
+    pub(crate) organization_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) replaced_api_key_id: Option<String>,
+    pub(crate) api_key_id: String,
+    pub(crate) endpoint_id: String,
+}
+
+#[derive(Clone)]
+enum RepairEndpointState {
+    Existing {
+        endpoint_id: String,
+        original_request: InstanceServiceQueryApiEndpointsPostRequest,
+    },
+    Missing,
+}
+
+fn require_owned_query_key<'a>(
+    key: &'a ServiceQueryKey,
+    org_id: &str,
+    service_id: &str,
+) -> CloudResult<(&'a str, &'a str)> {
+    let key_org_id = key.organization_id.as_deref().ok_or_else(|| {
+        CloudError::new(format!(
+            "the stored query key for service {service_id} has no ownership organization; \
+             refusing to repair a legacy or non-owned record"
+        ))
+    })?;
+    if key_org_id != org_id {
+        return Err(CloudError::new(format!(
+            "the stored query key for service {service_id} belongs to organization {key_org_id}, \
+             not {org_id}; refusing to repair it"
+        )));
+    }
+    let api_key_id = key.api_key_id.as_deref().ok_or_else(|| {
+        CloudError::new(format!(
+            "the stored query key for service {service_id} has no exact management API key ID; \
+             refusing to repair a legacy or non-owned record"
+        ))
+    })?;
+    let endpoint_id = key.endpoint_id.as_deref().ok_or_else(|| {
+        CloudError::new(format!(
+            "the stored query key for service {service_id} has no exact query endpoint ID; \
+             refusing to repair a record whose endpoint ownership cannot be verified"
+        ))
+    })?;
+    if key
+        .pending_cleanup_api_key_ids
+        .iter()
+        .any(|pending| pending == api_key_id)
+    {
+        return Err(CloudError::new(format!(
+            "the stored query key for service {service_id} marks its active management API key \
+             for cleanup; refusing to delete it"
+        )));
+    }
+    Ok((api_key_id, endpoint_id))
+}
+
+fn inspect_repair_endpoint(
+    endpoint: Option<ServiceQueryAPIEndpoint>,
+    expected_endpoint_id: &str,
+    service_id: &str,
+) -> CloudResult<RepairEndpointState> {
+    let Some(endpoint) = endpoint else {
+        return Ok(RepairEndpointState::Missing);
+    };
+    let endpoint_id = require_field(endpoint.id, "query endpoint id")?;
+    if endpoint_id != expected_endpoint_id {
+        return Err(CloudError::new(format!(
+            "query endpoint {endpoint_id} for service {service_id} does not match the owned \
+             endpoint {expected_endpoint_id}; refusing to modify its bindings"
+        )));
+    }
+    let original_request = InstanceServiceQueryApiEndpointsPostRequest {
+        roles: require_field(endpoint.roles, "query endpoint roles")?,
+        open_api_keys: require_field(endpoint.open_api_keys, "query endpoint openApiKeys")?,
+        allowed_origins: require_field(endpoint.allowed_origins, "query endpoint allowedOrigins")?,
+    };
+    Ok(RepairEndpointState::Existing {
+        endpoint_id,
+        original_request,
+    })
+}
+
+fn build_repair_endpoint_request(
+    state: &RepairEndpointState,
+    old_api_key_id: &str,
+    new_api_key_id: &str,
+) -> InstanceServiceQueryApiEndpointsPostRequest {
+    match state {
+        RepairEndpointState::Existing {
+            original_request, ..
+        } => {
+            let mut request = original_request.clone();
+            request
+                .open_api_keys
+                .retain(|key_id| key_id != old_api_key_id);
+            if !request
+                .open_api_keys
+                .iter()
+                .any(|key_id| key_id == new_api_key_id)
+            {
+                request.open_api_keys.push(new_api_key_id.to_string());
+            }
+            request
+        }
+        RepairEndpointState::Missing => InstanceServiceQueryApiEndpointsPostRequest {
+            roles: vec![QueryEndpointRole::SqlConsoleAdmin],
+            open_api_keys: vec![new_api_key_id.to_string()],
+            allowed_origins: ALLOWED_ORIGINS.to_string(),
+        },
+    }
+}
+
+async fn restore_repair_endpoint(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    state: &RepairEndpointState,
+) -> CloudResult<()> {
+    match state {
+        RepairEndpointState::Existing {
+            original_request, ..
+        } => {
+            client
+                .create_query_endpoint(org_id, service_id, original_request)
+                .await?;
+        }
+        RepairEndpointState::Missing => {
+            client
+                .delete_query_endpoint_if_exists(org_id, service_id)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn fail_after_repair_binding<T>(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    new_api_key_id: &str,
+    endpoint_state: &RepairEndpointState,
+    mut repair_error: CloudError,
+) -> CloudResult<T> {
+    if let Err(rollback_error) =
+        restore_repair_endpoint(client, org_id, service_id, endpoint_state).await
+    {
+        repair_error.message = format!(
+            "{repair_error}; additionally, failed to restore the original query endpoint \
+             bindings: {rollback_error}. Newly created API key {new_api_key_id} was retained \
+             because the endpoint may still reference it"
+        );
+        return Err(repair_error);
+    }
+    if let Err(cleanup_error) = client
+        .delete_api_key_if_exists(org_id, new_api_key_id)
+        .await
+    {
+        repair_error.message = format!(
+            "{repair_error}; additionally, failed to delete newly created API key \
+             {new_api_key_id}: {cleanup_error}"
+        );
+    }
+    Err(repair_error)
+}
+
+fn repair_state_changed(expected: &ServiceQueryKey, current: &ServiceQueryKey) -> bool {
+    expected.organization_id != current.organization_id
+        || expected.api_key_id != current.api_key_id
+        || expected.key_id != current.key_id
+        || expected.key_secret != current.key_secret
+        || expected.endpoint_id != current.endpoint_id
+        || expected.pending_cleanup_api_key_ids != current.pending_cleanup_api_key_ids
+}
+
+pub async fn repair_service_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+) -> CloudResult<QueryKeyRepairResult> {
+    // Snapshot before waiting so a concurrent repair winner can be reused
+    // rather than immediately rotated again after the lock is acquired.
+    let expected_stale = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
+        CloudError::new(format!(
+            "no stored query key exists for service {service_id}; run a query normally before \
+             requesting repair"
+        ))
+    })?;
+    require_owned_query_key(&expected_stale, org_id, service_id)?;
+
+    let provisioning_lock = credentials::lock_query_provisioning().await?;
+    let mut old_key = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
+        CloudError::new(format!(
+            "the stored query key for service {service_id} was removed while waiting to repair it"
+        ))
+    })?;
+    let (old_api_key_id, expected_endpoint_id) =
+        require_owned_query_key(&old_key, org_id, service_id)?;
+    let old_api_key_id = old_api_key_id.to_string();
+    let expected_endpoint_id = expected_endpoint_id.to_string();
+
+    if !old_key.pending_cleanup_api_key_ids.is_empty() {
+        for pending_id in &old_key.pending_cleanup_api_key_ids {
+            client
+                .delete_api_key_if_exists(org_id, pending_id)
+                .await
+                .map_err(|mut error| {
+                    error.message = format!(
+                        "failed to finish query-key repair for service {service_id}: could not \
+                         delete superseded API key {pending_id}: {}",
+                        error.message
+                    );
+                    error
+                })?;
+        }
+        let cleaned_ids = std::mem::take(&mut old_key.pending_cleanup_api_key_ids);
+        credentials::set_service_query_key(service_id, old_key, &provisioning_lock)?;
+        return Ok(QueryKeyRepairResult {
+            status: "cleanup_completed",
+            service_id: service_id.to_string(),
+            organization_id: org_id.to_string(),
+            replaced_api_key_id: cleaned_ids.last().cloned(),
+            api_key_id: old_api_key_id,
+            endpoint_id: expected_endpoint_id,
+        });
+    }
+
+    if repair_state_changed(&expected_stale, &old_key) {
+        return Ok(QueryKeyRepairResult {
+            status: "already_repaired",
+            service_id: service_id.to_string(),
+            organization_id: org_id.to_string(),
+            replaced_api_key_id: None,
+            api_key_id: old_api_key_id,
+            endpoint_id: expected_endpoint_id,
+        });
+    }
+
+    let endpoint = client
+        .get_query_endpoint_for_binding(org_id, service_id)
+        .await?;
+    let endpoint_state = inspect_repair_endpoint(endpoint, &expected_endpoint_id, service_id)?;
+
+    let key_request = build_query_api_key_request(&old_key.service_name);
+    let key_response = client.create_api_key(org_id, &key_request).await?;
+    let new_api_key_id =
+        require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
+    let (new_key_id, new_key_secret) = match require_credential_pair(&key_response) {
+        Ok(pair) => pair,
+        Err(error) => {
+            return fail_after_key_creation(client, org_id, &new_api_key_id, error).await;
+        }
+    };
+
+    let endpoint_request =
+        build_repair_endpoint_request(&endpoint_state, &old_api_key_id, &new_api_key_id);
+    let repaired_endpoint = match client
+        .create_query_endpoint(org_id, service_id, &endpoint_request)
+        .await
+    {
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            return fail_after_repair_binding(
+                client,
+                org_id,
+                service_id,
+                &new_api_key_id,
+                &endpoint_state,
+                error,
+            )
+            .await;
+        }
+    };
+    let repaired_endpoint_id = match require_field(repaired_endpoint.id, "query endpoint id") {
+        Ok(endpoint_id) => endpoint_id,
+        Err(error) => {
+            return fail_after_repair_binding(
+                client,
+                org_id,
+                service_id,
+                &new_api_key_id,
+                &endpoint_state,
+                error,
+            )
+            .await;
+        }
+    };
+    if let RepairEndpointState::Existing { endpoint_id, .. } = &endpoint_state
+        && repaired_endpoint_id != *endpoint_id
+    {
+        return fail_after_repair_binding(
+            client,
+            org_id,
+            service_id,
+            &new_api_key_id,
+            &endpoint_state,
+            CloudError::new(format!(
+                "query endpoint repair returned endpoint {repaired_endpoint_id}, expected owned \
+                 endpoint {endpoint_id}"
+            )),
+        )
+        .await;
+    }
+
+    let mut replacement = build_service_query_key(
+        org_id,
+        &new_api_key_id,
+        new_key_id,
+        new_key_secret,
+        Some(repaired_endpoint_id.clone()),
+        &old_key.service_name,
+        Utc::now(),
+    );
+    replacement
+        .pending_cleanup_api_key_ids
+        .push(old_api_key_id.clone());
+    if let Err(error) =
+        credentials::set_service_query_key(service_id, replacement.clone(), &provisioning_lock)
+    {
+        return fail_after_repair_binding(
+            client,
+            org_id,
+            service_id,
+            &new_api_key_id,
+            &endpoint_state,
+            error,
+        )
+        .await;
+    }
+
+    if let Err(mut error) = client
+        .delete_api_key_if_exists(org_id, &old_api_key_id)
+        .await
+    {
+        error.message = format!(
+            "the replacement query key for service {service_id} is active, but the superseded \
+             API key {old_api_key_id} could not be deleted: {}. Its exact ID remains stored; \
+             rerun `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}` \
+             to finish cleanup",
+            error.message
+        );
+        return Err(error);
+    }
+
+    replacement.pending_cleanup_api_key_ids.clear();
+    credentials::set_service_query_key(service_id, replacement, &provisioning_lock)?;
+    Ok(QueryKeyRepairResult {
+        status: "repaired",
+        service_id: service_id.to_string(),
+        organization_id: org_id.to_string(),
+        replaced_api_key_id: Some(old_api_key_id),
+        api_key_id: new_api_key_id,
+        endpoint_id: repaired_endpoint_id,
+    })
+}
+
+async fn fail_after_key_creation<T>(
+    client: &CloudClient,
+    org_id: &str,
+    api_key_id: &str,
+    provisioning_error: CloudError,
+) -> CloudResult<T> {
+    match client.delete_api_key_if_exists(org_id, api_key_id).await {
+        Ok(_) => Err(provisioning_error),
+        Err(cleanup_error) => Err(CloudError {
+            message: format!(
+                "{provisioning_error}; additionally, failed to delete newly created API key \
+                 {api_key_id}: {cleanup_error}"
+            ),
+            kind: provisioning_error.kind,
+        }),
+    }
+}
+
 /// The keys already bound to an existing query endpoint, taken from a
 /// successful GET. The upsert replaces `openApiKeys` wholesale, so an absent
-/// `result` or absent `openApiKeys` cannot be read as "no keys bound": merging
-/// into an empty list would revoke every binding the response failed to
-/// report. An explicitly empty list is a real answer and merges normally.
-fn existing_open_api_keys(
-    endpoint: Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>,
-) -> CloudResult<Vec<String>> {
-    let incomplete = |field: &str| {
-        CloudError::new(format!(
-            "the query endpoint response is missing field '{field}', so the keys currently bound \
-             to the endpoint are unknown; binding a new key would revoke them"
-        ))
+/// `openApiKeys` cannot be read as "no keys bound": merging into an empty list
+/// would revoke every binding the response failed to report. An explicitly
+/// empty list is a real answer and merges normally.
+fn existing_open_api_keys(endpoint: ServiceQueryAPIEndpoint) -> CloudResult<Vec<String>> {
+    endpoint.open_api_keys.ok_or_else(|| {
+        CloudError::new(
+            "the query endpoint response is missing field 'openApiKeys', so the keys currently \
+             bound to the endpoint are unknown; binding a new key would revoke them",
+        )
+    })
+}
+
+fn endpoint_without_key(
+    endpoint: ServiceQueryAPIEndpoint,
+    api_key_uuid: &str,
+) -> CloudResult<Option<InstanceServiceQueryApiEndpointsPostRequest>> {
+    let mut open_api_keys = existing_open_api_keys(endpoint.clone())?;
+    if !open_api_keys.iter().any(|key| key == api_key_uuid) {
+        return Ok(None);
+    }
+    open_api_keys.retain(|key| key != api_key_uuid);
+
+    Ok(Some(InstanceServiceQueryApiEndpointsPostRequest {
+        allowed_origins: require_field(endpoint.allowed_origins, "allowedOrigins")?,
+        open_api_keys,
+        roles: require_field(endpoint.roles, "roles")?,
+    }))
+}
+
+async fn unbind_query_endpoint(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_uuid: &str,
+) -> CloudResult<()> {
+    let Some(endpoint) = client
+        .get_query_endpoint_for_binding(org_id, service_id)
+        .await?
+    else {
+        return Ok(());
     };
-    endpoint
-        .ok_or_else(|| incomplete("result"))?
-        .open_api_keys
-        .ok_or_else(|| incomplete("openApiKeys"))
+    let Some(request) = endpoint_without_key(endpoint, api_key_uuid)? else {
+        return Ok(());
+    };
+    client
+        .create_query_endpoint(org_id, service_id, &request)
+        .await?;
+    Ok(())
 }
 
 /// Bind `api_key_uuid` to the service's query endpoint, merging into the
@@ -171,15 +621,11 @@ async fn bind_query_endpoint(
     api_key_uuid: &str,
 ) -> CloudResult<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
     let mut open_api_keys = match client
-        .api()
-        .instance_query_endpoint_get(org_id, service_id)
-        .await
+        .get_query_endpoint_for_binding(org_id, service_id)
+        .await?
     {
-        Ok(resp) => existing_open_api_keys(resp.result)?,
-        // Only a 404 means there is no endpoint yet, so this binding is the
-        // first one and starts from an empty list.
-        Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Vec::new(),
-        Err(e) => return Err(client.convert_error_for_organization(e, org_id)),
+        Some(endpoint) => existing_open_api_keys(endpoint)?,
+        None => Vec::new(),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
         open_api_keys.push(api_key_uuid.to_string());
@@ -196,6 +642,39 @@ async fn bind_query_endpoint(
     client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await
+}
+
+impl CloudClient {
+    async fn get_query_endpoint_for_binding(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<Option<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint>> {
+        match self
+            .api()
+            .instance_query_endpoint_get(org_id, service_id)
+            .await
+        {
+            Ok(response) => Self::unwrap_response(response).map(Some),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
+    }
+
+    async fn delete_query_endpoint_if_exists(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<()> {
+        match self
+            .api()
+            .instance_query_endpoint_delete(org_id, service_id)
+            .await
+        {
+            Ok(_) | Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(()),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -243,7 +722,7 @@ mod tests {
             .with_timezone(&Utc);
         let key = build_service_query_key(
             "org-1",
-            "api-key-uuid".into(),
+            "api-key-uuid",
             "query-key-id".into(),
             "query-key-secret".into(),
             Some("endpoint-id".into()),
@@ -256,6 +735,7 @@ mod tests {
         assert_eq!(key.key_id, "query-key-id");
         assert_eq!(key.key_secret, "query-key-secret");
         assert_eq!(key.endpoint_id.as_deref(), Some("endpoint-id"));
+        assert!(key.pending_cleanup_api_key_ids.is_empty());
         assert_eq!(key.service_name, "demo");
         assert_eq!(key.created_at, created_at);
     }
@@ -274,7 +754,7 @@ mod tests {
     #[test]
     fn existing_keys_are_returned_when_the_endpoint_reports_them() {
         assert_eq!(
-            existing_open_api_keys(Some(endpoint(Some(vec!["uuid-a", "uuid-b"])))).unwrap(),
+            existing_open_api_keys(endpoint(Some(vec!["uuid-a", "uuid-b"]))).unwrap(),
             vec!["uuid-a".to_string(), "uuid-b".to_string()],
         );
     }
@@ -282,7 +762,7 @@ mod tests {
     #[test]
     fn an_explicitly_empty_key_list_is_a_real_answer() {
         assert!(
-            existing_open_api_keys(Some(endpoint(Some(vec![]))))
+            existing_open_api_keys(endpoint(Some(vec![])))
                 .unwrap()
                 .is_empty()
         );
@@ -290,7 +770,7 @@ mod tests {
 
     #[test]
     fn absent_open_api_keys_is_refused_rather_than_treated_as_empty() {
-        let err = existing_open_api_keys(Some(endpoint(None))).unwrap_err();
+        let err = existing_open_api_keys(endpoint(None)).unwrap_err();
         assert!(
             err.to_string().contains("'openApiKeys'") && err.to_string().contains("revoke"),
             "error should name the field and the consequence: {err}",
@@ -298,11 +778,148 @@ mod tests {
     }
 
     #[test]
-    fn absent_result_is_refused_rather_than_treated_as_empty() {
-        let err = existing_open_api_keys(None).unwrap_err();
-        assert!(
-            err.to_string().contains("'result'"),
-            "error should name the field: {err}",
+    fn endpoint_unbind_preserves_current_settings_and_other_keys() {
+        let request = endpoint_without_key(
+            ServiceQueryAPIEndpoint {
+                allowed_origins: Some("https://example.com".into()),
+                id: Some("ep-1".into()),
+                open_api_keys: Some(vec!["other-key".into(), "new-key".into()]),
+                roles: Some(vec![QueryEndpointRole::SqlConsoleReadOnly]),
+            },
+            "new-key",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(request.allowed_origins, "https://example.com");
+        assert_eq!(request.open_api_keys, ["other-key"]);
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
+    }
+
+    #[test]
+    fn query_api_key_request_has_service_scoped_provisioning_shape() {
+        let request = build_query_api_key_request("analytics");
+        assert_eq!(request.name, "clickhousectl-query-analytics");
+        assert!(request.assigned_role_ids.is_empty());
+        assert!(request.expire_at.is_none());
+        assert!(request.hash_data.is_none());
+        assert_eq!(request.state, ApiKeyPostRequestState::Enabled);
+        assert_eq!(request.ip_access_list.len(), 1);
+        assert_eq!(request.ip_access_list[0].source, "0.0.0.0/0");
+        assert_eq!(
+            request.ip_access_list[0].description.as_deref(),
+            Some("clickhousectl auto-provisioned key for service analytics")
         );
+        #[cfg(feature = "deprecated-fields")]
+        assert!(request.roles.is_none());
+    }
+
+    #[test]
+    fn repair_endpoint_request_replaces_only_the_owned_binding() {
+        let state = inspect_repair_endpoint(
+            Some(ServiceQueryAPIEndpoint {
+                id: Some("endpoint-1".into()),
+                roles: Some(vec![QueryEndpointRole::SqlConsoleReadOnly]),
+                open_api_keys: Some(vec!["other-key".into(), "old-key".into()]),
+                allowed_origins: Some("https://example.com".into()),
+            }),
+            "endpoint-1",
+            "service-1",
+        )
+        .unwrap();
+
+        let request = build_repair_endpoint_request(&state, "old-key", "new-key");
+        assert_eq!(request.roles, vec![QueryEndpointRole::SqlConsoleReadOnly]);
+        assert_eq!(request.open_api_keys, vec!["other-key", "new-key"]);
+        assert_eq!(request.allowed_origins, "https://example.com");
+
+        let RepairEndpointState::Existing {
+            original_request, ..
+        } = state
+        else {
+            panic!("expected existing endpoint");
+        };
+        assert_eq!(
+            original_request.open_api_keys,
+            vec!["other-key", "old-key"],
+            "the rollback request must retain the exact original bindings"
+        );
+    }
+
+    #[test]
+    fn repair_endpoint_request_can_recreate_a_missing_owned_endpoint() {
+        let state = inspect_repair_endpoint(None, "deleted-endpoint", "service-1").unwrap();
+        let request = build_repair_endpoint_request(&state, "old-key", "new-key");
+        assert_eq!(request.roles, vec![QueryEndpointRole::SqlConsoleAdmin]);
+        assert_eq!(request.open_api_keys, vec!["new-key"]);
+        assert_eq!(request.allowed_origins, "*");
+    }
+
+    #[test]
+    fn repair_refuses_a_different_or_incomplete_endpoint() {
+        let different = inspect_repair_endpoint(
+            Some(ServiceQueryAPIEndpoint {
+                id: Some("endpoint-2".into()),
+                roles: Some(vec![]),
+                open_api_keys: Some(vec![]),
+                allowed_origins: Some("*".into()),
+            }),
+            "endpoint-1",
+            "service-1",
+        )
+        .err()
+        .unwrap();
+        assert!(different.to_string().contains("refusing to modify"));
+
+        let incomplete = inspect_repair_endpoint(
+            Some(ServiceQueryAPIEndpoint {
+                id: Some("endpoint-1".into()),
+                roles: Some(vec![]),
+                open_api_keys: None,
+                allowed_origins: Some("*".into()),
+            }),
+            "endpoint-1",
+            "service-1",
+        )
+        .err()
+        .unwrap();
+        assert!(incomplete.to_string().contains("openApiKeys"));
+    }
+
+    #[test]
+    fn repair_requires_complete_ownership_metadata() {
+        let key = ServiceQueryKey {
+            organization_id: None,
+            api_key_id: None,
+            key_id: "query-key".into(),
+            key_secret: "query-secret".into(),
+            endpoint_id: Some("endpoint-1".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: Utc::now(),
+        };
+        let error = require_owned_query_key(&key, "org-1", "service-1").unwrap_err();
+        assert!(error.to_string().contains("legacy or non-owned"));
+    }
+
+    #[test]
+    fn repair_detects_a_concurrent_winner() {
+        let expected = ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: Some("stale-key".into()),
+            key_id: "stale-id".into(),
+            key_secret: "stale-secret".into(),
+            endpoint_id: Some("endpoint-1".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: Utc::now(),
+        };
+        let mut winner = expected.clone();
+        winner.api_key_id = Some("winner-key".into());
+        winner.key_id = "winner-id".into();
+        winner.key_secret = "winner-secret".into();
+
+        assert!(repair_state_changed(&expected, &winner));
+        assert!(!repair_state_changed(&winner, &winner));
     }
 }
