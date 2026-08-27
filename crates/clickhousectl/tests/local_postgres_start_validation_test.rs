@@ -88,6 +88,16 @@ impl FakeDocker {
                 } else if request.contains("/containers/existing-container/start") {
                     thread_started.store(true, Ordering::Relaxed);
                     write_response(&mut stream, "application/json", "");
+                } else if request.contains("/containers/existing-container/exec") {
+                    write_response(&mut stream, "application/json", r#"{"Id":"readiness"}"#);
+                } else if request.contains("/exec/readiness/start") {
+                    write_response(&mut stream, "application/json", "");
+                } else if request.contains("/exec/readiness/json") {
+                    write_response(
+                        &mut stream,
+                        "application/json",
+                        r#"{"Running":false,"ExitCode":0}"#,
+                    );
                 } else if request.contains("/containers/existing-container/json") {
                     let body = json!({
                         "Id": "existing-container",

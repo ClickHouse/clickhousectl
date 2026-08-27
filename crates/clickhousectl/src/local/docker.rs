@@ -522,6 +522,8 @@ pub async fn postgres_is_ready(docker: &Docker, id: &str) -> Result<bool> {
                     "--quiet".to_string(),
                     "--host".to_string(),
                     "127.0.0.1".to_string(),
+                    // `--port` only changes the host binding; the official
+                    // image always listens on 5432 inside the container.
                     "--port".to_string(),
                     "5432".to_string(),
                     "--timeout".to_string(),
@@ -956,14 +958,15 @@ pub fn stop_blocking(id: &str) -> Result<()> {
 /// Remove a host directory and its contents, even when files inside are
 /// owned by container UIDs (postgres' uid 999) the host user can't `rm`.
 ///
-/// Tries `std::fs::remove_dir_all` first, which is enough on macOS because
-/// Docker Desktop maps host UIDs transparently. On Linux bind mounts are
-/// direct, so fall back to a one-shot Alpine container running as root
-/// that nukes the directory from inside.
+/// On non-macOS hosts, tries `std::fs::remove_dir_all` first and falls back to
+/// a one-shot Alpine container for files owned by container UIDs. macOS Docker
+/// backends can retain a stale bind-mount view after host-side removal, so they
+/// always remove the directory through Docker's filesystem view.
 pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
     if !host_path.exists() {
         return Ok(());
     }
+    #[cfg(not(target_os = "macos"))]
     if std::fs::remove_dir_all(host_path).is_ok() {
         return Ok(());
     }
@@ -1008,10 +1011,14 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         }
 
         let bind = format!("{}:/work", parent_str);
-        let cmd = format!("rm -rf /work/{}", basename);
         let cfg = ContainerCreateBody {
             image: Some("alpine:latest".into()),
-            cmd: Some(vec!["sh".into(), "-c".into(), cmd]),
+            cmd: Some(vec![
+                "rm".into(),
+                "-rf".into(),
+                "--".into(),
+                format!("/work/{basename}"),
+            ]),
             host_config: Some(HostConfig {
                 binds: Some(vec![bind]),
                 auto_remove: Some(true),
@@ -1037,7 +1044,7 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
 
     // If anything is left (e.g. the dir itself remained empty), clean up host-side.
     if host_path.exists() {
-        let _ = std::fs::remove_dir_all(host_path);
+        std::fs::remove_dir_all(host_path)?;
     }
     Ok(())
 }

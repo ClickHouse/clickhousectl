@@ -25,7 +25,9 @@ struct DockerScenario {
     existing: bool,
     outcome: ContainerOutcome,
     readiness_exit_codes: Vec<i64>,
+    readiness_create_errors: usize,
     logs: Vec<String>,
+    remove_fails: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -42,7 +44,7 @@ struct FakeDocker {
 }
 
 impl FakeDocker {
-    fn start(socket_path: &Path, scenario: DockerScenario) -> Self {
+    fn start(socket_path: &Path, project: &Path, scenario: DockerScenario) -> Self {
         let listener = UnixListener::bind(socket_path).expect("bind fake Docker socket");
         listener
             .set_nonblocking(true)
@@ -51,10 +53,20 @@ impl FakeDocker {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_requests = Arc::clone(&requests);
+        let project = project.to_path_buf();
         let thread = thread::spawn(move || {
+            let DockerScenario {
+                existing,
+                outcome,
+                readiness_exit_codes,
+                readiness_create_errors,
+                logs,
+                remove_fails,
+            } = scenario;
             let mut started = false;
             let mut next_exec = 0_usize;
-            let mut readiness_exit_codes: VecDeque<i64> = scenario.readiness_exit_codes.into();
+            let mut readiness_create_errors = readiness_create_errors;
+            let mut readiness_exit_codes: VecDeque<i64> = readiness_exit_codes.into();
             let mut exec_exit_codes = HashMap::new();
 
             while !thread_stop.load(Ordering::Relaxed) {
@@ -81,22 +93,38 @@ impl FakeDocker {
                         write_json(&mut stream, 200, "[]")
                     }
                     ("GET", "/images/postgres:18/json") => write_json(&mut stream, 200, "{}"),
+                    ("GET", "/images/alpine:latest/json") => write_json(&mut stream, 200, "{}"),
                     ("GET", path)
                         if path.starts_with("/containers/clickhousectl-pg-default-18/json") =>
                     {
                         write_json(&mut stream, 404, r#"{"message":"No such container"}"#)
                     }
                     ("POST", path) if path.starts_with("/containers/create?") => {
-                        assert!(!scenario.existing, "resumed start created a new container");
-                        write_json(&mut stream, 201, r#"{"Id":"pg-id","Warnings":[]}"#);
+                        let body: serde_json::Value = serde_json::from_str(&request.body)
+                            .expect("container create body JSON");
+                        if body["Image"] == "alpine:latest" {
+                            let instance_dir = project.join(".clickhouse/servers/default-pg18");
+                            match std::fs::remove_dir_all(instance_dir) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                                Err(error) => panic!("simulate privileged data cleanup: {error}"),
+                            }
+                            write_json(&mut stream, 201, r#"{"Id":"cleanup-id","Warnings":[]}"#);
+                        } else {
+                            assert!(!existing, "resumed start created a new container");
+                            write_json(&mut stream, 201, r#"{"Id":"pg-id","Warnings":[]}"#);
+                        }
                     }
                     ("POST", path) if path.starts_with("/containers/pg-id/start") => {
                         started = true;
+                        let data_dir = project.join(".clickhouse/servers/default-pg18/data");
+                        std::fs::create_dir_all(&data_dir).expect("create simulated PGDATA");
+                        std::fs::write(data_dir.join("PG_VERSION"), "18")
+                            .expect("write simulated PGDATA marker");
                         write_response(&mut stream, 204, "application/json", b"");
                     }
                     ("GET", path) if path.starts_with("/containers/pg-id/json") => {
-                        let running =
-                            started && matches!(scenario.outcome, ContainerOutcome::Running);
+                        let running = started && matches!(outcome, ContainerOutcome::Running);
                         let state = if running {
                             r#"{"Status":"running","Running":true,"Paused":false,"ExitCode":0,"OOMKilled":false}"#
                         } else if started {
@@ -110,9 +138,16 @@ impl FakeDocker {
                         write_json(&mut stream, 200, &body);
                     }
                     ("POST", "/containers/pg-id/exec") => {
-                        let exit_code = readiness_exit_codes
-                            .pop_front()
-                            .expect("unexpected extra pg_isready probe");
+                        if readiness_create_errors > 0 {
+                            readiness_create_errors -= 1;
+                            write_json(
+                                &mut stream,
+                                500,
+                                r#"{"message":"temporary create_exec failure"}"#,
+                            );
+                            continue;
+                        }
+                        let exit_code = readiness_exit_codes.pop_front().unwrap_or(1);
                         let exec_id = format!("exec-{next_exec}");
                         next_exec += 1;
                         exec_exit_codes.insert(exec_id.clone(), exit_code);
@@ -139,14 +174,28 @@ impl FakeDocker {
                             &mut stream,
                             200,
                             "application/vnd.docker.raw-stream",
-                            &docker_log_stream(&scenario.logs),
+                            &docker_log_stream(&logs),
                         );
                     }
                     ("POST", path) if path.starts_with("/containers/pg-id/stop?") => {
                         write_response(&mut stream, 204, "application/json", b"")
                     }
-                    ("DELETE", path) if path.starts_with("/containers/pg-id?") => {
+                    ("POST", path) if path.starts_with("/containers/cleanup-id/start") => {
                         write_response(&mut stream, 204, "application/json", b"")
+                    }
+                    ("POST", path) if path.starts_with("/containers/cleanup-id/wait") => {
+                        write_json(&mut stream, 200, r#"{"StatusCode":0}"#)
+                    }
+                    ("DELETE", path) if path.starts_with("/containers/pg-id?") => {
+                        if remove_fails {
+                            write_json(
+                                &mut stream,
+                                500,
+                                r#"{"message":"simulated cleanup failure"}"#,
+                            )
+                        } else {
+                            write_response(&mut stream, 204, "application/json", b"")
+                        }
                     }
                     _ => panic!("unexpected fake Docker request: {request:?}"),
                 }
@@ -254,7 +303,8 @@ fn reserve_port() -> u16 {
 
 fn write_resumed_server(project: &Path) {
     let servers = project.join(".clickhouse/servers");
-    std::fs::create_dir_all(&servers).expect("create resumed server metadata directory");
+    std::fs::create_dir_all(servers.join("default-pg18/data"))
+        .expect("create resumed server data directory");
     let cwd = project.canonicalize().expect("canonical project path");
     let metadata = serde_json::json!({
         "name": "default-pg18",
@@ -278,11 +328,21 @@ fn run_start(
     scenario: DockerScenario,
     resumed: bool,
     telemetry_debug: bool,
-) -> (Output, Vec<DockerRequest>) {
+    wait_timeout: u16,
+    preexisting_data: bool,
+) -> (Output, Vec<DockerRequest>, tempfile::TempDir) {
     let home = tempfile::tempdir().expect("create home tempdir");
     let project = tempfile::tempdir().expect("create project tempdir");
     if resumed {
         write_resumed_server(project.path());
+    }
+    if preexisting_data {
+        let marker = project
+            .path()
+            .join(".clickhouse/servers/default-pg18/data/existing-data");
+        std::fs::create_dir_all(marker.parent().unwrap())
+            .expect("create pre-existing Postgres data directory");
+        std::fs::write(marker, "keep").expect("write pre-existing data marker");
     }
     if telemetry_debug {
         let telemetry_dir = home.path().join(".clickhouse");
@@ -294,8 +354,9 @@ fn run_start(
         .expect("enable telemetry");
     }
     let socket_path = home.path().join("docker.sock");
-    let docker = FakeDocker::start(&socket_path, scenario);
+    let docker = FakeDocker::start(&socket_path, project.path(), scenario);
     let port = reserve_port().to_string();
+    let wait_timeout = wait_timeout.to_string();
     let mut command = Command::new(clickhousectl_binary());
     command
         .env_clear()
@@ -308,7 +369,7 @@ fn run_start(
             "postgres",
             "start",
             "--wait-timeout",
-            "2",
+            &wait_timeout,
         ]);
     if resumed {
         command.args(["--name", "default"]);
@@ -323,7 +384,7 @@ fn run_start(
     let output = command.output().expect("run clickhousectl");
     let requests = docker.requests();
     drop(docker);
-    (output, requests)
+    (output, requests, project)
 }
 
 fn readiness_requests(requests: &[DockerRequest]) -> Vec<&DockerRequest> {
@@ -335,14 +396,18 @@ fn readiness_requests(requests: &[DockerRequest]) -> Vec<&DockerRequest> {
 
 #[test]
 fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() {
-    let (output, requests) = run_start(
+    let (output, requests, _project) = run_start(
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::Running,
             readiness_exit_codes: vec![1, 0],
+            readiness_create_errors: 1,
             logs: vec![],
+            remove_fails: false,
         },
         false,
+        false,
+        2,
         false,
     );
 
@@ -354,7 +419,7 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).expect("start JSON");
     assert_eq!(result["container_id"], "pg-id");
     let probes = readiness_requests(&requests);
-    assert_eq!(probes.len(), 2);
+    assert_eq!(probes.len(), 3);
     for probe in probes {
         let body: serde_json::Value = serde_json::from_str(&probe.body).expect("exec body JSON");
         assert_eq!(
@@ -377,14 +442,18 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
 
 #[test]
 fn resumed_start_also_waits_for_postgres_readiness() {
-    let (output, requests) = run_start(
+    let (output, requests, _project) = run_start(
         DockerScenario {
             existing: true,
             outcome: ContainerOutcome::Running,
             readiness_exit_codes: vec![1, 0],
+            readiness_create_errors: 0,
             logs: vec![],
+            remove_fails: false,
         },
         true,
+        false,
+        2,
         false,
     );
 
@@ -405,20 +474,66 @@ fn resumed_start_also_waits_for_postgres_readiness() {
 }
 
 #[test]
+fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
+    let started = std::time::Instant::now();
+    let (output, requests, project) = run_start(
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            remove_fails: false,
+        },
+        false,
+        false,
+        1,
+        false,
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(started.elapsed() < Duration::from_secs(4));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("did not become ready within 1 seconds"),
+        "{stderr}"
+    );
+    assert!(readiness_requests(&requests).len() >= 2);
+    assert!(
+        !project
+            .path()
+            .join(".clickhouse/servers/default-pg18")
+            .exists(),
+        "wall-clock timeout retained PGDATA created by this attempt"
+    );
+    assert!(
+        !project
+            .path()
+            .join(".clickhouse/servers/default-pg18.json")
+            .exists(),
+        "wall-clock timeout retained success metadata"
+    );
+}
+
+#[test]
 fn immediate_exit_reports_bounded_logs_and_error_telemetry_without_setup_success() {
     let mut logs: Vec<String> = (0..80)
         .map(|index| format!("startup line {index}: {}", "x".repeat(300)))
         .collect();
     logs.push("FATAL: startup failed before readiness".to_string());
-    let (output, requests) = run_start(
+    let (output, requests, project) = run_start(
         DockerScenario {
             existing: false,
             outcome: ContainerOutcome::ImmediateExit,
             readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
             logs,
+            remove_fails: false,
         },
         false,
         true,
+        2,
+        false,
     );
 
     assert_eq!(output.status.code(), Some(1));
@@ -445,4 +560,109 @@ fn immediate_exit_reports_bounded_logs_and_error_telemetry_without_setup_success
     assert!(stderr.contains(r#""exit_code":1"#), "{stderr}");
     assert!(stderr.contains(r#""outcome":"error""#), "{stderr}");
     assert!(readiness_requests(&requests).is_empty());
+    assert!(
+        !project
+            .path()
+            .join(".clickhouse/servers/default-pg18")
+            .exists(),
+        "failed fresh start retained PGDATA created by this attempt"
+    );
+    assert!(
+        !project
+            .path()
+            .join(".clickhouse/servers/default-pg18.json")
+            .exists(),
+        "failed fresh start retained success metadata"
+    );
+}
+
+#[test]
+fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
+    let (output, requests, project) = run_start(
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::ImmediateExit,
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            remove_fails: false,
+        },
+        false,
+        false,
+        2,
+        true,
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("directory existed before this start attempt"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("recovery metadata retained"), "{stderr}");
+    assert!(
+        project
+            .path()
+            .join(".clickhouse/servers/default-pg18/data/existing-data")
+            .exists(),
+        "failed start removed pre-existing data"
+    );
+    assert!(
+        project
+            .path()
+            .join(".clickhouse/servers/default-pg18.json")
+            .exists(),
+        "failed start did not retain recovery metadata"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn incomplete_container_cleanup_retains_pgdata_and_recovery_metadata() {
+    let (output, requests, project) = run_start(
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::ImmediateExit,
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            remove_fails: true,
+        },
+        false,
+        false,
+        2,
+        false,
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("simulated cleanup failure"), "{stderr}");
+    assert!(stderr.contains("recovery metadata retained"), "{stderr}");
+    assert!(
+        project
+            .path()
+            .join(".clickhouse/servers/default-pg18/data/PG_VERSION")
+            .exists(),
+        "PGDATA was removed while its container remained"
+    );
+    assert!(
+        project
+            .path()
+            .join(".clickhouse/servers/default-pg18.json")
+            .exists(),
+        "incomplete cleanup did not retain recovery metadata"
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .count(),
+        1
+    );
 }

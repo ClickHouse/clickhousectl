@@ -255,6 +255,13 @@ pub enum Error {
     #[error("Docker error: {0}")]
     #[allow(clippy::enum_variant_names)]
     DockerError(String),
+
+    #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
+    PostgresStartupRollback {
+        #[source]
+        primary: Box<Error>,
+        cleanup: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
