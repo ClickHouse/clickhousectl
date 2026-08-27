@@ -159,7 +159,7 @@ case_path_traversal_name() {
 # ── 7. install postgres@latest rejected ──
 case_install_rejects_latest() {
     local out; out=$("$CTL" local install postgres@latest 2>&1) || true
-    echo "$out" | grep -q "not supported" || { die "no rejection: $out"; return 1; }
+    echo "$out" | grep -Fq "invalid or unsupported postgres version 'latest'" || { die "no rejection: $out"; return 1; }
 }
 
 # ── 8. Cross-engine name reuse coexists (CH and PG can share a name) ──
