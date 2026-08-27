@@ -122,6 +122,33 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
 }
 
 #[test]
+fn omitted_stop_is_a_noop_with_only_a_postgres_data_remnant() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let postgres_data = project
+        .path()
+        .join(".clickhouse/servers/analytics-pg18/data");
+    std::fs::create_dir_all(&postgres_data).expect("create Postgres data remnant");
+
+    let stop = run(
+        project.path(),
+        home.path(),
+        &["local", "--json", "server", "stop"],
+    );
+
+    assert_success(&stop);
+    assert_eq!(
+        body(&stop),
+        json!({
+            "stopped": false,
+            "selection": "implicit",
+            "reason": "no_clickhouse_servers"
+        })
+    );
+    assert!(postgres_data.is_dir());
+}
+
+#[test]
 fn omitted_stop_selects_the_sole_running_then_stopped_custom_server() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");

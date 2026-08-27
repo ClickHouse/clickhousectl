@@ -979,6 +979,7 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | Code | Meaning |
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist |
+| `server_selection_required` | A server name is required because omission is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server |
 | `invalid_version` | The version selector is invalid |

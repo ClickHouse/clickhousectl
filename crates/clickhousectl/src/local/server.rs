@@ -174,6 +174,12 @@ pub fn pg_instance_key(name: &str, major: &str) -> String {
     format!("{}-pg{}", name, major)
 }
 
+fn is_pg_instance_key(name: &str) -> bool {
+    name.rsplit_once("-pg").is_some_and(|(name, major)| {
+        !name.is_empty() && !major.is_empty() && major.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
 /// Join a child name onto the servers directory. Exposed so handlers can
 /// remove a whole `<key>/` wrapper without poking at internals.
 pub fn servers_dir_join(child: &str) -> PathBuf {
@@ -502,6 +508,7 @@ pub(crate) fn list_clickhouse_server_names_locked(lock: &MetadataLock) -> Result
             continue;
         };
         if validate_server_name(&name).is_err()
+            || is_pg_instance_key(&name)
             || entries.iter().any(|entry| {
                 entry.name == name
                     && entry

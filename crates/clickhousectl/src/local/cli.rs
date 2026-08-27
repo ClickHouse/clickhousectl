@@ -413,15 +413,12 @@ CONTEXT FOR AGENTS:
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Without a name, stops \"default\" when it exists; otherwise stops the sole known ClickHouse
-  server. With no ClickHouse servers this is a successful no-op. Multiple non-default servers
-  require an explicit name or `clickhousectl local server stop-all`.
-  Pass the name positionally (e.g., `server stop dev`).
-  Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
+  Stops a ClickHouse server. Without a name, stops \"default\" when it exists, otherwise the sole
+  known ClickHouse server. With no ClickHouse servers this is a successful no-op; with multiple
+  non-default servers, pass a positional name (e.g., `server stop dev`) or use `server stop-all`.
+  Use `clickhousectl local server list` to find names.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
-  Idempotent: a server that exists but is already stopped exits 0 (no error).
-  An unknown server name still errors so typos are caught.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
@@ -429,7 +426,12 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
-        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
         name_flag: Option<String>,
 
         /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
@@ -461,9 +463,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  Without a name, removes \"default\" only when it exists. A custom server is never selected
-  implicitly; use `server list`, then pass its name explicitly.
-  Pass the name positionally (e.g., `server remove dev`).
+  Without a name, removes \"default\" only when it exists. It never guesses a custom server;
+  use `server list`, then pass a custom name positionally.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (only an existing "default" is selected when omitted)
@@ -471,7 +472,12 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
-        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
         name_flag: Option<String>,
     },
 
@@ -1559,19 +1565,15 @@ mod tests {
     }
 
     #[test]
-    fn server_teardown_agent_help_only_advertises_positional_names() {
+    fn server_teardown_help_hides_compatibility_name_flags() {
         for command in ["stop", "remove"] {
             let help = Cli::try_parse_from(["clickhousectl", "local", "server", command, "--help"])
                 .err()
                 .expect("help should exit through clap")
                 .to_string();
-            let context = help
-                .split_once("CONTEXT FOR AGENTS:")
-                .expect("agent context")
-                .1;
 
-            assert!(context.contains("positionally"), "{help}");
-            assert!(!context.contains("--name"), "{help}");
+            assert!(!help.contains("--name"), "{help}");
+            assert!(help.contains("Without a name"), "{help}");
         }
     }
 

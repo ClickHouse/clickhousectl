@@ -106,7 +106,7 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     };
 
     let output = fresh_home_command()
-        .args(["local", "--json", "server", "stop"])
+        .args(["local", "--json", "server", "stop", "missing"])
         .output()
         .expect("run structured failure");
     assert_eq!(output.status.code(), Some(1));
@@ -120,14 +120,14 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     );
 
     let output = fresh_home_command()
-        .args(["local", "server", "stop"])
+        .args(["local", "server", "stop", "missing"])
         .output()
         .expect("run human failure");
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
     assert!(
-        stderr.contains("Error: Server 'default' not found"),
+        stderr.contains("Error: Server 'missing' not found"),
         "{stderr}"
     );
     assert!(stderr.contains("anonymous usage data"), "{stderr}");
@@ -146,7 +146,7 @@ fn telemetry_debug_does_not_append_to_a_structured_error() {
     let output = command(project.path(), home.path())
         .env_remove("DO_NOT_TRACK")
         .env("CHCTL_TELEMETRY_DEBUG", "1")
-        .args(["local", "--json", "server", "stop"])
+        .args(["local", "--json", "server", "stop", "missing"])
         .output()
         .expect("run structured failure with telemetry debug");
 
@@ -154,7 +154,7 @@ fn telemetry_debug_does_not_append_to_a_structured_error() {
         &output,
         &expected_error(
             "server_not_found",
-            "Server 'default' not found",
+            "Server 'missing' not found",
             Some("clickhousectl local server list"),
         ),
     );

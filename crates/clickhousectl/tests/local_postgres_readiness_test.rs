@@ -851,7 +851,7 @@ fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise(
 }
 
 #[test]
-fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
+fn failed_fresh_start_preserves_postgres_identity_without_polluting_clickhouse_selection() {
     let (output, requests, project) = run_start(
         DockerScenario {
             existing: false,
@@ -897,6 +897,30 @@ fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
             .count(),
         1
     );
+
+    let clickhouse_data = project.path().join(".clickhouse/servers/dev/data");
+    std::fs::create_dir_all(&clickhouse_data).expect("create ClickHouse data directory");
+    let home = tempfile::tempdir().expect("create selection home");
+    let stop = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home.path())
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(project.path())
+        .args(["local", "--json", "server", "stop"])
+        .output()
+        .expect("run omitted ClickHouse stop");
+
+    assert!(
+        stop.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&stop.stdout).expect("stop JSON");
+    assert_eq!(result["name"], "dev");
+    assert_eq!(result["already_stopped"], true);
+    assert_eq!(result["selection"], "implicit");
+    assert!(clickhouse_data.is_dir());
 }
 
 #[test]

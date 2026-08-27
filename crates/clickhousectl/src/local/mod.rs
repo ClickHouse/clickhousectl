@@ -1113,42 +1113,11 @@ fn stop_server_global(
     json: bool,
 ) -> Result<()> {
     let all = server::list_all_servers_global();
-    let candidates: Vec<_> = all
+    let (name, selection) = global_stop_target(name_input)?;
+    let matches: Vec<_> = all
         .iter()
-        .filter(|entry| project.is_none_or(|project| entry.project == project))
-        .collect();
-    let (name, selection) = match name_input {
-        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
-            server::validate_server_name(&name)?;
-            (name, output::ServerSelection::Explicit)
-        }
-        ServerNameInput::Omitted => {
-            if candidates.iter().any(|entry| entry.name == "default") {
-                ("default".to_string(), output::ServerSelection::Implicit)
-            } else {
-                match candidates.as_slice() {
-                    [] => {
-                        let out = output::ServerStopNoopOutput {
-                            stopped: false,
-                            selection: output::ServerSelection::Implicit,
-                            reason: "no_clickhouse_servers",
-                        };
-                        output::print_output(&out, json);
-                        return Ok(());
-                    }
-                    [entry] => (entry.name.clone(), output::ServerSelection::Implicit),
-                    entries => {
-                        return Err(Error::ServerStopSelectionRequired {
-                            available: entries.len(),
-                        });
-                    }
-                }
-            }
-        }
-    };
-    let matches: Vec<_> = candidates
-        .into_iter()
         .filter(|entry| entry.name == name)
+        .filter(|entry| project.is_none_or(|project| entry.project == project))
         .collect();
 
     if matches.is_empty() {
@@ -1176,6 +1145,16 @@ fn stop_server_global(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+fn global_stop_target(name_input: ServerNameInput) -> Result<(String, output::ServerSelection)> {
+    match name_input {
+        ServerNameInput::Positional(name) | ServerNameInput::NameFlag(name) => {
+            server::validate_server_name(&name)?;
+            Ok((name, output::ServerSelection::Explicit))
+        }
+        ServerNameInput::Omitted => Ok(("default".to_string(), output::ServerSelection::Implicit)),
+    }
 }
 
 fn stop_all_servers_local(json: bool) -> Result<()> {
@@ -1353,6 +1332,14 @@ mod tests {
         assert_eq!(
             ServerNameInput::from_args(None, Some("flagged".into())),
             ServerNameInput::NameFlag("flagged".into())
+        );
+    }
+
+    #[test]
+    fn omitted_global_stop_keeps_the_literal_default_target() {
+        assert_eq!(
+            global_stop_target(ServerNameInput::Omitted).unwrap(),
+            ("default".to_string(), output::ServerSelection::Implicit)
         );
     }
 
