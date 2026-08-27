@@ -322,7 +322,7 @@ fn run_client(
 fn resolve_direct_client_version(version_spec: Option<ClientVersionArg>) -> Result<String> {
     if let Some(version_spec) = version_spec {
         let spec = version_spec.into_spec();
-        return version_manager::resolve::try_resolve_local(&spec)
+        return version_manager::resolve::try_resolve_local(&spec)?
             .ok_or_else(|| Error::ClientVersionNotInstalled(spec.to_string()));
     }
 

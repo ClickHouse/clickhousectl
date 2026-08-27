@@ -246,19 +246,12 @@ CONTEXT FOR AGENTS:
   Two connection modes:
   1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
      locally managed server started via `clickhousectl local server start`. Defaults to \"default\".
-     Its recorded server version selects the local client binary; --version is not accepted.
   2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
      ClickHouse server directly, bypassing local server lookup. Host-only uses port 9000; port-only
-     connects to localhost. --host/--port select the connection; --version selects an already
-     installed local client binary and never changes the default. Direct selectors cannot be
-     combined with --name.
-  Direct mode without --version uses a valid default. With no default, it uses the sole installed
-  version without setting a default; zero installed versions and multiple installed versions are
-  errors. A stale default must be repaired with `local use` or bypassed with --version.
+     connects to localhost. Direct selectors cannot be combined with --name.
   --query and --queries-file execute SQL inline or from a file.
   Additional clickhouse-client args can be passed after --.
-  Related: `clickhousectl local list` to see installed versions, `clickhousectl local use` to set a
-  default, `clickhousectl local server list` to see managed servers."
+  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
     )]
     Client {
         /// Server name to connect to (default: "default")
@@ -979,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn clickhouse_client_help_distinguishes_connection_and_binary_selection() {
+    fn clickhouse_client_help_describes_binary_version_selection() {
         let error = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
             .err()
             .expect("--help should stop parsing");
@@ -987,12 +980,8 @@ mod tests {
         let help = error.to_string();
 
         for text in [
-            "--host/--port select the connection",
-            "--version selects an already",
-            "installed local client binary",
-            "never changes the default",
-            "uses the sole installed",
-            "A stale default must be repaired",
+            "Installed local client version for direct host/port mode",
+            "Does not change the default",
         ] {
             assert!(help.contains(text), "missing {text:?} in:\n{help}");
         }

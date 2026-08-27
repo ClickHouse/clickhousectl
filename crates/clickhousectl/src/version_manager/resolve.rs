@@ -28,12 +28,12 @@ pub struct ResolvedVersion {
 /// Try to satisfy a spec from already-installed versions, without any network call.
 /// Returns `None` for floating specs (`Latest`, `Channel(_)`) — those always need the
 /// remote — or when no installed version matches.
-pub fn try_resolve_local(spec: &VersionSpec) -> Option<String> {
+pub fn try_resolve_local(spec: &VersionSpec) -> Result<Option<String>> {
     match spec {
-        VersionSpec::Latest | VersionSpec::Channel(_) => None,
+        VersionSpec::Latest | VersionSpec::Channel(_) => Ok(None),
         _ => {
-            let installed = list_installed_versions().ok()?;
-            find_local_match(spec, &installed)
+            let installed = list_installed_versions()?;
+            Ok(find_local_match(spec, &installed))
         }
     }
 }

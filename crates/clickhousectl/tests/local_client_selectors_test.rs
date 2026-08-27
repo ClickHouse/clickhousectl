@@ -337,6 +337,38 @@ fn clickhouse_direct_reports_stale_default_and_explicit_missing_version() {
 }
 
 #[test]
+fn clickhouse_direct_explicit_version_propagates_version_list_io_errors() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let clickhouse = home.path().join(".clickhouse");
+    std::fs::create_dir_all(&clickhouse).expect("create ClickHouse directory");
+    std::fs::write(clickhouse.join("versions"), "not a directory")
+        .expect("write invalid versions path");
+
+    let output = run(
+        project.path(),
+        home.path(),
+        None,
+        &[
+            "local",
+            "client",
+            "--host",
+            "remote",
+            "--version",
+            VERSION_A,
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(stderr.contains("IO error"), "stderr: {stderr}");
+    assert!(stderr.contains("Not a directory"), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("is not installed"),
+        "filesystem error was masked: {stderr}"
+    );
+}
+
+#[test]
 fn clickhouse_named_mode_uses_server_version_without_a_default() {
     let project = tempfile::tempdir().expect("create project tempdir");
     let home = tempfile::tempdir().expect("create home tempdir");

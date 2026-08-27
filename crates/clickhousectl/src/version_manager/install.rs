@@ -23,7 +23,7 @@ pub async fn install_local_first(
     platform: &Platform,
     force: bool,
 ) -> Result<String> {
-    if !force && let Some(local) = try_resolve_local(spec) {
+    if !force && let Some(local) = try_resolve_local(spec)? {
         eprintln!("ClickHouse {} is already installed as {}", spec, local);
         eprintln!("Use --force to re-download the latest build");
         return Ok(local);
@@ -40,7 +40,7 @@ pub async fn ensure_installed_local_first(
     spec: &VersionSpec,
     platform: &Platform,
 ) -> Result<String> {
-    if let Some(local) = try_resolve_local(spec) {
+    if let Some(local) = try_resolve_local(spec)? {
         return Ok(local);
     }
 
