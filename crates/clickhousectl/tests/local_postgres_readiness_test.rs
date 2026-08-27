@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+static START_COMMAND_LOCK: Mutex<()> = Mutex::new(());
+
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
 }
@@ -401,6 +403,9 @@ fn run_start_command(
     telemetry_debug: bool,
     wait_timeout: u16,
 ) -> Output {
+    let _guard = START_COMMAND_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let port = reserve_port().to_string();
     let wait_timeout = wait_timeout.to_string();
     let mut command = Command::new(clickhousectl_binary());
@@ -649,7 +654,7 @@ fn failed_fresh_start_preserves_preexisting_data_and_recovery_metadata() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("directory existed before this start attempt"),
+        stderr.contains("directory contained data before this start attempt"),
         "{stderr}"
     );
     assert!(stderr.contains("recovery metadata retained"), "{stderr}");
@@ -768,6 +773,40 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
     assert!(create < start && start < remove);
     assert!(!fresh_instance_dir(project.path()).exists());
     assert!(!metadata_path(project.path()).exists());
+}
+
+#[test]
+fn already_gone_container_is_a_successful_rollback() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![500],
+            remove_statuses: vec![404],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: false,
+        },
+    );
+
+    let output = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("start failed by test"), "{stderr}");
+    assert!(
+        !stderr.contains("Postgres startup rollback incomplete"),
+        "{stderr}"
+    );
+    assert!(!fresh_instance_dir(project.path()).exists());
+    assert!(!metadata_path(project.path()).exists());
+    request_index(&docker.requests(), "DELETE", "/containers/pg-id?");
 }
 
 #[test]

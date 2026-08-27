@@ -12,6 +12,7 @@ use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashSet;
 use std::future::Future;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -345,7 +346,9 @@ async fn start(
         docker::pull_image(&docker, tag, json).await?;
     }
 
-    let created_instance_dir = server::ensure_pg_data_dir(&user_name, &major)?;
+    let instance_dir = server::servers_dir_join(&key);
+    let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
+    server::ensure_pg_data_dir(&user_name, &major)?;
     let data_dir = server::pg_data_dir(&user_name, &major);
 
     // Defensive cleanup of any unmanaged container colliding on our chosen
@@ -407,7 +410,7 @@ async fn start(
             &docker,
             &container_id,
             &info,
-            created_instance_dir,
+            remove_fresh_data_on_failure,
             primary,
         )
         .await);
@@ -426,11 +429,36 @@ async fn start(
     Ok(())
 }
 
+/// A fresh attempt owns an absent or empty instance directory, including one
+/// containing only an empty `data/` from an earlier pre-container step.
+fn fresh_instance_dir_is_disposable(path: &Path) -> bool {
+    let mut entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
+    };
+    let entry = match entries.next() {
+        None => return true,
+        Some(Ok(entry)) => entry,
+        Some(Err(_)) => return false,
+    };
+    if entries.next().is_some()
+        || entry.file_name() != "data"
+        || !entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+    {
+        return false;
+    }
+    match std::fs::read_dir(entry.path()) {
+        Ok(mut data_entries) => data_entries.next().is_none(),
+        Err(_) => false,
+    }
+}
+
 async fn rollback_failed_fresh_start(
     docker: &bollard::Docker,
     container_id: &str,
     info: &ServerInfo,
-    created_instance_dir: bool,
+    remove_fresh_data_on_failure: bool,
     primary: Error,
 ) -> Error {
     let instance_dir = server::servers_dir_join(&info.name);
@@ -447,7 +475,7 @@ async fn rollback_failed_fresh_start(
         }
     };
 
-    let instance_removed = if created_instance_dir && container_removed {
+    let instance_removed = if remove_fresh_data_on_failure && container_removed {
         match docker::remove_host_dir_blocking(&instance_dir) {
             Ok(()) if !instance_dir.exists() => true,
             Ok(()) => {
@@ -466,10 +494,10 @@ async fn rollback_failed_fresh_start(
             }
         }
     } else {
-        let reason = if created_instance_dir {
+        let reason = if remove_fresh_data_on_failure {
             "the container could not be removed"
         } else {
-            "the directory existed before this start attempt"
+            "the directory contained data before this start attempt"
         };
         diagnostics.push(format!(
             "retained Postgres data '{}' because {reason}",
@@ -1360,6 +1388,23 @@ mod tests {
     fn resolve_port_rejects_zero_for_non_clap_callers() {
         let err = resolve_port(Some(0)).unwrap_err();
         assert!(matches!(err, Error::Postgres(msg) if msg.contains("--port 0")));
+    }
+
+    #[test]
+    fn fresh_data_cleanup_ownership_is_conservative() {
+        let tempdir = tempfile::tempdir().expect("create policy tempdir");
+        let instance_dir = tempdir.path().join("policy-pg18");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        std::fs::create_dir(&instance_dir).expect("create empty instance dir");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        let data_dir = instance_dir.join("data");
+        std::fs::create_dir(&data_dir).expect("create empty data dir");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        std::fs::write(data_dir.join("PG_VERSION"), "existing").expect("write existing PGDATA");
+        assert!(!fresh_instance_dir_is_disposable(&instance_dir));
     }
 
     #[test]

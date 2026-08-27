@@ -575,15 +575,21 @@ pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
 }
 
 pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
+    use bollard::errors::Error as BErr;
     use bollard::query_parameters::RemoveContainerOptionsBuilder;
-    docker
+    match docker
         .remove_container(
             id,
             Some(RemoveContainerOptionsBuilder::default().force(true).build()),
         )
         .await
-        .map_err(|e| Error::DockerError(e.to_string()))?;
-    Ok(())
+    {
+        Ok(())
+        | Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
+        Err(e) => Err(Error::DockerError(e.to_string())),
+    }
 }
 
 pub async fn container_logs_tail(
@@ -1010,12 +1016,7 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         let bind = format!("{}:/work", parent_str);
         let cfg = ContainerCreateBody {
             image: Some("alpine:latest".into()),
-            cmd: Some(vec![
-                "rm".into(),
-                "-rf".into(),
-                "--".into(),
-                format!("/work/{basename}"),
-            ]),
+            cmd: Some(privileged_remove_command(&basename)),
             host_config: Some(HostConfig {
                 binds: Some(vec![bind]),
                 auto_remove: Some(true),
@@ -1044,6 +1045,15 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         std::fs::remove_dir_all(host_path)?;
     }
     Ok(())
+}
+
+fn privileged_remove_command(basename: &str) -> Vec<String> {
+    vec![
+        "rm".into(),
+        "-rf".into(),
+        "--".into(),
+        format!("/work/{basename}"),
+    ]
 }
 
 pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
@@ -1333,6 +1343,34 @@ mod tests {
         assert_eq!(
             String::from_utf8(output).unwrap(),
             "Pulling postgres:missing... failed\n"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn remove_host_dir_removes_normal_directory() {
+        let tempdir = tempfile::tempdir().expect("create cleanup tempdir");
+        let directory = tempdir.path().join("normal-pg18");
+        std::fs::create_dir_all(directory.join("data")).expect("create data directory");
+        std::fs::write(directory.join("data/PG_VERSION"), "18").expect("write data file");
+
+        remove_host_dir_blocking(&directory).expect("remove host directory");
+
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn privileged_remove_passes_metacharacters_as_one_argument() {
+        let basename = "db; touch injected; $(whoami) *";
+
+        assert_eq!(
+            privileged_remove_command(basename),
+            vec![
+                "rm".to_string(),
+                "-rf".to_string(),
+                "--".to_string(),
+                format!("/work/{basename}"),
+            ]
         );
     }
 
