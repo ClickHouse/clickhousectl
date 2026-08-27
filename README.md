@@ -292,14 +292,14 @@ Project-local server commands select `.clickhouse` under the exact current worki
 
 Without a name, `server stop` selects an existing `default`, then a sole known ClickHouse server. It succeeds without changing anything when none exist, and requires a name or `server stop-all` when multiple non-default servers exist. Bare `server remove` is deliberately stricter: it removes an existing `default` only and otherwise requires an explicit name, even when there is just one custom server.
 
-Use `server stop-all` when the intent is to stop every ClickHouse and Postgres server in the current project. Version removal and server-data removal are separate operations:
+Version removal and server-data removal are separate operations:
 
 | Command | Removes |
 | --- | --- |
 | `clickhousectl local remove <exact-version>` | An installed ClickHouse binary from the global version store. |
 | `clickhousectl local server remove <server-name>` | A stopped named server and its data from the exact current project. |
 
-**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Retain the returned generated name for later stop and remove commands, or pass a name positionally for a stable identity.
+**Server naming:** Without a name, the first server is called "default". If "default" is already running, a random name is generated (e.g. "bold-crane"). Pass a name positionally for stable identities you can start/stop repeatedly.
 
 **Ports:** Defaults are HTTP 8123 and TCP 9000. If these are already in use, free ports are automatically assigned and shown in the output. Use `--http-port` and `--tcp-port` to set explicit ports.
 

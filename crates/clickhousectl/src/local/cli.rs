@@ -308,7 +308,7 @@ CONTEXT FOR AGENTS:
     clickhousectl local server remove dev
 
   If `server start` generates a name, retain the returned name for later `stop` and `remove`
-  commands. For project cleanup, use `clickhousectl local server stop-all`.
+  commands. Use `clickhousectl local server stop-all` for project cleanup.
   `clickhousectl local remove <exact-version>` removes an installed ClickHouse binary;
   `clickhousectl local server remove <server-name>` removes a stopped server and its data.
   Related: `clickhousectl local client` to connect to a running server.")]
@@ -440,7 +440,6 @@ CONTEXT FOR AGENTS:
   Restart with `clickhousectl local server start <name>`.
   Project-local commands use `.clickhouse` under the exact current working directory; parent
   `.clickhouse` directories are not searched. Change to the project root before running them.
-  Use `clickhousectl local server stop-all` when the intent is project cleanup.
   Related: `clickhousectl local server list` to see servers.")]
     Stop {
         /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
@@ -1376,7 +1375,7 @@ mod tests {
                 "    clickhousectl local server remove dev\n",
                 "\n",
                 "  If `server start` generates a name, retain the returned name for later `stop` and `remove`\n",
-                "  commands. For project cleanup, use `clickhousectl local server stop-all`.\n",
+                "  commands. Use `clickhousectl local server stop-all` for project cleanup.\n",
                 "  `clickhousectl local remove <exact-version>` removes an installed ClickHouse binary;\n",
                 "  `clickhousectl local server remove <server-name>` removes a stopped server and its data.\n",
                 "  Related: `clickhousectl local client` to connect to a running server.\n",
