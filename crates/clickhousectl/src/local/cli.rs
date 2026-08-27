@@ -1389,9 +1389,9 @@ mod tests {
 
         assert!(
             help.contains(concat!(
-                "  Without a name, zero ClickHouse servers is a successful no-op; one server selects that sole\n",
-                "  server; multiple servers select \"default\" when it exists; and multiple non-default servers\n",
-                "  require an explicit name or `clickhousectl local server stop-all`."
+                "  Stops a ClickHouse server. Without a name, stops \"default\" when it exists, otherwise the sole\n",
+                "  known ClickHouse server. With no ClickHouse servers this is a successful no-op; with multiple\n",
+                "  non-default servers, pass a positional name (e.g., `server stop dev`) or use `server stop-all`."
             )),
             "{help}"
         );
@@ -1403,8 +1403,8 @@ mod tests {
 
         assert!(
             help.contains(concat!(
-                "  Without a name, removes \"default\" only when it exists. A custom server is never selected\n",
-                "  implicitly; use `server list`, then pass its name explicitly."
+                "  Without a name, removes \"default\" only when it exists. It never guesses a custom server;\n",
+                "  use `server list`, then pass a custom name positionally."
             )),
             "{help}"
         );
