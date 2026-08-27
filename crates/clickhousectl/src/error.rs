@@ -160,11 +160,12 @@ impl fmt::Display for StartupKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ManagedClientErrorKind {
     ServerNotFound,
     ServerNotRunning,
     BinaryNotFound,
+    ProjectStateUnavailable(Box<Error>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +183,7 @@ impl ManagedClientSelection {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ManagedClientError {
     pub kind: ManagedClientErrorKind,
     pub project_dir: PathBuf,
@@ -193,7 +194,7 @@ pub struct ManagedClientError {
 
 impl fmt::Display for ManagedClientError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
+        match &self.kind {
             ManagedClientErrorKind::ServerNotFound => {
                 writeln!(
                     f,
@@ -234,11 +235,30 @@ impl fmt::Display for ManagedClientError {
                     "Run `clickhousectl local server list` and install the selected version with `clickhousectl local install <version>`, or use direct mode with `clickhousectl local client --host <host> --port <port>`."
                 )
             }
+            ManagedClientErrorKind::ProjectStateUnavailable(source) => {
+                writeln!(
+                    f,
+                    "Managed client mode: server '{}' could not be resolved because state in current project '{}' is unavailable: {source}",
+                    self.server_name,
+                    self.project_dir.display()
+                )?;
+                write!(
+                    f,
+                    "Repair the project state error above, then run `clickhousectl local server list`; or use direct mode with `clickhousectl local client --host <host> --port <port>`."
+                )
+            }
         }
     }
 }
 
-impl std::error::Error for ManagedClientError {}
+impl std::error::Error for ManagedClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ManagedClientErrorKind::ProjectStateUnavailable(source) => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 #[allow(dead_code)]

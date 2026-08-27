@@ -273,11 +273,15 @@ fn run_client(
 ) -> Result<()> {
     // If --host or --port is set, connect directly (bypass local server lookup).
     // Otherwise, look up the named server for port and version.
-    let (resolved_host, tcp_port, version) = if host.is_some() || port.is_some() {
+    let (resolved_host, tcp_port, version, binary) = if host.is_some() || port.is_some() {
         let h = host.unwrap_or_else(|| "localhost".to_string());
         let p = port.unwrap_or(9000);
         let v = resolve_direct_client_version(version_spec)?;
-        (h, p, v)
+        let binary = paths::binary_path(&v)?;
+        if !binary.exists() {
+            return Err(Error::VersionNotFound(v));
+        }
+        (h, p, v, binary)
     } else {
         let server_name = name.as_deref().unwrap_or("default");
         let selection = if name.is_some() {
@@ -297,9 +301,17 @@ fn run_client(
                 binary_version,
             })
         };
-        let metadata_lock = server::lock_metadata()?;
-        server::recover_current_project_servers_locked(&metadata_lock)?;
-        let entry = server::server_entry_locked(server_name, &metadata_lock)?
+        let project_state_error = |source| {
+            managed_error(
+                ManagedClientErrorKind::ProjectStateUnavailable(Box::new(source)),
+                None,
+            )
+        };
+        let metadata_lock = server::lock_metadata().map_err(&project_state_error)?;
+        server::recover_current_project_servers_locked(&metadata_lock)
+            .map_err(&project_state_error)?;
+        let entry = server::server_entry_locked(server_name, &metadata_lock)
+            .map_err(&project_state_error)?
             .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotFound, None))?;
         if !entry.running {
             return Err(managed_error(
@@ -317,14 +329,8 @@ fn run_client(
                 Some(info.version),
             ));
         }
-        ("localhost".to_string(), info.tcp_port, info.version)
+        ("localhost".to_string(), info.tcp_port, info.version, binary)
     };
-
-    let binary = paths::binary_path(&version)?;
-
-    if !binary.exists() {
-        return Err(Error::VersionNotFound(version));
-    }
 
     ensure_repeated_query_supported(&version, query.len())?;
 

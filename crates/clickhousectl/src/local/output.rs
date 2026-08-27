@@ -20,6 +20,7 @@ enum LocalErrorCode {
     ManagedClientServerNotFound,
     ManagedClientServerNotRunning,
     ManagedClientBinaryNotFound,
+    ManagedClientProjectStateUnavailable,
     ServerNotFound,
     ServerSelectionRequired,
     ServerNotRunning,
@@ -42,23 +43,9 @@ struct LocalErrorDetail {
     command: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum LocalClientMode {
-    Managed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum LocalProjectScopeKind {
-    ExactCurrentProject,
-}
-
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct LocalProjectScope {
-    kind: LocalProjectScopeKind,
     path: String,
-    parent_projects_searched: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -76,20 +63,8 @@ struct LocalManagedServer {
     binary_version: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum LocalGuidanceAction {
-    ListProjectServers,
-    ReturnToProjectRoot,
-    StartDefaultServer,
-    StartNamedServer,
-    InstallSelectedVersion,
-    UseDirectHost,
-}
-
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct LocalGuidance {
-    action: LocalGuidanceAction,
     message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<&'static str>,
@@ -99,7 +74,6 @@ struct LocalGuidance {
 struct ManagedClientErrorDetail {
     code: LocalErrorCode,
     message: &'static str,
-    mode: LocalClientMode,
     project_scope: LocalProjectScope,
     server: LocalManagedServer,
     guidance: Vec<LocalGuidance>,
@@ -270,7 +244,7 @@ impl LocalErrorOutput {
 
 impl ManagedClientErrorDetail {
     fn from_error(error: &ManagedClientError) -> Self {
-        let (code, message) = match error.kind {
+        let (code, message) = match &error.kind {
             ManagedClientErrorKind::ServerNotFound => (
                 LocalErrorCode::ManagedClientServerNotFound,
                 "Managed client server was not found in the current project",
@@ -283,20 +257,22 @@ impl ManagedClientErrorDetail {
                 LocalErrorCode::ManagedClientBinaryNotFound,
                 "Managed client binary selected by server metadata is not installed",
             ),
+            ManagedClientErrorKind::ProjectStateUnavailable(_) => (
+                LocalErrorCode::ManagedClientProjectStateUnavailable,
+                "Managed client project state is unavailable",
+            ),
         };
         let selection = match error.selection {
             ManagedClientSelection::Default => LocalServerSelection::Default,
             ManagedClientSelection::Named => LocalServerSelection::Named,
         };
         let mut guidance = vec![LocalGuidance {
-            action: LocalGuidanceAction::ListProjectServers,
             message: "List managed servers in this exact project",
             command: Some("clickhousectl local server list"),
         }];
-        match error.kind {
+        match &error.kind {
             ManagedClientErrorKind::ServerNotFound => {
                 guidance.push(LocalGuidance {
-                    action: LocalGuidanceAction::ReturnToProjectRoot,
                     message: "Return to the project directory that owns the managed server",
                     command: None,
                 });
@@ -307,14 +283,21 @@ impl ManagedClientErrorDetail {
             }
             ManagedClientErrorKind::BinaryNotFound => {
                 guidance.push(LocalGuidance {
-                    action: LocalGuidanceAction::InstallSelectedVersion,
                     message: "Install the version selected by the managed server metadata",
                     command: Some("clickhousectl local install <version>"),
                 });
             }
+            ManagedClientErrorKind::ProjectStateUnavailable(_) => {
+                guidance.insert(
+                    0,
+                    LocalGuidance {
+                        message: "Repair the reported project state error before retrying",
+                        command: None,
+                    },
+                );
+            }
         }
         guidance.push(LocalGuidance {
-            action: LocalGuidanceAction::UseDirectHost,
             message: "Bypass managed project lookup and connect directly",
             command: Some("clickhousectl local client --host <host> --port <port>"),
         });
@@ -322,11 +305,8 @@ impl ManagedClientErrorDetail {
         Self {
             code,
             message,
-            mode: LocalClientMode::Managed,
             project_scope: LocalProjectScope {
-                kind: LocalProjectScopeKind::ExactCurrentProject,
                 path: error.project_dir.display().to_string(),
-                parent_projects_searched: false,
             },
             server: LocalManagedServer {
                 selection,
@@ -341,12 +321,10 @@ impl ManagedClientErrorDetail {
 fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
     match selection {
         ManagedClientSelection::Default => LocalGuidance {
-            action: LocalGuidanceAction::StartDefaultServer,
             message: "Start the default managed server in this project",
             command: Some("clickhousectl local server start"),
         },
         ManagedClientSelection::Named => LocalGuidance {
-            action: LocalGuidanceAction::StartNamedServer,
             message: "Start the selected named managed server in this project",
             command: Some("clickhousectl local server start <name>"),
         },
@@ -1006,6 +984,23 @@ mod tests {
                     binary_version: Some("25.12.9.61".into()),
                 }),
                 "managed_client_binary_not_found",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ProjectStateUnavailable(Box::new(
+                        Error::ServerLock {
+                            operation: "open the server metadata lock file",
+                            path: "/project/.clickhouse/servers/.metadata.lock".into(),
+                            remediation: "Check access, then retry.",
+                            source: std::io::Error::other("lock failed"),
+                        },
+                    )),
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Default,
+                    server_name: "default".into(),
+                    binary_version: None,
+                }),
+                "managed_client_project_state_unavailable",
             ),
             (Error::ServerNotFound("default".into()), "server_not_found"),
             (

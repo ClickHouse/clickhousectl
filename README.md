@@ -233,6 +233,8 @@ clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an in
 
 `--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
 
+Without `--host` or `--port`, managed client lookup uses `.clickhouse/servers` from the canonical current directory only. It does not search parent directories. If lookup fails, return to the project root that owns the server, inspect that project's servers with `local server list`, or use direct mode.
+
 In direct mode, `--host` and `--port` select the server connection while `--version` independently selects an already installed local client binary. Numeric selectors such as `26`, `26.8`, and `26.8.1.1760` select the newest installed match. This does not install a binary or change `~/.clickhouse/default`.
 
 Without `--version`, direct mode uses the valid default. If no default exists, zero installed versions is an error, one installed version is used without creating a default, and multiple installed versions require either `--version` or `local use`. A default that names a missing binary is an error; repair it with `local use`, or bypass it for one direct connection with `--version`.
@@ -972,13 +974,19 @@ Local runtime failures also use structured output when `local --json` is set or 
 }
 ```
 
-`error.code` and `error.message` are always present. `error.command` is an optional safe recovery command. Messages are built from allowlisted fields and never serialize raw I/O errors, paths, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+`error.code` and `error.message` are always present. `error.command` is an optional safe recovery command. Messages are built from allowlisted fields and never serialize raw I/O errors, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+
+Managed `local client` failures deliberately use dedicated `managed_client_*` codes rather than the general server codes. Their error object includes `project_scope.path` (the canonical directory inspected), `server.selection` and `server.name`, an optional `server.binary_version`, and ordered `guidance` entries with allowlisted messages and optional commands. No raw lock, metadata, or I/O error is included in JSON. The nested shape distinguishes this exact-project lookup contract from failures in other local commands without changing those commands' stable envelopes.
 
 The schema and meanings of existing codes are stable. New optional fields or codes may be added compatibly; unclassified local failures use the bounded `local_error` fallback.
 
 | Code | Meaning |
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist |
+| `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
+| `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
+| `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
+| `managed_client_project_state_unavailable` | Managed client lookup could not read or lock current-project server state |
 | `server_selection_required` | A server name is required because omission is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server |
