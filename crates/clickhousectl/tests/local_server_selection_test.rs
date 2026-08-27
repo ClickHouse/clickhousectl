@@ -108,15 +108,53 @@ fn omitted_stop_is_a_human_and_json_noop_with_zero_servers() {
         json!({
             "stopped": false,
             "selection": "implicit",
-            "reason": "no_clickhouse_servers"
+            "reason": "no_clickhouse_servers",
+            "project_scope": {
+                "kind": "exact_current_project",
+                "path": project.path().canonicalize().unwrap(),
+                "parent_projects_searched": false
+            },
+            "guidance": [
+                {
+                    "action": "return_to_project_root",
+                    "message": "Change to the local project root where the server was started",
+                    "command": "cd <project-root>"
+                },
+                {
+                    "action": "list_project_servers",
+                    "message": "List servers after returning to that exact project",
+                    "command": "clickhousectl local server list"
+                },
+                {
+                    "action": "list_global_servers",
+                    "message": "Locate running ClickHouse servers across projects",
+                    "command": "clickhousectl local server list --global"
+                },
+                {
+                    "action": "stop_global_project_server",
+                    "message": "After confirming the project, stop the server with explicit global project selection",
+                    "command": "clickhousectl local server stop <name> --global --project <project-root>"
+                }
+            ]
         })
     );
 
-    let human = run(project.path(), home.path(), &["local", "server", "stop"]);
+    let human_project = tempfile::tempdir().expect("create human project");
+    let human = run(
+        human_project.path(),
+        home.path(),
+        &["local", "server", "stop"],
+    );
     assert_success(&human);
     assert_eq!(
         String::from_utf8_lossy(&human.stdout),
-        "No ClickHouse servers found; nothing to stop\n"
+        format!(
+            "No ClickHouse servers found; nothing to stop\n\
+             No `.clickhouse` directory existed under project '{}' when the command started.\n\
+             Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
+             The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects.\n",
+            human_project.path().canonicalize().unwrap().display()
+        )
     );
     assert!(human.stderr.is_empty());
 }
@@ -328,6 +366,8 @@ fn omitted_remove_never_selects_custom_servers() {
     for names in [&[][..], &["dev"][..], &["alpha", "beta"][..]] {
         let project = tempfile::tempdir().expect("create project");
         let home = tempfile::tempdir().expect("create home");
+        std::fs::create_dir_all(project.path().join(".clickhouse/servers"))
+            .expect("create existing project state");
         for name in names {
             create_stopped_server(project.path(), name);
         }

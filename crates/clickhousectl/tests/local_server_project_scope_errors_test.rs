@@ -74,6 +74,51 @@ fn assert_exact_scope(value: &Value, project: &Path) {
 }
 
 #[test]
+fn omitted_commands_explain_absent_project_state() {
+    let root = tempfile::tempdir().expect("create root");
+    let home = tempfile::tempdir().expect("create home");
+    let stop_project = root.path().join("stop-project");
+    let remove_project = root.path().join("remove-project");
+    std::fs::create_dir(&stop_project).expect("create stop project");
+    std::fs::create_dir(&remove_project).expect("create remove project");
+
+    let stop = json_stdout(&run(
+        &stop_project,
+        home.path(),
+        &["local", "--json", "server", "stop"],
+    ));
+    assert_eq!(stop["stopped"], false);
+    assert_exact_scope(&stop["project_scope"], &stop_project);
+    assert_eq!(
+        stop["guidance"][0]["message"],
+        "Change to the local project root where the server was started"
+    );
+
+    let remove = json_error(&run(
+        &remove_project,
+        home.path(),
+        &["local", "--json", "server", "remove"],
+    ));
+    assert_eq!(remove["error"]["code"], "server_selection_required");
+    assert!(remove["error"].get("command").is_none());
+    assert!(remove["error"].get("server").is_none());
+    assert_exact_scope(&remove["error"]["project_scope"], &remove_project);
+    assert_eq!(
+        remove["error"]["guidance"][0]["message"],
+        "Change to the local project root where the server was started"
+    );
+
+    let human_project = root.path().join("human-project");
+    std::fs::create_dir(&human_project).expect("create human project");
+    let human = run(&human_project, home.path(), &["local", "server", "remove"]);
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("No `.clickhouse` project state was found"));
+    assert!(stderr.contains("parent `.clickhouse` directories are not searched"));
+    assert!(stderr.contains("where the server was started"));
+}
+
+#[test]
 fn root_and_child_scope_running_and_stopped_metadata_independently() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");

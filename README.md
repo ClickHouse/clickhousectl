@@ -285,7 +285,7 @@ clickhousectl local server dotenv --local --user default --database mydb  # Incl
 
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
 
-Project-local server commands select `.clickhouse` under the exact current working directory. They do not search parent directories, so running `list`, `stop`, or `remove` from a child directory selects a different project scope. Change to the project root first. There is intentionally no project-path override for project-local commands; `server stop --global --project <project-root>` is only for an explicitly confirmed server found with `server list --global`.
+Project-local server commands select `.clickhouse` under the exact current working directory. They do not search parent directories, so running `list`, `stop`, or `remove` from a child directory selects a different project scope. Change to the local project root where the server was started first; this is where `.clickhouse` typically lives. There is intentionally no project-path override for project-local commands; `server stop --global --project <project-root>` is only for an explicitly confirmed server found with `server list --global`.
 
 Without a name, `server stop` selects an existing `default`, then a sole known ClickHouse server. It succeeds without changing anything when none exist, and requires a name or `server stop-all` when multiple non-default servers exist. Bare `server remove` is deliberately stricter: it removes an existing `default` only and otherwise requires an explicit name, even when there is just one custom server.
 
@@ -970,13 +970,44 @@ Local runtime failures also use structured output when `local --json` is set or 
 {
   "error": {
     "code": "server_not_found",
-    "message": "Server 'default' not found",
-    "command": "clickhousectl local server list"
+    "message": "Server 'default' was not found in the current project",
+    "project_scope": {
+      "kind": "exact_current_project",
+      "path": "/path/to/project",
+      "parent_projects_searched": false
+    },
+    "server": {
+      "name": "default"
+    },
+    "guidance": [
+      {
+        "action": "return_to_project_root",
+        "message": "Change to the local project root where the server was started",
+        "command": "cd <project-root>"
+      },
+      {
+        "action": "list_project_servers",
+        "message": "List servers after returning to that exact project",
+        "command": "clickhousectl local server list"
+      },
+      {
+        "action": "list_global_servers",
+        "message": "Locate running ClickHouse servers across projects",
+        "command": "clickhousectl local server list --global"
+      },
+      {
+        "action": "stop_global_project_server",
+        "message": "After confirming the project, stop the server with explicit global project selection",
+        "command": "clickhousectl local server stop <name> --global --project <project-root>"
+      }
+    ]
   }
 }
 ```
 
-`error.code` and `error.message` are always present. `error.command` is an optional safe recovery command. Messages are built from allowlisted fields and never serialize raw I/O errors, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+`error.code` and `error.message` are always present. General errors can include an optional top-level `error.command` safe recovery command. Project-local `server stop` and `server remove` not-found errors instead include `project_scope`, `server`, and ordered `guidance`; their top-level `command` field is absent. Messages are built from allowlisted fields and never serialize raw I/O errors, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+
+When `.clickhouse` is absent from the current directory, bare `server stop` includes the same `project_scope` and `guidance` in its successful no-op output, while bare `server remove` includes them in its `server_selection_required` error. This distinguishes a missing project root from an initialized project that has no matching ClickHouse server.
 
 Managed `local client` failures deliberately use dedicated `managed_client_*` codes rather than the general server codes. Their error object includes `project_scope.path` (the canonical directory inspected), `server.selection` and `server.name`, an optional `server.binary_version`, and ordered `guidance` entries with allowlisted messages and optional commands. No raw lock, metadata, or I/O error is included in JSON. The nested shape distinguishes this exact-project lookup contract from failures in other local commands without changing those commands' stable envelopes.
 

@@ -5,7 +5,7 @@
 
 use crate::error::{
     Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
-    PortKind, ProjectServerCommand, ProjectServerNotFound,
+    PortKind, ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing,
 };
 use serde::Serialize;
 use std::fmt;
@@ -120,6 +120,14 @@ struct ProjectServerErrorDetail {
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
+struct ProjectServerStateMissingDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    project_scope: ServerProjectScope,
+    guidance: Vec<ProjectServerGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
 struct LocalProjectServer {
     name: String,
 }
@@ -130,6 +138,7 @@ enum LocalErrorBody {
     General(LocalErrorDetail),
     ManagedClient(ManagedClientErrorDetail),
     ProjectServer(ProjectServerErrorDetail),
+    ProjectServerStateMissing(ProjectServerStateMissingDetail),
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -147,6 +156,13 @@ impl LocalErrorOutput {
         if let Error::ProjectServerNotFound(error) = error {
             return Self {
                 error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(error)),
+            };
+        }
+        if let Error::ProjectServerStateMissing(error) = error {
+            return Self {
+                error: LocalErrorBody::ProjectServerStateMissing(
+                    ProjectServerStateMissingDetail::from_error(error),
+                ),
             };
         }
         let detail = match error {
@@ -386,6 +402,17 @@ impl ProjectServerErrorDetail {
     }
 }
 
+impl ProjectServerStateMissingDetail {
+    fn from_error(error: &ProjectServerStateMissing) -> Self {
+        Self {
+            code: LocalErrorCode::ServerSelectionRequired,
+            message: "No project-local server state was found in the current directory; no server was removed",
+            project_scope: exact_current_project_scope(&error.project_dir),
+            guidance: project_scope_guidance(Some(error.command)),
+        }
+    }
+}
+
 pub(crate) fn exact_current_project_scope(project_dir: &Path) -> ServerProjectScope {
     ServerProjectScope {
         kind: LocalProjectScopeKind::ExactCurrentProject,
@@ -400,7 +427,7 @@ pub(crate) fn project_scope_guidance(
     let mut guidance = vec![
         ProjectServerGuidance {
             action: LocalGuidanceAction::ReturnToProjectRoot,
-            message: "Change to the project root that owns the server",
+            message: "Change to the local project root where the server was started",
             command: Some("cd <project-root>"),
         },
         ProjectServerGuidance {
@@ -766,7 +793,7 @@ impl fmt::Display for ServerListOutput {
                 )?;
                 return write!(
                     f,
-                    "Return to the project root and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+                    "Return to the local project root where the server was started and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
                 );
             }
             write!(f, "No servers")?;
@@ -954,11 +981,32 @@ pub struct ServerStopNoopOutput {
     pub stopped: bool,
     pub selection: ServerSelection,
     pub reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_scope: Option<ServerProjectScope>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guidance: Vec<ProjectServerGuidance>,
 }
 
 impl fmt::Display for ServerStopNoopOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "No ClickHouse servers found; nothing to stop")
+        write!(f, "No ClickHouse servers found; nothing to stop")?;
+        if let Some(scope) = &self.project_scope {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "No `.clickhouse` directory existed under project '{}' when the command started.",
+                scope.path
+            )?;
+            writeln!(
+                f,
+                "Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched."
+            )?;
+            write!(
+                f,
+                "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1132,6 +1180,13 @@ mod tests {
                     server_name: "default".into(),
                 }),
                 "server_not_found",
+            ),
+            (
+                Error::ProjectServerStateMissing(ProjectServerStateMissing {
+                    command: ProjectServerCommand::Remove,
+                    project_dir: "/project".into(),
+                }),
+                "server_selection_required",
             ),
             (Error::ServerNotFound("default".into()), "server_not_found"),
             (

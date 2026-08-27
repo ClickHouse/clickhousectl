@@ -52,7 +52,7 @@ fn expected_project_server_error(project: &Path, name: &str) -> String {
             "guidance": [
                 {
                     "action": "return_to_project_root",
-                    "message": "Change to the project root that owns the server",
+                    "message": "Change to the local project root where the server was started",
                     "command": "cd <project-root>"
                 },
                 {
@@ -161,7 +161,7 @@ fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
     assert!(
-        stderr.contains("Error: Server 'missing' not found"),
+        stderr.contains("Error: Server 'missing' was not found in project"),
         "{stderr}"
     );
     assert!(stderr.contains("anonymous usage data"), "{stderr}");
@@ -186,11 +186,7 @@ fn telemetry_debug_does_not_append_to_a_structured_error() {
 
     assert_structured_failure(
         &output,
-        &expected_error(
-            "server_not_found",
-            "Server 'missing' not found",
-            Some("clickhousectl local server list"),
-        ),
+        &expected_project_server_error(project.path(), "missing"),
     );
 }
 
@@ -333,7 +329,7 @@ fn human_and_clap_errors_keep_their_existing_formats() {
         format!(
             "Error: Server 'missing' was not found in project '{}'.\n\
              Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-             Return to the project root and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`.\n",
+             Return to the local project root where the server was started and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects; after confirming the project, use `clickhousectl local server stop <name> --global --project <project-root>`.\n",
             project.path().canonicalize().unwrap().display()
         )
     );

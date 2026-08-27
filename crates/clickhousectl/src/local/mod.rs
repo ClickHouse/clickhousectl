@@ -11,7 +11,7 @@ use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, Se
 
 use crate::error::{
     Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
-    ProjectServerCommand, ProjectServerNotFound, Result,
+    ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing, Result,
 };
 use crate::{init, paths, version_manager};
 use std::io::Write;
@@ -894,6 +894,7 @@ fn stop_server(
         server::validate_server_name(name)?;
     }
     let project_dir = init::canonical_project_dir()?;
+    let project_state_missing = !init::local_dir().is_dir();
 
     // Recover orphaned servers so we can stop processes
     // that lost their metadata files.
@@ -918,6 +919,13 @@ fn stop_server(
                             stopped: false,
                             selection: output::ServerSelection::Implicit,
                             reason: "no_clickhouse_servers",
+                            project_scope: project_state_missing
+                                .then(|| output::exact_current_project_scope(&project_dir)),
+                            guidance: if project_state_missing {
+                                output::project_scope_guidance(Some(ProjectServerCommand::Stop))
+                            } else {
+                                Vec::new()
+                            },
                         };
                         output::print_output(&out, json);
                         return Ok(());
@@ -980,6 +988,7 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
         server::validate_server_name(name)?;
     }
     let project_dir = init::canonical_project_dir()?;
+    let project_state_missing = !init::local_dir().is_dir();
 
     // Recover orphaned servers so we correctly detect a running
     // process even when its metadata file is missing.
@@ -994,6 +1003,14 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
             if names.iter().any(|name| name == "default") {
                 ("default".to_string(), output::ServerSelection::Implicit)
             } else {
+                if project_state_missing && names.is_empty() {
+                    return Err(Error::ProjectServerStateMissing(
+                        ProjectServerStateMissing {
+                            command: ProjectServerCommand::Remove,
+                            project_dir,
+                        },
+                    ));
+                }
                 return Err(Error::ServerRemoveSelectionRequired {
                     available: names.len(),
                 });
