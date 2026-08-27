@@ -91,6 +91,75 @@ fn explicit_json_and_agent_mode_emit_the_same_exact_server_error() {
     assert_structured_failure(&agent, &expected);
 }
 
+#[cfg(feature = "telemetry")]
+#[test]
+fn fresh_home_json_error_defers_telemetry_notice_to_human_mode() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let fresh_home_command = || {
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("HOME", home.path())
+            .current_dir(project.path());
+        command
+    };
+
+    let output = fresh_home_command()
+        .args(["local", "--json", "server", "stop"])
+        .output()
+        .expect("run structured failure");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("all stderr is exactly one JSON value");
+    assert_eq!(parsed["error"]["code"], "server_not_found");
+    assert!(
+        !home.path().join(".clickhouse/telemetry.json").exists(),
+        "structured output must leave first-run consent pending"
+    );
+
+    let output = fresh_home_command()
+        .args(["local", "server", "stop"])
+        .output()
+        .expect("run human failure");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("human stderr is UTF-8");
+    assert!(
+        stderr.contains("Error: Server 'default' not found"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("anonymous usage data"), "{stderr}");
+    assert!(home.path().join(".clickhouse/telemetry.json").exists());
+}
+
+#[cfg(feature = "telemetry")]
+#[test]
+fn telemetry_debug_does_not_append_to_a_structured_error() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let state_path = home.path().join(".clickhouse/telemetry.json");
+    std::fs::create_dir_all(state_path.parent().unwrap()).expect("create telemetry directory");
+    std::fs::write(state_path, r#"{"disabled":false}"#).expect("enable telemetry");
+
+    let output = command(project.path(), home.path())
+        .env_remove("DO_NOT_TRACK")
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .args(["local", "--json", "server", "stop"])
+        .output()
+        .expect("run structured failure with telemetry debug");
+
+    assert_structured_failure(
+        &output,
+        &expected_error(
+            "server_not_found",
+            "Server 'default' not found",
+            Some("clickhousectl local server list"),
+        ),
+    );
+}
+
 #[test]
 fn version_port_and_startup_failures_have_typed_safe_shapes() {
     let project = tempfile::tempdir().expect("create project");

@@ -798,7 +798,7 @@ fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
 }
 
 #[test]
-fn immediate_exit_redacts_bounded_logs_and_reports_error_telemetry_without_setup_success() {
+fn immediate_exit_redacts_bounded_logs_without_setup_success_or_telemetry_noise() {
     let mut logs: Vec<String> = (0..80)
         .map(|index| format!("startup line {index}: {}", "x".repeat(300)))
         .collect();
@@ -824,19 +824,15 @@ fn immediate_exit_redacts_bounded_logs_and_reports_error_telemetry_without_setup
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty(), "setup success leaked to stdout");
     let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
-    assert!(stderr.contains(r#""code": "startup_exit""#), "{stderr}");
-    assert!(
-        stderr.contains("Postgres server 'default' exited before becoming ready"),
-        "{stderr}"
+    let error: serde_json::Value =
+        serde_json::from_str(&stderr).expect("stderr is exactly one JSON error");
+    assert_eq!(error["error"]["code"], "startup_exit");
+    assert_eq!(
+        error["error"]["message"],
+        "Postgres server 'default' exited before becoming ready"
     );
     assert!(!stderr.contains("FATAL: startup failed before readiness"));
     assert!(!stderr.contains("[earlier log output truncated]"));
-    assert!(
-        stderr.contains(r#""command":"local postgres start""#),
-        "{stderr}"
-    );
-    assert!(stderr.contains(r#""exit_code":1"#), "{stderr}");
-    assert!(stderr.contains(r#""outcome":"error""#), "{stderr}");
     assert!(readiness_requests(&requests).is_empty());
     assert!(
         !project

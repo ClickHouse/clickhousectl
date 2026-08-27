@@ -16,11 +16,12 @@
 //! ([`capture`] walks `ArgMatches` ids and `Arg` metadata, never touching
 //! `get_one`/`get_raw`), so leaking a value is structurally impossible.
 //!
-//! Every invocation of the binary counts (#320): bare, `--help`,
-//! `--version`, and mistyped commands all show the first-run notice and
-//! produce events under the same consent state machine — failed invocations
-//! are exactly the signal that shows where the CLI confuses people and
-//! agents. A successful parse is captured exactly from `ArgMatches`; a
+//! Every invocation of the binary goes through the same consent state machine
+//! (#320). Bare, `--help`, `--version`, and mistyped commands show the first-run
+//! notice. A structured local failure defers a still-pending notice so stderr
+//! remains one JSON value; a later human-readable invocation shows it. Failed
+//! invocations are exactly the signal that shows where the CLI confuses people
+//! and agents. A successful parse is captured exactly from `ArgMatches`; a
 //! failed parse has none, so [`capture_lossy`] re-walks argv against the
 //! clap definitions and records the longest *valid* prefix, the error kind,
 //! and clap's suggestion re-anchored to a definition string — the unmatched
@@ -720,12 +721,13 @@ fn exec_invocation(stashed: &Invocation) -> Invocation {
 /// The telemetry hook, called once at the very end of `main` (after the
 /// command has run, so `telemetry disable` silences its own event), with the
 /// exit code the process is about to exit with. Never errors, never
-/// blocks beyond spawning a detached child.
-pub fn finalize(invocation: Invocation, exit_code: i32) {
+/// blocks beyond spawning a detached child. A deferred first-run notice leaves
+/// the state missing so the next human-readable invocation can show it.
+pub fn finalize(invocation: Invocation, exit_code: i32, defer_first_run_notice: bool) {
     if !claim(&FINALIZED) {
         return;
     }
-    finalize_inner(&invocation, exit_code);
+    finalize_inner(&invocation, exit_code, defer_first_run_notice);
 }
 
 /// The pre-exec hook, called by the `exec()` handoffs (`local client`, host
@@ -741,14 +743,18 @@ pub fn finalize_before_exec() {
     if !claim(&FINALIZED) {
         return;
     }
-    finalize_inner(&exec_invocation(stashed), 0);
+    finalize_inner(&exec_invocation(stashed), 0, false);
 }
 
-fn finalize_inner(invocation: &Invocation, exit_code: i32) {
+fn finalize_inner(invocation: &Invocation, exit_code: i32, defer_first_run_notice: bool) {
     let Some(path) = state_path() else { return };
+    if defer_first_run_notice && load_state_from(&path) == State::Missing {
+        return;
+    }
     match decide(&path, invocation, exit_code, &real_env_lookup) {
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
+        Action::Debug(_) if defer_first_run_notice => {}
         Action::Debug(json) => {
             use std::io::Write;
             // Not `eprintln!`, which panics on a closed stderr — see
