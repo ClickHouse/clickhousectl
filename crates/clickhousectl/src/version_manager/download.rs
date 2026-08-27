@@ -217,6 +217,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::Semaphore;
 
     fn test_request_policy() -> network::RequestPolicy {
         network::RequestPolicy {
@@ -383,11 +384,14 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(AtomicUsize::new(0));
         let server_requests = requests.clone();
+        let held_connections = Arc::new(Semaphore::new(0));
+        let server_held_connections = held_connections.clone();
         let server = tokio::spawn(async move {
             let mut connections = Vec::new();
             for _ in 0..2 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 server_requests.fetch_add(1, Ordering::SeqCst);
+                let held_connections = server_held_connections.clone();
                 connections.push(tokio::spawn(async move {
                     let mut request = [0_u8; 1024];
                     let _ = socket.read(&mut request).await;
@@ -397,7 +401,7 @@ mod tests {
                         )
                         .await
                         .unwrap();
-                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    let _permit = held_connections.acquire().await.unwrap();
                 }));
             }
             for connection in connections {
@@ -407,15 +411,20 @@ mod tests {
         let url = format!("http://{address}/artifact?token=secret");
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("artifact");
+        // Keep the enclosing deadlines well clear of the idle-read timeout under test.
+        let request_policy = network::RequestPolicy {
+            request_timeout: Duration::from_secs(5),
+            ..test_request_policy()
+        };
+        let retry_policy = RetryPolicy {
+            operation_timeout: Duration::from_secs(30),
+            ..test_retry_policy(2)
+        };
 
-        let error = download_url_with_policy(
-            &url,
-            &destination,
-            test_request_policy(),
-            test_retry_policy(2),
-        )
-        .await
-        .unwrap_err();
+        let error = download_url_with_policy(&url, &destination, request_policy, retry_policy)
+            .await
+            .unwrap_err();
+        held_connections.add_permits(2);
 
         let Error::Network(failure) = error else {
             panic!("expected network failure");
