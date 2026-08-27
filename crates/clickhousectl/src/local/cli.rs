@@ -413,10 +413,8 @@ CONTEXT FOR AGENTS:
     /// Stop a running server by name
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a ClickHouse server. The name defaults to \"default\"; use `clickhousectl local server list`
-  to find other server names.
-  Pass the name positionally (e.g. `server stop dev`). The compatibility form `--name dev`
-  remains accepted, but cannot be combined with a positional name.
+  Stops a ClickHouse server. The name defaults to \"default\"; pass it positionally to select
+  another server (e.g., `server stop dev`). Use `clickhousectl local server list` to find names.
   Sends SIGTERM first, then SIGKILL if the process doesn't exit gracefully.
   The server's data and metadata are preserved so it remains visible in `server list`.
   Restart with `clickhousectl local server start <name>`.
@@ -461,9 +459,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Permanently deletes a server's data directory. The server must be stopped first.
   This is irreversible — all data for this server instance will be lost.
-  Pass the name positionally (e.g. `server remove dev`). The compatibility form `--name dev`
-  remains accepted, but cannot be combined with a positional name.
-  The name defaults to \"default\".
+  The name defaults to \"default\"; pass it positionally to select another server.
   Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
     Remove {
         /// Name of the server to remove (default: "default")
@@ -1555,6 +1551,23 @@ mod tests {
             .expect("name forms should conflict");
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
             assert!(error.to_string().contains("cannot be used with"), "{error}");
+        }
+    }
+
+    #[test]
+    fn server_teardown_agent_help_only_advertises_positional_names() {
+        for command in ["stop", "remove"] {
+            let help = Cli::try_parse_from(["clickhousectl", "local", "server", command, "--help"])
+                .err()
+                .expect("help should exit through clap")
+                .to_string();
+            let context = help
+                .split_once("CONTEXT FOR AGENTS:")
+                .expect("agent context")
+                .1;
+
+            assert!(context.contains("positionally"), "{help}");
+            assert!(!context.contains("--name"), "{help}");
         }
     }
 
