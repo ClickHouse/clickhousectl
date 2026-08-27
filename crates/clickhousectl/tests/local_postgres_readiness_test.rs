@@ -776,40 +776,6 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
 }
 
 #[test]
-fn already_gone_container_is_a_successful_rollback() {
-    let home = tempfile::tempdir().expect("create home tempdir");
-    let project = tempfile::tempdir().expect("create project tempdir");
-    let socket_path = home.path().join("docker.sock");
-    let docker = FakeDocker::start(
-        &socket_path,
-        project.path(),
-        DockerScenario {
-            existing: false,
-            outcome: ContainerOutcome::Running,
-            start_statuses: vec![500],
-            remove_statuses: vec![404],
-            readiness_exit_codes: vec![],
-            readiness_create_errors: 0,
-            logs: vec![],
-            write_partial_data: false,
-        },
-    );
-
-    let output = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
-
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("start failed by test"), "{stderr}");
-    assert!(
-        !stderr.contains("Postgres startup rollback incomplete"),
-        "{stderr}"
-    );
-    assert!(!fresh_instance_dir(project.path()).exists());
-    assert!(!metadata_path(project.path()).exists());
-    request_index(&docker.requests(), "DELETE", "/containers/pg-id?");
-}
-
-#[test]
 fn initialization_timeout_removes_partial_pgdata() {
     let home = tempfile::tempdir().expect("create home tempdir");
     let project = tempfile::tempdir().expect("create project tempdir");

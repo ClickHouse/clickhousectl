@@ -575,17 +575,21 @@ pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
 }
 
 pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
-    use bollard::errors::Error as BErr;
     use bollard::query_parameters::RemoveContainerOptionsBuilder;
-    match docker
-        .remove_container(
-            id,
-            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-        )
-        .await
-    {
+    remove_container_result(
+        docker
+            .remove_container(
+                id,
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+            )
+            .await,
+    )
+}
+
+fn remove_container_result(result: std::result::Result<(), BollardError>) -> Result<()> {
+    match result {
         Ok(())
-        | Err(BErr::DockerResponseServerError {
+        | Err(BollardError::DockerResponseServerError {
             status_code: 404, ..
         }) => Ok(()),
         Err(e) => Err(Error::DockerError(e.to_string())),
@@ -1371,6 +1375,17 @@ mod tests {
                 "--".to_string(),
                 format!("/work/{basename}"),
             ]
+        );
+    }
+
+    #[test]
+    fn missing_container_is_already_removed() {
+        assert!(
+            remove_container_result(Err(BollardError::DockerResponseServerError {
+                status_code: 404,
+                message: "No such container".to_string(),
+            }))
+            .is_ok()
         );
     }
 
