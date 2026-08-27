@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const VERSION: &str = "25.12.9.61";
+const VERSION: &str = "latest";
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn clickhousectl_binary() -> PathBuf {
@@ -73,6 +73,9 @@ impl Fixture {
         .expect("install fake ClickHouse wrapper");
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
             .expect("make fake ClickHouse wrapper executable");
+        std::fs::write(home.join(".clickhouse/default"), VERSION)
+            .expect("select fake latest version");
+        seed_update_cache(&home);
 
         // Process discovery is part of the shipped lifecycle. Deterministic
         // stand-ins expose only this fixture's live fake processes, avoiding
@@ -139,17 +142,27 @@ impl Fixture {
     }
 
     fn start(&self, name: Option<&str>) -> RunningServer {
+        self.start_with_expected_name(name, Some(name.unwrap_or("default")))
+    }
+
+    fn start_generated(&self) -> RunningServer {
+        self.start_with_expected_name(None, None)
+    }
+
+    fn start_with_expected_name(
+        &self,
+        name: Option<&str>,
+        expected_name: Option<&str>,
+    ) -> RunningServer {
         let mut args = strings(&["local", "--json", "server", "start"]);
         if let Some(name) = name {
             args.push(name.to_string());
         }
-        args.extend(strings(&["--version", VERSION, "--no-wait"]));
+        args.push("--no-wait".into());
         let output = self.run(&self.project, &args);
-        let log = std::fs::read_to_string(
-            self.server_dir(name.unwrap_or("default"))
-                .join("server.log"),
-        )
-        .unwrap_or_default();
+        let log = expected_name
+            .and_then(|name| std::fs::read_to_string(self.server_dir(name).join("server.log")).ok())
+            .unwrap_or_default();
         assert_eq!(
             output.status.code(),
             Some(0),
@@ -158,7 +171,16 @@ impl Fixture {
         );
         assert!(output.stderr.is_empty(), "JSON start wrote to stderr");
         let body: Value = serde_json::from_slice(&output.stdout).expect("parse start JSON");
-        let expected_name = name.unwrap_or("default");
+        let actual_name = body["name"].as_str().expect("start name");
+        if let Some(expected_name) = expected_name {
+            assert_eq!(actual_name, expected_name, "unexpected server name");
+        } else {
+            assert_ne!(actual_name, "default", "repeated start reused default name");
+            let (adjective, noun) = actual_name
+                .split_once('-')
+                .expect("generated name uses adjective-noun form");
+            assert!(!adjective.is_empty() && !noun.is_empty());
+        }
         let pid = body["pid"].as_u64().expect("start PID") as u32;
         let http_port = body["http_port"].as_u64().expect("start HTTP port") as u16;
         let tcp_port = body["tcp_port"].as_u64().expect("start TCP port") as u16;
@@ -168,7 +190,7 @@ impl Fixture {
         assert_eq!(
             body,
             json!({
-                "name": expected_name,
+                "name": actual_name,
                 "pid": pid,
                 "http_port": http_port,
                 "tcp_port": tcp_port,
@@ -179,7 +201,7 @@ impl Fixture {
 
         self.wait_for_pid_record(pid);
         wait_for_process(pid, true);
-        let metadata = read_json(&self.metadata_path(expected_name));
+        let metadata = read_json(&self.metadata_path(actual_name));
         let started_at = metadata["started_at"]
             .as_str()
             .expect("metadata timestamp")
@@ -189,14 +211,14 @@ impl Fixture {
             "invalid persisted timestamp: {started_at}"
         );
         let server = RunningServer {
-            name: expected_name.to_string(),
+            name: actual_name.to_string(),
             pid,
             http_port,
             tcp_port,
             started_at,
         };
         self.assert_running_metadata(&server);
-        assert!(self.data_dir(expected_name).is_dir());
+        assert!(self.data_dir(actual_name).is_dir());
         server
     }
 
@@ -479,6 +501,18 @@ fn write_executable(path: &Path, contents: &str) {
         .expect("make fake process tool executable");
 }
 
+fn seed_update_cache(home: &Path) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after epoch")
+        .as_secs();
+    std::fs::write(
+        home.join(".clickhouse/last_update_check"),
+        format!("{now}\n{}", env!("CARGO_PKG_VERSION")),
+    )
+    .expect("seed fresh update cache");
+}
+
 fn canonical(path: &Path) -> String {
     path.canonicalize()
         .expect("canonicalize project path")
@@ -525,7 +559,7 @@ fn scope_guidance(include_global_stop: bool) -> Value {
     let mut guidance = vec![
         json!({
             "action": "return_to_project_root",
-            "message": "Change to the project root that owns the server",
+            "message": "Change to the local project root where the server was started",
             "command": "cd <project-root>"
         }),
         json!({
@@ -574,7 +608,7 @@ fn human_project_not_found(project: &Path, name: &str, command: &str) -> String 
     format!(
         "Error: Server '{name}' was not found in project '{}'.\n\
          Project-local server {command} uses the exact current working directory; parent `.clickhouse` directories are not searched.\n\
-         Return to the project root and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects{global_stop}.\n",
+         Return to the local project root where the server was started and run `clickhousectl local server list`; use `clickhousectl local server list --global` to locate running servers in other projects{global_stop}.\n",
         canonical(project)
     )
 }
@@ -695,20 +729,46 @@ fn fresh_project(fixture: &Fixture) {
 fn default_lifecycle(fixture: &Fixture) {
     let server = fixture.start(None);
     fixture.write_marker("default", "default-data");
+    let generated = fixture.start_generated();
+    fixture.run_cases(&[CommandCase {
+        label: "generated server explicit stop".into(),
+        cwd: TestCwd::Root,
+        args: vec![
+            "local".into(),
+            "--json".into(),
+            "server".into(),
+            "stop".into(),
+            generated.name.clone(),
+        ],
+        expected: ExpectedOutput::JsonSuccess(json!({
+            "name": generated.name,
+            "already_stopped": false,
+            "selection": "explicit"
+        })),
+    }]);
+    wait_for_process(generated.pid, false);
+    fixture.assert_stopped_metadata(&generated);
+    fixture.run_cases(&[CommandCase {
+        label: "generated server explicit remove".into(),
+        cwd: TestCwd::Root,
+        args: vec![
+            "local".into(),
+            "--json".into(),
+            "server".into(),
+            "remove".into(),
+            generated.name.clone(),
+        ],
+        expected: ExpectedOutput::JsonSuccess(json!({
+            "name": generated.name,
+            "selection": "explicit"
+        })),
+    }]);
+    fixture.assert_removed(&generated.name);
     fixture.run_cases(&[
         CommandCase {
             label: "repeated default start".into(),
             cwd: TestCwd::Root,
-            args: strings(&[
-                "local",
-                "--json",
-                "server",
-                "start",
-                "default",
-                "--version",
-                VERSION,
-                "--no-wait",
-            ]),
+            args: strings(&["local", "--json", "server", "start", "default", "--no-wait"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
                 "Server 'default' is already running",
@@ -1120,6 +1180,11 @@ fn local_server_state_machine() {
         (scenario.run)(&fixture);
         fixture.assert_no_server_instances(&fixture.project);
         fixture.assert_telemetry_disabled();
+        assert!(
+            !fixture.home.join(".clickhouse/servers").exists(),
+            "{} wrote project server state under HOME",
+            scenario.name
+        );
 
         let recorded: BTreeSet<_> = std::fs::read_to_string(&fixture.pid_file)
             .unwrap_or_default()
