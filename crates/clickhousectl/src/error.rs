@@ -255,6 +255,16 @@ pub enum Error {
     ServerRunningCannotRemove(String),
 
     #[error(
+        "Permission denied reading server metadata '{}': {source}. Check ownership and file permissions, then retry.",
+        path.display()
+    )]
+    ServerMetadataPermission {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "Failed to read server metadata '{}': {source}. Check that the file is readable, then retry.",
         path.display()
     )]
@@ -287,6 +297,15 @@ pub enum Error {
     #[error("Failed to durably update server metadata '{}': {source}", path.display())]
     ServerMetadataWrite {
         path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Could not {operation} at '{}': {source}. {remediation}", path.display())]
+    ServerLock {
+        operation: &'static str,
+        path: PathBuf,
+        remediation: &'static str,
         #[source]
         source: std::io::Error,
     },

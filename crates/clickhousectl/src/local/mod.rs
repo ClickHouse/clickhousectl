@@ -440,7 +440,7 @@ async fn start_server(
     }
 
     // Show running server count
-    let running = server::list_running_servers_locked(&metadata_lock)?.len();
+    let running = server::advisory_running_server_count_locked(&metadata_lock);
     if running > 0 {
         eprintln!(
             "Note: {} server{} already running (use `clickhousectl local server list` to see them)",

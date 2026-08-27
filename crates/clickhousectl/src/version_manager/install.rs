@@ -138,7 +138,7 @@ pub async fn install_resolved(
     };
 
     let commit_lock = CommitLock::acquire(&versions_dir).await?;
-    let replaced_existing = commit_staged_install_locked(
+    let (_, notify_running_servers) = commit_staged_install_locked(
         &commit_lock,
         &versions_dir,
         &staging,
@@ -147,13 +147,14 @@ pub async fn install_resolved(
         is_master,
         platform,
         master_head.as_ref(),
+        version_in_use_by_running_server,
         |_| Ok(()),
     )?;
 
     // Replacing a build on disk never affects already-running servers (they keep
     // executing the old binary) — just say so, so the swap isn't silent.
     drop(commit_lock);
-    if is_master && replaced_existing && version_in_use_by_running_server(&exact_version)? {
+    if notify_running_servers {
         eprintln!(
             "Note: running servers keep using the previous {} build until restarted",
             exact_version
@@ -185,8 +186,9 @@ fn commit_staged_install_locked(
     is_master: bool,
     platform: &Platform,
     master_head: Option<&master::HeadInfo>,
+    version_in_use: impl FnOnce(&str) -> Result<bool>,
     mut checkpoint: impl FnMut(CommitCheckpoint) -> Result<()>,
-) -> Result<bool> {
+) -> Result<(bool, bool)> {
     let version_dir = versions_dir.join(exact_version);
     let target_binary = version_dir.join("clickhouse");
     let target_metadata = match std::fs::symlink_metadata(&version_dir) {
@@ -207,6 +209,7 @@ fn commit_staged_install_locked(
     if replaced_existing && !force && !is_master {
         return Err(Error::VersionAlreadyInstalled(exact_version.to_string()));
     }
+    let notify_running_servers = is_master && replaced_existing && version_in_use(exact_version)?;
 
     File::open(staging.binary_path())?.sync_all()?;
     sync_directory(staging.payload())?;
@@ -236,7 +239,7 @@ fn commit_staged_install_locked(
         );
     }
 
-    Ok(replaced_existing)
+    Ok((replaced_existing, notify_running_servers))
 }
 
 /// Like `install_resolved`, but returns the existing version instead of erroring
@@ -633,16 +636,59 @@ mod tests {
             true,
             &test_platform(),
             Some(&head),
+            |_| Ok(false),
             |_| Ok(()),
         )
         .unwrap();
 
-        assert!(!replaced);
+        assert!(!replaced.0);
         assert_eq!(
             fs::read(versions_dir.join("26.5.1.1/clickhouse")).unwrap(),
             b"complete-master-build"
         );
         assert!(!versions_dir.join(".master-builds.json").exists());
+    }
+
+    #[test]
+    fn metadata_failure_does_not_replace_existing_master_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let versions_dir = temp.path().join("versions");
+        let version_dir = versions_dir.join("26.5.1.1");
+        fs::create_dir_all(&version_dir).unwrap();
+        let installed_binary = version_dir.join("clickhouse");
+        fs::write(&installed_binary, b"existing master build").unwrap();
+        let staging = InstallStaging::create(&versions_dir).unwrap();
+        fs::write(staging.binary_path(), b"replacement master build").unwrap();
+        let lock = CommitLock::acquire_blocking(&versions_dir).unwrap();
+
+        let error = commit_staged_install_locked(
+            &lock,
+            &versions_dir,
+            &staging,
+            "26.5.1.1",
+            true,
+            true,
+            &test_platform(),
+            None,
+            |_| {
+                Err(Error::ServerMetadataRead {
+                    path: PathBuf::from("broken.json"),
+                    source: std::io::Error::other("metadata unavailable"),
+                })
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, Error::ServerMetadataRead { .. }));
+        assert_eq!(
+            fs::read(installed_binary).unwrap(),
+            b"existing master build"
+        );
+        assert_eq!(
+            fs::read(staging.binary_path()).unwrap(),
+            b"replacement master build"
+        );
     }
 
     #[test]
@@ -683,6 +729,7 @@ mod tests {
             true,
             &test_platform(),
             Some(&head),
+            |_| Ok(false),
             |checkpoint| {
                 let checkpoint_name = match checkpoint {
                     CommitCheckpoint::SidecarInvalidated => "invalidated",

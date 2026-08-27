@@ -1,6 +1,7 @@
 //! Subprocess coverage for local Postgres readiness through a fake Docker API.
 
 use std::collections::{HashMap, VecDeque};
+use std::fs::OpenOptions;
 use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -40,6 +41,7 @@ struct DockerRequest {
     method: String,
     path: String,
     body: String,
+    metadata_lock_available: bool,
 }
 
 struct FakeDocker {
@@ -96,7 +98,8 @@ impl FakeDocker {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .expect("set fake Docker read timeout");
-                let request = read_request(&mut stream);
+                let mut request = read_request(&mut stream);
+                request.metadata_lock_available = metadata_lock_available(&project);
                 thread_requests.lock().unwrap().push(request.clone());
 
                 match (request.method.as_str(), request.path.as_str()) {
@@ -104,11 +107,17 @@ impl FakeDocker {
                     ("GET", path) if path.starts_with("/containers/json?") => {
                         write_json(&mut stream, 200, "[]")
                     }
-                    ("GET", "/images/postgres:18/json") => write_json(&mut stream, 200, "{}"),
+                    ("GET", "/images/postgres:18/json") => {
+                        inject_metadata_during_image_inspect(&project);
+                        write_json(&mut stream, 200, "{}");
+                    }
                     ("GET", "/images/alpine:latest/json") => write_json(&mut stream, 200, "{}"),
                     ("GET", path)
                         if path.starts_with("/containers/clickhousectl-pg-default-18/json") =>
                     {
+                        write_json(&mut stream, 404, r#"{"message":"No such container"}"#)
+                    }
+                    ("GET", path) if path.starts_with("/containers/concurrent-id/json") => {
                         write_json(&mut stream, 404, r#"{"message":"No such container"}"#)
                     }
                     ("POST", path) if path.starts_with("/containers/create?") => {
@@ -168,6 +177,13 @@ impl FakeDocker {
                             r#"{{"Id":"pg-id","State":{state},"Config":{{"Env":["POSTGRES_USER=postgres","POSTGRES_PASSWORD=stored-secret","POSTGRES_DB=postgres"]}}}}"#
                         );
                         write_json(&mut stream, 200, &body);
+                    }
+                    ("GET", path) if path.starts_with("/containers/dotenv-id/json") => {
+                        write_json(
+                            &mut stream,
+                            200,
+                            r#"{"Id":"dotenv-id","State":{"Running":true},"Config":{"Env":["POSTGRES_USER=dotenv-user","POSTGRES_PASSWORD=dotenv-secret","POSTGRES_DB=dotenv-database"]}}"#,
+                        );
                     }
                     ("POST", "/containers/pg-id/exec") => {
                         if readiness_create_errors > 0 {
@@ -291,7 +307,57 @@ fn read_request(stream: &mut UnixStream) -> DockerRequest {
         method: request_parts.next().expect("HTTP method").to_string(),
         path: request_parts.next().expect("HTTP path").to_string(),
         body: String::from_utf8_lossy(&bytes[header_end..header_end + content_length]).into_owned(),
+        metadata_lock_available: false,
     }
+}
+
+fn metadata_lock_available(project: &Path) -> bool {
+    let path = project.join(".clickhouse/servers/.metadata.lock");
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+    else {
+        return false;
+    };
+    file.try_lock().is_ok()
+}
+
+fn inject_metadata_during_image_inspect(project: &Path) {
+    let marker = project.join("inject-metadata-during-image-inspect");
+    if !marker.exists() {
+        return;
+    }
+
+    let servers = project.join(".clickhouse/servers");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(servers.join(".metadata.lock"))
+        .expect("open metadata lock for concurrent write");
+    lock.lock()
+        .expect("acquire metadata lock for concurrent write");
+    let metadata = serde_json::json!({
+        "name": "default-pg18",
+        "pid": 0,
+        "version": "postgres:18",
+        "http_port": 0,
+        "tcp_port": 5432,
+        "started_at": "concurrent",
+        "cwd": project.canonicalize().unwrap(),
+        "engine": "postgres",
+        "container_id": "concurrent-id"
+    });
+    std::fs::write(
+        servers.join("default-pg18.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .expect("write concurrent metadata");
+    std::fs::remove_file(marker).expect("remove metadata injection marker");
 }
 
 fn write_json(stream: &mut UnixStream, status: u16, body: &str) {
@@ -357,6 +423,28 @@ fn write_resumed_server(project: &Path) {
         serde_json::to_vec_pretty(&metadata).unwrap(),
     )
     .expect("write resumed server metadata");
+}
+
+fn write_dotenv_server(project: &Path) {
+    let servers = project.join(".clickhouse/servers");
+    std::fs::create_dir_all(servers.join("default-pg18/data"))
+        .expect("create dotenv server data directory");
+    let metadata = serde_json::json!({
+        "name": "default-pg18",
+        "pid": 0,
+        "version": "postgres:18",
+        "http_port": 0,
+        "tcp_port": 5432,
+        "started_at": "before-dotenv",
+        "cwd": project.canonicalize().unwrap(),
+        "engine": "postgres",
+        "container_id": "dotenv-id"
+    });
+    std::fs::write(
+        servers.join("default-pg18.json"),
+        serde_json::to_vec_pretty(&metadata).unwrap(),
+    )
+    .expect("write dotenv server metadata");
 }
 
 fn run_start(
@@ -480,6 +568,10 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
     let probes = readiness_requests(&requests);
     assert_eq!(probes.len(), 3);
     for probe in probes {
+        assert!(
+            probe.metadata_lock_available,
+            "metadata lock was held during readiness request: {probe:?}"
+        );
         let body: serde_json::Value = serde_json::from_str(&probe.body).expect("exec body JSON");
         assert_eq!(
             body["Cmd"],
@@ -497,6 +589,130 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
         assert!(!probe.body.contains("fresh-secret"));
         assert!(body["Env"].is_null());
     }
+    let image_inspect = requests
+        .iter()
+        .find(|request| request.path == "/images/postgres:18/json")
+        .expect("fresh image inspection request");
+    assert!(
+        image_inspect.metadata_lock_available,
+        "metadata lock was held during image inspection: {image_inspect:?}"
+    );
+}
+
+#[test]
+fn postgres_dotenv_releases_metadata_lock_before_docker_credentials_read() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    write_dotenv_server(project.path());
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: true,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![],
+            remove_statuses: vec![],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: false,
+            create_metadata_directory_on_start: false,
+        },
+    );
+
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home.path())
+        .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
+        .current_dir(project.path())
+        .args(["local", "--json", "postgres", "dotenv", "--name", "default"])
+        .output()
+        .expect("run postgres dotenv");
+    let requests = docker.requests();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let inspections: Vec<_> = requests
+        .iter()
+        .filter(|request| request.path == "/containers/dotenv-id/json")
+        .collect();
+    assert!(inspections.len() >= 2, "requests: {requests:?}");
+    assert!(
+        inspections.last().unwrap().metadata_lock_available,
+        "metadata lock was held during credential read: {inspections:?}"
+    );
+}
+
+#[test]
+fn postgres_start_revalidates_metadata_after_image_inspection() {
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let project = tempfile::tempdir().expect("create project tempdir");
+    std::fs::write(
+        project.path().join("inject-metadata-during-image-inspect"),
+        b"inject",
+    )
+    .expect("write metadata injection marker");
+    let socket_path = home.path().join("docker.sock");
+    let docker = FakeDocker::start(
+        &socket_path,
+        project.path(),
+        DockerScenario {
+            existing: false,
+            outcome: ContainerOutcome::Running,
+            start_statuses: vec![],
+            remove_statuses: vec![],
+            readiness_exit_codes: vec![],
+            readiness_create_errors: 0,
+            logs: vec![],
+            write_partial_data: false,
+            create_metadata_directory_on_start: false,
+        },
+    );
+    let port = reserve_port().to_string();
+
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home.path())
+        .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
+        .current_dir(project.path())
+        .args([
+            "local",
+            "postgres",
+            "start",
+            "--name",
+            "default",
+            "--version",
+            "18",
+            "--port",
+            &port,
+        ])
+        .output()
+        .expect("run postgres start");
+    let requests = docker.requests();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("container is gone"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.path.starts_with("/containers/create")),
+        "start ignored concurrently committed metadata: {requests:?}"
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.path().join(".clickhouse/servers/default-pg18.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["container_id"], "concurrent-id");
 }
 
 #[test]

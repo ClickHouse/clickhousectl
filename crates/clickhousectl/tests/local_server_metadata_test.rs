@@ -147,10 +147,10 @@ fn selected_permission_failure_is_actionable() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Failed to read server metadata"),
+        stderr.contains("Permission denied reading server metadata"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("Check that the file is readable"));
+    assert!(stderr.contains("Check ownership and file permissions"));
     assert!(!stderr.contains("is not running"), "stderr: {stderr}");
 }
 
@@ -187,6 +187,38 @@ fn list_ignores_stale_temp_but_rejects_corrupt_live_entry() {
     );
     assert_eq!(corrupt.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&corrupt.stderr).contains("not valid JSON"));
+}
+
+#[test]
+fn corrupt_unrelated_metadata_does_not_block_start() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path());
+    let _processes = ProcessFileGuard(project.path().join("fake-clickhouse-pids"));
+    let metadata = write_metadata(project.path(), b"not json");
+
+    let output = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--name",
+            "unrelated",
+            "--version",
+            VERSION,
+            "--no-wait",
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(metadata).unwrap(), b"not json");
 }
 
 #[test]

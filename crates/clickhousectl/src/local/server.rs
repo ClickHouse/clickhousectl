@@ -55,7 +55,7 @@ fn default_engine() -> Engine {
 /// `engine` and `container_id` are post-Postgres-support additions and default
 /// to ClickHouse + None so existing `.clickhouse/servers/*.json` files keep
 /// deserializing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub name: String,
     /// Active ClickHouse process PID; 0 when stopped or for Postgres.
@@ -115,14 +115,37 @@ pub(crate) struct MetadataLock {
 
 impl MetadataLock {
     fn acquire_at(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir).map_err(|source| {
+            server_lock_error(
+                "create the server metadata lock directory",
+                dir,
+                "Check write access to the parent directory, then retry.",
+                source,
+            )
+        })?;
+        let path = dir.join(METADATA_LOCK_FILE);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(dir.join(METADATA_LOCK_FILE))?;
-        file.lock()?;
+            .open(&path)
+            .map_err(|source| {
+                server_lock_error(
+                    "open the server metadata lock file",
+                    &path,
+                    "Check read and write access to the lock file and its directory, then retry.",
+                    source,
+                )
+            })?;
+        file.lock().map_err(|source| {
+            server_lock_error(
+                "acquire the server metadata lock",
+                &path,
+                "Check that the filesystem supports advisory file locks, then retry.",
+                source,
+            )
+        })?;
         Ok(Self {
             _file: file,
             dir: dir.to_path_buf(),
@@ -210,6 +233,20 @@ fn metadata_write_error(path: &Path, source: std::io::Error) -> Error {
     }
 }
 
+fn server_lock_error(
+    operation: &'static str,
+    path: &Path,
+    remediation: &'static str,
+    source: std::io::Error,
+) -> Error {
+    Error::ServerLock {
+        operation,
+        path: path.to_path_buf(),
+        remediation,
+        source,
+    }
+}
+
 fn sync_directory(dir: &Path, metadata_path: &Path) -> Result<()> {
     #[cfg(unix)]
     File::open(dir)
@@ -219,6 +256,14 @@ fn sync_directory(dir: &Path, metadata_path: &Path) -> Result<()> {
 }
 
 fn save_server_info_at(dir: &Path, info: &ServerInfo) -> Result<()> {
+    save_server_info_at_with_sync(dir, info, sync_directory)
+}
+
+fn save_server_info_at_with_sync(
+    dir: &Path,
+    info: &ServerInfo,
+    sync: impl FnOnce(&Path, &Path) -> Result<()>,
+) -> Result<()> {
     let path = dir.join(format!("{}.json", info.name));
     let json = serde_json::to_vec_pretty(info)?;
     let mut temporary = tempfile::Builder::new()
@@ -233,7 +278,10 @@ fn save_server_info_at(dir: &Path, info: &ServerInfo) -> Result<()> {
     temporary
         .persist(&path)
         .map_err(|error| metadata_write_error(&path, error.error))?;
-    sync_directory(dir, &path)
+    // The rename has committed metadata at this point. A directory sync error
+    // must not make callers treat the child as untracked and terminate it.
+    let _ = sync(dir, &path);
+    Ok(())
 }
 
 pub(crate) fn save_server_info_locked(info: &ServerInfo, lock: &MetadataLock) -> Result<()> {
@@ -289,6 +337,12 @@ fn load_info_at(path: &Path) -> Result<Option<ServerInfo>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(Error::ServerMetadataPermission {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
         Err(source) => {
             return Err(Error::ServerMetadataRead {
                 path: path.to_path_buf(),
@@ -378,6 +432,13 @@ pub fn list_all_servers() -> Result<Vec<ServerEntry>> {
 }
 
 pub(crate) fn list_all_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerEntry>> {
+    list_all_servers_locked_inner(lock, false)
+}
+
+fn list_all_servers_locked_inner(
+    lock: &MetadataLock,
+    skip_entry_errors: bool,
+) -> Result<Vec<ServerEntry>> {
     let dir = &lock.dir;
     let mut entries = Vec::new();
 
@@ -389,6 +450,9 @@ pub(crate) fn list_all_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerE
 
     for entry in dir_entries {
         let entry = entry?;
+        if !entry.path().is_file() {
+            continue;
+        }
         let fname = match entry.file_name().into_string() {
             Ok(s) => s,
             Err(_) => continue,
@@ -397,7 +461,12 @@ pub(crate) fn list_all_servers_locked(lock: &MetadataLock) -> Result<Vec<ServerE
             Some(s) => s,
             None => continue,
         };
-        let Some(entry) = server_entry_locked(stem, lock)? else {
+        let entry = match server_entry_locked(stem, lock) {
+            Ok(entry) => entry,
+            Err(_) if skip_entry_errors => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(entry) = entry else {
             // The file was removed after read_dir; absence is not corruption
             // and must not produce a phantom stopped entry.
             continue;
@@ -455,6 +524,13 @@ pub(crate) fn list_running_servers_locked(lock: &MetadataLock) -> Result<Vec<Ser
         .filter(|entry| entry.running)
         .filter_map(|entry| entry.info)
         .collect())
+}
+
+/// Best-effort count used only for the informational notice during start.
+pub(crate) fn advisory_running_server_count_locked(lock: &MetadataLock) -> usize {
+    list_all_servers_locked_inner(lock, true)
+        .map(|entries| entries.iter().filter(|entry| entry.running).count())
+        .unwrap_or_default()
 }
 
 /// Check if a named server is currently running.
@@ -989,14 +1065,13 @@ mod tests {
     }
 
     #[test]
-    fn selected_metadata_reports_read_io_errors() {
+    fn listing_ignores_json_directories() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("default.json");
         std::fs::create_dir(&path).unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
 
-        let error = load_info_at(&path).unwrap_err();
-        assert!(matches!(error, Error::ServerMetadataRead { .. }));
-        assert!(error.to_string().contains("Failed to read server metadata"));
+        assert!(list_all_servers_locked(&lock).unwrap().is_empty());
     }
 
     #[cfg(unix)]
@@ -1013,10 +1088,34 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
         let error = load_info_at(&path).unwrap_err();
-        let Error::ServerMetadataRead { source, .. } = error else {
-            panic!("expected metadata read error");
+        let Error::ServerMetadataPermission { source, .. } = error else {
+            panic!("expected metadata permission error");
         };
         assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn metadata_lock_directory_failure_is_actionable() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock_directory = directory.path().join("servers");
+        std::fs::write(&lock_directory, b"not a directory").unwrap();
+
+        let error = match MetadataLock::acquire_at(&lock_directory) {
+            Ok(_) => panic!("metadata lock acquisition unexpectedly succeeded"),
+            Err(error) => error,
+        };
+
+        assert!(std::error::Error::source(&error).is_some());
+        assert!(matches!(
+            error,
+            Error::ServerLock {
+                operation: "create the server metadata lock directory",
+                path,
+                source,
+                ..
+            } if path == lock_directory
+                && source.kind() == std::io::ErrorKind::AlreadyExists
+        ));
     }
 
     #[test]
@@ -1036,6 +1135,41 @@ mod tests {
             std::fs::read_to_string(stale_temp).unwrap(),
             r#"{"name":"default""#
         );
+    }
+
+    #[test]
+    fn directory_sync_failure_after_persist_keeps_committed_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let info = test_info(0, "committed");
+
+        save_server_info_at_with_sync(directory.path(), &info, |_, path| {
+            Err(metadata_write_error(
+                path,
+                std::io::Error::other("injected directory sync failure"),
+            ))
+        })
+        .unwrap();
+
+        let stored = load_info_at(&directory.path().join("default.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.version, "committed");
+    }
+
+    #[test]
+    fn advisory_count_ignores_corrupt_unrelated_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let mut healthy = test_info(std::process::id(), "25.12.1.1");
+        healthy.name = "healthy".into();
+        save_server_info_locked(&healthy, &lock).unwrap();
+        std::fs::write(directory.path().join("corrupt.json"), b"not json").unwrap();
+
+        assert_eq!(advisory_running_server_count_locked(&lock), 1);
+        assert!(matches!(
+            list_all_servers_locked(&lock),
+            Err(Error::ServerMetadataParse { .. })
+        ));
     }
 
     #[test]

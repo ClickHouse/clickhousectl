@@ -248,70 +248,63 @@ async fn start(
     let extra_env = preflight.extra_env;
     let password_from_env = preflight.password_from_env;
 
-    let metadata_lock = server::lock_metadata()?;
-    server::recover_current_project_servers_locked(&metadata_lock)?;
-
-    // User-facing name (no version suffix). Defaults to "default" when no
-    // postgres "default" is currently running.
-    let user_name = match name.as_deref() {
-        Some(n) => n.to_string(),
-        None => default_pg_name_locked(&metadata_lock)?,
-    };
-
-    // If `--version` is omitted but there's already exactly one instance for
-    // this name, resume it — the user almost certainly wants their existing
-    // data, not a freshly-initialized DEFAULT_PG_TAG. With multiple
-    // instances, we ask them to disambiguate. Only when zero exist do we
-    // default to DEFAULT_PG_TAG.
-    let (tag, major) = match version.as_deref() {
-        Some(v) => (v.to_string(), pg_major_from_tag(v)),
-        None => {
-            let existing = server::find_pg_instances_locked(&user_name, &metadata_lock)?;
-            match existing.len() {
-                0 => (
-                    DEFAULT_PG_TAG.to_string(),
-                    pg_major_from_tag(DEFAULT_PG_TAG),
-                ),
-                1 => {
-                    let info = &existing[0];
-                    let stored_tag = info
-                        .version
-                        .strip_prefix("postgres:")
-                        .unwrap_or(&info.version);
-                    (stored_tag.to_string(), pg_major_from_tag(stored_tag))
-                }
-                _ => {
-                    let versions: Vec<String> =
-                        existing.iter().map(|i| i.version.clone()).collect();
-                    return Err(Error::Postgres(format!(
-                        "multiple postgres instances named '{}' ({}); pass --version to select one",
-                        user_name,
-                        versions.join(", ")
-                    )));
-                }
-            }
-        }
-    };
-    let tag = tag.as_str();
-
-    // Disk identifier — uniquely scopes (name, major) so two majors of the
-    // same name never share container/data/metadata.
-    let key = server::pg_instance_key(&user_name, &major);
-
     let docker = docker::connect().await?;
-
     let project_cwd = std::env::current_dir()
         .and_then(|p| p.canonicalize())
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
-    // Resume path: an instance for this exact (name, major) already exists.
-    if let Some(prior) = server::load_info_locked(&key, &metadata_lock)? {
-        let cid = prior.container_id.as_deref().unwrap_or("");
-        let container_present =
-            !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
-        if container_present {
-            if server::is_server_running_locked(&key, &metadata_lock)? {
+    loop {
+        // Resolve an optimistic target, then release the project-wide lock
+        // before potentially slow fresh-image inspection and pulling.
+        let metadata_lock = server::lock_metadata()?;
+        server::recover_current_project_servers_locked(&metadata_lock)?;
+        let user_name = match name.as_deref() {
+            Some(name) => name.to_string(),
+            None => default_pg_name_locked(&metadata_lock)?,
+        };
+        let (tag, major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let key = server::pg_instance_key(&user_name, &major);
+        let prior = server::load_info_locked(&key, &metadata_lock)?;
+        drop(metadata_lock);
+
+        if prior.is_none() {
+            if !docker::image_exists(&docker, &tag).await? {
+                docker::pull_image(&docker, &tag, json).await?;
+            }
+            docker::ensure_name_free(&docker, &user_name, &major, &project_cwd).await?;
+        }
+
+        // The optimistic target may have changed while Docker work was in
+        // progress. Re-resolve it before any state-determining mutation.
+        let metadata_lock = server::lock_metadata()?;
+        let (current_tag, current_major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let current_key = server::pg_instance_key(&user_name, &current_major);
+        let current = server::load_info_locked(&current_key, &metadata_lock)?;
+        if current_tag != tag || current_key != key || current != prior {
+            drop(metadata_lock);
+            continue;
+        }
+
+        // Resume path: an instance for this exact (name, major) already exists.
+        if let Some(prior) = prior {
+            let cid = prior.container_id.as_deref().unwrap_or("");
+            let inspected = if cid.is_empty() {
+                None
+            } else {
+                docker.inspect_container(cid, None).await.ok()
+            };
+            let Some(inspected) = inspected else {
+                return Err(Error::Postgres(format!(
+                    "server '{}' (postgres:{}) has metadata but the container is gone. \
+                     Run `clickhousectl local postgres remove {}` to clear the data dir \
+                     and start fresh.",
+                    user_name, major, user_name
+                )));
+            };
+            if inspected.state.and_then(|state| state.running) == Some(true) {
                 return Err(Error::ServerAlreadyRunning(user_name));
             }
             if port.is_some()
@@ -326,109 +319,100 @@ async fn start(
                     user_name, user_name
                 );
             }
-            return resume_existing(&docker, prior, wait_timeout, json, &metadata_lock).await;
+            return resume_existing(&docker, prior, wait_timeout, json, metadata_lock).await;
         }
-        // Metadata orphaned — container removed externally. Force explicit
-        // cleanup to avoid silently re-initing against potentially-stale data.
-        return Err(Error::Postgres(format!(
-            "server '{}' (postgres:{}) has metadata but the container is gone. \
-             Run `clickhousectl local postgres remove {}` to clear the data dir \
-             and start fresh.",
-            user_name, major, user_name
-        )));
-    }
 
-    // Fresh create.
-    let host_port = match host_port {
-        Some(port) => port,
-        None => resolve_port(None)?,
-    };
-    if !docker::image_exists(&docker, tag).await? {
-        docker::pull_image(&docker, tag, json).await?;
-    }
+        // Fresh create.
+        let host_port = match host_port {
+            Some(port) => port,
+            None => resolve_port(None)?,
+        };
 
-    let instance_dir = server::servers_dir_join(&key);
-    let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
-    server::ensure_pg_data_dir(&user_name, &major)?;
-    let data_dir = server::pg_data_dir(&user_name, &major);
+        let instance_dir = server::servers_dir_join(&key);
+        let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
+        server::ensure_pg_data_dir(&user_name, &major)?;
+        let data_dir = server::pg_data_dir(&user_name, &major);
 
-    // Defensive cleanup of any unmanaged container colliding on our chosen
-    // container name (only if labels confirm we own it).
-    docker::ensure_name_free(&docker, &user_name, &major, &project_cwd).await?;
+        let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
+        let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
 
-    let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
-    let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
+        let password = password_from_env
+            .or(password)
+            .unwrap_or_else(generate_password);
 
-    let password = password_from_env
-        .or(password)
-        .unwrap_or_else(generate_password);
+        let opts = PostgresRunOpts {
+            user_name: &user_name,
+            major: &major,
+            tag: &tag,
+            host_port,
+            data_dir: &data_dir,
+            project_cwd: &project_cwd,
+            user: &user,
+            password: &password,
+            database: &database,
+            extra_env,
+        };
 
-    let opts = PostgresRunOpts {
-        user_name: &user_name,
-        major: &major,
-        tag,
-        host_port,
-        data_dir: &data_dir,
-        project_cwd: &project_cwd,
-        user: &user,
-        password: &password,
-        database: &database,
-        extra_env,
-    };
+        let container_id = docker::create_postgres(&docker, opts).await?;
 
-    let container_id = docker::create_postgres(&docker, opts).await?;
+        let info = ServerInfo {
+            name: key.clone(),
+            pid: 0,
+            version: format!("postgres:{tag}"),
+            http_port: 0,
+            tcp_port: host_port,
+            started_at: server::now_timestamp(),
+            cwd: project_cwd.clone(),
+            engine: Engine::Postgres,
+            container_id: Some(container_id.clone()),
+        };
+        let startup_result = async {
+            docker::start_existing(&docker, &container_id).await?;
+            server::save_server_info_locked(&info, &metadata_lock)
+        }
+        .await;
 
-    let info = ServerInfo {
-        name: key.clone(),
-        pid: 0,
-        version: format!("postgres:{tag}"),
-        http_port: 0,
-        tcp_port: host_port,
-        started_at: server::now_timestamp(),
-        cwd: project_cwd.clone(),
-        engine: Engine::Postgres,
-        container_id: Some(container_id.clone()),
-    };
-    let startup_result = async {
-        docker::start_existing(&docker, &container_id).await?;
-        server::save_server_info_locked(&info, &metadata_lock)?;
-        if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
-            return Err(postgres_readiness_error(
+        if let Err(primary) = startup_result {
+            return Err(rollback_failed_fresh_start(
                 &docker,
                 &container_id,
-                &user_name,
-                wait_timeout,
-                failure,
+                &info,
+                remove_fresh_data_on_failure,
+                primary,
+                &metadata_lock,
             )
             .await);
         }
-        Ok(())
-    }
-    .await;
+        drop(metadata_lock);
 
-    if let Err(primary) = startup_result {
-        return Err(rollback_failed_fresh_start(
-            &docker,
-            &container_id,
-            &info,
-            remove_fresh_data_on_failure,
-            primary,
-            &metadata_lock,
-        )
-        .await);
-    }
+        if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
+            let primary =
+                postgres_readiness_error(&docker, &container_id, &user_name, wait_timeout, failure)
+                    .await;
+            let metadata_lock = server::lock_metadata()?;
+            return Err(rollback_failed_fresh_start(
+                &docker,
+                &container_id,
+                &info,
+                remove_fresh_data_on_failure,
+                primary,
+                &metadata_lock,
+            )
+            .await);
+        }
 
-    let out = output::PostgresStartOutput {
-        name: user_name,
-        container_id,
-        image: format!("postgres:{tag}"),
-        port: host_port,
-        user,
-        password,
-        database,
-    };
-    output::print_output(&out, json);
-    Ok(())
+        let out = output::PostgresStartOutput {
+            name: user_name,
+            container_id,
+            image: format!("postgres:{tag}"),
+            port: host_port,
+            user,
+            password,
+            database,
+        };
+        output::print_output(&out, json);
+        return Ok(());
+    }
 }
 
 /// A fresh attempt owns an absent or empty instance directory, including one
@@ -557,6 +541,41 @@ fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String
     }
 }
 
+/// Resolve the image tag for a user-facing name. The caller invokes this both
+/// before Docker image preparation and under the final metadata lock.
+fn resolve_pg_start_version_locked(
+    user_name: &str,
+    version: Option<&str>,
+    metadata_lock: &server::MetadataLock,
+) -> Result<(String, String)> {
+    if let Some(version) = version {
+        return Ok((version.to_string(), pg_major_from_tag(version)));
+    }
+
+    let existing = server::find_pg_instances_locked(user_name, metadata_lock)?;
+    match existing.as_slice() {
+        [] => Ok((
+            DEFAULT_PG_TAG.to_string(),
+            pg_major_from_tag(DEFAULT_PG_TAG),
+        )),
+        [info] => {
+            let stored_tag = info
+                .version
+                .strip_prefix("postgres:")
+                .unwrap_or(&info.version);
+            Ok((stored_tag.to_string(), pg_major_from_tag(stored_tag)))
+        }
+        _ => {
+            let versions: Vec<&str> = existing.iter().map(|info| info.version.as_str()).collect();
+            Err(Error::Postgres(format!(
+                "multiple postgres instances named '{}' ({}); pass --version to select one",
+                user_name,
+                versions.join(", ")
+            )))
+        }
+    }
+}
+
 /// Resolve `--name <X> [--version <V>]` to a single Postgres instance on disk.
 /// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
 /// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
@@ -596,28 +615,19 @@ async fn resume_existing(
     prior: ServerInfo,
     wait_timeout: Duration,
     json: bool,
-    metadata_lock: &server::MetadataLock,
+    metadata_lock: server::MetadataLock,
 ) -> Result<()> {
     let container_id = prior.container_id.clone().expect("checked by caller");
     let display_name = user_name_from_key(&prior.name).to_string();
 
     docker::start_existing(docker, &container_id).await?;
 
-    if let Err(failure) = wait_for_postgres_ready(docker, &container_id, wait_timeout).await {
-        let error =
-            postgres_readiness_error(docker, &container_id, &display_name, wait_timeout, failure)
-                .await;
-        let _ = docker::stop_container(docker, &container_id).await;
-        return Err(error);
-    }
-
-    let (user, password, database) = read_pg_env(docker, &container_id).await;
-
     let info = ServerInfo {
         started_at: server::now_timestamp(),
         ..prior
     };
-    if let Err(primary) = server::save_server_info_locked(&info, metadata_lock) {
+    if let Err(primary) = server::save_server_info_locked(&info, &metadata_lock) {
+        drop(metadata_lock);
         return match docker::stop_container(docker, &container_id).await {
             Ok(()) => Err(primary),
             Err(cleanup) => Err(Error::PostgresStartupRollback {
@@ -628,6 +638,17 @@ async fn resume_existing(
             }),
         };
     }
+    drop(metadata_lock);
+
+    if let Err(failure) = wait_for_postgres_ready(docker, &container_id, wait_timeout).await {
+        let error =
+            postgres_readiness_error(docker, &container_id, &display_name, wait_timeout, failure)
+                .await;
+        let _ = docker::stop_container(docker, &container_id).await;
+        return Err(error);
+    }
+
+    let (user, password, database) = read_pg_env(docker, &container_id).await;
 
     let out = output::PostgresStartOutput {
         name: display_name,
@@ -1143,6 +1164,7 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
     if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
+    drop(metadata_lock);
 
     // Read user/password/db from the container env so we always emit accurate creds.
     let (user, password, database) = docker::block_on(read_pg_env_for_dotenv(
