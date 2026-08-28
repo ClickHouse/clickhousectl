@@ -6302,3 +6302,176 @@ async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
         "a pre-hashed create must not report key material:\n{stdout}",
     );
 }
+
+// ── `service update --remove-*` warns on unmatched entries (issue #612) ────
+
+/// Mount a `GET` returning the given `ipAccessList`/`privateEndpointIds`/`tags`
+/// snapshot and a `PATCH` that echoes it back unchanged, both scoped to
+/// `svc-1` in `org-1`.
+async fn mount_service_update_round_trip(mock: &MockServer, current: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": current,
+            "status": 200,
+            "requestId": "stub-service-get",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": current,
+            "status": 200,
+            "requestId": "stub-service-update",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn service_update_warns_when_remove_ip_allow_matches_nothing() {
+    let mock = MockServer::start().await;
+    mount_service_update_round_trip(
+        &mock,
+        serde_json::json!({
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "demo",
+            "ipAccessList": [{ "source": "10.0.0.0/8" }],
+        }),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--remove-ip-allow",
+            "10.99.99.99/32",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Warning: --remove-ip-allow 10.99.99.99/32 did not match any entry in the service's \
+         current IP allow list; no entry was removed\n"
+    );
+}
+
+#[tokio::test]
+async fn service_update_does_not_warn_when_remove_ip_allow_matches() {
+    let mock = MockServer::start().await;
+    mount_service_update_round_trip(
+        &mock,
+        serde_json::json!({
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "demo",
+            "ipAccessList": [{ "source": "10.0.0.0/8" }],
+        }),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--remove-ip-allow",
+            "10.0.0.0/8",
+        ],
+    );
+
+    assert_success(&output);
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
+    let mock = MockServer::start().await;
+    mount_service_update_round_trip(
+        &mock,
+        serde_json::json!({
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "demo",
+            "privateEndpointIds": ["pe-1"],
+            "tags": [{ "key": "env", "value": "prod" }],
+        }),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--remove-private-endpoint-id",
+            "pe-missing",
+            "--remove-tag",
+            "missing",
+        ],
+    );
+
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr,
+        "Warning: --remove-private-endpoint-id pe-missing did not match any private endpoint \
+         on the service; nothing was removed\n\
+         Warning: --remove-tag missing did not match any tag on the service; nothing was \
+         removed\n"
+    );
+}
+
+#[tokio::test]
+async fn service_update_skips_get_when_no_removals_requested() {
+    let mock = MockServer::start().await;
+    // No removal flags: the handler must not issue the pre-update GET at all,
+    // since idempotent adds/renames never risk a silent no-op.
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "22222222-3333-4444-5555-666666666666", "name": "renamed" },
+            "status": 200,
+            "requestId": "stub-service-update",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service", "update", "svc-1", "--org-id", "org-1", "--name", "renamed",
+        ],
+    );
+
+    assert_success(&output);
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

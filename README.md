@@ -573,6 +573,10 @@ clickhousectl cloud service update <service-id> \
   --add-tag env=staging \
   --transparent-data-encryption-key-id tde-key-1 \
   --enable-core-dumps false
+# `--remove-ip-allow`/`--remove-private-endpoint-id`/`--remove-tag` are
+# idempotent: removing something already absent still exits 0, but
+# clickhousectl warns on stderr for each value that matched nothing, so a
+# typo doesn't silently no-op.
 
 # Update replica scaling (vertical autoscaling — fixed replica count, variable memory)
 clickhousectl cloud service scale <service-id> \

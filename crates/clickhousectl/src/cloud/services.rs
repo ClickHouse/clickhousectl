@@ -17,7 +17,9 @@ use clickhouse_cloud_api::models::{
     ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
-use std::{io::IsTerminal, time::Duration};
+#[cfg(test)]
+use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
+use std::{collections::HashSet, io::IsTerminal, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Clone, Copy)]
@@ -1263,6 +1265,85 @@ fn build_update_service_request(
     })
 }
 
+/// Whether `options` requests removing anything from a service, so callers
+/// can decide whether a pre-update `GET` is needed to check the removals
+/// against the current state.
+fn has_removals(options: &ServiceUpdateOptions) -> bool {
+    !options.remove_ip_allow.is_empty()
+        || !options.remove_private_endpoint_ids.is_empty()
+        || !options.remove_tags.is_empty()
+}
+
+/// Requested values that do not match anything in `current` (by exact string
+/// equality). The service update API silently no-ops a removal that matches
+/// nothing, which is idempotent but can hide a typo, so the caller surfaces
+/// each unmatched entry as a warning instead of failing.
+fn unmatched<'a>(requested: &'a [String], current: &HashSet<&str>) -> Vec<&'a str> {
+    requested
+        .iter()
+        .map(String::as_str)
+        .filter(|value| !current.contains(value))
+        .collect()
+}
+
+/// Human-readable warnings for every `--remove-*` value on `options` that
+/// does not match anything in `current`.
+fn unmatched_removal_warnings(options: &ServiceUpdateOptions, current: &Service) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let current_ip_allow: HashSet<&str> = current
+        .ip_access_list
+        .iter()
+        .flatten()
+        .filter_map(|entry| entry.source.as_deref())
+        .collect();
+    for value in unmatched(&options.remove_ip_allow, &current_ip_allow) {
+        warnings.push(format!(
+            "--remove-ip-allow {value} did not match any entry in the service's current IP allow list; no entry was removed"
+        ));
+    }
+
+    let current_private_endpoint_ids: HashSet<&str> = current
+        .private_endpoint_ids
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    for value in unmatched(
+        &options.remove_private_endpoint_ids,
+        &current_private_endpoint_ids,
+    ) {
+        warnings.push(format!(
+            "--remove-private-endpoint-id {value} did not match any private endpoint on the service; nothing was removed"
+        ));
+    }
+
+    let current_tags: HashSet<&str> = current
+        .tags
+        .iter()
+        .flatten()
+        .filter_map(|tag| tag.key.as_deref())
+        .collect();
+    let remove_tag_keys: Vec<String> = options
+        .remove_tags
+        .iter()
+        .map(|value| tag_key(value).to_string())
+        .collect();
+    for value in unmatched(&remove_tag_keys, &current_tags) {
+        warnings.push(format!(
+            "--remove-tag {value} did not match any tag on the service; nothing was removed"
+        ));
+    }
+
+    warnings
+}
+
+/// The key portion of a `key` or `key=value` tag argument, matching how
+/// [`crate::cloud::shared::parse_tag`] splits removal/addition arguments.
+fn tag_key(value: &str) -> &str {
+    value.split_once('=').map_or(value, |(key, _)| key).trim()
+}
+
 fn build_service_password_patch_request(
     options: &ServiceResetPasswordOptions,
 ) -> ServicePasswordPatchRequest {
@@ -1536,6 +1617,14 @@ async fn service_update(
 ) -> CloudResult<()> {
     let request = build_update_service_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+
+    if has_removals(&options) {
+        let current = client.get_service(&org_id, service_id).await?;
+        for warning in unmatched_removal_warnings(&options, &current) {
+            eprint_line(format!("Warning: {warning}"));
+        }
+    }
+
     let service = client.update_service(&org_id, service_id, &request).await?;
 
     if json {
@@ -4524,6 +4613,121 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("turbo"));
+    }
+
+    #[test]
+    fn has_removals_is_false_when_no_remove_flags_set() {
+        assert!(!has_removals(&ServiceUpdateOptions::default()));
+        assert!(!has_removals(&ServiceUpdateOptions {
+            add_ip_allow: vec!["10.0.0.0/8".to_string()],
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn has_removals_is_true_when_any_remove_flag_set() {
+        assert!(has_removals(&ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            ..Default::default()
+        }));
+        assert!(has_removals(&ServiceUpdateOptions {
+            remove_private_endpoint_ids: vec!["pe-1".to_string()],
+            ..Default::default()
+        }));
+        assert!(has_removals(&ServiceUpdateOptions {
+            remove_tags: vec!["env".to_string()],
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn unmatched_returns_only_values_absent_from_current() {
+        let current: HashSet<&str> = ["a", "b"].into_iter().collect();
+        assert_eq!(
+            unmatched(&["a".to_string(), "c".to_string()], &current),
+            vec!["c"]
+        );
+        assert!(unmatched(&["a".to_string(), "b".to_string()], &current).is_empty());
+    }
+
+    #[test]
+    fn tag_key_strips_value_and_trims() {
+        assert_eq!(tag_key("env"), "env");
+        assert_eq!(tag_key("env=prod"), "env");
+        assert_eq!(tag_key(" env = prod"), "env");
+    }
+
+    fn service_with_ip_allow_endpoints_and_tags() -> Service {
+        Service {
+            ip_access_list: Some(vec![IpAccessListEntryResponse {
+                source: Some("10.0.0.0/8".to_string()),
+                description: None,
+            }]),
+            private_endpoint_ids: Some(vec!["pe-1".to_string()]),
+            tags: Some(vec![ResourceTagsV1Response {
+                key: Some("env".to_string()),
+                value: Some("prod".to_string()),
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_is_empty_when_everything_matches() {
+        let current = service_with_ip_allow_endpoints_and_tags();
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            remove_private_endpoint_ids: vec!["pe-1".to_string()],
+            remove_tags: vec!["env".to_string()],
+            ..Default::default()
+        };
+        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_names_every_unmatched_entry() {
+        let current = service_with_ip_allow_endpoints_and_tags();
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.99.99.99/32".to_string()],
+            remove_private_endpoint_ids: vec!["pe-missing".to_string()],
+            remove_tags: vec!["missing=value".to_string()],
+            ..Default::default()
+        };
+        let warnings = unmatched_removal_warnings(&options, &current);
+        assert_eq!(warnings.len(), 3);
+        assert!(
+            warnings[0].contains("--remove-ip-allow 10.99.99.99/32")
+                && warnings[0].contains("did not match"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[1].contains("--remove-private-endpoint-id pe-missing"),
+            "{warnings:?}"
+        );
+        assert!(warnings[2].contains("--remove-tag missing"), "{warnings:?}");
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_matches_tag_removal_by_key_only() {
+        // Removing "env=staging" should still match a current "env=prod" tag:
+        // the key is what the server matches on for removal.
+        let current = service_with_ip_allow_endpoints_and_tags();
+        let options = ServiceUpdateOptions {
+            remove_tags: vec!["env=staging".to_string()],
+            ..Default::default()
+        };
+        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_handles_empty_current_lists() {
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            ..Default::default()
+        };
+        let warnings = unmatched_removal_warnings(&options, &Service::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("--remove-ip-allow 10.0.0.0/8"));
     }
 
     #[test]
