@@ -390,8 +390,13 @@ pub enum Error {
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 
+    /// `local remove` was asked to delete a version that a running server was
+    /// started from. The blocking servers are named with their project root
+    /// because the check spans every project, not just the current directory:
+    /// deleting the binary breaks a server started elsewhere just as badly.
     #[error(
-        "Version {version} is in use by running server(s): {servers}. Stop them first, or pass --force."
+        "Version {version} is in use by running server(s), in this project or another: {servers}. \
+         Stop them first (`clickhousectl local server stop --global <name>`), or pass --force to stop them and remove the version."
     )]
     VersionInUse { version: String, servers: String },
 

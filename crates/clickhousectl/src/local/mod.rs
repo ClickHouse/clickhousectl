@@ -214,26 +214,29 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         });
     }
 
-    // Recover orphaned servers so we detect a running process even when its
-    // metadata file is missing, then refuse to pull the binary out from under
-    // a server running on this version.
-    server::recover_current_project_servers()?;
-    let in_use: Vec<String> = server::list_running_servers()?
-        .into_iter()
-        .filter(|i| i.version == version)
-        .map(|i| i.name)
-        .collect();
+    // Refuse to pull the binary out from under a server running on this
+    // version. The lookup spans every project, not just this one: a server
+    // started from another directory is invisible to project-scoped metadata,
+    // but deleting its binary breaks `local client` there just the same.
+    let in_use = server::servers_using_version(version)?;
     if !in_use.is_empty() {
         if !force {
             return Err(Error::VersionInUse {
                 version: version.to_string(),
-                servers: in_use.join(", "),
+                servers: server::describe_version_users(&in_use),
             });
         }
-        for name in &in_use {
-            server::kill_server(name)?;
+        for user in &in_use {
+            // Servers in this project are stopped through their metadata so it
+            // stays consistent; servers elsewhere can only be stopped by PID,
+            // exactly like `server stop --global`.
+            if user.current_project {
+                server::kill_server(&user.name)?;
+            } else {
+                server::kill_server_by_pid(user.pid)?;
+            }
             if !json {
-                println!("Stopped server '{}'", name);
+                println!("Stopped server '{}' in {}", user.name, user.project);
             }
         }
     }

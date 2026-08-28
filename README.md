@@ -172,12 +172,12 @@ clickhousectl local list --remote           # Available for download
 
 # Remove a version
 clickhousectl local remove 26.8.1.1760
-clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this version, and remove it even if it is the default
+clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this version (in any project), and remove it even if it is the default
 ```
 
 `local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning.
 
-`local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with the running server names. Stop the server first, or pass `--force` to stop the running server(s) and then remove the version.
+`local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with exit `1` and JSON error code `server_running`. Because versions are shared between projects, the check spans **every** project, not just the current directory: the error names each blocking server with the project root it was started from and its PID, so a server found by `clickhousectl local server list --global` is identifiable. Stop those servers first (`clickhousectl local server stop --global <name>`), or pass `--force` to stop them — in whichever project they run — and then remove the version.
 
 `local remove` also refuses to delete the **current default version** (exit `1`, JSON error code `version_is_default`): removing it clears the `~/.clickhouse/default` marker and the global `~/.local/bin/clickhouse` symlink, and the exact build is not always re-downloadable — `builds.clickhouse.com` does not serve every exact build, which can leave a master-channel build unrecoverable. Switch the default first with `clickhousectl local use <other-version>`, or pass `--force` to remove it anyway. A forced removal stops any running servers on the version, warns on stderr before the version itself is deleted, then reports `was_default: true` in its output and clears both the default marker and the global symlink; set a new default with `clickhousectl local use latest`.
 

@@ -201,10 +201,15 @@ impl LocalErrorOutput {
                 message: format!("Server '{name}' is running"),
                 command: Some("clickhousectl local server list"),
             },
-            Error::VersionInUse { .. } => LocalErrorDetail {
+            // The blocking servers are named — including their project root —
+            // because they may live outside the current project, where neither
+            // `server list` nor the caller's own state can find them.
+            Error::VersionInUse { version, servers } => LocalErrorDetail {
                 code: LocalErrorCode::ServerRunning,
-                message: "A running server is using this version".to_string(),
-                command: Some("clickhousectl local server list"),
+                message: format!(
+                    "Version {version} is in use by running server(s), in this project or another: {servers}"
+                ),
+                command: Some("clickhousectl local server list --global"),
             },
             Error::VersionIsDefault { .. } => LocalErrorDetail {
                 code: LocalErrorCode::VersionIsDefault,
