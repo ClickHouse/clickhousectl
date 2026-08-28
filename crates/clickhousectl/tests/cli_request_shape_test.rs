@@ -581,6 +581,59 @@ async fn service_delete_running_conflict_suggests_force() {
     );
 }
 
+// ── Postgres deletion JSON output (issue #614) ────────────────────────────
+
+/// `postgres delete --json` must emit the Postgres resource object, not the
+/// raw `{"status":...,"requestId":...}` API envelope the delete endpoint
+/// itself returns: the handler fetches the resource before issuing the
+/// delete and renders that instead, consistent with every other
+/// `cloud postgres` subcommand.
+#[tokio::test]
+async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
+    let mock = MockServer::start().await;
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": postgres_id,
+                "name": "my-postgres",
+                "state": "running",
+            },
+            "status": 200,
+            "requestId": "stub-postgres-get",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}"
+        )))
+        .respond_with(successful_delete_response("stub-postgres-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["postgres", "delete", postgres_id, "--org-id", "org-1"],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert_eq!(stdout["id"], postgres_id);
+    assert_eq!(stdout["name"], "my-postgres");
+    assert_eq!(stdout["state"], "running");
+    assert!(
+        stdout.get("status").is_none() && stdout.get("requestId").is_none(),
+        "must not emit the raw API envelope, got: {stdout}"
+    );
+}
+
 const DELETE_TEST_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
 const DELETE_TEST_API_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const DELETE_TEST_PENDING_API_KEY_ID: &str = "99999999-8888-7777-6666-555555555555";

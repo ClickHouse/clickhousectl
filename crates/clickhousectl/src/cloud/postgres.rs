@@ -990,14 +990,27 @@ pub async fn postgres_delete(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
+
+    // The delete endpoint itself only ever returns the raw API envelope
+    // (`ApiResponse<serde_json::Value>`, no resource in `result`), so fetch the
+    // resource before deleting it and render that instead: `--json` output must
+    // stay consistent with every other `cloud postgres` subcommand, which emits
+    // the resource object rather than `{"status":...,"requestId":...}` (#614).
     let resp = client
+        .api()
+        .postgres_service_get(&org_id, postgres_id)
+        .await
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
+    let svc = unwrap_api(resp)?;
+
+    client
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
         .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
         println!("Postgres service {} deletion initiated", postgres_id);
     }
