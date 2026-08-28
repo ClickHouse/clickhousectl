@@ -6475,3 +6475,151 @@ async fn service_update_skips_get_when_no_removals_requested() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// ── Private endpoint ID format validation (issue #611) ─────────────────────
+
+#[tokio::test]
+async fn private_endpoint_create_sends_well_formed_endpoint_id() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "vpce-0123456789abcdef0", "description": "prod" },
+            "status": 200,
+            "requestId": "stub-private-endpoint-create",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "private-endpoint",
+            "create",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--endpoint-id",
+            "vpce-0123456789abcdef0",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["id"], "vpce-0123456789abcdef0");
+}
+
+/// A malformed ID must fail as a clap usage error (exit 2) before any request
+/// is sent: registering one is org-wide and has to be unpicked by hand.
+#[tokio::test]
+async fn private_endpoint_create_rejects_malformed_endpoint_id_without_calling_api() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "private-endpoint",
+            "create",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--endpoint-id",
+            "vpce-bogus",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid AWS VPC endpoint ID 'vpce-bogus'"),
+        "stderr should explain the format: {stderr}"
+    );
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "a rejected endpoint ID must not reach the API"
+    );
+}
+
+#[tokio::test]
+async fn service_update_rejects_malformed_added_private_endpoint_id_without_calling_api() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--add-private-endpoint-id",
+            "vpce-bogus",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+/// GCP (numeric PSC connection ID) and Azure (Resource ID) formats are not
+/// AWS-shaped and must still be forwarded verbatim.
+#[tokio::test]
+async fn private_endpoint_create_forwards_non_aws_endpoint_ids() {
+    for endpoint_id in [
+        "102600141743718403",
+        "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe-demo",
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": endpoint_id, "description": "" },
+                "status": 200,
+                "requestId": "stub-private-endpoint-create",
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--org-id",
+                "org-1",
+                "--endpoint-id",
+                endpoint_id,
+            ],
+        );
+
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["id"], endpoint_id);
+    }
+}

@@ -276,7 +276,7 @@ CONTEXT FOR AGENTS:
         remove_ip_allow: Vec<String>,
 
         /// Add a private endpoint ID to the service
-        #[arg(long = "add-private-endpoint-id")]
+        #[arg(long = "add-private-endpoint-id", value_parser = parse_private_endpoint_id_arg)]
         add_private_endpoint_id: Vec<String>,
 
         /// Remove a private endpoint ID from the service
@@ -554,8 +554,9 @@ pub enum PrivateEndpointCommands {
         /// Service ID
         service_id: String,
 
-        /// Private endpoint ID (VPC endpoint ID)
-        #[arg(long)]
+        /// Private endpoint ID (AWS VPC endpoint ID, GCP PSC connection ID, or
+        /// Azure private endpoint Resource ID / resourceGuid)
+        #[arg(long, value_parser = parse_private_endpoint_id_arg)]
         endpoint_id: String,
 
         /// Description
@@ -914,6 +915,79 @@ fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAcc
     };
 
     (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
+}
+
+/// Prefix of an AWS PrivateLink VPC endpoint ID.
+const AWS_VPC_ENDPOINT_PREFIX: &str = "vpce-";
+
+/// Clap `value_parser` for flags that *add* a private endpoint ID to a service.
+///
+/// Adding an ID registers it org-wide and the API accepts any string, so a typo
+/// silently installs a dud entry that has to be unpicked from both the service
+/// and the organization (issue #611). Reject the cases that cannot be a real
+/// endpoint ID before the request is sent; clap reports this as a usage error.
+///
+/// Removal flags deliberately skip this check — a bogus ID that is already
+/// registered must stay removable.
+fn parse_private_endpoint_id_arg(value: &str) -> std::result::Result<String, String> {
+    validate_private_endpoint_id(value).map(|()| value.to_string())
+}
+
+/// The three providers use unrelated endpoint ID formats, and the provider is
+/// not known at parse time, so only checks that hold for every provider are
+/// applied:
+///
+/// * AWS PrivateLink IDs are `vpce-` plus 8 or 17 lowercase hex characters. The
+///   prefix is unmistakable, so a value carrying it anywhere must be exactly one
+///   well-formed AWS ID — that catches truncated IDs, uppercased IDs and a
+///   pasted VPC endpoint ARN.
+/// * GCP uses a numeric Private Service Connect connection ID and Azure uses a
+///   private endpoint Resource ID or `resourceGuid`. Neither has a marker that
+///   distinguishes a typo from a valid value, so they are only checked for
+///   emptiness and whitespace (illegal in all three formats). An Azure Resource
+///   ID is an absolute path and can name a resource `vpce-...`, so it is exempt
+///   from the AWS check.
+///
+/// Whether the endpoint exists and belongs to the caller is not checkable from
+/// the client; that remains an upstream API gap.
+fn validate_private_endpoint_id(value: &str) -> std::result::Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("private endpoint ID must not be empty".to_string());
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "invalid private endpoint ID '{value}': IDs cannot contain whitespace \
+             (pass each endpoint ID as its own flag value)"
+        ));
+    }
+    // Azure Resource IDs are absolute paths and can legitimately name a
+    // resource `vpce-...`, so they are exempt from the AWS-shaped check below.
+    if value.starts_with('/') {
+        return Ok(());
+    }
+    if value.to_ascii_lowercase().contains(AWS_VPC_ENDPOINT_PREFIX)
+        && !is_aws_vpc_endpoint_id(value)
+    {
+        return Err(format!(
+            "invalid AWS VPC endpoint ID '{value}': expected exactly '{AWS_VPC_ENDPOINT_PREFIX}' \
+             followed by 17 lowercase hex characters (for example vpce-0123456789abcdef0). GCP \
+             uses the numeric Private Service Connect connection ID and Azure the private \
+             endpoint Resource ID or resourceGuid"
+        ));
+    }
+    Ok(())
+}
+
+/// `vpce-` plus 8 (legacy) or 17 (current) lowercase hex characters, and nothing
+/// else.
+fn is_aws_vpc_endpoint_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix(AWS_VPC_ENDPOINT_PREFIX) else {
+        return false;
+    };
+    matches!(suffix.len(), 8 | 17)
+        && suffix
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
 }
 
 fn parse_private_endpoint_ids_patch(
@@ -3014,7 +3088,7 @@ mod tests {
             "create",
             "svc-1",
             "--endpoint-id",
-            "vpce-1",
+            "vpce-0123456789abcdef0",
         ]);
         let crate::cloud::cli::ServiceCommands::PrivateEndpoint { command } = private_endpoint
         else {
@@ -3805,7 +3879,7 @@ mod tests {
             "create",
             "svc-1",
             "--endpoint-id",
-            "vpce-1",
+            "vpce-0123456789abcdef0",
             "--description",
             "production",
             "--org-id",
@@ -3824,9 +3898,165 @@ mod tests {
             panic!("expected private-endpoint create");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(endpoint_id, "vpce-1");
+        assert_eq!(endpoint_id, "vpce-0123456789abcdef0");
         assert_eq!(description.as_deref(), Some("production"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    /// Non-AWS endpoint IDs have no marker that separates a typo from a valid
+    /// value, so they must pass through untouched (issue #611).
+    #[test]
+    fn parses_non_aws_private_endpoint_ids_unchanged() {
+        for id in [
+            // GCP Private Service Connect connection ID.
+            "102600141743718403",
+            // Azure private endpoint Resource ID.
+            "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg/providers/\
+             Microsoft.Network/privateEndpoints/pe-demo",
+            // Azure resourceGuid (legacy form).
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            // Legacy 8-character AWS VPC endpoint ID.
+            "vpce-0123abcd",
+        ] {
+            let command = parse_service(&[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                id,
+            ]);
+            let crate::cloud::cli::ServiceCommands::PrivateEndpoint { command } = command else {
+                panic!("expected private-endpoint command");
+            };
+            let crate::cloud::cli::PrivateEndpointCommands::Create { endpoint_id, .. } = command
+            else {
+                panic!("expected private-endpoint create");
+            };
+            assert_eq!(endpoint_id, id, "{id} must be accepted verbatim");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_private_endpoint_create_endpoint_id() {
+        for id in ["vpce-1", "vpce-bogus", "VPCE-0123456789ABCDEF0", "", " "] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                id,
+            ])
+            .err()
+            .unwrap_or_else(|| panic!("--endpoint-id {id:?} must be rejected"));
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "--endpoint-id {id:?} must fail as a usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_added_private_endpoint_id_on_update() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--add-private-endpoint-id",
+            "vpce-nope",
+        ])
+        .err()
+        .expect("malformed --add-private-endpoint-id must be rejected");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    /// Removing an ID must never be format-checked: a bogus ID that is already
+    /// registered has to stay removable (issue #611).
+    #[test]
+    fn accepts_malformed_removed_private_endpoint_id_on_update() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--remove-private-endpoint-id",
+            "vpce-nope",
+        ]);
+        let crate::cloud::cli::ServiceCommands::Update {
+            remove_private_endpoint_id,
+            ..
+        } = command
+        else {
+            panic!("expected service update");
+        };
+        assert_eq!(remove_private_endpoint_id, vec!["vpce-nope"]);
+    }
+
+    #[test]
+    fn validate_private_endpoint_id_accepts_every_provider_format() {
+        for id in [
+            "vpce-0123456789abcdef0",
+            "vpce-0123abcd",
+            "102600141743718403",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe",
+            // An Azure resource may itself be named `vpce-...`.
+            "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/\
+             vpce-mine",
+        ] {
+            assert!(
+                validate_private_endpoint_id(id).is_ok(),
+                "{id} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_private_endpoint_id_rejects_empty_values() {
+        for id in ["", "   ", "\t"] {
+            let error = validate_private_endpoint_id(id).expect_err("empty must be rejected");
+            assert!(error.contains("must not be empty"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_private_endpoint_id_rejects_malformed_values() {
+        for id in [
+            // Two IDs squeezed into one quoted flag value.
+            "vpce-0123456789abcdef0 vpce-0123abcd",
+            "vpce-",
+            "vpce-1",
+            "vpce-xyz",
+            // 16 hex characters: one short of the current AWS length.
+            "vpce-0123456789abcdef",
+            // 18 hex characters: one too many.
+            "vpce-0123456789abcdef01",
+            // Non-hex character inside an otherwise correct-length ID.
+            "vpce-0123456789abcdefg",
+            // AWS never issues uppercase IDs, so this would register a dud.
+            "VPCE-0123456789ABCDEF0",
+            // Endpoint *service* name pasted instead of the endpoint ID.
+            "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
+            // Full ARN pasted instead of the endpoint ID.
+            "arn:aws:ec2:us-east-1:123456789012:vpc-endpoint/vpce-0123456789abcdef0",
+        ] {
+            let error = validate_private_endpoint_id(id)
+                .expect_err(&format!("{id} must be rejected, not accepted"));
+            // The message names the offending value so the fix is obvious.
+            assert!(
+                error.contains(id),
+                "error for {id} should quote the value: {error}"
+            );
+        }
     }
 
     #[test]
@@ -4985,17 +5215,18 @@ mod tests {
 
     #[test]
     fn build_private_endpoint_create_request_supports_minimal_fields() {
-        let request = build_private_endpoint_create_request("vpce-1", None);
+        let request = build_private_endpoint_create_request("vpce-0123456789abcdef0", None);
 
-        assert_eq!(request.id, "vpce-1");
+        assert_eq!(request.id, "vpce-0123456789abcdef0");
         assert!(request.description.is_empty());
     }
 
     #[test]
     fn build_private_endpoint_create_request_supports_maximal_fields() {
-        let request = build_private_endpoint_create_request("vpce-1", Some("production"));
+        let request =
+            build_private_endpoint_create_request("vpce-0123456789abcdef0", Some("production"));
 
-        assert_eq!(request.id, "vpce-1");
+        assert_eq!(request.id, "vpce-0123456789abcdef0");
         assert_eq!(request.description, "production");
     }
 
