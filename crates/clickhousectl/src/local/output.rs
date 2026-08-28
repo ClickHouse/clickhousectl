@@ -326,10 +326,11 @@ impl LocalErrorOutput {
             }
             // Installed but unusable: the message is entirely self-composed
             // (path plus a closed-vocabulary problem), so it renders at parity
-            // and names the repair (#471).
+            // and names the repair (#471). `--force` because install counts
+            // any existing path at the binary location as already installed.
             Error::BinaryNotLaunchable { version, .. } => {
                 Mapping::parity(LocalErrorCode::BinaryNotLaunchable)
-                    .command(format!("clickhousectl local install {version}"))
+                    .command(format!("clickhousectl local install --force {version}"))
             }
             Error::NoDefaultVersion | Error::AmbiguousClientVersion => {
                 Mapping::parity(LocalErrorCode::VersionSelectionRequired)
@@ -1568,7 +1569,7 @@ mod tests {
         );
         assert_eq!(
             json["error"]["command"],
-            "clickhousectl local install 25.12.9.61"
+            "clickhousectl local install --force 25.12.9.61"
         );
     }
 

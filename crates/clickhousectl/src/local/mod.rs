@@ -1510,7 +1510,7 @@ mod tests {
         assert!(message.contains("not executable"), "{message}");
         assert!(message.contains(&binary.display().to_string()), "{message}");
         assert!(
-            message.contains("clickhousectl local install 25.12.9.61"),
+            message.contains("clickhousectl local install --force 25.12.9.61"),
             "{message}"
         );
     }

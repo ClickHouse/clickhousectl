@@ -495,9 +495,11 @@ pub enum Error {
     /// `exec()` handoff (#471). Also self-composed — see
     /// [`BinaryLaunchProblem`] — so it renders in full, unlike
     /// [`Error::Exec`], which reports what the OS said when a launch that
-    /// looked viable still failed.
+    /// looked viable still failed. The repair needs `--force`: install
+    /// treats any existing path at the binary location as "already
+    /// installed" and no-ops without it.
     #[error(
-        "ClickHouse build {version} cannot be launched: {problem} ({path})\nReinstall it with `clickhousectl local install {version}`"
+        "ClickHouse build {version} cannot be launched: {problem} ({path})\nReinstall it with `clickhousectl local install --force {version}`"
     )]
     BinaryNotLaunchable {
         version: String,
