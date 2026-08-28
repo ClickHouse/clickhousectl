@@ -972,7 +972,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: Prometheus commands emit text, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `cloud org prometheus` and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
 Local runtime failures also use structured output when `local --json` is set or a coding agent is detected. The CLI writes exactly one error object to stderr and preserves the documented exit code:
 

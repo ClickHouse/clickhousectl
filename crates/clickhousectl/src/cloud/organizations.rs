@@ -53,6 +53,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Get organization Prometheus configuration
+    #[command(after_help = "\
+OUTPUT FORMAT:
+  Output is always raw Prometheus exposition text, never JSON. --json is
+  accepted for consistency with other commands but is silently ignored.")]
     Prometheus {
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -957,6 +961,21 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
+    }
+
+    #[test]
+    fn org_prometheus_help_documents_json_is_ignored() {
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("always raw Prometheus exposition text"),
+            "{help}"
+        );
+        assert!(help.contains("--json"), "{help}");
+        assert!(help.contains("silently ignored"), "{help}");
     }
 
     #[test]

@@ -401,6 +401,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Get service Prometheus metrics
+    #[command(after_help = "\
+OUTPUT FORMAT:
+  Output is always raw Prometheus exposition text, never JSON. --json is
+  accepted for consistency with other commands but is silently ignored.")]
     Prometheus {
         /// Service ID
         service_id: String,
@@ -2525,6 +2529,22 @@ mod tests {
         assert!(help.contains("Legacy or non-owned records"), "{help}");
         assert!(help.contains("is never run"), "{help}");
         assert!(help.contains("automatically after a query fails"), "{help}");
+    }
+
+    #[test]
+    fn service_prometheus_help_documents_json_is_ignored() {
+        let error =
+            Cli::try_parse_from(["clickhousectl", "cloud", "service", "prometheus", "--help"])
+                .err()
+                .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("always raw Prometheus exposition text"),
+            "{help}"
+        );
+        assert!(help.contains("--json"), "{help}");
+        assert!(help.contains("silently ignored"), "{help}");
     }
 
     #[test]
