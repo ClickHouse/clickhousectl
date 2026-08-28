@@ -7094,3 +7094,81 @@ async fn private_endpoint_create_forwards_non_aws_endpoint_ids() {
         assert_eq!(body["id"], endpoint_id);
     }
 }
+
+// ── `clickpipe scale` requires at least one target (issue #605) ────────────
+//
+// Without --replicas/--cpu-millicores/--memory-gb the CLI used to send an
+// empty PATCH body, which the API 400s on and the CLI surfaced as a generic
+// "Internal error" (exit 1). It must now be a clap usage error (exit 2)
+// raised before any request is sent.
+
+#[tokio::test]
+async fn clickpipe_scale_without_any_flag_is_a_usage_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/[^/]+/scaling$",
+        ))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickpipe", "scale", "svc-1", "pipe-1", "--org-id", "org-1"],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("replicas")
+            || stderr.contains("cpu-millicores")
+            || stderr.contains("memory-gb"),
+        "stderr should name the scale flags: {stderr}"
+    );
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "a rejected scale command must not reach the API"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/[^/]+/scaling$",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "name": "pipe-1",
+                "scaling": { "replicas": 4 },
+            },
+            "status": 200,
+            "requestId": "stub-clickpipe-scale",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "scale",
+            "svc-1",
+            "pipe-1",
+            "--org-id",
+            "org-1",
+            "--replicas",
+            "4",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["replicas"], 4);
+}

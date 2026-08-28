@@ -768,7 +768,7 @@ clickhousectl cloud clickpipe resync <service-id> <clickpipe-id>   # CDC pipes o
 # Delete a ClickPipe
 clickhousectl cloud clickpipe delete <service-id> <clickpipe-id>
 
-# Update scaling
+# Update scaling (at least one of --replicas/--cpu-millicores/--memory-gb is required)
 clickhousectl cloud clickpipe scale <service-id> <clickpipe-id> \
   --replicas 2 --cpu-millicores 250 --memory-gb 1
 

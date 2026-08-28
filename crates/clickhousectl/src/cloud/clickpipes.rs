@@ -2,7 +2,7 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
 use clap::builder::PossibleValuesParser;
-use clap::{Args, Subcommand};
+use clap::{ArgGroup, Args, Subcommand};
 use tabled::{Table, Tabled, settings::Style};
 
 // Valid wire values for each ClickPipe enum the CLI accepts as a string argument.
@@ -156,6 +156,9 @@ pub enum ClickPipeCommands {
     },
 
     /// Update scaling configuration
+    #[command(
+        group(ArgGroup::new("scale_target").required(true).multiple(true).args(["replicas", "cpu_millicores", "memory_gb"]))
+    )]
     Scale {
         /// Service ID
         service_id: String,
@@ -2765,21 +2768,77 @@ mod tests {
         assert_eq!(cpu_millicores, Some(500));
         assert_eq!(memory_gb, Some(1.5));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn scale_requires_at_least_one_of_replicas_cpu_or_memory() {
+        assert_rejected(&["scale", "svc-1", "pipe-1"]);
+    }
+
+    #[test]
+    fn scale_accepts_a_single_flag() {
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&["scale", "svc-1", "pipe-1", "--replicas", "4"])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, Some(4));
+        assert_eq!(cpu_millicores, None);
+        assert_eq!(memory_gb, None);
 
         let ClickPipeCommands::Scale {
             replicas,
             cpu_millicores,
             memory_gb,
-            org_id,
             ..
-        } = parse_clickpipe(&["scale", "svc-1", "pipe-1"])
+        } = parse_clickpipe(&["scale", "svc-1", "pipe-1", "--cpu-millicores", "500"])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, None);
+        assert_eq!(cpu_millicores, Some(500));
+        assert_eq!(memory_gb, None);
+
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&["scale", "svc-1", "pipe-1", "--memory-gb", "1.5"])
         else {
             panic!("expected scale");
         };
         assert_eq!(replicas, None);
         assert_eq!(cpu_millicores, None);
-        assert_eq!(memory_gb, None);
-        assert_eq!(org_id, None);
+        assert_eq!(memory_gb, Some(1.5));
+    }
+
+    #[test]
+    fn scale_accepts_any_combination_of_flags() {
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&[
+            "scale",
+            "svc-1",
+            "pipe-1",
+            "--replicas",
+            "4",
+            "--memory-gb",
+            "1.5",
+        ])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, Some(4));
+        assert_eq!(cpu_millicores, None);
+        assert_eq!(memory_gb, Some(1.5));
     }
 
     #[test]
@@ -4337,7 +4396,7 @@ mod tests {
         assert_write(&["start", "svc-1", "pipe-1"], true);
         assert_write(&["stop", "svc-1", "pipe-1"], true);
         assert_write(&["resync", "svc-1", "pipe-1"], true);
-        assert_write(&["scale", "svc-1", "pipe-1"], true);
+        assert_write(&["scale", "svc-1", "pipe-1", "--replicas", "4"], true);
         assert_write(&["settings", "get", "svc-1", "pipe-1"], false);
         assert_write(&["settings", "update", "svc-1", "pipe-1"], true);
         assert_write(
