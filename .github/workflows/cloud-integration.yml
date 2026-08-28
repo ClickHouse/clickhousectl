@@ -16,7 +16,7 @@ on:
   schedule:
     - cron: "0 3 * * 1-5"
   pull_request:
-    types: [labeled]
+    types: [opened, reopened, synchronize, labeled]
 
 permissions:
   contents: read
@@ -24,19 +24,18 @@ permissions:
 env:
   DO_NOT_TRACK: "1"
 
-concurrency:
-  group: cloud-integration
-  queue: max
-  cancel-in-progress: false
-
 jobs:
+  # The planner is read-only and secret-free, so it runs automatically on
+  # every same-repository PR push. Only the environment-bearing job below is
+  # gated on the run-cloud-integration label.
   plan:
     name: Plan Cloud integration tests
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
-       github.event.label.name == 'run-cloud-integration' &&
+       (github.event.action != 'labeled' ||
+        github.event.label.name == 'run-cloud-integration') &&
        github.event.pull_request.head.repo.full_name == github.repository &&
        github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
@@ -165,14 +164,27 @@ jobs:
   cloud-integration:
     name: Cloud integration tests
     needs: plan
+    # PR runs enter this job only from the exact run-cloud-integration
+    # labeled event: authorization is one-shot and bound to the head SHA the
+    # label was applied to. A planner-only run (opened/synchronize/reopened)
+    # skips this job even when suites are selected.
     if: >-
       ${{
         needs.plan.result == 'success' &&
+        (github.event_name != 'pull_request' ||
+         (github.event.action == 'labeled' &&
+          github.event.label.name == 'run-cloud-integration')) &&
         (needs.plan.outputs.service == 'true' ||
          needs.plan.outputs.postgres == 'true' ||
          needs.plan.outputs.organization == 'true' ||
          needs.plan.outputs.clickpipes == 'true')
       }}
+    # Live runs serialize globally against the shared Cloud test resources;
+    # planner-only runs stay out of this queue on purpose.
+    concurrency:
+      group: cloud-integration
+      queue: max
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: cloud-integration
     env:

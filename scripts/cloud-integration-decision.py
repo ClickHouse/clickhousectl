@@ -28,7 +28,7 @@ SUITE_STEPS = {
     "Run cloud integration suite": "service",
     "Run cloud Postgres integration suite": "postgres",
     "Run cloud Org integration suite": "organization",
-    "Run ClickPipe Postgres CDC integration test": "clickpipes",
+    "Run ClickPipe Postgres CLI CDC integration test": "clickpipes",
 }
 
 CLASSIFIER_PATH = Path(__file__).with_name("classify-cloud-integration.py")
@@ -250,9 +250,12 @@ def waiting_decision(pull_request: dict[str, Any], repository: str) -> Decision:
         else ""
     )
     summary = (
-        f"Head `{sha}` has no Cloud integration decision. Apply the "
-        "`run-cloud-integration` label to run the trusted planner and any "
-        f"selected live suites.{fork_note}\n\n"
+        f"Head `{sha}` has no Cloud integration decision yet. The trusted "
+        "planner runs automatically on same-repository pushes; when it "
+        "selects no live suites this check turns green with no action "
+        "needed. When live suites are selected, apply the "
+        "`run-cloud-integration` label to authorize them for this exact "
+        f"head.{fork_note}\n\n"
         "Maintainers may instead record a one-shot override by commenting:\n\n"
         f"`{OVERRIDE_COMMAND} {sha} <reason or successful stack-run URL>`\n\n"
         "A decision for another commit does not apply to this SHA."
@@ -292,6 +295,25 @@ def successful_live_decision(
             f"Cloud Integration run [{run['id']}]({run['html_url']}) tested "
             f"exact head `{run['head_sha']}`.\n\n"
             f"Successful suites: {suite_text}."
+        ),
+        details_url=run["html_url"],
+    )
+
+
+def authorization_required_decision(
+    run: dict[str, Any], suites: tuple[str, ...]
+) -> Decision:
+    suite_text = ", ".join(f"`{suite}`" for suite in suites)
+    return Decision(
+        conclusion="action_required",
+        title="Live Cloud integration suites need authorization",
+        summary=(
+            f"The trusted planner in Cloud Integration run "
+            f"[{run['id']}]({run['html_url']}) selected {suite_text} for "
+            f"exact head `{run['head_sha']}`, but no live run is authorized "
+            "yet. Apply the `run-cloud-integration` label to run the "
+            "selected suites against this exact head (re-apply it after any "
+            "push), or have a maintainer record a one-shot override."
         ),
         details_url=run["html_url"],
     )
@@ -507,16 +529,15 @@ def evaluate_workflow_run(
 
     expected_suites = tuple(selection.suites)
     if live_job.get("conclusion") == "skipped":
-        if expected_suites:
-            return failed_decision(
-                run,
-                "the environment-bearing job was skipped although trusted "
-                f"selection required {classifier.format_suites(expected_suites)}",
-            )
         if run.get("conclusion") != "success":
             return failed_decision(
                 run, f"workflow concluded {run.get('conclusion')!r}"
             )
+        if expected_suites:
+            # A planner-only run (no run-cloud-integration labeled event)
+            # legitimately skips the environment-bearing job; the decision
+            # stays open and names the suites awaiting authorization.
+            return authorization_required_decision(run, expected_suites)
         return successful_no_suite_decision(run)
 
     if live_job.get("conclusion") != "success":
@@ -597,6 +618,17 @@ def reconcile(api: GitHubAPI, event: dict[str, Any], repository: str) -> None:
     if decision is None:
         print("Cloud run did not change the current decision")
         return
+    if decision.conclusion == "action_required":
+        # A planner-only run must not downgrade a settled decision for the
+        # same exact head (a passed live run, an override, or a recorded
+        # failure that a maintainer must waive explicitly).
+        existing = api.find_decision_check(head_sha)
+        if existing is not None and existing.get("conclusion") not in (
+            None,
+            "action_required",
+        ):
+            print("Keeping the settled decision over an authorization prompt")
+            return
     check = api.upsert_decision(head_sha, decision)
     print(
         f"Decision check {check['id']} updated to {decision.conclusion} for {head_sha}"
