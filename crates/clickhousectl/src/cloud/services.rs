@@ -5,6 +5,7 @@ use crate::cloud::credentials;
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
+use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -1988,12 +1989,14 @@ async fn run_basic_service_query(
     };
     if confirmed_idle {
         eprint_waking_service(service_name);
+        failure::note_retry();
         return run(true).await;
     }
 
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
+            failure::note_retry();
             run(true).await
         }
         other => other,
@@ -2041,6 +2044,9 @@ where
             eprintln!("Waiting for the Query API endpoint to become ready...");
             waiting = true;
         }
+        // One more probe is about to be sent: the retry bucket is how a
+        // dashboard sees "this run waited on propagation" (#450).
+        failure::note_retry();
         tokio::time::sleep(backoff.min(remaining)).await;
         backoff = backoff.saturating_mul(2).min(readiness.max_backoff);
     }
@@ -2085,17 +2091,21 @@ async fn run_just_provisioned_service_query(
     .await
 }
 
+/// Whether an error means "the Query API endpoint is not (yet) usable by this
+/// credential" rather than "the query itself failed".
+///
+/// The test is structural: a SQL-level rejection arrives as
+/// `Error::Sql`, which proves the service ran the request, so the endpoint is
+/// demonstrably usable. It used to be told apart by sniffing the formatted
+/// message for a `SQL error ` prefix (#450).
 fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
-    match error {
+    matches!(
+        error,
         clickhouse_cloud_api::Error::Api {
-            status: 401 | 403, ..
-        } => true,
-        clickhouse_cloud_api::Error::Api {
-            status: 404,
-            message,
-        } => !message.starts_with("SQL error "),
-        _ => false,
-    }
+            status: 401 | 403 | 404,
+            ..
+        }
+    )
 }
 
 fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Option<u16> {
@@ -2114,24 +2124,36 @@ fn stale_stored_query_key_error(service_id: &str, org_id: &str, status: u16) -> 
          may be stale; no replacement was created. Repair only this service credential with \
          `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}`"
     ))
+    // The rejection status is the only bounded fact worth reporting: the
+    // status comes from the query host's own 401/403.
+    .with_failure(ApiFailure::with_status(FailureKind::Http4xx, status))
 }
 
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
-    let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    // Anchor the duration bucket of any failure classification (#450) at the
+    // start of the run rather than at process start, so it measures the query
+    // and not the CLI's own startup.
+    failure::start_span();
+
+    let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())
+        .map_err(|error| error.at_stage(FailureStage::SqlInput))?;
+    let org_id = resolve_org_id(client, options.org_id.as_deref())
+        .await
+        .map_err(|error| error.at_stage(FailureStage::OrgResolution))?;
     let service = resolve_service(
         client,
         &org_id,
         options.name.as_deref(),
         options.id.as_deref(),
     )
-    .await?;
+    .await
+    .map_err(|error| error.at_stage(FailureStage::ServiceResolution))?;
     let service_id = match service.id {
         Some(id) => id.to_string(),
-        None => options
-            .id
-            .clone()
-            .ok_or_else(|| CloudError::new("the API response is missing the service id"))?,
+        None => options.id.clone().ok_or_else(|| {
+            CloudError::new("the API response is missing the service id")
+                .at_stage(FailureStage::ServiceResolution)
+        })?,
     };
     let service_name = or_absent(service.name.as_deref());
 
@@ -2143,7 +2165,16 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         }
     });
 
+    // The `query_request` classifications below are a *fallback*: recording
+    // is first-write-wins, so an inner boundary that knows the exact stage
+    // (`key_create`, `endpoint_get`, ...) keeps its record and only failures
+    // no boundary claimed -- an unusable local credential store, say -- land
+    // on the coarse `query_request` stage rather than going unclassified
+    // (#450).
     let response = if client.is_bearer_auth() {
+        // OAuth carries no write access, so no key or endpoint provisioning is
+        // possible on this path at all.
+        failure::set_provisioning_state(ProvisioningState::Bearer);
         let run = |wake: bool| {
             client.api().run_query_bearer(
                 &service_id,
@@ -2156,15 +2187,20 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
                 eprint_waking_service(&service_name);
+                failure::note_retry();
                 run(true).await
             }
             other => other,
         };
         result.map_err(|error| {
             convert_query_error(client, error, &service_name, &service_id, &org_id)
+                .at_stage(FailureStage::QueryRequest)
         })?
     } else {
-        let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)? {
+        let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)
+            .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
+        {
+            failure::set_provisioning_state(ProvisioningState::StoredKey);
             match run_basic_service_query(
                 client,
                 &service_id,
@@ -2180,16 +2216,19 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             {
                 Err(error) => match stored_query_key_rejection_status(&error) {
                     Some(status) => {
-                        return Err(stale_stored_query_key_error(&service_id, &org_id, status));
+                        return Err(stale_stored_query_key_error(&service_id, &org_id, status)
+                            .at_stage(FailureStage::QueryRequest));
                     }
                     None => Err(error),
                 },
                 response => response,
             }
         } else {
-            let (key_id, key_secret) = client
-                .basic_auth_credentials()
-                .ok_or_else(|| CloudError::new("API key credentials are unavailable"))?;
+            failure::set_provisioning_state(ProvisioningState::ManagementKey);
+            let (key_id, key_secret) = client.basic_auth_credentials().ok_or_else(|| {
+                CloudError::new("API key credentials are unavailable")
+                    .at_stage(FailureStage::QueryRequest)
+            })?;
             match run_basic_service_query(
                 client,
                 &service_id,
@@ -2205,21 +2244,26 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             {
                 Err(error) if query_endpoint_readiness_error(&error) => {
                     if options.no_auto_enable {
+                        failure::set_provisioning_state(ProvisioningState::Refused);
                         return Err(CloudError::new(format!(
                             "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
-                        )));
+                        ))
+                        .at_stage(FailureStage::QueryRequest));
                     }
                     eprintln!(
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
                     );
+                    failure::set_provisioning_state(ProvisioningState::Provisioning);
                     let key = crate::cloud::service_query::ensure_service_query_setup(
                         client,
                         &org_id,
                         &service_id,
                         &service_name,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| error.at_stage(FailureStage::QueryRequest))?;
+                    failure::set_provisioning_state(ProvisioningState::Provisioned);
                     run_just_provisioned_service_query(
                         client,
                         &service_id,
@@ -2238,6 +2282,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         };
         result.map_err(|error| {
             convert_query_error(client, error, &service_name, &service_id, &org_id)
+                .at_stage(FailureStage::QueryRequest)
         })?
     };
 
@@ -2248,10 +2293,20 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     let mut handle = stdout.lock();
     let mut byte_count = 0;
     let mut last_byte = None;
+    // Both failure modes of the stream are classified here, at the boundary
+    // that knows which one happened (#450): a truncated body is a transport
+    // failure, a refused write is local I/O.
+    let stream_failure = |error: CloudError| error.at_stage(FailureStage::ResponseStream);
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk
-            .map_err(|error| CloudError::new(format!("Failed to read query response: {error}")))?;
-        handle.write_all(&bytes)?;
+        let bytes = chunk.map_err(|error| {
+            stream_failure(
+                CloudError::new(format!("Failed to read query response: {error}"))
+                    .with_failure(ApiFailure::new(FailureKind::Transport)),
+            )
+        })?;
+        handle
+            .write_all(&bytes)
+            .map_err(|error| stream_failure(CloudError::from(error)))?;
         byte_count += bytes.len();
         if let Some(last) = bytes.last() {
             last_byte = Some(*last);
@@ -2259,10 +2314,14 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     }
     match query_output_completion(&format, byte_count, last_byte) {
         QueryOutputCompletion::None => {}
-        QueryOutputCompletion::Newline => handle.write_all(b"\n")?,
+        QueryOutputCompletion::Newline => handle
+            .write_all(b"\n")
+            .map_err(|error| stream_failure(CloudError::from(error)))?,
         QueryOutputCompletion::Acknowledge => eprintln!("OK"),
     }
-    handle.flush()?;
+    handle
+        .flush()
+        .map_err(|error| stream_failure(CloudError::from(error)))?;
     Ok(())
 }
 
@@ -2309,7 +2368,10 @@ fn convert_query_error(
     match error {
         clickhouse_cloud_api::Error::ServiceStopped => CloudError::new(format!(
             "service '{service_name}' is stopped; start it with `clickhousectl cloud service start {service_id} --org-id {org_id}` and retry"
-        )),
+        ))
+        // Rewriting the message must not lose the classification the variant
+        // already established (#450).
+        .with_failure(ApiFailure::new(FailureKind::ServiceStopped)),
         other => client.convert_error(other),
     }
 }
@@ -4439,10 +4501,13 @@ mod tests {
                 }
             ));
         }
+        // A SQL-level rejection proves the endpoint *is* usable, and it is
+        // recognized by its variant rather than by its message text.
         assert!(!query_endpoint_readiness_error(
-            &clickhouse_cloud_api::Error::Api {
+            &clickhouse_cloud_api::Error::Sql {
                 status: 404,
-                message: "SQL error 60: Unknown table".into(),
+                code: "60".into(),
+                details: "Unknown table".into(),
             }
         ));
         assert!(!query_endpoint_readiness_error(
@@ -4535,6 +4600,61 @@ mod tests {
         assert_eq!(
             converted.message,
             format!("Query API endpoint did not become ready within {timeout:?}")
+        );
+        // The readiness deadline is reported as a timeout (#450), not as a
+        // generic 4xx: the CLI, not the API, gave up.
+        assert_eq!(
+            converted.failure,
+            Some(ApiFailure::with_status(FailureKind::Timeout, 408))
+        );
+    }
+
+    /// Every query-path error a boundary rewrites keeps a classification
+    /// derived from what actually failed, not from its message (#450).
+    #[test]
+    fn query_errors_carry_their_structural_classification() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+
+        // A stopped service gets a rewritten, actionable message; the
+        // classification survives the rewrite.
+        let stopped = convert_query_error(
+            &client,
+            clickhouse_cloud_api::Error::ServiceStopped,
+            "demo",
+            "svc-1",
+            "org-1",
+        );
+        assert!(stopped.message.contains("is stopped"));
+        assert_eq!(
+            stopped.failure,
+            Some(ApiFailure::new(FailureKind::ServiceStopped))
+        );
+
+        let sql = convert_query_error(
+            &client,
+            clickhouse_cloud_api::Error::Sql {
+                status: 400,
+                code: "62".into(),
+                details: "Syntax error".into(),
+            },
+            "demo",
+            "svc-1",
+            "org-1",
+        );
+        assert_eq!(
+            sql.failure,
+            Some(ApiFailure::with_status(FailureKind::SqlError, 400))
+        );
+
+        let stale = stale_stored_query_key_error("svc-1", "org-1", 401);
+        assert_eq!(
+            stale.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 401))
         );
     }
 

@@ -1459,3 +1459,540 @@ async fn closed_stderr_never_panics_or_bypasses_telemetry() {
     assert_eq!(output.status.code(), Some(0), "enable must not panic");
     assert!(stdout_of(&output).contains("Telemetry enabled."));
 }
+
+// -- query failure classification (#450) -------------------------------------
+//
+// `cloud service query` is the command whose exit-1 events were opaque, so it
+// is the one whose stages are pinned end-to-end here: each test drives the
+// real binary against a mock control plane and a mock query host, then reads
+// the exact payload the process would have sent.
+//
+// `CHCTL_TELEMETRY_DEBUG=1` prints that payload to stderr instead of handing
+// it to the detached send child, which keeps these tests synchronous — the
+// consent state machine, including the debug branch, is covered above.
+
+const QUERY_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+/// Control plane that answers the service lookup `cloud service query`
+/// performs before it talks to the query host.
+async fn start_control_plane(service_status: u16) -> MockServer {
+    let mock = MockServer::start().await;
+    let body = serde_json::json!({
+        "result": { "id": QUERY_SERVICE_ID, "name": "demo" },
+        "status": 200,
+        "requestId": "stub-service-get",
+    });
+    let response = if service_status == 200 {
+        ResponseTemplate::new(200).set_body_json(body)
+    } else {
+        ResponseTemplate::new(service_status).set_body_string("NOT_FOUND")
+    };
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_SERVICE_ID}"
+        )))
+        .respond_with(response)
+        .mount(&mock)
+        .await;
+    mock
+}
+
+async fn start_query_host(response: ResponseTemplate) -> MockServer {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_SERVICE_ID}/run")))
+        .respond_with(response)
+        .mount(&mock)
+        .await;
+    mock
+}
+
+/// The OAuth token file that makes the CLI take the bearer query path.
+fn write_oauth_tokens(sandbox: &Sandbox, control_uri: &str) {
+    let ch_dir = sandbox.home.path().join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    std::fs::write(
+        ch_dir.join("tokens.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "access_token": "test-bearer-token",
+            "refresh_token": "unused",
+            "expires_at": 4102444800u64,
+            "api_url": format!("{control_uri}/v1"),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// The payload the invocation would have sent, parsed out of the debug line
+/// on stderr.
+fn debug_payload(output: &Output) -> Value {
+    let stderr = stderr_of(output);
+    stderr
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|value| value.get("command").is_some())
+        .unwrap_or_else(|| panic!("no telemetry debug payload on stderr:\n{stderr}"))
+}
+
+/// Run `cloud service query` against the mocks, in a throwaway project
+/// directory, with telemetry enabled in debug mode.
+fn run_query(
+    sandbox: &Sandbox,
+    project: &std::path::Path,
+    control: &MockServer,
+    query_host: Option<&MockServer>,
+    args: &[&str],
+) -> Output {
+    let url = control.uri();
+    let mut argv = vec![
+        "cloud",
+        "--url",
+        &url,
+        "service",
+        "query",
+        "--id",
+        QUERY_SERVICE_ID,
+        "--org-id",
+        "org-1",
+    ];
+    argv.extend_from_slice(args);
+    let mut command = sandbox.command(&argv);
+    command
+        .current_dir(project)
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env_remove("CLICKHOUSE_CLOUD_QUERY_HOST");
+    if let Some(query_host) = query_host {
+        command.env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri());
+    }
+    command.output().expect("failed to spawn binary")
+}
+
+/// Everything a query test needs: an enabled telemetry sandbox, a bearer
+/// credential, and an isolated project directory.
+async fn query_sandbox(control: &MockServer) -> (Sandbox, tempfile::TempDir) {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    write_oauth_tokens(&sandbox, &control.uri());
+    (sandbox, tempfile::tempdir().unwrap())
+}
+
+#[tokio::test]
+async fn a_sql_error_is_classified_without_the_sql_reaching_the_payload() {
+    let control = start_control_plane(200).await;
+    let query_host = start_query_host(
+        ResponseTemplate::new(400)
+            .set_body_string(r#"{"error":{"code":"62","details":"Syntax error near FROM"}}"#),
+    )
+    .await;
+    let (sandbox, project) = query_sandbox(&control).await;
+
+    let output = run_query(
+        &sandbox,
+        project.path(),
+        &control,
+        Some(&query_host),
+        &[
+            "--query",
+            "SELECT api_password FROM totally_secret_table -- SUPER-SECRET-VALUE",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["command"], "cloud service query");
+    assert_eq!(event["outcome"], "error");
+    assert_eq!(event["exit_code"], 1);
+    // The service ran the request and rejected the statement: that is a
+    // distinct fact from "the request never got there".
+    assert_eq!(event["failure_stage"], "query_request");
+    assert_eq!(event["failure_kind"], "sql_error");
+    assert_eq!(event["http_status"], 400);
+    assert_eq!(event["retry_bucket"], "0");
+    assert_eq!(event["provisioning_state"], "bearer");
+    assert!(
+        event["duration_bucket"].is_string(),
+        "a classified failure reports a duration bucket: {event}"
+    );
+
+    // The SQL, the identifiers in it and the server's own message stay on the
+    // machine — the user still sees them on stderr.
+    let raw = serde_json::to_string(&event).unwrap();
+    for secret in [
+        "SUPER-SECRET-VALUE",
+        "api_password",
+        "totally_secret_table",
+        "SELECT",
+        "Syntax error",
+        QUERY_SERVICE_ID,
+        "org-1",
+    ] {
+        assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
+    }
+    assert!(
+        stderr_of(&output).contains("SQL error 62: Syntax error near FROM"),
+        "the user must still see the real error: {}",
+        stderr_of(&output)
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_query_is_distinguishable_from_a_stopped_service() {
+    let control = start_control_plane(200).await;
+    let query_host = start_query_host(
+        ResponseTemplate::new(429).set_body_string("Too many requests, please retry"),
+    )
+    .await;
+    let (sandbox, project) = query_sandbox(&control).await;
+    let output = run_query(
+        &sandbox,
+        project.path(),
+        &control,
+        Some(&query_host),
+        &["--query", "SELECT 1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "query_request");
+    assert_eq!(event["failure_kind"], "rate_limited");
+    assert_eq!(event["http_status"], 429);
+
+    // A stopped service answers 206 and can never be woken by a query, so it
+    // is its own kind rather than another 4xx.
+    let control = start_control_plane(200).await;
+    let query_host = start_query_host(
+        ResponseTemplate::new(206).set_body_string(r#"{"data":"Service is stopped"}"#),
+    )
+    .await;
+    let (sandbox, project) = query_sandbox(&control).await;
+    let output = run_query(
+        &sandbox,
+        project.path(),
+        &control,
+        Some(&query_host),
+        &["--query", "SELECT 1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "query_request");
+    assert_eq!(event["failure_kind"], "service_stopped");
+    assert!(
+        event.get("http_status").is_none(),
+        "a state error carries no HTTP status: {event}"
+    );
+}
+
+#[tokio::test]
+async fn a_service_lookup_failure_names_its_own_stage() {
+    let control = start_control_plane(404).await;
+    let (sandbox, project) = query_sandbox(&control).await;
+
+    let output = run_query(
+        &sandbox,
+        project.path(),
+        &control,
+        None,
+        &["--query", "SELECT 1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "service_resolution");
+    assert_eq!(event["failure_kind"], "http_4xx");
+    assert_eq!(event["http_status"], 404);
+    // Nothing was provisioned or attempted against a query host.
+    assert!(event.get("provisioning_state").is_none(), "{event}");
+}
+
+#[tokio::test]
+async fn empty_sql_is_a_sql_input_failure_before_any_request() {
+    let control = start_control_plane(200).await;
+    let (sandbox, project) = query_sandbox(&control).await;
+
+    let output = run_query(
+        &sandbox,
+        project.path(),
+        &control,
+        None,
+        &["--query", "   \n  "],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "sql_input");
+    assert_eq!(event["failure_kind"], "other");
+    assert!(event.get("http_status").is_none(), "{event}");
+    assert!(event.get("provisioning_state").is_none(), "{event}");
+    assert_eq!(event["retry_bucket"], "0");
+    assert!(
+        control.received_requests().await.unwrap().is_empty(),
+        "an input failure must not touch the network"
+    );
+}
+
+#[tokio::test]
+async fn a_successful_query_carries_no_failure_classification() {
+    let control = start_control_plane(200).await;
+    let query_host = start_query_host(ResponseTemplate::new(200).set_body_string("1\n")).await;
+    let (sandbox, project) = query_sandbox(&control).await;
+
+    let output = run_query(
+        &sandbox,
+        project.path(),
+        &control,
+        Some(&query_host),
+        &["--query", "SELECT 1"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    let event = debug_payload(&output);
+    assert_eq!(event["outcome"], "ok");
+    for key in [
+        "failure_stage",
+        "failure_kind",
+        "http_status",
+        "retry_bucket",
+        "provisioning_state",
+        "duration_bucket",
+    ] {
+        assert!(
+            event.get(key).is_none(),
+            "a successful run must carry no {key}: {event}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_provisioning_burst_names_the_key_create_stage() {
+    // The API-key path: the management key is refused by the query host, so
+    // the CLI provisions a dedicated key — and the control plane rate-limits
+    // the key creation, exactly the burst #450 could not see.
+    let control = start_control_plane(200).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("TOO_MANY_REQUESTS"))
+        .mount(&control)
+        .await;
+    let query_host =
+        start_query_host(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+            .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "key_create");
+    assert_eq!(event["failure_kind"], "rate_limited");
+    assert_eq!(event["http_status"], 429);
+    assert_eq!(
+        event["provisioning_state"], "provisioning",
+        "the run died mid-provisioning, which is what separates it from a query failure: {event}"
+    );
+    let raw = serde_json::to_string(&event).unwrap();
+    for secret in [
+        "fake-key-for-tests",
+        "fake-secret-for-tests",
+        QUERY_SERVICE_ID,
+    ] {
+        assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
+    }
+}
+
+#[tokio::test]
+async fn a_refused_stdout_write_is_an_io_failure_of_the_response_stream() {
+    // The response arrives fine; forwarding it to a closed stdout does not.
+    // That is local I/O at the streaming stage, not a query failure — the
+    // distinction the single `error` outcome could not express.
+    let control = start_control_plane(200).await;
+    let query_host =
+        start_query_host(ResponseTemplate::new(200).set_body_string("1\n".repeat(4096))).await;
+    let (sandbox, project) = query_sandbox(&control).await;
+
+    let url = control.uri();
+    let (reader, writer) = std::io::pipe().expect("failed to create pipe");
+    drop(reader);
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdout(writer)
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a broken pipe must stay exit 1, never a panic: {}",
+        stderr_of(&output)
+    );
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "response_stream");
+    assert_eq!(event["failure_kind"], "io");
+    assert!(
+        event.get("http_status").is_none(),
+        "local I/O has no HTTP status: {event}"
+    );
+    assert_eq!(event["provisioning_state"], "bearer");
+}
+
+#[tokio::test]
+async fn a_failed_endpoint_read_during_provisioning_names_the_endpoint_get_stage() {
+    // Key creation succeeds and the endpoint read is what fails, so the stage
+    // is the finer-grained one and the rollback (deleting the key we just
+    // created) does not overwrite the classification.
+    let control = start_control_plane(200).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": "00000000-0000-0000-0000-0000000000aa" },
+                "keyId": "provisioned-key-id",
+                "keySecret": "provisioned-key-secret",
+            },
+            "status": 200,
+            "requestId": "stub-key-create",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_SERVICE_ID}/serviceQueryEndpoint"
+        )))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/keys/00000000-0000-0000-0000-0000000000aa",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {},
+            "status": 200,
+            "requestId": "stub-key-delete",
+        })))
+        .mount(&control)
+        .await;
+    let query_host =
+        start_query_host(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+            .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "endpoint_get");
+    assert_eq!(event["failure_kind"], "http_5xx");
+    assert_eq!(event["http_status"], 503);
+    assert_eq!(event["provisioning_state"], "provisioning");
+    let raw = serde_json::to_string(&event).unwrap();
+    for secret in [
+        "provisioned-key-secret",
+        "provisioned-key-id",
+        "00000000-0000-0000-0000-0000000000aa",
+    ] {
+        assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
+    }
+}
+
+#[tokio::test]
+async fn an_organization_lookup_failure_names_its_own_stage() {
+    // No `--org-id`, so the run starts by resolving the organization; a
+    // failure there is not a query failure.
+    let control = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+        .mount(&control)
+        .await;
+    let (sandbox, project) = query_sandbox(&control).await;
+
+    let url = control.uri();
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_SERVICE_ID,
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .env_remove("CLICKHOUSE_CLOUD_QUERY_HOST")
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "org_resolution");
+    assert_eq!(event["failure_kind"], "http_5xx");
+    assert_eq!(event["http_status"], 500);
+    assert!(event.get("provisioning_state").is_none(), "{event}");
+}

@@ -1209,6 +1209,7 @@ Each event contains exactly:
 - the CLI version, OS, and architecture
 - whether it ran in CI (`CI` env var)
 - whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)
+- when a command fails at runtime, a bounded description of *how* it failed (see below)
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
 
@@ -1217,6 +1218,17 @@ The privacy boundary for positional arguments is exactly the same one as for fla
 - only arguments you actually passed count, so a value clap filled in from a default (or from the environment), and a name the CLI generated for you, are absent — which is what makes "you named it" and "we picked one" distinguishable
 - arguments forwarded to another program are never recorded: everything after `--` for `local server start`, and the trailing arguments of `local client` and `local postgres client`, belong to `clickhouse-server`, `clickhouse-client`, and `psql`
 - when a command fails to parse, the unmatched token is still never recorded — only the slot it would have filled
+
+A failed *runtime* invocation may also carry up to six failure-classification fields, so that "exit code 1" stops being the only thing we know about a broken command. Each one is a closed vocabulary defined in the source, and nothing else can ever appear in it:
+
+- `failure_stage` — which stage failed: `sql_input`, `org_resolution`, `service_resolution`, `query_request`, `key_create`, `endpoint_get`, `endpoint_upsert`, `response_stream`
+- `failure_kind` — what kind of failure it was: `io`, `transport`, `http_4xx`, `http_5xx`, `sql_error`, `service_stopped`, `timeout`, `rate_limited`, `other`
+- `http_status` — the exact HTTP status, and only if it is one of a fixed list of common statuses; anything else is dropped (its class is already in `failure_kind`)
+- `retry_bucket` — how many retries the run made, as a bucket (`0`, `1`, `2`, `3_5`, `6_10`, `gt_10`), never an exact count
+- `provisioning_state` — how far Query API credential provisioning had got: `bearer`, `stored_key`, `management_key`, `provisioning`, `provisioned`, `refused`
+- `duration_bucket` — how long the operation ran before failing, as a bucket (`lt_250ms`, `lt_1s`, `lt_5s`, `lt_30s`, `lt_2m`, `ge_2m`)
+
+The privacy boundary is again structural rather than a filter: these values are fixed strings compiled into the binary (plus one number from an allowlist), and they are set only at the points in the code that own a given failure — a category is never derived from an error message. Your SQL, database and format values, file paths, service and organization IDs, API response text, and credentials therefore have no representation in these fields at all. A field is omitted, never sent as `null`, when it does not apply, and no failure classification is attached to a successful run or to the censored `exec_attempt` handoff described below.
 
 Exactly one event is recorded per invocation. Two commands are special: `local client` and `local postgres client` hand the process over to the native `clickhouse client` or to `psql` with `exec()`, which replaces clickhousectl's process image — same PID, same process group, same terminal, inherited stdin/stdout/stderr — so that Ctrl-C, job control and the program's own exit status or fatal signal reach your shell exactly as if you had run it directly. Because clickhousectl is gone at that point, its event is recorded just before the handover and is explicitly *censored*: the outcome is `exec_attempt` and its exit code is a fixed `0`, which means "the handoff was reached" and never "the native client succeeded". Failures clickhousectl can see for itself — a build that is missing, is not a regular file, or has no execute bit, or a `psql` that is not on `PATH` — are refused before the handover, so they are ordinary failures with the real exit code and a message telling you how to repair the install.
 

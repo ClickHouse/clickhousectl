@@ -65,30 +65,44 @@ fn derive_query_host(base_url: &str) -> Option<String> {
     Some(format!("{}://queries.{}{}", parsed.scheme(), rest, port))
 }
 
-fn query_api_error_message(status: reqwest::StatusCode, body: &str) -> String {
-    let sql_error = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|value| {
-            let error = value.get("error")?;
-            let code = match error.get("code")? {
-                serde_json::Value::String(code) if !code.is_empty() => code.clone(),
-                serde_json::Value::Number(code) => code.to_string(),
-                _ => return None,
-            };
-            let details = error.get("details")?.as_str()?;
-            if details.is_empty() {
-                return None;
-            }
-            Some(format!("SQL error {code}: {details}"))
-        });
+/// The ClickHouse error code and details a Query API failure body carries, or
+/// `None` when the body is not a SQL-level error report.
+fn query_api_sql_error(body: &str) -> Option<(String, String)> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let error = value.get("error")?;
+    let code = match error.get("code")? {
+        serde_json::Value::String(code) if !code.is_empty() => code.clone(),
+        serde_json::Value::Number(code) => code.to_string(),
+        _ => return None,
+    };
+    let details = error.get("details")?.as_str()?;
+    if details.is_empty() {
+        return None;
+    }
+    Some((code, details.to_string()))
+}
 
-    sql_error.unwrap_or_else(|| {
-        if body.is_empty() {
+/// Classify a Query API failure body: a SQL-level rejection becomes
+/// [`Error::Sql`], anything else stays an [`Error::Api`]. The rendered text is
+/// identical to what the single `Api` variant produced before, so callers that
+/// only print the error see no change; callers that need to know *what kind of
+/// failure this was* read the variant instead of the message.
+fn query_api_error(status: reqwest::StatusCode, body: &str) -> Error {
+    if let Some((code, details)) = query_api_sql_error(body) {
+        return Error::Sql {
+            status: status.as_u16(),
+            code,
+            details,
+        };
+    }
+    Error::Api {
+        status: status.as_u16(),
+        message: if body.is_empty() {
             format!("Query API returned HTTP {status} with an empty response body")
         } else {
             format!("Query API returned HTTP {status}: {body}")
-        }
-    })
+        },
+    }
 }
 
 fn query_api_reports_stopped_service(status: reqwest::StatusCode, body: &str) -> bool {
@@ -383,10 +397,7 @@ impl Client {
             return Err(match data.as_deref() {
                 Some("Confirm wake service") => Error::ServiceIdle,
                 Some("Service is stopped") => Error::ServiceStopped,
-                _ => Error::Api {
-                    status: 206,
-                    message: query_api_error_message(status, &body_text),
-                },
+                _ => query_api_error(status, &body_text),
             });
         }
         if !status.is_success() {
@@ -399,10 +410,7 @@ impl Client {
             if query_api_reports_stopped_service(status, &body_text) {
                 return Err(Error::ServiceStopped);
             }
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: query_api_error_message(status, &body_text),
-            });
+            return Err(query_api_error(status, &body_text));
         }
 
         Ok(response)
@@ -411,7 +419,7 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_query_host, query_api_error_message};
+    use super::{Error, derive_query_host, query_api_error};
 
     #[test]
     fn derive_query_host_prod() {
@@ -473,31 +481,73 @@ mod tests {
     #[test]
     fn query_api_error_extracts_documented_sql_error() {
         let body = r#"{"error":{"code":"62","details":"Syntax error","extra":"ignored"}}"#;
-        assert_eq!(
-            query_api_error_message(reqwest::StatusCode::BAD_REQUEST, body),
-            "SQL error 62: Syntax error"
+        let error = query_api_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert!(
+            matches!(
+                &error,
+                Error::Sql { status: 400, code, details }
+                    if code == "62" && details == "Syntax error"
+            ),
+            "expected a typed SQL error, got {error:?}"
         );
+        // The rendered text is what it always was, so nothing user-facing
+        // changes with the variant split.
+        assert_eq!(error.to_string(), "SQL error 62: Syntax error");
     }
 
     #[test]
     fn query_api_error_accepts_numeric_codes() {
         let body = r#"{"error":{"code":241,"details":"Memory limit exceeded"}}"#;
-        assert_eq!(
-            query_api_error_message(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body),
-            "SQL error 241: Memory limit exceeded"
+        let error = query_api_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body);
+        assert!(
+            matches!(
+                &error,
+                Error::Sql { status: 500, code, details }
+                    if code == "241" && details == "Memory limit exceeded"
+            ),
+            "expected a typed SQL error, got {error:?}"
         );
+        assert_eq!(error.to_string(), "SQL error 241: Memory limit exceeded");
     }
 
     #[test]
     fn query_api_error_preserves_status_and_unrecognized_body() {
         let malformed = r#"{"error":{"code":"62","details":"truncated"#;
-        assert_eq!(
-            query_api_error_message(reqwest::StatusCode::BAD_REQUEST, malformed),
-            format!("Query API returned HTTP 400 Bad Request: {malformed}")
+        let error = query_api_error(reqwest::StatusCode::BAD_REQUEST, malformed);
+        assert!(
+            matches!(&error, Error::Api { status: 400, .. }),
+            "a body that is not a SQL error report must stay an API error: {error:?}"
         );
         assert_eq!(
-            query_api_error_message(reqwest::StatusCode::BAD_GATEWAY, "upstream failed"),
-            "Query API returned HTTP 502 Bad Gateway: upstream failed"
+            error.to_string(),
+            format!("API error (status 400): Query API returned HTTP 400 Bad Request: {malformed}")
         );
+
+        let error = query_api_error(reqwest::StatusCode::BAD_GATEWAY, "upstream failed");
+        assert!(matches!(&error, Error::Api { status: 502, .. }));
+        assert_eq!(
+            error.to_string(),
+            "API error (status 502): Query API returned HTTP 502 Bad Gateway: upstream failed"
+        );
+    }
+
+    #[test]
+    fn query_api_error_needs_both_code_and_details_to_be_sql() {
+        for body in [
+            r#"{"error":{"code":"62"}}"#,
+            r#"{"error":{"details":"Syntax error"}}"#,
+            r#"{"error":{"code":"","details":"Syntax error"}}"#,
+            r#"{"error":{"code":"62","details":""}}"#,
+            r#"{"error":"ClickHouse service is currently unavailable."}"#,
+            "",
+        ] {
+            assert!(
+                matches!(
+                    query_api_error(reqwest::StatusCode::BAD_REQUEST, body),
+                    Error::Api { .. }
+                ),
+                "partial SQL error body must not become Error::Sql: {body}"
+            );
+        }
     }
 }

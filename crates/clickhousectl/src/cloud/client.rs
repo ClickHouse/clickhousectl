@@ -1,4 +1,5 @@
 use crate::dotenv::DotenvVars;
+use crate::failure::{ApiFailure, FailureKind, FailureStage};
 use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
@@ -14,6 +15,12 @@ pub enum CloudErrorKind {
 pub struct CloudError {
     pub message: String,
     pub kind: CloudErrorKind,
+    /// Structural classification of the failure behind this error (#450),
+    /// resolved from the library's typed error variant at the conversion
+    /// boundary or from the local operation that failed — never from the
+    /// message. `None` when no boundary claimed it, which
+    /// [`CloudError::at_stage`] reports as [`FailureKind::Other`].
+    pub failure: Option<ApiFailure>,
 }
 
 impl CloudError {
@@ -21,6 +28,7 @@ impl CloudError {
         Self {
             message: message.into(),
             kind: CloudErrorKind::Generic,
+            failure: None,
         }
     }
 
@@ -28,7 +36,36 @@ impl CloudError {
         Self {
             message: message.into(),
             kind: CloudErrorKind::Auth,
+            failure: None,
         }
+    }
+
+    /// Attach the classification of the failure this error stands for.
+    pub fn with_failure(mut self, failure: ApiFailure) -> Self {
+        self.failure = Some(failure);
+        self
+    }
+
+    /// Record this error against the stage whose boundary is returning it,
+    /// and hand it back unchanged — the shape `map_err` wants:
+    ///
+    /// ```ignore
+    /// client.create_api_key(org_id, &request)
+    ///     .await
+    ///     .map_err(|error| error.at_stage(FailureStage::KeyCreate))?;
+    /// ```
+    ///
+    /// The stage comes from the call site (which owns it) and the kind from
+    /// the error's own structural classification, so no category is ever
+    /// derived from the message. Recording is first-write-wins, so wrapping an
+    /// already-classified error at a coarser boundary is safe.
+    pub fn at_stage(self, stage: FailureStage) -> Self {
+        crate::failure::record(
+            stage,
+            self.failure
+                .unwrap_or_else(|| ApiFailure::new(FailureKind::Other)),
+        );
+        self
     }
 }
 
@@ -42,13 +79,13 @@ impl std::error::Error for CloudError {}
 
 impl From<std::io::Error> for CloudError {
     fn from(error: std::io::Error) -> Self {
-        Self::new(error.to_string())
+        Self::new(error.to_string()).with_failure(ApiFailure::new(FailureKind::Io))
     }
 }
 
 impl From<serde_json::Error> for CloudError {
     fn from(error: serde_json::Error) -> Self {
-        Self::new(error.to_string())
+        Self::new(error.to_string()).with_failure(ApiFailure::new(FailureKind::Other))
     }
 }
 
@@ -424,7 +461,21 @@ impl CloudClient {
         self.convert_error_with_organization(err, Some(org_id))
     }
 
+    /// The single boundary where a typed library error becomes a
+    /// `CloudError`, so it is also the single place the failure
+    /// classification (#450) is attached: every cloud command inherits the
+    /// same variant-derived category without doing anything.
     fn convert_error_with_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: Option<&str>,
+    ) -> CloudError {
+        let failure = crate::failure::classify_api_error(&err);
+        self.convert_error_message(err, org_id)
+            .with_failure(failure)
+    }
+
+    fn convert_error_message(
         &self,
         err: clickhouse_cloud_api::Error,
         org_id: Option<&str>,
@@ -663,6 +714,40 @@ mod tests {
             message: "Internal Server Error".into(),
         });
         assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    /// Conversion is the single boundary where a typed library error becomes a
+    /// `CloudError`, so every converted error carries its classification
+    /// (#450) whether or not a stage ever records it.
+    #[test]
+    fn convert_error_attaches_the_failure_classification() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 429,
+            message: "TOO_MANY_REQUESTS".into(),
+        });
+        assert_eq!(
+            err.failure,
+            Some(ApiFailure::with_status(FailureKind::RateLimited, 429))
+        );
+
+        // The OAuth hint rewrites the message; the classification is
+        // unaffected by it.
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 403,
+            message: "Forbidden".into(),
+        });
+        assert_eq!(
+            err.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 403))
+        );
+
+        // A locally-raised error has no classification until a boundary
+        // claims one, and local I/O is classified by its own conversion.
+        assert_eq!(CloudError::new("boom").failure, None);
+        assert_eq!(
+            CloudError::from(std::io::Error::other("disk gone")).failure,
+            Some(ApiFailure::new(FailureKind::Io))
+        );
     }
 
     #[test]

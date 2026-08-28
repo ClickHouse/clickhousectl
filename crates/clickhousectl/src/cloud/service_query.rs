@@ -8,6 +8,7 @@
 
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
+use crate::failure::FailureStage;
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
@@ -103,7 +104,10 @@ pub async fn ensure_service_query_setup(
 
     let key_request = build_query_api_key_request(service_name);
 
-    let key_response = client.create_api_key(org_id, &key_request).await?;
+    let key_response = client
+        .create_api_key(org_id, &key_request)
+        .await
+        .map_err(|error| error.at_stage(FailureStage::KeyCreate))?;
     // `key_id`/`key_secret` are the credential pair used for query auth.
     // The endpoint binding's `openApiKeys` array, by contrast, references
     // API keys by their resource UUID — the same value the management
@@ -111,8 +115,9 @@ pub async fn ensure_service_query_setup(
     // first: every failure past this point deletes the key it identifies, so
     // an absent `key.id` is the only one with no cleanup available — we
     // cannot name the key we just created.
-    let api_key_uuid =
-        require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
+    let api_key_uuid = require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")
+        .map_err(|error| error.at_stage(FailureStage::KeyCreate))?
+        .to_string();
 
     // Every response field is `Option<T>`, and an absent credential cannot be
     // substituted with a placeholder: fail loudly instead of persisting an
@@ -120,6 +125,7 @@ pub async fn ensure_service_query_setup(
     let (key_id, key_secret) = match require_credential_pair(&key_response) {
         Ok(pair) => pair,
         Err(e) => {
+            let e = e.at_stage(FailureStage::KeyCreate);
             // The key exists but we can't authenticate with it, so it is
             // dead weight in the org: discard it before failing.
             return fail_after_key_creation(client, org_id, &api_key_uuid, e).await;
@@ -171,7 +177,7 @@ async fn fail_after_endpoint_binding<T>(
                  to remove API key {api_key_id} from the query endpoint: {unbind_error}. The key \
                  was retained for recovery"
             ),
-            kind: persistence_error.kind,
+            ..persistence_error
         });
     }
 
@@ -424,13 +430,19 @@ pub async fn repair_service_query_key(
 
     let endpoint = client
         .get_query_endpoint_for_binding(org_id, service_id)
-        .await?;
-    let endpoint_state = inspect_repair_endpoint(endpoint, &expected_endpoint_id, service_id)?;
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?;
+    let endpoint_state = inspect_repair_endpoint(endpoint, &expected_endpoint_id, service_id)
+        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?;
 
     let key_request = build_query_api_key_request(&old_key.service_name);
-    let key_response = client.create_api_key(org_id, &key_request).await?;
-    let new_api_key_id =
-        require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
+    let key_response = client
+        .create_api_key(org_id, &key_request)
+        .await
+        .map_err(|error| error.at_stage(FailureStage::KeyCreate))?;
+    let new_api_key_id = require_field(key_response.key.as_ref().and_then(|key| key.id), "key.id")
+        .map_err(|error| error.at_stage(FailureStage::KeyCreate))?
+        .to_string();
     let (new_key_id, new_key_secret) = match require_credential_pair(&key_response) {
         Ok(pair) => pair,
         Err(error) => {
@@ -452,7 +464,7 @@ pub async fn repair_service_query_key(
                 service_id,
                 &new_api_key_id,
                 &endpoint_state,
-                error,
+                error.at_stage(FailureStage::EndpointUpsert),
             )
             .await;
         }
@@ -553,7 +565,9 @@ async fn fail_after_key_creation<T>(
                 "{provisioning_error}; additionally, failed to delete newly created API key \
                  {api_key_id}: {cleanup_error}"
             ),
-            kind: provisioning_error.kind,
+            // The cleanup failure is secondary: the classification stays the
+            // one of the failure that triggered the rollback.
+            ..provisioning_error
         }),
     }
 }
@@ -622,9 +636,11 @@ async fn bind_query_endpoint(
 ) -> CloudResult<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
     let mut open_api_keys = match client
         .get_query_endpoint_for_binding(org_id, service_id)
-        .await?
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?
     {
-        Some(endpoint) => existing_open_api_keys(endpoint)?,
+        Some(endpoint) => existing_open_api_keys(endpoint)
+            .map_err(|error| error.at_stage(FailureStage::EndpointGet))?,
         None => Vec::new(),
     };
     if !open_api_keys.iter().any(|k| k == api_key_uuid) {
@@ -642,6 +658,7 @@ async fn bind_query_endpoint(
     client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))
 }
 
 impl CloudClient {

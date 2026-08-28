@@ -15,6 +15,24 @@ pub enum Error {
     #[error("API error (status {status}): {message}")]
     Api { status: u16, message: String },
 
+    /// The Query API reported a ClickHouse SQL-level error: the request
+    /// reached the service, which rejected the statement itself and answered
+    /// with a `{"error": {"code": …, "details": …}}` body.
+    ///
+    /// Split out from [`Error::Api`] so callers can tell "the server refused
+    /// this SQL" from "the request never got that far" *structurally* — the
+    /// previous shape forced them to sniff the formatted message for a
+    /// `SQL error ` prefix. The `Display` text is unchanged, so user-facing
+    /// output is identical either way.
+    #[error("SQL error {code}: {details}")]
+    Sql {
+        status: u16,
+        /// ClickHouse error code as the query host reported it (numeric codes
+        /// arrive as numbers, named ones as strings, so it stays a string).
+        code: String,
+        details: String,
+    },
+
     /// Operation requires a different auth mode than the client was configured with.
     #[error("auth mismatch: {0}")]
     AuthMismatch(String),
