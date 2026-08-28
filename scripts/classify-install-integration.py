@@ -43,6 +43,7 @@ INSTALL_PREFIXES = ("crates/clickhousectl/src/version_manager/",)
 NON_INSTALL_EXACT_PATHS = frozenset(
     {
         "crates/clickhousectl/src/dotenv.rs",
+        "crates/clickhousectl/src/failure.rs",
         "crates/clickhousectl/src/local/config.rs",
         "crates/clickhousectl/src/local/docker.rs",
         "crates/clickhousectl/src/local/postgres.rs",

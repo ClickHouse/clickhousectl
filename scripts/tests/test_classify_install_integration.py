@@ -116,6 +116,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             frozenset(
                 {
                     "crates/clickhousectl/src/dotenv.rs",
+                    "crates/clickhousectl/src/failure.rs",
                     "crates/clickhousectl/src/local/config.rs",
                     "crates/clickhousectl/src/local/docker.rs",
                     "crates/clickhousectl/src/local/postgres.rs",
