@@ -30,6 +30,33 @@ pub(crate) fn or_absent<T: std::fmt::Display>(value: Option<T>) -> String {
         .unwrap_or_else(|| ABSENT.to_string())
 }
 
+/// Write one line to stderr, discarding a write failure.
+///
+/// `eprintln!` *panics* when the write fails, and the write fails with
+/// `BrokenPipe` as soon as whatever was reading stderr goes away (a pager the
+/// user quit, a supervising harness that stopped reading). That turns a
+/// long-running command into a panic and exit 101 — see #598, where
+/// `cloud service delete --force` streamed stop-poll progress for minutes and
+/// crashed instead of deleting the service. Progress and status lines are never
+/// worth a panic: the exit code, not the line, reports the outcome.
+///
+/// Same rule as `telemetry::print_first_run_notice` and
+/// `update::print_cached_update_notice`.
+pub(crate) fn eprint_line(line: impl std::fmt::Display) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
+/// Write one line to stdout, discarding a write failure.
+///
+/// The stdout counterpart of [`eprint_line`], for a result line printed after
+/// the operation it describes already succeeded: a closed stdout must not
+/// convert a completed deletion into a panic.
+pub(crate) fn print_line(line: impl std::fmt::Display) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{line}");
+}
+
 /// Serialize `value` and print it as an indented, human-readable tree.
 ///
 /// - Object keys are printed verbatim (camelCase, as the API returns them).

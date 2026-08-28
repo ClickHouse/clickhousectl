@@ -611,11 +611,15 @@ fn write_service_query_key(root: &Path, organization_id: Option<&str>, api_key_i
     .unwrap();
 }
 
-fn invoke_service_delete(
+/// Start a `service delete` without waiting for it, so a test can close the
+/// child's pipes while the command is still running (see the #598 tests).
+fn spawn_service_delete(
     mock: &MockServer,
     project_dir: &Path,
     force: bool,
-) -> std::process::Output {
+    stdout: Stdio,
+    stderr: Stdio,
+) -> std::process::Child {
     let url = mock.uri();
     let mut args = vec![
         "cloud",
@@ -638,8 +642,36 @@ fn invoke_service_delete(
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(project_dir)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
         .expect("failed to spawn clickhousectl")
+}
+
+fn invoke_service_delete(
+    mock: &MockServer,
+    project_dir: &Path,
+    force: bool,
+) -> std::process::Output {
+    spawn_service_delete(mock, project_dir, force, Stdio::piped(), Stdio::piped())
+        .wait_with_output()
+        .expect("failed to run clickhousectl")
+}
+
+/// The HTTP methods and paths the mock received, in order.
+async fn received_request_shape(mock: &MockServer) -> Vec<(String, String)> {
+    mock.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            (
+                request.method.as_str().to_string(),
+                request.url.path().to_string(),
+            )
+        })
+        .collect()
 }
 
 fn successful_delete_response(request_id: &str) -> ResponseTemplate {
@@ -899,18 +931,8 @@ async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
     // The delete request never succeeded, so local query-key cleanup and the
     // organization-scoped key deletion (which would follow a successful
     // delete) must not have been attempted.
-    let requests = mock.received_requests().await.unwrap();
-    let request_shape = requests
-        .iter()
-        .map(|request| {
-            (
-                request.method.as_str().to_string(),
-                request.url.path().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
     assert_eq!(
-        request_shape,
+        received_request_shape(&mock).await,
         vec![
             (
                 "GET".to_string(),
@@ -996,6 +1018,134 @@ async fn forced_service_delete_reports_only_poll_state_transitions_when_redirect
         format!(
             "Stopping service {DELETE_TEST_SERVICE_ID} before deletion...\n  state: stopping\n  state: stopped\n"
         )
+    );
+}
+
+/// Mock a `--force` delete of a service that is observed mid-`stopping`:
+/// `running` on the pre-stop check, then `stopping` and `stopped` from the
+/// poll loop.
+async fn mount_forced_delete_stop_sequence(mock: &MockServer) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let states = ["running", "stopping", "stopped"];
+    let request_index = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(move |_: &wiremock::Request| {
+            let index = request_index.fetch_add(1, Ordering::SeqCst);
+            let state = states[index.min(states.len() - 1)];
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": DELETE_TEST_SERVICE_ID,
+                    "name": "demo",
+                    "state": state,
+                },
+                "status": 200,
+                "requestId": format!("stub-service-get-{index}"),
+            }))
+        })
+        .expect(3)
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}/state"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": DELETE_TEST_SERVICE_ID,
+                "name": "demo",
+                "state": "stopping",
+            },
+            "status": 200,
+            "requestId": "stub-service-stop",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+/// #598: a `--force` delete that observed the service mid-`stopping` panicked
+/// with exit 101. The stop poll streams a progress line per state change for as
+/// long as the stop takes (minutes on a real service), so it outlives readers
+/// that go away — a pager the user quit, a supervising harness that stopped
+/// reading — and `eprintln!` panics when the write fails with `BrokenPipe`.
+/// The delete must still run to completion and exit 0.
+#[tokio::test]
+async fn forced_service_delete_survives_a_closed_stderr_while_stopping() {
+    let mock = MockServer::start().await;
+    mount_forced_delete_stop_sequence(&mock).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = spawn_service_delete(&mock, dir.path(), true, Stdio::null(), Stdio::piped());
+    // Dropping the read end closes the pipe while the command is still
+    // polling. Rust ignores `SIGPIPE`, so the child's next write to stderr
+    // fails with `EPIPE` rather than killing the process — exactly the state a
+    // reader that walked away leaves behind.
+    drop(child.stderr.take().expect("stderr was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stderr must not turn a completed forced delete into a panic"
+    );
+    // Not just "didn't panic": the stop-then-delete sequence still completed.
+    let shape = received_request_shape(&mock).await;
+    assert_eq!(
+        shape.last(),
+        Some(&(
+            "DELETE".to_string(),
+            format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+        )),
+        "unexpected request sequence: {shape:?}"
+    );
+}
+
+/// The stdout counterpart of #598: the result line is printed after the
+/// service is already gone, so a closed stdout must not turn a completed
+/// deletion into a panic either.
+#[tokio::test]
+async fn service_delete_survives_a_closed_stdout() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = spawn_service_delete(&mock, dir.path(), false, Stdio::piped(), Stdio::piped());
+    drop(child.stdout.take().expect("stdout was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stdout must not turn a completed deletion into a panic"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![(
+            "DELETE".to_string(),
+            format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+        )]
     );
 }
 

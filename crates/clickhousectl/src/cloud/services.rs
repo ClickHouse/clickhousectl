@@ -2,7 +2,7 @@ use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanu
 use crate::cloud::backups::BackupConfigCommands;
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
-use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::builder::PossibleValuesParser;
@@ -26,6 +26,12 @@ struct QueryEndpointReadiness {
     initial_backoff: Duration,
     max_backoff: Duration,
 }
+
+/// Gap between `GET service` calls while `service delete --force` waits for a
+/// stop to finish. A real stop takes minutes, so the loop can emit dozens of
+/// progress lines — see [`crate::cloud::output::eprint_line`] for why none of
+/// them may panic.
+const STOP_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
     timeout: Duration::from_secs(120),
@@ -1428,7 +1434,15 @@ async fn service_delete(
             .map(|service| or_absent(service.state.as_ref()))
             .unwrap_or_default();
         if matches!(state.as_str(), "running" | "idle" | "starting") {
-            eprintln!("Stopping service {} before deletion...", service_id);
+            // Every write below goes through `eprint_line`/`print_line`, never
+            // `eprintln!`/`println!`: this loop streams progress for as long as
+            // the stop takes (minutes), so it routinely outlives whatever was
+            // reading its output, and a panicking write turned a successful
+            // delete into exit 101 (#598).
+            eprint_line(format!(
+                "Stopping service {} before deletion...",
+                service_id
+            ));
             client
                 .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
                 .await?;
@@ -1437,11 +1451,11 @@ async fn service_delete(
                 std::io::stderr().is_terminal() && !json && std::env::var_os("CI").is_none();
             let mut progress = StopPollProgress::default();
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(STOP_POLL_INTERVAL).await;
                 let service = client.get_service(&org_id, service_id).await?;
                 let state = or_absent(service.state.as_ref());
                 if let Some(line) = progress.render(&state, verbose_polling) {
-                    eprintln!("{line}");
+                    eprint_line(line);
                 }
                 if classify_stop_poll_state(service.state.as_ref())? {
                     break;
@@ -1458,10 +1472,12 @@ async fn service_delete(
     if !retain_query_key {
         credentials::remove_service_query_key(service_id)?;
     }
+    // The service is already gone by here, so a closed stdout must not turn a
+    // completed deletion into a panic — see `print_line` and #598.
     if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        print_line(serde_json::to_string_pretty(&response)?);
     } else {
-        println!("Service {} deletion initiated", service_id);
+        print_line(format!("Service {} deletion initiated", service_id));
     }
     Ok(())
 }

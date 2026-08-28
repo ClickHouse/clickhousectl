@@ -1,6 +1,6 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
-use crate::cloud::output::{or_absent, print_human};
+use crate::cloud::output::{eprint_line, or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
@@ -502,18 +502,20 @@ pub(crate) fn service_query_key_cleanup(
         return Ok((vec![], false));
     };
     let Some(api_key_id) = key.api_key_id else {
-        eprintln!(
+        // `eprint_line`, not `eprintln!`: a warning on the way to deleting a
+        // service must not panic on a closed stderr (#598).
+        eprint_line(format!(
             "Warning: the stored query key for service {service_id} predates exact management \
              API key IDs; service deletion will continue without unsafe cloud key cleanup."
-        );
+        ));
         return Ok((vec![], false));
     };
     let Some(key_org_id) = key.organization_id else {
-        eprintln!(
+        eprint_line(format!(
             "Warning: the stored query key for service {service_id} has a management API key ID \
              but no provisioning organization; cloud key cleanup was skipped and the local \
              record was retained."
-        );
+        ));
         return Ok((vec![], true));
     };
     if key_org_id != org_id {

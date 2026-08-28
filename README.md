@@ -629,6 +629,8 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+`--force` stops the service and then polls it until the stop completes, which takes minutes on a real service, printing each state change to stderr (stdout stays reserved for the result). Progress output is best-effort: if whatever was reading it goes away — a pager you quit, a supervising process that stopped reading — the lines are dropped and the deletion still runs to completion and exits 0.
+
 Use `clickhousectl cloud service create --help` for the complete option list. If omitted, `--provider` defaults to `aws`, `--region` defaults to `us-east-1`, and the IP allowlist defaults to `0.0.0.0/0`; production workflows should normally set all three explicitly. When the create response includes an initial password, it is shown only once.
 
 `--query` and `--queries-file` are mutually exclusive. If neither is supplied, `cloud service query` reads SQL from stdin; `--queries-file -` also reads stdin explicitly.
