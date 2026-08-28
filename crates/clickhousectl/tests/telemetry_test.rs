@@ -4,8 +4,8 @@
 //! `HOME` pointed at a temp dir (sandboxing `~/.clickhouse/telemetry.json`)
 //! and `CHCTL_TELEMETRY_URL` pointed at a local `wiremock` server, then
 //! asserts on the consent flow (notice/marker/silence) and on the recorded
-//! payload shape — in particular that flag values and positional arguments
-//! never appear on the wire.
+//! payload shape — in particular that flag and positional *values* never
+//! appear on the wire, while positional presence does (#480).
 //!
 //! The send happens in a detached child process, so tests that expect an
 //! event poll the mock briefly; tests that expect *no* event give the
@@ -211,6 +211,7 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     let event = &payloads[0];
     assert_eq!(event["command"], "local list");
     assert!(event["flags"].as_array().unwrap().is_empty());
+    assert!(event["positionals"].as_array().unwrap().is_empty());
     assert_eq!(event["exit_code"], 0);
     // Whether an agent is detected depends on the harness environment; pin
     // that the two fields exist and agree (one detection feeds both).
@@ -298,6 +299,8 @@ async fn failure_reported_and_positional_value_never_leaks() {
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
     assert_eq!(event["command"], "local remove");
+    // The slot the version went into is recorded; the version is not (#480).
+    assert_eq!(event["positionals"], serde_json::json!(["version"]));
     // The event carries the exit code the process exited with, and
     // the outcome derived from it — a failed handler is "error", not "ok".
     assert_eq!(event["exit_code"], 1);
@@ -350,6 +353,7 @@ async fn managed_client_failure_details_never_reach_telemetry() {
     let event = &payloads[0];
     assert_eq!(event["command"], "local client");
     assert_eq!(event["flags"], serde_json::json!(["name"]));
+    assert_eq!(event["positionals"], serde_json::json!([]));
     assert_eq!(event["exit_code"], 1);
     let raw_payload = serde_json::to_string(event).unwrap();
     for sensitive in [
@@ -387,6 +391,7 @@ async fn server_scope_failure_paths_never_reach_telemetry() {
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
     assert_eq!(event["command"], "local server stop");
+    assert_eq!(event["positionals"], serde_json::json!(["name"]));
     assert_eq!(event["exit_code"], 1);
     let raw_payload = serde_json::to_string(event).unwrap();
     for sensitive in [
@@ -475,6 +480,137 @@ async fn flag_names_sent_but_values_never_leak() {
     let event = &payloads[0];
     assert_eq!(event["command"], "local list");
     assert_eq!(event["flags"], serde_json::json!(["json"]));
+}
+
+// -- positional presence (#480) ---------------------------------------------
+
+/// The three shapes issue #480 could not tell apart, end to end: a bare
+/// lifecycle command, the same command with a named server, and the
+/// compatibility `--name` flag. `positionals` is the discriminator and never
+/// carries the name itself.
+#[tokio::test]
+async fn positional_presence_distinguishes_bare_from_named_stop() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+
+    let cases: &[(&[&str], Value)] = &[
+        (&["local", "server", "stop"], serde_json::json!([])),
+        (
+            &["local", "server", "stop", "SECRET-SERVER-NAME"],
+            serde_json::json!(["name"]),
+        ),
+        (
+            &["local", "server", "stop", "--name", "SECRET-SERVER-NAME"],
+            serde_json::json!([]),
+        ),
+    ];
+
+    for (index, (args, expected)) in cases.iter().enumerate() {
+        let output = sandbox
+            .command(args)
+            .current_dir(project.path())
+            .output()
+            .unwrap();
+        // Whether the stop succeeds is irrelevant here; the event shape is not.
+        let payloads = sandbox.wait_for_requests(index + 1).await;
+        let event = &payloads[index];
+        assert_eq!(event["command"], "local server stop", "for {args:?}");
+        assert_eq!(event["positionals"], *expected, "for {args:?}");
+        let raw = serde_json::to_string(event).unwrap();
+        assert!(
+            !raw.contains("SECRET"),
+            "server name leaked for {args:?}: {raw} (stderr: {})",
+            stderr_of(&output)
+        );
+    }
+
+    // The flag form records the name as a *flag*, so the two naming styles
+    // stay distinguishable without recording the value.
+    let payloads = sandbox.wait_for_requests(3).await;
+    assert_eq!(payloads[2]["flags"], serde_json::json!(["name"]));
+}
+
+/// A missing required positional (parse failure) and a supplied one (dispatch)
+/// are now different events, which is what the August 2026 investigation
+/// could not separate.
+#[tokio::test]
+async fn missing_required_positional_is_distinguishable_from_a_supplied_one() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+
+    let output = sandbox
+        .command(&["local", "use"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", stderr_of(&output));
+    let payloads = sandbox.wait_for_requests(1).await;
+    let event = &payloads[0];
+    assert_eq!(event["command"], "local use");
+    assert_eq!(event["outcome"], "missing_required");
+    assert_eq!(event["positionals"], serde_json::json!([]));
+
+    // Supplied but not installed: the parse succeeded, so the slot is present
+    // and the failure is a handler failure, not a usage error.
+    let output = sandbox
+        .command(&["local", "remove", "25.12.9.61"])
+        .current_dir(project.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    let payloads = sandbox.wait_for_requests(2).await;
+    let event = &payloads[1];
+    assert_eq!(event["command"], "local remove");
+    assert_eq!(event["outcome"], "error");
+    assert_eq!(event["positionals"], serde_json::json!(["version"]));
+    let raw = serde_json::to_string(event).unwrap();
+    assert!(!raw.contains("25.12.9.61"), "version leaked: {raw}");
+}
+
+/// Hostile, secret-shaped positionals: presence is recorded, the value is not,
+/// and arguments forwarded to another program are not recorded at all.
+#[tokio::test]
+async fn hostile_positionals_never_appear_on_the_wire() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    const HOSTILE: &str = "postgres://user:pa55w0rd@db.internal:5432/prod";
+
+    let cases: &[(&[&str], &str, Value)] = &[
+        (
+            &["local", "server", "stop", HOSTILE],
+            "local server stop",
+            serde_json::json!(["name"]),
+        ),
+        // Forwarded to clickhouse-client after `--`: not this CLI's shape.
+        (
+            &["local", "client", "--", HOSTILE],
+            "local client",
+            serde_json::json!([]),
+        ),
+    ];
+
+    for (index, (args, command, expected)) in cases.iter().enumerate() {
+        let output = sandbox
+            .command(args)
+            .current_dir(project.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{}", stdout_of(&output));
+        let payloads = sandbox.wait_for_requests(index + 1).await;
+        let event = &payloads[index];
+        assert_eq!(event["command"], *command, "for {args:?}");
+        assert_eq!(event["positionals"], *expected, "for {args:?}");
+        let raw = serde_json::to_string(event).unwrap();
+        for fragment in ["postgres://", "pa55w0rd", "db.internal", HOSTILE] {
+            assert!(
+                !raw.contains(fragment),
+                "hostile positional leaked for {args:?}: {raw}"
+            );
+        }
+    }
 }
 
 // -- any invocation counts (#320): bare, help, version, parse errors --------
@@ -574,6 +710,9 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
     let event = &payloads[0];
     assert_eq!(event["command"], "cloud org usage");
     assert_eq!(event["flags"], serde_json::json!(["from-date", "to-date"]));
+    // The deprecated positional org-id form is now visible as presence — the
+    // exact signal #480 asked for, with the id still off the wire.
+    assert_eq!(event["positionals"], serde_json::json!(["legacy_org_id"]));
     assert_eq!(event["exit_code"], 2);
     assert_eq!(event["outcome"], "invalid_value");
     let raw = serde_json::to_string(event).unwrap();

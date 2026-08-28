@@ -1202,13 +1202,20 @@ The CLI checks for updates in the background (at most once per 24 hours) and cac
 Each event contains exactly:
 
 - the command path (e.g. `local server start`)
-- the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values, never positional arguments
+- the **names** of the flags passed (e.g. `json`, `org-id`) — never flag values
+- the **names** of the positional arguments passed (e.g. `name` for `local server stop dev`) — presence only, never the value
 - how the invocation ended and its exit code
 - the CLI version, OS, and architecture
 - whether it ran in CI (`CI` env var)
 - whether it ran under a detected coding agent, and if so which one (e.g. `claude-code`)
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
+
+The privacy boundary for positional arguments is exactly the same one as for flags: every recorded name is a string compiled into the binary, so the field's vocabulary is a closed set that cannot carry anything you typed. `clickhousectl local server stop analytics-prod` records `positionals: ["name"]` — the fact that a server was named, not which one. Three further exclusions keep the field honest:
+
+- only arguments you actually passed count, so a value clap filled in from a default (or from the environment), and a name the CLI generated for you, are absent — which is what makes "you named it" and "we picked one" distinguishable
+- arguments forwarded to another program are never recorded: everything after `--` for `local server start`, and the trailing arguments of `local client` and `local postgres client`, belong to `clickhouse-server`, `clickhouse-client`, and `psql`
+- when a command fails to parse, the unmatched token is still never recorded — only the slot it would have filled
 
 Nothing is sent before you have seen the notice unless you explicitly enable telemetry with `clickhousectl telemetry enable`. The first run normally prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. Explicitly enabling telemetry starts it immediately and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 

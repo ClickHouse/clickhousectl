@@ -11,10 +11,13 @@
 //! repeated notice). `DO_NOT_TRACK` (donottrack.sh convention) overrides
 //! everything: no notice, no file write, no send.
 //!
-//! The payload carries the command path and flag *names* only — never flag
-//! values, never positional arguments. It is built from the clap definitions
-//! ([`capture`] walks `ArgMatches` ids and `Arg` metadata, never touching
-//! `get_one`/`get_raw`), so leaking a value is structurally impossible.
+//! The payload carries the command path plus flag and positional *names* only
+//! — never any values. It is built from the clap definitions ([`capture`] walks
+//! `ArgMatches` ids and `Arg` metadata, never touching `get_one`/`get_raw`), so
+//! leaking a value is structurally impossible. Positional *presence* is
+//! recorded as the definition-owned id (#480), which is what makes
+//! `local server stop` and `local server stop <name>` distinguishable; see
+//! [`Payload::positionals`] for the exclusions.
 //!
 //! Every invocation of the binary goes through the same consent state machine
 //! (#320). Bare, `--help`, `--version`, and mistyped commands show the first-run
@@ -91,6 +94,11 @@ pub fn init() {
 
 /// The ingest worker caps `flags` at 64 entries; truncate client-side too.
 const MAX_FLAGS: usize = 64;
+
+/// Positional ids are a deduplicated subset of the clap definitions, so the
+/// real bound is a handful per command; the cap is belt-and-braces so a future
+/// definition change can never widen the field.
+const MAX_POSITIONALS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Consent state
@@ -179,6 +187,19 @@ fn env_truthy(value: Option<String>) -> bool {
 struct Payload {
     command: String,
     flags: Vec<String>,
+    /// Definition-owned ids of the positional slots the user filled on the
+    /// command line (e.g. `["name"]` for `local server stop dev`) — presence
+    /// only, never the value (#480). The privacy boundary:
+    ///
+    /// * every entry is cloned from an `Arg` definition compiled into the
+    ///   binary, so the field's vocabulary is closed and cannot carry argv;
+    /// * only `ValueSource::CommandLine` slots count, so clap defaults,
+    ///   environment-fed values, and names a handler generates at runtime are
+    ///   absent — which is exactly what makes "the user named it" and "we
+    ///   picked one" distinguishable;
+    /// * passthrough slots are excluded ([`is_passthrough_positional`]): the
+    ///   argv they forward to another program is not part of this CLI's shape.
+    positionals: Vec<String>,
     /// Exit code: `Error::exit_code()` for dispatched commands — 0 success,
     /// 1 error, 3 cancelled, 4 auth required, or a child process's passthrough
     /// code — and clap's own code for parse outcomes (0 help/version, 2 usage
@@ -235,10 +256,13 @@ fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
 fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) -> Payload {
     let mut flags = invocation.flags.clone();
     flags.truncate(MAX_FLAGS);
+    let mut positionals = invocation.positionals.clone();
+    positionals.truncate(MAX_POSITIONALS);
     let detected = is_ai_agent::detect();
     Payload {
         command: invocation.command.clone(),
         flags,
+        positionals,
         exit_code,
         outcome: dispatched_outcome(invocation.outcome, exit_code),
         suggestion: invocation.suggestion.clone(),
@@ -255,12 +279,15 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
 // Invocation capture
 // ---------------------------------------------------------------------------
 
-/// What the user invoked: the subcommand path (e.g. `"local start"`) and the
-/// long names of the flags they passed. No values, no positionals.
+/// What the user invoked: the subcommand path (e.g. `"local start"`), the long
+/// names of the flags they passed, and the ids of the positional slots they
+/// filled. Names only — never a value.
 #[derive(Clone)]
 pub struct Invocation {
     command: String,
     flags: Vec<String>,
+    /// See [`Payload::positionals`]: definition-owned ids, presence only.
+    positionals: Vec<String>,
     /// See [`Payload::outcome`]: `"ok"` from [`capture`] means *parsed* —
     /// the dispatched outcome is not knowable until the exit code exists, so
     /// [`dispatched_outcome`] derives it at finalize time. From
@@ -348,6 +375,22 @@ fn find_defined_name<'a>(cmd: &'a clap::Command, name: &str) -> Option<&'a str> 
         })
 }
 
+/// Whether a positional slot exists to forward raw argv to another program
+/// rather than to describe this CLI's own shape (`local client [ARGS]…`,
+/// `local postgres client [ARGS]…`, `local server start -- [CLICKHOUSE_ARG]…`).
+///
+/// The test is structural, not a hand-maintained list of ids: these slots are
+/// exactly the ones marked `last`, `trailing_var_arg`, or
+/// `allow_hyphen_values`, because forwarding argv verbatim is what those
+/// markers are for. Recording their presence would classify another program's
+/// argument list — including everything after a `--` — as a clickhousectl
+/// positional, so they are skipped ([`Payload::positionals`]). New passthrough
+/// slots inherit the exclusion automatically; a new *ordinary* positional is
+/// recorded without a config change.
+fn is_passthrough_positional(arg: &clap::Arg) -> bool {
+    arg.is_last_set() || arg.is_trailing_var_arg_set() || arg.is_allow_hyphen_values_set()
+}
+
 #[derive(Default)]
 struct PositionalCursor {
     index: usize,
@@ -382,8 +425,16 @@ impl PositionalCursor {
                 .is_some_and(clap::Arg::is_allow_hyphen_values_set)
     }
 
-    /// Consume a definition-backed positional slot without retaining its value.
-    fn consume(&mut self, cmd: &clap::Command, token: &str) -> bool {
+    /// Consume a definition-backed positional slot without retaining its
+    /// value, recording the slot's *id* in `seen` when it is one of this CLI's
+    /// own positionals. The id is cloned from the `Arg` definition, so the
+    /// token itself still never enters the result.
+    fn consume(
+        &mut self,
+        cmd: &clap::Command,
+        token: &str,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> bool {
         let Some(arg) = self.current(cmd) else {
             return false;
         };
@@ -391,12 +442,16 @@ impl PositionalCursor {
             .get_value_terminator()
             .is_some_and(|terminator| terminator.as_str() == token)
         {
+            // A terminator token fills no slot: nothing to record.
             self.index += 1;
             self.values = 0;
             self.active = false;
             return true;
         }
 
+        if !is_passthrough_positional(arg) {
+            seen.insert(arg.get_id().as_str().to_string());
+        }
         self.values += 1;
         self.active = true;
         let max_values = arg.get_num_args().map_or(1, |range| range.max_values());
@@ -438,14 +493,16 @@ fn short_cluster_is_defined(stack: &[&clap::Command], cluster: &str) -> bool {
     true
 }
 
-/// Derive the command path and passed-flag names from the parsed matches.
+/// Derive the command path, passed-flag names, and filled positional ids from
+/// the parsed matches.
 ///
 /// Only ids and `Arg` metadata are consulted — never `get_one`/`get_raw`/
-/// `get_many` — so argument *values* are structurally unreachable here.
-/// Positionals are skipped entirely (their names could still describe user
-/// data), default-valued and env-fed args are excluded by the
+/// `get_many` — so argument *values* are structurally unreachable here. A
+/// positional contributes its definition id and nothing else (#480; see
+/// [`Payload::positionals`]), passthrough slots contribute nothing at all,
+/// default-valued and env-fed args are excluded by the
 /// `ValueSource::CommandLine` filter, and clap's propagation of global flags
-/// into subcommand matches is deduplicated by the set.
+/// into subcommand matches is deduplicated by the sets.
 pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     use clap::parser::ValueSource;
 
@@ -454,6 +511,7 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     // subcommand matches but their `Arg` definition lives on an ancestor.
     let mut stack: Vec<&clap::Command> = vec![root];
     let mut flags = std::collections::BTreeSet::new();
+    let mut positionals = std::collections::BTreeSet::new();
     let mut current = matches;
     loop {
         for id in current.ids() {
@@ -477,6 +535,11 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
                 continue;
             };
             if arg.is_positional() {
+                if !is_passthrough_positional(arg) {
+                    // The definition's id, cloned from the definition — a
+                    // positional has no long name to fall back on.
+                    positionals.insert(arg.get_id().as_str().to_string());
+                }
                 continue;
             }
             flags.insert(arg.get_long().unwrap_or(id.as_str()).to_string());
@@ -498,6 +561,7 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     Invocation {
         command: path.join(" "),
         flags: flags.into_iter().collect(),
+        positionals: positionals.into_iter().collect(),
         outcome: "ok",
         suggestion: None,
     }
@@ -511,10 +575,16 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
 /// enter the result, the same "structurally impossible to leak a value"
 /// guarantee as [`capture`]. The walk stops at the first token that matches
 /// nothing. Defined positional slots are consumed without retaining their
-/// values, allowing later flags to be captured; an unmatched token for which
-/// no slot exists still stops the walk. The token itself is never recorded (a
-/// typo is indistinguishable from a secret pasted into the wrong window — see
-/// #320).
+/// values, recording the slot id like [`capture`] does and allowing later
+/// flags to be captured; an unmatched token for which no slot exists still
+/// stops the walk. The token itself is never recorded (a typo is
+/// indistinguishable from a secret pasted into the wrong window — see #320).
+///
+/// Slot assignment here is the walk's own index arithmetic rather than clap's
+/// parse, so on a failed parse a recorded id says "a token reached this slot",
+/// which is the fact the shape analysis needs; it is definition-owned either
+/// way. The walk breaks at `--`, so nothing beyond it is ever attributed to a
+/// positional.
 pub fn capture_lossy(
     root: &mut clap::Command,
     argv: &[std::ffi::OsString],
@@ -530,6 +600,7 @@ pub fn capture_lossy(
     let mut stack: Vec<&clap::Command> = vec![root];
     let mut path: Vec<&str> = Vec::new();
     let mut flags = std::collections::BTreeSet::new();
+    let mut positionals = std::collections::BTreeSet::new();
     let mut tokens = argv.iter().skip(1);
     let mut positional = PositionalCursor::new();
     'walk: while let Some(token) = tokens.next() {
@@ -545,7 +616,7 @@ pub fn capture_lossy(
         // values (including subcommand-like strings). With hyphen values or a
         // trailing var arg it also owns flag-like strings.
         if positional.active_accepts(current, hyphenated) {
-            positional.consume(current, token);
+            positional.consume(current, token, &mut positionals);
             continue;
         }
         if let Some(rest) = token.strip_prefix("--") {
@@ -561,7 +632,7 @@ pub fn capture_lossy(
                 })
             }) else {
                 if positional.inactive_accepts_hyphen(current) {
-                    positional.consume(current, token);
+                    positional.consume(current, token, &mut positionals);
                     continue;
                 }
                 break;
@@ -589,7 +660,7 @@ pub fn capture_lossy(
             if positional.inactive_accepts_hyphen(current)
                 && !short_cluster_is_defined(&stack, cluster)
             {
-                positional.consume(current, token);
+                positional.consume(current, token, &mut positionals);
                 continue;
             }
             positional.interrupt();
@@ -625,7 +696,7 @@ pub fn capture_lossy(
             path.push(sub.get_name());
             stack.push(sub);
             positional = PositionalCursor::new();
-        } else if positional.consume(current, token) {
+        } else if positional.consume(current, token, &mut positionals) {
             continue;
         } else {
             break;
@@ -634,6 +705,7 @@ pub fn capture_lossy(
     Invocation {
         command: path.join(" "),
         flags: flags.into_iter().collect(),
+        positionals: positionals.into_iter().collect(),
         outcome: outcome_for_error(error.kind()),
         suggestion: suggestion_for_error(root, error),
     }
@@ -775,8 +847,9 @@ fn print_first_run_notice() {
     let _ = writeln!(
         std::io::stderr(),
         "\nNote: clickhousectl collects anonymous usage data to help improve the CLI:\n\
-         command name, flag names (never values or arguments), success/failure, version,\n\
-         OS/arch, and CI/agent detection. No user or machine IDs. Nothing was sent this run.\n\
+         command name, flag and argument names (never their values), success/failure,\n\
+         version, OS/arch, and CI/agent detection. No user or machine IDs.\n\
+         Nothing was sent this run.\n\
          Opt out: `clickhousectl telemetry disable` or DO_NOT_TRACK=1.\n\
          Details: {DOCS_URL}"
     );
@@ -928,6 +1001,7 @@ mod tests {
         Invocation {
             command: "local list".into(),
             flags: vec!["json".into()],
+            positionals: vec![],
             outcome: "ok",
             suggestion: None,
         }
@@ -1017,6 +1091,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["command"], "local list");
         assert_eq!(value["flags"], serde_json::json!(["json"]));
+        assert_eq!(value["positionals"], serde_json::json!([]));
         assert_eq!(value["exit_code"], 4);
         // The parse-time "ok" placeholder is rewritten from the exit code.
         assert_eq!(value["outcome"], "auth_required");
@@ -1075,6 +1150,7 @@ mod tests {
         let inv = Invocation {
             command: "local".into(),
             flags: vec![],
+            positionals: vec![],
             outcome: "unknown_argument",
             suggestion: None,
         };
@@ -1108,6 +1184,7 @@ mod tests {
             [
                 "command",
                 "flags",
+                "positionals",
                 "exit_code",
                 "outcome",
                 "suggestion",
@@ -1132,11 +1209,13 @@ mod tests {
         let inv = Invocation {
             command: "x".into(),
             flags: (0..100).map(|i| format!("flag-{i}")).collect(),
+            positionals: (0..100).map(|i| format!("pos-{i}")).collect(),
             outcome: "ok",
             suggestion: None,
         };
         let payload = build_payload(&inv, 0, &env_of(&[]));
         assert_eq!(payload.flags.len(), MAX_FLAGS);
+        assert_eq!(payload.positionals.len(), MAX_POSITIONALS);
     }
 
     // -- exec handoffs: pre-exec hook building blocks -------------------------
@@ -1156,6 +1235,7 @@ mod tests {
         let stashed = Invocation {
             command: "local client".into(),
             flags: vec!["port".into()],
+            positionals: vec!["name".into()],
             outcome: "ok",
             suggestion: None,
         };
@@ -1163,6 +1243,7 @@ mod tests {
         assert_eq!(inv.outcome, "exec");
         assert_eq!(inv.command, "local client");
         assert_eq!(inv.flags, ["port"]);
+        assert_eq!(inv.positionals, ["name"]);
         assert_eq!(inv.suggestion, None);
     }
 
@@ -1174,6 +1255,7 @@ mod tests {
         let inv = exec_invocation(&Invocation {
             command: "local client".into(),
             flags: vec!["query".into()],
+            positionals: vec![],
             outcome: "ok",
             suggestion: None,
         });
@@ -1211,8 +1293,153 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service get");
         assert_eq!(inv.flags, ["json", "org-id"]);
+        // The positional's definition id is recorded; its value is not (#480).
+        assert_eq!(inv.positionals, ["service_id"]);
         let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+    }
+
+    /// The three lifecycle shapes issue #480 could not tell apart.
+    #[test]
+    fn capture_distinguishes_bare_named_and_flag_named_stop() {
+        let bare = capture_from(&["clickhousectl", "local", "server", "stop"]);
+        assert_eq!(bare.command, "local server stop");
+        assert!(bare.flags.is_empty());
+        assert!(
+            bare.positionals.is_empty(),
+            "an omitted positional must stay absent: {:?}",
+            bare.positionals
+        );
+
+        let named = capture_from(&["clickhousectl", "local", "server", "stop", "SECRET-NAME"]);
+        assert_eq!(named.command, "local server stop");
+        assert!(named.flags.is_empty());
+        assert_eq!(named.positionals, ["name"]);
+
+        // The compatibility `--name` form is a flag, so the two ways of naming
+        // a server stay distinguishable without a separate source field.
+        let flagged = capture_from(&[
+            "clickhousectl",
+            "local",
+            "server",
+            "stop",
+            "--name",
+            "SECRET-NAME",
+        ]);
+        assert_eq!(flagged.command, "local server stop");
+        assert_eq!(flagged.flags, ["name"]);
+        assert!(flagged.positionals.is_empty());
+
+        for inv in [&bare, &named, &flagged] {
+            let json = serde_json::to_string(&build_payload(inv, 0, &env_of(&[]))).unwrap();
+            assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+        }
+    }
+
+    /// The other half of the #480 signal: a supplied version is visible on the
+    /// successful parse, so it is distinguishable from the missing-required
+    /// parse failure asserted in `lossy_missing_required_positional_is_absent`.
+    #[test]
+    fn capture_records_supplied_version_positional() {
+        for command in [
+            ["clickhousectl", "local", "use", "25.12.9.61"],
+            ["clickhousectl", "local", "remove", "25.12.9.61"],
+        ] {
+            let inv = capture_from(&command);
+            assert_eq!(inv.positionals, ["version"], "for {command:?}");
+            assert_eq!(inv.outcome, "ok");
+        }
+    }
+
+    /// Passthrough slots forward argv to another program (`clickhouse-client`,
+    /// `psql`, `clickhouse-server`). Their presence is not this CLI's shape and
+    /// is never recorded — including everything after a `--`.
+    #[test]
+    fn capture_excludes_passthrough_positionals() {
+        let inv = capture_from(&[
+            "clickhousectl",
+            "local",
+            "client",
+            "--",
+            "--secret-passthrough-flag",
+            "SECRET-VALUE",
+        ]);
+        assert_eq!(inv.command, "local client");
+        assert!(
+            inv.positionals.is_empty(),
+            "passthrough args were recorded: {:?}",
+            inv.positionals
+        );
+
+        // `server start` puts its passthrough behind `last = true`: the named
+        // server is still recorded, the forwarded arguments are not.
+        let inv = capture_from(&[
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "SECRET-NAME",
+            "--",
+            "--logger.level=SECRET-LEVEL",
+        ]);
+        assert_eq!(inv.command, "local server start");
+        assert_eq!(inv.positionals, ["name"]);
+
+        let inv = capture_from(&[
+            "clickhousectl",
+            "local",
+            "postgres",
+            "client",
+            "--",
+            "-c",
+            "SECRET-SQL",
+        ]);
+        assert_eq!(inv.command, "local postgres client");
+        assert!(inv.positionals.is_empty());
+    }
+
+    /// Every passthrough slot in the real command tree is recognized
+    /// structurally, and every recorded id is a source-level identifier — the
+    /// field's vocabulary is closed by the definitions, not by an allowlist
+    /// that can go stale.
+    #[test]
+    fn positional_ids_are_closed_definition_identifiers() {
+        fn walk(cmd: &clap::Command, recorded: &mut Vec<String>, passthrough: &mut Vec<String>) {
+            for arg in cmd.get_positionals() {
+                if is_passthrough_positional(arg) {
+                    passthrough.push(arg.get_id().to_string());
+                } else {
+                    recorded.push(arg.get_id().to_string());
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, recorded, passthrough);
+            }
+        }
+        let mut cmd = crate::cli::Cli::command();
+        cmd.build();
+        let (mut recorded, mut passthrough) = (Vec::new(), Vec::new());
+        walk(&cmd, &mut recorded, &mut passthrough);
+
+        assert!(!recorded.is_empty(), "the tree must have positionals");
+        for id in &recorded {
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "positional id {id} is not a Rust identifier, so it is not \
+                 definition-owned"
+            );
+        }
+        // The passthrough slots are the argv-forwarding ones; they all happen
+        // to be spelled `args`, but the exclusion is by marker, not by name.
+        assert!(
+            passthrough.iter().all(|id| id == "args"),
+            "unexpected passthrough slots: {passthrough:?}"
+        );
+        assert!(
+            !recorded.contains(&"args".to_string()),
+            "a forwarding slot is being recorded: {recorded:?}"
+        );
     }
 
     #[test]
@@ -1240,9 +1467,31 @@ mod tests {
             .unwrap();
         let inv = capture(&cmd, &matches);
         assert_eq!(inv.command, "sub");
-        // `level` has a default (ValueSource::DefaultValue) and `target` is
-        // positional — only the explicitly passed named flag is reported.
+        // `level` has a default (ValueSource::DefaultValue), so it is not
+        // reported; `target` was passed on the command line, so its id is.
         assert_eq!(inv.flags, ["verbose"]);
+        assert_eq!(inv.positionals, ["target"]);
+    }
+
+    /// A positional that clap filled from a default (or, by the same
+    /// `ValueSource::CommandLine` comparison, from the environment) is not a
+    /// user-supplied positional and must stay absent — that is what makes an
+    /// omitted default distinguishable from an explicit value.
+    #[test]
+    fn capture_excludes_defaulted_positionals() {
+        use clap::{Arg, Command};
+        let mut cmd = Command::new("root").subcommand(
+            Command::new("sub")
+                .arg(Arg::new("target").default_value("default"))
+                .arg(Arg::new("other")),
+        );
+        let matches = cmd.try_get_matches_from_mut(["root", "sub"]).unwrap();
+        let inv = capture(&cmd, &matches);
+        assert!(
+            inv.positionals.is_empty(),
+            "a defaulted positional was reported as user-supplied: {:?}",
+            inv.positionals
+        );
     }
 
     #[test]
@@ -1250,6 +1499,7 @@ mod tests {
         let inv = capture_from(&["clickhousectl", "local", "list"]);
         assert_eq!(inv.command, "local list");
         assert!(inv.flags.is_empty());
+        assert!(inv.positionals.is_empty());
     }
 
     // -- capture_lossy: failed parses, longest valid prefix only -------------
@@ -1735,6 +1985,158 @@ mod tests {
         assert_eq!(inv.outcome, "unknown_argument");
         let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+    }
+
+    // -- capture_lossy: positional presence on failed parses -----------------
+
+    /// A required positional that was never supplied stays absent, so a bare
+    /// `local use` is distinguishable from `local use <version>` (#480).
+    #[test]
+    fn lossy_missing_required_positional_is_absent() {
+        for args in [
+            &["clickhousectl", "local", "use"],
+            &["clickhousectl", "local", "remove"],
+        ] {
+            let inv = capture_lossy_from(args);
+            assert_eq!(inv.outcome, "missing_required", "for {args:?}");
+            assert!(
+                inv.positionals.is_empty(),
+                "a missing positional was recorded for {args:?}: {:?}",
+                inv.positionals
+            );
+        }
+    }
+
+    /// A failed parse that *did* carry a positional records the slot id, so a
+    /// handler-side failure after a supplied version is distinguishable from
+    /// the missing-argument parse failure above.
+    #[test]
+    fn lossy_supplied_positional_records_the_slot_id() {
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "local",
+            "remove",
+            "SECRET-VERSION",
+            "--frobnicate",
+        ]);
+        assert_eq!(inv.command, "local remove");
+        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.positionals, ["version"]);
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "positional value leaked: {json}");
+    }
+
+    /// Nothing after `--` is a clickhousectl positional: the walk stops there,
+    /// so a forwarded argument list can never be attributed to a slot.
+    #[test]
+    fn lossy_tokens_after_double_dash_are_not_positionals() {
+        let inv = capture_lossy_from(&["clickhousectl", "local", "--", "SECRET-ONE", "SECRET-TWO"]);
+        assert_eq!(inv.command, "local");
+        assert!(inv.positionals.is_empty());
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "post-`--` token leaked: {json}");
+    }
+
+    /// Passthrough slots are excluded on the lossy path too, including a
+    /// trailing var arg that swallows hostile flag-like tokens.
+    #[test]
+    fn lossy_passthrough_positionals_are_excluded() {
+        use clap::{Arg, Command, value_parser};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("target"))
+                .arg(
+                    Arg::new("args")
+                        .num_args(0..)
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true),
+                )
+                .arg(
+                    Arg::new("count")
+                        .long("count")
+                        .value_parser(value_parser!(u16)),
+                ),
+        );
+        // The bad `--count` value is what fails the parse; the trailing var
+        // arg would otherwise swallow the hostile tokens successfully.
+        let inv = capture_lossy_with(
+            cmd,
+            &[
+                "root",
+                "run",
+                "--count",
+                "SECRET-COUNT",
+                "SECRET-TARGET",
+                "--secret-forwarded",
+                "SECRET-FORWARDED-VALUE",
+            ],
+        );
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.flags, ["count"]);
+        assert_eq!(
+            inv.positionals,
+            ["target"],
+            "only the CLI's own slot may be recorded"
+        );
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "forwarded argv leaked: {json}");
+    }
+
+    /// A value terminator advances the cursor without filling a slot, so the
+    /// terminator token alone must not look like a supplied positional.
+    #[test]
+    fn lossy_value_terminator_records_no_positional() {
+        use clap::{Arg, Command};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("values").num_args(1..).value_terminator(";"))
+                .arg(Arg::new("after")),
+        );
+        let inv = capture_lossy_with(cmd, &["root", "run", ";", "SECRET-JUNK", "SECRET-EXTRA"]);
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.positionals, ["after"]);
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        assert!(!json.contains("SECRET"), "terminated value leaked: {json}");
+    }
+
+    /// Hostile secret-shaped positionals across every capture path: the ids
+    /// recorded are definition strings, the values never appear.
+    #[test]
+    fn hostile_positional_fixtures_never_reach_the_payload() {
+        const HOSTILE: &[&str] = &[
+            "AKIAIOSFODNN7EXAMPLE",
+            "sk-live-0123456789abcdef",
+            "postgres://user:pa55w0rd@db.internal:5432/prod",
+            "s3://bucket/customer-export.csv",
+            "/Users/someone/.ssh/id_rsa",
+            "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        ];
+        for hostile in HOSTILE {
+            // Successful parse.
+            let inv = capture_from(&["clickhousectl", "local", "server", "stop", hostile]);
+            assert_eq!(inv.positionals, ["name"]);
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
+            assert!(!json.contains(hostile), "leaked {hostile}: {json}");
+
+            // Failed parse (unknown flag after the positional).
+            let inv = capture_lossy_from(&[
+                "clickhousectl",
+                "local",
+                "server",
+                "stop",
+                hostile,
+                "--frobnicate",
+            ]);
+            assert_eq!(inv.positionals, ["name"]);
+            let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+            assert!(!json.contains(hostile), "leaked {hostile}: {json}");
+
+            // Passthrough (forwarded verbatim to clickhouse-client).
+            let inv = capture_from(&["clickhousectl", "local", "client", "--", hostile]);
+            assert!(inv.positionals.is_empty());
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
+            assert!(!json.contains(hostile), "leaked {hostile}: {json}");
+        }
     }
 
     #[test]
