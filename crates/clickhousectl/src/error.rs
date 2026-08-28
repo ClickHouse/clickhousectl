@@ -160,6 +160,37 @@ impl fmt::Display for StartupKind {
     }
 }
 
+/// Why a selected native binary cannot be launched, decided *before* the
+/// `exec()` handoff so the failure is an ordinary error rather than a censored
+/// telemetry handoff attempt (#471).
+///
+/// A closed vocabulary, deliberately: the resulting message is this CLI's own
+/// text end to end (path plus one of these phrases plus remediation), which is
+/// what lets it render at parity in structured output instead of being redacted
+/// like [`Error::Exec`]'s foreign subprocess text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryLaunchProblem {
+    /// Nothing at the path (a build removed after version resolution).
+    Missing,
+    /// A directory, device or socket where the binary should be.
+    NotAFile,
+    /// A regular file with no execute bit for anyone.
+    NotExecutable,
+    /// The path could not be inspected at all (permissions on a parent, …).
+    Unreadable,
+}
+
+impl fmt::Display for BinaryLaunchProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Missing => "the file does not exist",
+            Self::NotAFile => "it is not a regular file",
+            Self::NotExecutable => "it is not executable",
+            Self::Unreadable => "its metadata could not be read",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum ManagedClientErrorKind {
     ServerNotFound,
@@ -459,6 +490,20 @@ pub enum Error {
     /// summarized in structured output rather than rendered.
     #[error("{0}")]
     UnsupportedArgument(String),
+
+    /// The selected native binary cannot be launched, detected before the
+    /// `exec()` handoff (#471). Also self-composed — see
+    /// [`BinaryLaunchProblem`] — so it renders in full, unlike
+    /// [`Error::Exec`], which reports what the OS said when a launch that
+    /// looked viable still failed.
+    #[error(
+        "ClickHouse build {version} cannot be launched: {problem} ({path})\nReinstall it with `clickhousectl local install {version}`"
+    )]
+    BinaryNotLaunchable {
+        version: String,
+        problem: BinaryLaunchProblem,
+        path: String,
+    },
 
     #[error("{kind} port {port} is already in use{}", kind.human_guidance())]
     PortInUse { kind: PortKind, port: u16 },

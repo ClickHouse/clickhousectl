@@ -1040,7 +1040,16 @@ async fn client(
     extra_args: Vec<String>,
 ) -> Result<()> {
     if host.is_some() || port.is_some() {
-        // Direct connect — no server lookup; require host psql.
+        // Direct connect — no server lookup; require host psql. Probing before
+        // the handoff (the same probe the managed path already uses to choose
+        // between host psql and `docker exec`) keeps a missing `psql` an
+        // ordinary error event instead of a censored `exec_attempt` (#471).
+        if !host_has_psql() {
+            return Err(Error::Postgres(
+                "could not execute psql: not found on PATH (install the PostgreSQL client tools)"
+                    .to_string(),
+            ));
+        }
         let h = host.unwrap_or_else(|| "127.0.0.1".to_string());
         let p = port.unwrap_or(DEFAULT_PG_PORT);
         return exec_host_psql(
@@ -1167,7 +1176,12 @@ fn exec_host_psql(
     }
     cmd.args(&extra_args);
     // `exec()` replaces the process image on success, so `main`'s telemetry
-    // tail never runs for this invocation; record the event now (#320).
+    // tail never runs for this invocation; record the censored handoff attempt
+    // now (#320, #471). Both callers probe for `psql` first, so only a race
+    // (or a `PATH` entry that is not launchable) can fail below this line;
+    // `psql` itself then inherits this process's stdio, process group, session
+    // and controlling TTY unchanged, which is why the handoff stays an
+    // `exec()`.
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();

@@ -35,6 +35,10 @@ enum LocalErrorCode {
     /// [`Self::VersionUnavailable`], which means it could not be resolved or
     /// downloaded: `local list --remote` is no help for a local miss.
     VersionNotInstalled,
+    /// The build is installed but cannot be launched: not a regular file, or
+    /// carrying no execute bit. Distinct from [`Self::VersionNotInstalled`],
+    /// which `local install` fixes by fetching a missing build.
+    BinaryNotLaunchable,
     VersionSelectionRequired,
     VersionAlreadyInstalled,
     VersionUnavailable,
@@ -318,6 +322,13 @@ impl LocalErrorOutput {
             }
             Error::ClientVersionNotInstalled(version) => {
                 Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command(format!("clickhousectl local install {version}"))
+            }
+            // Installed but unusable: the message is entirely self-composed
+            // (path plus a closed-vocabulary problem), so it renders at parity
+            // and names the repair (#471).
+            Error::BinaryNotLaunchable { version, .. } => {
+                Mapping::parity(LocalErrorCode::BinaryNotLaunchable)
                     .command(format!("clickhousectl local install {version}"))
             }
             Error::NoDefaultVersion | Error::AmbiguousClientVersion => {
@@ -1297,6 +1308,7 @@ pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::BinaryLaunchProblem;
 
     fn error_json(error: &Error) -> serde_json::Value {
         serde_json::to_value(LocalErrorOutput::from_error(error)).unwrap()
@@ -1524,11 +1536,40 @@ mod tests {
                 "io_error",
             ),
             (Error::Exec("raw fallback details".into()), "local_error"),
+            (
+                Error::BinaryNotLaunchable {
+                    version: "25.12.9.61".into(),
+                    problem: BinaryLaunchProblem::NotExecutable,
+                    path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+                },
+                "binary_not_launchable",
+            ),
         ];
 
         for (error, expected) in cases {
             assert_eq!(error_json(&error)["error"]["code"], expected);
         }
+    }
+
+    /// An installed-but-unlaunchable build is a different failure from a
+    /// missing one, and its recovery is the reinstall of *that* version (#471).
+    #[test]
+    fn unlaunchable_binary_json_error_names_the_problem_and_the_reinstall() {
+        let json = error_json(&Error::BinaryNotLaunchable {
+            version: "25.12.9.61".into(),
+            problem: BinaryLaunchProblem::NotExecutable,
+            path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+        });
+        let message = json["error"]["message"].as_str().expect("message");
+        assert!(message.contains("not executable"), "{message}");
+        assert!(
+            message.contains("/home/u/.clickhouse/versions/25.12.9.61/clickhouse"),
+            "{message}"
+        );
+        assert_eq!(
+            json["error"]["command"],
+            "clickhousectl local install 25.12.9.61"
+        );
     }
 
     #[test]
@@ -1670,6 +1711,11 @@ mod tests {
             Error::AmbiguousClientVersion,
             Error::StaleDefaultVersion("25.12.9.61".into()),
             Error::ClientVersionNotInstalled("25.12.9.61".into()),
+            Error::BinaryNotLaunchable {
+                version: "25.12.9.61".into(),
+                problem: BinaryLaunchProblem::NotAFile,
+                path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+            },
             Error::RepeatedClientQueryUnsupported {
                 version: "24.1.1.1".into(),
                 minimum: "24.2",

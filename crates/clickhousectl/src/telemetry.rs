@@ -34,9 +34,20 @@
 //! (`local client`, host `psql`), replacing the process image so `main`'s
 //! tail never runs on success. Those call sites invoke
 //! [`finalize_before_exec`] immediately before `exec()`; it records the
-//! stashed invocation with outcome `"exec"` and shares an exactly-once
-//! guard with [`finalize`] so a *failed* `exec()` — where the error
-//! propagates back to `main` — never produces a second event.
+//! stashed invocation with outcome `"exec_attempt"` and shares an
+//! exactly-once guard with [`finalize`] so a *failed* `exec()` — where the
+//! error propagates back to `main` — never produces a second event.
+//!
+//! `"exec_attempt"` is a **censored** outcome (#471): it proves the handoff
+//! hook was reached, never that the process image was replaced and never
+//! anything about the handed-over program's status. The handoff call sites
+//! therefore validate what can be validated *before* the hook runs (the
+//! selected binary is a regular file with an execute bit; `psql` is on
+//! `PATH`), so the deterministic launch failures are ordinary
+//! `"error"`/exit-1 events. What is left — a binary unlinked or chmod-ed
+//! between validation and `exec()`, a bad executable format — is a race no
+//! pre-flight can close, and it lands on `"exec_attempt"` with the correct
+//! exit code and message still reaching the shell.
 //!
 //! Transport is a detached child process (`clickhousectl telemetry send`,
 //! hidden): the parent spawns it with all stdio nulled and never waits, so
@@ -209,9 +220,13 @@ struct Payload {
     /// invocations carry `"ok"`, `"error"` (including non-zero child exits),
     /// `"cancelled"`, or `"auth_required"`. Child exits are explicitly marked
     /// as `"error"`; the remaining dispatched outcomes are derived from the
-    /// exit code by [`dispatched_outcome`]. `"exec"` means the process image was
-    /// replaced by `exec()` — the handed-over program's exit status is
-    /// unknowable, so `exit_code` is a fixed 0 and not meaningful. Failed
+    /// exit code by [`dispatched_outcome`]. `"exec_attempt"` means the
+    /// invocation reached the `exec()` handoff — nothing more. It is a
+    /// *censored* observation: the process image may or may not have been
+    /// replaced, and the handed-over program's exit status is unknowable
+    /// either way, so `exit_code` is a fixed 0 and carries no information.
+    /// Consumers must never count it as a native-client success or read its
+    /// exit code as a status. Failed
     /// parses carry a direct mapping of clap's `ErrorKind` (`"help"`,
     /// `"version"`, `"invalid_subcommand"`, …).
     /// Literal strings only — this field can never carry user data.
@@ -238,7 +253,7 @@ struct Payload {
 /// marks a successful parse `"ok"` before the command has run; by finalize
 /// time the exit code says how dispatch actually ended, so only that
 /// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
-/// `"exec"` from [`finalize_before_exec`] pass through untouched. The mapping
+/// `"exec_attempt"` from [`finalize_before_exec`] pass through untouched. The mapping
 /// mirrors `Error::exit_code()`, with arbitrary child exit codes classified as
 /// errors.
 fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
@@ -768,11 +783,12 @@ pub fn stash_invocation(invocation: Invocation) {
 }
 
 /// Exactly-once guard shared by [`finalize`] and [`finalize_before_exec`]:
-/// whichever runs first claims it, the other is a no-op. When `exec()` fails,
-/// the pre-exec hook has already recorded the invocation as `"exec"` and the
-/// error propagating back to `main`'s tail is not recorded — losing the
-/// exec-failure detail is the accepted price for never emitting two events
-/// for one invocation.
+/// whichever runs first claims it, the other is a no-op. When `exec()` fails
+/// the pre-exec hook has already recorded the invocation as `"exec_attempt"`,
+/// and the error propagating back to `main`'s tail is not recorded a second
+/// time — which is why `"exec_attempt"` is defined as censored rather than as
+/// a successful handoff (#471). Launch failures that *can* be detected before
+/// the hook runs never reach it, so they are recorded as ordinary errors.
 static FINALIZED: AtomicBool = AtomicBool::new(false);
 
 /// `true` for exactly one caller per guard: swap semantics, first wins.
@@ -781,11 +797,11 @@ fn claim(guard: &AtomicBool) -> bool {
 }
 
 /// The event recorded when the process image is about to be replaced: the
-/// stashed parse result with its outcome rewritten to the `"exec"` literal
-/// (see [`Payload::outcome`]).
-fn exec_invocation(stashed: &Invocation) -> Invocation {
+/// stashed parse result with its outcome rewritten to the `"exec_attempt"`
+/// literal (see [`Payload::outcome`]).
+fn exec_attempt_invocation(stashed: &Invocation) -> Invocation {
     Invocation {
-        outcome: "exec",
+        outcome: "exec_attempt",
         ..stashed.clone()
     }
 }
@@ -804,10 +820,15 @@ pub fn finalize(invocation: Invocation, exit_code: i32, defer_first_run_notice: 
 
 /// The pre-exec hook, called by the `exec()` handoffs (`local client`, host
 /// `psql`) immediately before the process image is replaced and `main`'s tail
-/// becomes unreachable. On a first run this prints the notice to stderr just
+/// becomes unreachable. Records the censored `"exec_attempt"` outcome, exactly
+/// once per invocation. On a first run this prints the notice to stderr just
 /// before the handed-over program starts — acceptable and intended. The
 /// detached send child survives the `exec()` because it is a separate
 /// process.
+///
+/// Call it as late as possible: everything a handler can check about the
+/// launch belongs *before* this hook, so that failure is a real
+/// `"error"`/exit-1 event instead of a censored attempt (#471).
 pub fn finalize_before_exec() {
     let Some(stashed) = STASHED_INVOCATION.get() else {
         return;
@@ -815,7 +836,7 @@ pub fn finalize_before_exec() {
     if !claim(&FINALIZED) {
         return;
     }
-    finalize_inner(&exec_invocation(stashed), 0, false);
+    finalize_inner(&exec_attempt_invocation(stashed), 0, false);
 }
 
 fn finalize_inner(invocation: &Invocation, exit_code: i32, defer_first_run_notice: bool) {
@@ -1122,7 +1143,7 @@ mod tests {
             dispatched_outcome("unknown_argument", 2),
             "unknown_argument"
         );
-        assert_eq!(dispatched_outcome("exec", 0), "exec");
+        assert_eq!(dispatched_outcome("exec_attempt", 0), "exec_attempt");
     }
 
     /// The `outcome` field of the payload `decide` builds for the given
@@ -1231,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_invocation_rewrites_only_the_outcome() {
+    fn exec_attempt_invocation_rewrites_only_the_outcome() {
         let stashed = Invocation {
             command: "local client".into(),
             flags: vec!["port".into()],
@@ -1239,8 +1260,8 @@ mod tests {
             outcome: "ok",
             suggestion: None,
         };
-        let inv = exec_invocation(&stashed);
-        assert_eq!(inv.outcome, "exec");
+        let inv = exec_attempt_invocation(&stashed);
+        assert_eq!(inv.outcome, "exec_attempt");
         assert_eq!(inv.command, "local client");
         assert_eq!(inv.flags, ["port"]);
         assert_eq!(inv.positionals, ["name"]);
@@ -1248,27 +1269,38 @@ mod tests {
     }
 
     #[test]
-    fn exec_outcome_sends_the_expected_payload() {
+    fn exec_attempt_outcome_sends_the_expected_payload() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, false).unwrap();
-        let inv = exec_invocation(&Invocation {
+        let inv = exec_attempt_invocation(&Invocation {
             command: "local client".into(),
             flags: vec!["query".into()],
             positionals: vec![],
             outcome: "ok",
             suggestion: None,
         });
-        // The hook always passes 0: the handed-over program's exit status is
-        // unknowable, and `outcome` marks the code as not meaningful.
+        // The hook always passes 0: the handoff is censored, so neither the
+        // launch nor the handed-over program's exit status is observable and
+        // `outcome` marks the code as carrying no information.
         let Action::Send(json) = decide(&path, &inv, 0, &env_of(&[])) else {
             panic!("expected Send");
         };
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["command"], "local client");
         assert_eq!(value["flags"], serde_json::json!(["query"]));
-        assert_eq!(value["outcome"], "exec");
+        assert_eq!(value["outcome"], "exec_attempt");
         assert_eq!(value["exit_code"], 0);
+    }
+
+    #[test]
+    fn exec_attempt_is_never_rewritten_to_a_dispatched_outcome() {
+        // A censored attempt must not be laundered into "ok" (or "error") by
+        // the exit-code mapping, whatever code the tail would have seen.
+        let inv = exec_attempt_invocation(&invocation());
+        for exit_code in [0, 1, 3, 4, 23] {
+            assert_eq!(decided_outcome(&inv, exit_code), "exec_attempt");
+        }
     }
 
     // -- capture: values are structurally unreachable ------------------------

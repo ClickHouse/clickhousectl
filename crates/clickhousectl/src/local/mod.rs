@@ -10,12 +10,14 @@ pub mod symlink;
 use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
 use crate::error::{
-    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
+    BinaryLaunchProblem, Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
     ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing, Result,
 };
 use crate::{init, paths, version_manager};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::Command;
 
 pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
@@ -375,6 +377,9 @@ fn run_client(
     };
 
     ensure_repeated_query_supported(&version, query.len())?;
+    // Before the telemetry pre-exec hook, so a binary that cannot be launched
+    // is an ordinary error event rather than a censored handoff attempt (#471).
+    ensure_launchable(&binary, &version)?;
 
     let mut cmd = Command::new(&binary);
     cmd.arg("client")
@@ -393,11 +398,50 @@ fn run_client(
 
     cmd.args(&args);
     // `exec()` replaces the process image on success, so `main`'s telemetry
-    // tail never runs for this invocation; record the event now (#320).
+    // tail never runs for this invocation; record the censored handoff attempt
+    // now (#320, #471). Everything checkable about the launch is checked above
+    // this line, so only a race can still fail below it — and the native
+    // client, once launched, owns the terminal outright: it inherits stdin,
+    // stdout and stderr unchanged, stays in clickhousectl's process group and
+    // session on the same controlling TTY, and keeps this PID, so Ctrl-C,
+    // Ctrl-Z, window resizes and its own exit status or fatal signal reach the
+    // shell exactly as if it had been invoked directly. Preserving that is why
+    // the handoff stays an `exec()` and the outcome is censored instead of
+    // becoming a spawn-and-wait wrapper that would have to relay all of it.
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
+}
+
+/// Reject a selected ClickHouse binary that `exec()` is certain to refuse,
+/// *before* the telemetry pre-exec hook runs (#471).
+///
+/// `exec()` returns only on failure, by which point the invocation has already
+/// been recorded as a censored `exec_attempt`; a launch failure must therefore
+/// be caught here to be observable as a failure at all. The deterministic ones
+/// are: nothing at the path, a path that is not a regular file (a directory,
+/// say), a path that cannot be stat-ed, and a regular file carrying no execute
+/// bit. A binary unlinked or chmod-ed between this check and `exec()`, or one
+/// with a bad executable format, is a race no pre-flight can close — the
+/// correct exit code and message still reach the shell.
+fn ensure_launchable(binary: &Path, version: &str) -> Result<()> {
+    let problem = match std::fs::metadata(binary) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BinaryLaunchProblem::Missing,
+        Err(_) => BinaryLaunchProblem::Unreadable,
+        Ok(metadata) if !metadata.is_file() => BinaryLaunchProblem::NotAFile,
+        // "Can anyone execute this", not "can the owner": a build installed
+        // 0o711 or 0o111 is perfectly launchable.
+        Ok(metadata) if metadata.permissions().mode() & 0o111 == 0 => {
+            BinaryLaunchProblem::NotExecutable
+        }
+        Ok(_) => return Ok(()),
+    };
+    Err(Error::BinaryNotLaunchable {
+        version: version.to_string(),
+        problem,
+        path: binary.display().to_string(),
+    })
 }
 
 const REPEATED_QUERY_MIN_VERSION: &str = "23.9.1.1854";
@@ -1398,6 +1442,92 @@ mod tests {
         assert!(ensure_repeated_query_supported(REPEATED_QUERY_MIN_VERSION, 2).is_ok());
         assert!(ensure_repeated_query_supported("25.12.9.61", 3).is_ok());
         assert!(ensure_repeated_query_supported("26.8.1.1760", usize::MAX).is_ok());
+    }
+
+    /// Write `contents` at `path` with the given mode, creating parents.
+    fn write_with_mode(path: &Path, contents: &str, mode: u32) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        std::fs::write(path, contents).expect("write file");
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(mode);
+        std::fs::set_permissions(path, permissions).expect("set mode");
+    }
+
+    #[test]
+    fn launchable_binary_passes_the_pre_exec_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("versions/25.12.9.61/clickhouse");
+        write_with_mode(&binary, "#!/bin/sh\nexit 0\n", 0o755);
+        assert!(ensure_launchable(&binary, "25.12.9.61").is_ok());
+    }
+
+    /// The classified problem for a path the pre-flight rejects.
+    fn launch_problem(binary: &Path, version: &str) -> BinaryLaunchProblem {
+        match ensure_launchable(binary, version).expect_err("path must be rejected") {
+            Error::BinaryNotLaunchable { problem, .. } => problem,
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn unlaunchable_binaries_fail_before_the_pre_exec_hook() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // No execute bit: `exec()` would return EACCES *after* the handoff had
+        // already been recorded, so the check names the file and the repair.
+        let not_executable = dir.path().join("versions/25.12.9.61/clickhouse");
+        write_with_mode(&not_executable, "#!/bin/sh\nexit 0\n", 0o644);
+        assert_eq!(
+            launch_problem(&not_executable, "25.12.9.61"),
+            BinaryLaunchProblem::NotExecutable
+        );
+
+        // A directory in the binary's place: `exists()` is true, so resolution
+        // accepts it and only the pre-flight can reject it.
+        let directory = dir.path().join("versions/26.8.1.1760/clickhouse");
+        std::fs::create_dir_all(&directory).expect("create directory");
+        assert_eq!(
+            launch_problem(&directory, "26.8.1.1760"),
+            BinaryLaunchProblem::NotAFile
+        );
+
+        // Missing entirely: a build removed after version resolution.
+        let missing = dir.path().join("versions/27.1.2.3/clickhouse");
+        assert_eq!(
+            launch_problem(&missing, "27.1.2.3"),
+            BinaryLaunchProblem::Missing
+        );
+    }
+
+    #[test]
+    fn launch_failure_message_names_the_build_the_path_and_the_repair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("versions/25.12.9.61/clickhouse");
+        write_with_mode(&binary, "#!/bin/sh\nexit 0\n", 0o644);
+        let message = ensure_launchable(&binary, "25.12.9.61")
+            .expect_err("a non-executable binary cannot be launched")
+            .to_string();
+        assert!(message.contains("not executable"), "{message}");
+        assert!(message.contains(&binary.display().to_string()), "{message}");
+        assert!(
+            message.contains("clickhousectl local install 25.12.9.61"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn group_and_other_execute_bits_count_as_launchable() {
+        // The check asks "can anyone execute this", not "can the owner": a
+        // build installed with 0o711 or 0o111 must not be refused.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for mode in [0o711, 0o151, 0o111] {
+            let binary = dir.path().join(format!("mode-{mode:o}/clickhouse"));
+            write_with_mode(&binary, "#!/bin/sh\nexit 0\n", mode);
+            assert!(
+                ensure_launchable(&binary, "25.12.9.61").is_ok(),
+                "mode {mode:o} must be launchable"
+            );
+        }
     }
 
     fn server_info(name: &str, engine: server::Engine, version: &str) -> server::ServerInfo {

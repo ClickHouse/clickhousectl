@@ -1093,6 +1093,7 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | `invalid_config_name` | The config name is a path rather than a file in the configs dir |
 | `invalid_version` | The version selector is invalid |
 | `version_not_installed` | The requested or configured version is not installed locally |
+| `binary_not_launchable` | The version is installed but its binary cannot be launched (missing, not a regular file, or not executable) |
 | `version_selection_required` | A version must be chosen because no default is set or the choice is ambiguous |
 | `version_already_installed` | The requested version is already installed |
 | `version_unavailable` | The requested version could not be resolved or downloaded |
@@ -1216,6 +1217,8 @@ The privacy boundary for positional arguments is exactly the same one as for fla
 - only arguments you actually passed count, so a value clap filled in from a default (or from the environment), and a name the CLI generated for you, are absent — which is what makes "you named it" and "we picked one" distinguishable
 - arguments forwarded to another program are never recorded: everything after `--` for `local server start`, and the trailing arguments of `local client` and `local postgres client`, belong to `clickhouse-server`, `clickhouse-client`, and `psql`
 - when a command fails to parse, the unmatched token is still never recorded — only the slot it would have filled
+
+Exactly one event is recorded per invocation. Two commands are special: `local client` and `local postgres client` hand the process over to the native `clickhouse client` or to `psql` with `exec()`, which replaces clickhousectl's process image — same PID, same process group, same terminal, inherited stdin/stdout/stderr — so that Ctrl-C, job control and the program's own exit status or fatal signal reach your shell exactly as if you had run it directly. Because clickhousectl is gone at that point, its event is recorded just before the handover and is explicitly *censored*: the outcome is `exec_attempt` and its exit code is a fixed `0`, which means "the handoff was reached" and never "the native client succeeded". Failures clickhousectl can see for itself — a build that is missing, is not a regular file, or has no execute bit, or a `psql` that is not on `PATH` — are refused before the handover, so they are ordinary failures with the real exit code and a message telling you how to repair the install.
 
 Nothing is sent before you have seen the notice unless you explicitly enable telemetry with `clickhousectl telemetry enable`. The first run normally prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. Explicitly enabling telemetry starts it immediately and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 

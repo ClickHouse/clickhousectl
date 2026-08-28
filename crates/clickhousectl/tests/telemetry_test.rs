@@ -465,6 +465,389 @@ async fn child_exit_code_reaches_the_telemetry_tail_unchanged() {
     assert_eq!(payloads[0]["outcome"], "error");
 }
 
+// ---------------------------------------------------------------------------
+// `exec()` handoffs (#471). `local client` replaces the process image, so its
+// event is emitted by the pre-exec hook and is *censored*: `exec_attempt`
+// proves the handoff was reached, never that the launch or the native client
+// succeeded. These tests pin both halves of that contract — the deterministic
+// launch failures are ordinary `error` events, the residual race is censored,
+// and either way exactly one event is emitted and the shell keeps the real
+// status.
+// ---------------------------------------------------------------------------
+
+const FAKE_VERSION: &str = "25.12.9.61";
+
+/// Install a fake native client at `~/.clickhouse/versions/<version>/clickhouse`
+/// in the sandboxed home, with the given contents and mode.
+#[cfg(unix)]
+fn install_fake_clickhouse(sandbox: &Sandbox, version: &str, contents: &str, mode: u32) -> PathBuf {
+    let binary = sandbox
+        .home
+        .path()
+        .join(".clickhouse/versions")
+        .join(version)
+        .join("clickhouse");
+    std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+    std::fs::write(&binary, contents).unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+    binary
+}
+
+/// `local client` on the direct-connect path (no server metadata needed),
+/// selecting the fake binary by exact version.
+///
+/// The environment is cleared down to `HOME` and the ingest URL — as in
+/// `child_exit_code_reaches_the_telemetry_tail_unchanged` — so agent detection
+/// cannot flip the assertions from human text to the JSON envelope depending on
+/// where the suite runs.
+#[cfg(unix)]
+fn run_local_client(sandbox: &Sandbox, project: &std::path::Path) -> Output {
+    sandbox
+        .command(&[
+            "local",
+            "client",
+            "--version",
+            FAKE_VERSION,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9000",
+        ])
+        .env_clear()
+        .env("HOME", sandbox.home.path())
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
+        .current_dir(project)
+        .output()
+        .expect("run clickhousectl")
+}
+
+/// Wait for the event, then give a hypothetical second one time to arrive and
+/// fail if it does: exactly one event per invocation is the contract, and the
+/// handoff hook shares its guard with `main`'s tail.
+async fn exactly_one_event(sandbox: &Sandbox) -> Value {
+    let payloads = sandbox.wait_for_requests(1).await;
+    tokio::time::sleep(Duration::from_millis(750)).await;
+    let requests = sandbox.received_requests().await;
+    assert_eq!(
+        requests.len(),
+        1,
+        "expected exactly one telemetry event, saw {:?}",
+        requests
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.body).into_owned())
+            .collect::<Vec<_>>()
+    );
+    payloads.into_iter().next().unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn successful_handoff_is_one_censored_exec_attempt() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    install_fake_clickhouse(
+        &sandbox,
+        FAKE_VERSION,
+        "#!/bin/sh\nprintf 'child ran\\n'\nexit 0\n",
+        0o755,
+    );
+
+    let output = run_local_client(&sandbox, project.path());
+
+    // The child inherited stdout and its status is the process status: the
+    // image really was replaced.
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    assert!(stdout_of(&output).contains("child ran"), "{output:?}");
+
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["outcome"], "exec_attempt");
+    // Fixed 0: censored, not "the native client succeeded".
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn child_exit_status_is_preserved_and_the_event_stays_censored() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    install_fake_clickhouse(
+        &sandbox,
+        FAKE_VERSION,
+        "#!/bin/sh\nprintf 'child ran\\n'\nexit 23\n",
+        0o755,
+    );
+
+    let output = run_local_client(&sandbox, project.path());
+
+    // The shell sees the native client's own status, unmodified.
+    assert_eq!(output.status.code(), Some(23), "{}", stderr_of(&output));
+    assert!(stdout_of(&output).contains("child ran"), "{output:?}");
+
+    // And the event does not claim to know it: `exec_attempt` with a fixed 0
+    // is the documented censored reading, never `ok` and never the child's 23.
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["outcome"], "exec_attempt");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_native_client_keeps_this_process_and_its_stdio() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    // `$$` is the exec'd shell's PID. It equalling the PID the harness spawned
+    // is the whole reason the handoff stays an `exec()` and its telemetry stays
+    // censored: same process means same process group, same session and the
+    // same controlling TTY, so job control, Ctrl-C and window resizes reach the
+    // native client exactly as if the shell had launched it. Reading a line
+    // back off stdin pins that stdin/stdout are inherited, not rewired.
+    install_fake_clickhouse(
+        &sandbox,
+        FAKE_VERSION,
+        "#!/bin/sh\nread line\nprintf 'pid:%s\\nstdin:%s\\n' \"$$\" \"$line\"\nexit 0\n",
+        0o755,
+    );
+
+    let mut child = sandbox
+        .command(&[
+            "local",
+            "client",
+            "--version",
+            FAKE_VERSION,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9000",
+        ])
+        .env_clear()
+        .env("HOME", sandbox.home.path())
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
+        .current_dir(project.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn clickhousectl");
+    let pid = child.id();
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(b"hello\n")
+            .expect("write to inherited stdin");
+    }
+    let output = child.wait_with_output().expect("wait for clickhousectl");
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr_of(&output));
+    let stdout = stdout_of(&output);
+    assert!(
+        stdout.contains(&format!("pid:{pid}")),
+        "the native client must run as this very process: {stdout}"
+    );
+    assert!(stdout.contains("stdin:hello"), "{stdout}");
+
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["outcome"], "exec_attempt");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn signal_terminated_child_reaches_the_shell_as_a_signal() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nkill -TERM $$\n", 0o755);
+
+    let output = run_local_client(&sandbox, project.path());
+
+    // Killed by a signal, so there is no exit code at all — the shell sees the
+    // native client's death, not a wrapper's translation of it.
+    assert_eq!(output.status.code(), None);
+    assert_eq!(output.status.signal(), Some(15));
+
+    // And telemetry says only that the handoff was reached.
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["outcome"], "exec_attempt");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn non_executable_binary_is_an_error_event_not_a_handoff() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nexit 0\n", 0o644);
+
+    let output = run_local_client(&sandbox, project.path());
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("not executable"), "{stderr}");
+    assert!(
+        stderr.contains("clickhousectl local install"),
+        "the error should say how to repair the install: {stderr}"
+    );
+
+    // A launch that never happened is a failure, not an accepted handoff.
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["outcome"], "error");
+    assert_eq!(event["exit_code"], 1);
+    assert_eq!(event["exit_code"], output.status.code().unwrap());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn directory_in_place_of_the_binary_is_an_error_event() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    // A directory named `clickhouse` satisfies the `exists()` resolution
+    // checks, so this reaches the launch pre-flight.
+    let binary = sandbox
+        .home
+        .path()
+        .join(".clickhouse/versions")
+        .join(FAKE_VERSION)
+        .join("clickhouse");
+    std::fs::create_dir_all(&binary).unwrap();
+
+    let output = run_local_client(&sandbox, project.path());
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("not a regular file"), "{stderr}");
+
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["outcome"], "error");
+    assert_eq!(event["exit_code"], 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn binary_removed_before_the_pre_flight_is_an_error_event() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let binary = install_fake_clickhouse(&sandbox, FAKE_VERSION, "#!/bin/sh\nexit 0\n", 0o755);
+    // Version resolution lists the directory, but nothing is left to launch:
+    // removal is detected by the pre-flight, so it is an ordinary error.
+    std::fs::remove_file(&binary).unwrap();
+    std::fs::write(binary.parent().unwrap().join("clickhouse.bak"), "stub").unwrap();
+
+    let output = run_local_client(&sandbox, project.path());
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["outcome"], "error");
+    assert_eq!(event["exit_code"], 1);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn launch_failure_after_the_pre_flight_is_censored_never_successful() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    // A regular file with an execute bit — the pre-flight passes — whose
+    // shebang interpreter does not exist, so `execve` fails with the very
+    // ENOENT a binary unlinked between the pre-flight and the launch would
+    // produce. That race is not closable, so this is the deterministic stand-in
+    // for it: the residue lands on the censored outcome, never on `ok`.
+    install_fake_clickhouse(
+        &sandbox,
+        FAKE_VERSION,
+        "#!/no/such/interpreter\nexit 0\n",
+        0o755,
+    );
+
+    let output = run_local_client(&sandbox, project.path());
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("Failed to execute ClickHouse"),
+        "the OS launch failure must still reach the shell: {stderr}"
+    );
+
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local client");
+    assert_eq!(event["outcome"], "exec_attempt");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bad_executable_format_is_censored_never_successful() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    // Executable, but not an executable format. The pre-flight passes, and
+    // `execvp` gets ENOEXEC — which POSIX has it answer by re-execing the file
+    // through `/bin/sh`, so the image *is* replaced and the shell reports the
+    // failure with its own non-zero status. Either way clickhousectl is gone by
+    // then: the outcome the event can honestly carry is the censored attempt,
+    // and the status the user sees is not clickhousectl's to choose.
+    install_fake_clickhouse(&sandbox, FAKE_VERSION, "\u{0}\u{1}not a binary\n", 0o755);
+
+    let output = run_local_client(&sandbox, project.path());
+
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "a file that is not an executable format must fail: {stderr}"
+    );
+
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["outcome"], "exec_attempt");
+    assert_eq!(event["exit_code"], 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn missing_psql_is_an_error_event_not_a_handoff() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let empty_path = sandbox.home.path().join("empty-path");
+    std::fs::create_dir_all(&empty_path).unwrap();
+
+    let output = sandbox
+        .command(&["local", "postgres", "client", "--host", "127.0.0.1"])
+        .env_clear()
+        .env("HOME", sandbox.home.path())
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
+        .env("PATH", &empty_path)
+        .current_dir(project.path())
+        .output()
+        .expect("run clickhousectl");
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("could not execute psql"), "{stderr}");
+
+    // The other `exec()` handoff: a program that cannot be launched is an
+    // error, not a censored attempt.
+    let event = exactly_one_event(&sandbox).await;
+    assert_eq!(event["command"], "local postgres client");
+    assert_eq!(event["outcome"], "error");
+    assert_eq!(event["exit_code"], 1);
+}
+
 #[tokio::test]
 async fn flag_names_sent_but_values_never_leak() {
     let sandbox = Sandbox::new().await;
