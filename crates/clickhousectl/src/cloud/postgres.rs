@@ -19,9 +19,10 @@ pub enum PostgresCommands {
     List {
         #[arg(long)]
         org_id: Option<String>,
-        /// Filter results by field (e.g. --filter state=running)
-        #[arg(long)]
-        filter: Vec<String>,
+        /// Filter results client-side by field (repeatable), e.g. --filter
+        /// state=running. Keys: state, region, name, provider, isPrimary
+        #[arg(long, value_parser = parse_postgres_list_filter)]
+        filter: Vec<PostgresListFilter>,
     },
 
     /// Get details for a single Postgres service
@@ -559,30 +560,99 @@ fn write_pem_file(path: &Path, pem: &str) -> CloudResult<()> {
     Ok(())
 }
 
-fn apply_filter(item: &PostgresServiceListItem, filters: &[String]) -> bool {
-    for filter in filters {
-        let Some((key, val)) = filter.split_once('=') else {
-            continue;
-        };
-        // A response field the API omitted matches no filter value.
-        let matches = match key.trim() {
-            "state" => item
-                .state
-                .as_ref()
-                .is_some_and(|s| format!("{:?}", s).eq_ignore_ascii_case(val)),
-            "region" => item.region.as_deref() == Some(val),
-            "name" => item.name.as_deref() == Some(val),
-            "provider" => item
-                .provider
-                .as_ref()
-                .is_some_and(|p| format!("{:?}", p).eq_ignore_ascii_case(val)),
-            _ => true,
-        };
-        if !matches {
-            return false;
-        }
+/// A parsed, validated `cloud postgres list --filter KEY=VALUE` predicate.
+///
+/// `--filter` is applied client-side over the list response, so an unsupported
+/// key cannot be rejected by the API. Parsing into this closed set at clap time
+/// is what makes an unknown key a usage error (exit 2) instead of a silently
+/// unfiltered full listing (issue #603).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostgresListFilter {
+    /// Matched case-insensitively against the `state` wire value.
+    State(String),
+    /// Matched exactly against the region ID the API returned.
+    Region(String),
+    /// Matched exactly: service names are case-sensitive.
+    Name(String),
+    /// Matched case-insensitively against the `provider` wire value.
+    Provider(String),
+    /// Matched against the `isPrimary` boolean shown in the `Primary` column.
+    IsPrimary(bool),
+}
+
+/// The supported filter keys, in the order they are listed to the user. Spelled
+/// as the API's wire field names, which is what `--json` output shows.
+const POSTGRES_LIST_FILTER_KEYS: [&str; 5] = ["state", "region", "name", "provider", "isPrimary"];
+
+fn postgres_list_filter_keys() -> String {
+    POSTGRES_LIST_FILTER_KEYS.join(", ")
+}
+
+/// Parses one `KEY=VALUE` filter. Every rejection is a clap `value_parser`
+/// error, so the process exits 2 with the valid keys listed.
+fn parse_postgres_list_filter(raw: &str) -> std::result::Result<PostgresListFilter, String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err(format!(
+            "invalid filter '{raw}': expected KEY=VALUE, where KEY is one of {}",
+            postgres_list_filter_keys()
+        ));
+    };
+    let key = key.trim();
+    let value = value.trim();
+    // Keys are matched case-insensitively so `isprimary` works alongside the
+    // documented `isPrimary`; values keep their case for the per-key rules.
+    let canonical = POSTGRES_LIST_FILTER_KEYS
+        .into_iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(key))
+        .ok_or_else(|| {
+            format!(
+                "unknown filter key '{key}': expected one of {}",
+                postgres_list_filter_keys()
+            )
+        })?;
+    if value.is_empty() {
+        return Err(format!(
+            "filter '{canonical}' requires a value: expected {canonical}=VALUE"
+        ));
     }
-    true
+    Ok(match canonical {
+        "state" => PostgresListFilter::State(value.to_string()),
+        "region" => PostgresListFilter::Region(value.to_string()),
+        "name" => PostgresListFilter::Name(value.to_string()),
+        "provider" => PostgresListFilter::Provider(value.to_string()),
+        "isPrimary" => PostgresListFilter::IsPrimary(parse_filter_bool(canonical, value)?),
+        other => unreachable!("unhandled filter key '{other}'"),
+    })
+}
+
+/// `yes`/`no` are accepted because that is how the `Primary` column renders.
+fn parse_filter_bool(key: &str, value: &str) -> std::result::Result<bool, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "yes" => Ok(true),
+        "false" | "no" => Ok(false),
+        _ => Err(format!(
+            "invalid value '{value}' for filter '{key}': expected true or false"
+        )),
+    }
+}
+
+fn apply_filter(item: &PostgresServiceListItem, filters: &[PostgresListFilter]) -> bool {
+    // A response field the API omitted matches no filter value.
+    filters.iter().all(|filter| match filter {
+        // Compared against the serde wire value (`Display`), not the Rust
+        // Debug form: the latter never matches an `Unknown(..)` state.
+        PostgresListFilter::State(want) => item
+            .state
+            .as_ref()
+            .is_some_and(|state| state.to_string().eq_ignore_ascii_case(want)),
+        PostgresListFilter::Region(want) => item.region.as_deref() == Some(want.as_str()),
+        PostgresListFilter::Name(want) => item.name.as_deref() == Some(want.as_str()),
+        PostgresListFilter::Provider(want) => item
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider.to_string().eq_ignore_ascii_case(want)),
+        PostgresListFilter::IsPrimary(want) => item.is_primary == Some(*want),
+    })
 }
 
 fn state_label(s: Option<&clickhouse_cloud_api::models::PgStateProperty>) -> String {
@@ -730,7 +800,7 @@ pub struct PostgresRestoreOptions<'a> {
 pub async fn postgres_list(
     client: &CloudClient,
     org_id: Option<&str>,
-    filters: &[String],
+    filters: &[PostgresListFilter],
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
@@ -1372,11 +1442,93 @@ mod tests {
             "state=running",
             "--filter",
             "region=us-east-1",
+            "--filter",
+            "isPrimary=false",
         ]);
         let PostgresCommands::List { filter, .. } = cmd else {
             panic!("expected list");
         };
-        assert_eq!(filter, vec!["state=running", "region=us-east-1"]);
+        assert_eq!(
+            filter,
+            vec![
+                PostgresListFilter::State("running".to_string()),
+                PostgresListFilter::Region("us-east-1".to_string()),
+                PostgresListFilter::IsPrimary(false),
+            ]
+        );
+    }
+
+    fn list_filter_error(filter: &str) -> String {
+        let err = PostgresCli::try_parse_from(["clickhousectl", "list", "--filter", filter])
+            .err()
+            .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(err.exit_code(), 2, "filter errors must be usage errors");
+        err.to_string()
+    }
+
+    #[test]
+    fn rejects_an_unknown_postgres_list_filter_key() {
+        let message = list_filter_error("bogus=1");
+        assert!(message.contains("unknown filter key 'bogus'"), "{message}");
+        // The valid keys are listed so the user can correct the invocation.
+        for key in ["state", "region", "name", "provider", "isPrimary"] {
+            assert!(message.contains(key), "{key} missing from: {message}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_postgres_list_filter_without_a_value() {
+        let message = list_filter_error("state=");
+        assert!(
+            message.contains("filter 'state' requires a value"),
+            "{message}"
+        );
+        // Whitespace-only is empty too.
+        let message = list_filter_error("name=   ");
+        assert!(
+            message.contains("filter 'name' requires a value"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_postgres_list_filter_without_an_equals_sign() {
+        let message = list_filter_error("state");
+        assert!(
+            message.contains("invalid filter 'state': expected KEY=VALUE"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_is_primary_postgres_list_filter() {
+        let message = list_filter_error("isPrimary=maybe");
+        assert!(
+            message.contains("invalid value 'maybe' for filter 'isPrimary'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn parses_postgres_list_filter_keys_case_insensitively() {
+        assert_eq!(
+            parse_postgres_list_filter("ISPRIMARY=YES"),
+            Ok(PostgresListFilter::IsPrimary(true))
+        );
+        assert_eq!(
+            parse_postgres_list_filter(" state = running "),
+            Ok(PostgresListFilter::State("running".to_string()))
+        );
+        // `no`/`false` both read as false, matching the `Primary` column.
+        assert_eq!(
+            parse_postgres_list_filter("isPrimary=no"),
+            Ok(PostgresListFilter::IsPrimary(false))
+        );
+        assert_eq!(
+            parse_postgres_list_filter("isPrimary=false"),
+            Ok(PostgresListFilter::IsPrimary(false))
+        );
     }
 
     #[test]
@@ -2146,20 +2298,102 @@ mod tests {
         assert_eq!(enum_label(item.size.as_ref()), ABSENT);
     }
 
+    fn filters(raw: &[&str]) -> Vec<PostgresListFilter> {
+        raw.iter()
+            .map(|f| parse_postgres_list_filter(f).expect("valid filter"))
+            .collect()
+    }
+
     #[test]
     fn apply_filter_does_not_match_absent_response_fields() {
         let absent = PostgresServiceListItem::default();
-        assert!(!apply_filter(&absent, &["region=us-east-1".to_string()]));
-        assert!(!apply_filter(&absent, &["state=running".to_string()]));
-        // An unknown filter key stays permissive, as before.
-        assert!(apply_filter(&absent, &["bogus=1".to_string()]));
+        for filter in [
+            "region=us-east-1",
+            "state=running",
+            "name=my-pg",
+            "provider=aws",
+            "isPrimary=true",
+            "isPrimary=false",
+        ] {
+            assert!(
+                !apply_filter(&absent, &filters(&[filter])),
+                "absent field must not match {filter}"
+            );
+        }
 
         let present = PostgresServiceListItem {
             region: Some("us-east-1".to_string()),
             state: Some(clickhouse_cloud_api::models::PgStateProperty::Running),
+            name: Some("my-pg".to_string()),
+            provider: Some(clickhouse_cloud_api::models::PgProvider::Aws),
+            is_primary: Some(true),
             ..Default::default()
         };
-        assert!(apply_filter(&present, &["region=us-east-1".to_string()]));
-        assert!(apply_filter(&present, &["state=running".to_string()]));
+        assert!(apply_filter(
+            &present,
+            &filters(&[
+                "region=us-east-1",
+                "state=running",
+                "name=my-pg",
+                "provider=aws",
+                "isPrimary=true",
+            ])
+        ));
+        // Every filter must hold: one mismatch drops the item.
+        assert!(!apply_filter(
+            &present,
+            &filters(&["region=us-east-1", "isPrimary=false"])
+        ));
+    }
+
+    #[test]
+    fn apply_filter_compares_states_by_wire_value_not_debug_form() {
+        use clickhouse_cloud_api::models::PgStateProperty;
+
+        // Multi-word wire values and the `Unknown` catch-all both matched
+        // nothing while the comparison used `format!("{:?}")` (issue #603).
+        let restoring = PostgresServiceListItem {
+            state: Some(PgStateProperty::Restoring_backup),
+            ..Default::default()
+        };
+        assert!(apply_filter(
+            &restoring,
+            &filters(&["state=restoring_backup"])
+        ));
+        assert!(apply_filter(
+            &restoring,
+            &filters(&["state=RESTORING_BACKUP"])
+        ));
+        assert!(!apply_filter(&restoring, &filters(&["state=running"])));
+
+        let unknown = PostgresServiceListItem {
+            state: Some(PgStateProperty::Unknown("hibernating".to_string())),
+            ..Default::default()
+        };
+        assert!(apply_filter(&unknown, &filters(&["state=hibernating"])));
+        assert!(!apply_filter(&unknown, &filters(&["state=running"])));
+    }
+
+    #[test]
+    fn apply_filter_compares_providers_by_wire_value() {
+        use clickhouse_cloud_api::models::PgProvider;
+
+        let gcp = PostgresServiceListItem {
+            provider: Some(PgProvider::Gcp),
+            ..Default::default()
+        };
+        assert!(apply_filter(&gcp, &filters(&["provider=gcp"])));
+        assert!(!apply_filter(&gcp, &filters(&["provider=aws"])));
+
+        let unknown = PostgresServiceListItem {
+            provider: Some(PgProvider::Unknown("azure".to_string())),
+            ..Default::default()
+        };
+        assert!(apply_filter(&unknown, &filters(&["provider=azure"])));
+    }
+
+    #[test]
+    fn apply_filter_with_no_filters_keeps_every_item() {
+        assert!(apply_filter(&PostgresServiceListItem::default(), &[]));
     }
 }

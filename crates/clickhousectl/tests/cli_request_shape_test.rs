@@ -634,6 +634,130 @@ async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
     );
 }
 
+// ── Postgres list --filter validation (issue #603) ────────────────────────
+
+fn postgres_list_response() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": [
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "name": "primary-pg",
+                "state": "running",
+                "region": "us-east-1",
+                "provider": "aws",
+                "isPrimary": true,
+            },
+            {
+                "id": "66666666-7777-8888-9999-000000000000",
+                "name": "replica-pg",
+                "state": "restoring_backup",
+                "region": "us-east-1",
+                "provider": "aws",
+                "isPrimary": false,
+            },
+            {
+                // Absent `isPrimary`/`state`: must match no filter value.
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "name": "unknown-pg",
+                "region": "us-east-1",
+            },
+        ],
+        "status": 200,
+        "requestId": "stub-postgres-list",
+    }))
+}
+
+/// An unsupported `--filter` key used to return the whole unfiltered list with
+/// exit 0. It is now a clap usage error (exit 2) that names the valid keys, and
+/// no request reaches the API.
+#[tokio::test]
+async fn postgres_list_rejects_an_unknown_filter_key_before_calling_the_api() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(postgres_list_response())
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    for filter in ["bogus=1", "state=", "isPrimary=maybe", "state"] {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["postgres", "list", "--org-id", "org-1", "--filter", filter],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "--filter {filter} must be a usage error, stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "--filter {filter} must print no results, got: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres", "list", "--org-id", "org-1", "--filter", "bogus=1",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown filter key 'bogus'"), "{stderr}");
+    assert!(
+        stderr.contains("state, region, name, provider, isPrimary"),
+        "the valid keys must be listed, got: {stderr}"
+    );
+}
+
+/// `isPrimary` is a supported key (it is the `Primary` column), `state` matches
+/// the serde wire value including multi-word states, and an item whose field the
+/// API omitted matches nothing.
+#[tokio::test]
+async fn postgres_list_applies_supported_filters_client_side() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(postgres_list_response())
+        .mount(&mock)
+        .await;
+
+    let names = |filter: &str| -> Vec<String> {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["postgres", "list", "--org-id", "org-1", "--filter", filter],
+        );
+        assert_success(&output);
+        let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+            .expect("stdout should be a JSON array");
+        stdout
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|item| item["name"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    assert_eq!(names("isPrimary=true"), vec!["primary-pg".to_string()]);
+    assert_eq!(names("isPrimary=false"), vec!["replica-pg".to_string()]);
+    assert_eq!(
+        names("state=restoring_backup"),
+        vec!["replica-pg".to_string()]
+    );
+    assert_eq!(names("state=running"), vec!["primary-pg".to_string()]);
+    assert_eq!(
+        names("region=us-east-1"),
+        vec![
+            "primary-pg".to_string(),
+            "replica-pg".to_string(),
+            "unknown-pg".to_string()
+        ]
+    );
+    assert_eq!(names("name=nope"), Vec::<String>::new());
+}
+
 const DELETE_TEST_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
 const DELETE_TEST_API_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const DELETE_TEST_PENDING_API_KEY_ID: &str = "99999999-8888-7777-6666-555555555555";

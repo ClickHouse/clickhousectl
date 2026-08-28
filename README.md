@@ -674,6 +674,7 @@ Manage ClickHouse Cloud managed Postgres services. All write commands require AP
 # List / get
 clickhousectl cloud postgres list
 clickhousectl cloud postgres list --filter state=running
+clickhousectl cloud postgres list --filter region=us-east-1 --filter isPrimary=true
 clickhousectl cloud postgres get <pg-id>
 
 # Create
@@ -731,6 +732,8 @@ clickhousectl cloud postgres switchover <pg-id>
 ```
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
+
+`postgres list --filter KEY=VALUE` is applied client-side to the listing and is repeatable; every filter must match. Supported keys are `state`, `region`, `name`, `provider` and `isPrimary` (the `Primary` column; `true`/`false`, or the `yes`/`no` the column shows). Keys are case-insensitive, `state` and `provider` match the wire value case-insensitively, and `region`/`name` match exactly. An unknown key, a missing `=` or an empty value is a usage error (exit 2) listing the valid keys — it never returns an unfiltered list. A field the API omitted matches no filter value, so filtering on it excludes that service. This is unrelated to `cloud service list --filter`, which sends server-side resource-tag filters (`tag:env=production`) to the API.
 
 ### Backups
 
