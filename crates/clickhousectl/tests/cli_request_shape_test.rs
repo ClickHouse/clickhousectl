@@ -6439,40 +6439,156 @@ async fn mysql_server_id_absent_when_not_passed() {
     );
 }
 
-// ── ClickPipe settings updates preserve required values ─────────────────────
+// ── ClickPipe settings updates are source-aware (#602) ─────────────────────
+//
+// `kafka_read_committed` is only supported for Kafka pipes: the API fails the
+// whole PUT with "Setting 'kafka_read_committed' is only supported for Kafka
+// ClickPipes" for any other source. The handler therefore fetches the pipe to
+// classify its source, and only reads back and re-sends the Kafka-only setting
+// when the source is Kafka.
+
+const CLICKPIPE_PATH: &str = "/v1/organizations/org/services/svc-id/clickpipes/pipe-id";
+const CLICKPIPE_SETTINGS_PATH: &str =
+    "/v1/organizations/org/services/svc-id/clickpipes/pipe-id/settings";
+
+/// Stub the pipe GET with a source of the given shape, e.g.
+/// `json!({ "objectStorage": { "type": "s3" } })`.
+async fn mount_clickpipe_get(mock: &MockServer, source: Value) {
+    let stub_pipe = serde_json::json!({
+        "result": {
+            "id": "00000000-0000-0000-0000-0000000000aa",
+            "name": "test-pipe",
+            "state": "Running",
+            "source": source,
+        },
+        "status": 200,
+        "requestId": "stub-clickpipe-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(CLICKPIPE_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_pipe))
+        .mount(mock)
+        .await;
+}
+
+async fn mount_clickpipe_settings_put(mock: &MockServer, result: Value) {
+    let updated_settings = serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-settings-update",
+    });
+    Mock::given(method("PUT"))
+        .and(path(CLICKPIPE_SETTINGS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
+        .mount(mock)
+        .await;
+}
+
+/// The (method, path) pairs the mock saw, in order.
+async fn recorded_request_shape(mock: &MockServer) -> Vec<(String, String)> {
+    mock.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            (
+                request.method.as_str().to_string(),
+                request.url.path().to_string(),
+            )
+        })
+        .collect()
+}
+
+async fn recorded_put_body(mock: &MockServer) -> Value {
+    let requests = mock.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|request| request.method == wiremock::http::Method::PUT)
+        .expect("no settings PUT request recorded by mock");
+    serde_json::from_slice::<Value>(&put.body).unwrap()
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_omits_kafka_only_settings_for_non_kafka_pipes() {
+    for source in [
+        serde_json::json!({ "objectStorage": { "type": "s3", "format": "JSONEachRow" } }),
+        serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+        // A response that drops `source` entirely is treated as non-Kafka.
+        serde_json::json!({}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        mount_clickpipe_settings_put(
+            &mock,
+            serde_json::json!({ "object_storage_max_file_count": 200 }),
+        )
+        .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--object-storage-max-file-count",
+                "200",
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_success(&output);
+
+        // No settings GET: nothing needs reading back when no Kafka-only
+        // setting is being re-sent.
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".to_string(), CLICKPIPE_PATH.to_string()),
+                ("PUT".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
+            ],
+            "unexpected requests for source {source}"
+        );
+        assert_eq!(
+            recorded_put_body(&mock).await,
+            serde_json::json!({ "object_storage_max_file_count": 200 }),
+            "kafka-only settings leaked for source {source}"
+        );
+    }
+}
 
 #[tokio::test]
 async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() {
-    let settings_path = "/v1/organizations/org/services/svc-id/clickpipes/pipe-id/settings";
     for (current_settings, expected) in [
         (serde_json::json!({ "kafka_read_committed": true }), true),
+        (serde_json::json!({ "kafka_read_committed": false }), false),
         (serde_json::json!({}), false),
     ] {
         let mock = MockServer::start().await;
+        mount_clickpipe_get(
+            &mock,
+            serde_json::json!({ "kafka": { "type": "kafka", "brokers": "b:9092" } }),
+        )
+        .await;
         let current_settings = serde_json::json!({
             "result": current_settings,
             "status": 200,
             "requestId": "stub-settings-get",
         });
-        let updated_settings = serde_json::json!({
-            "result": {
-                "streaming_max_insert_wait_ms": 1000,
-                "kafka_read_committed": expected,
-            },
-            "status": 200,
-            "requestId": "stub-settings-update",
-        });
-
         Mock::given(method("GET"))
-            .and(path(settings_path))
+            .and(path(CLICKPIPE_SETTINGS_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(current_settings))
             .mount(&mock)
             .await;
-        Mock::given(method("PUT"))
-            .and(path(settings_path))
-            .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
-            .mount(&mock)
-            .await;
+        mount_clickpipe_settings_put(
+            &mock,
+            serde_json::json!({
+                "streaming_max_insert_wait_ms": 1000,
+                "kafka_read_committed": expected,
+            }),
+        )
+        .await;
 
         let output = invoke_cli_with_cloud_credentials(
             &mock,
@@ -6490,30 +6606,16 @@ async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() 
         );
         assert_success(&output);
 
-        let requests = mock.received_requests().await.unwrap();
-        let request_shape = requests
-            .iter()
-            .map(|request| {
-                (
-                    request.method.as_str().to_string(),
-                    request.url.path().to_string(),
-                )
-            })
-            .collect::<Vec<_>>();
         assert_eq!(
-            request_shape,
+            recorded_request_shape(&mock).await,
             vec![
-                ("GET".to_string(), settings_path.to_string()),
-                ("PUT".to_string(), settings_path.to_string()),
+                ("GET".to_string(), CLICKPIPE_PATH.to_string()),
+                ("GET".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
+                ("PUT".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
             ]
         );
-
-        let put = requests
-            .iter()
-            .find(|request| request.method == wiremock::http::Method::PUT)
-            .expect("no settings PUT request recorded by mock");
         assert_eq!(
-            serde_json::from_slice::<Value>(&put.body).unwrap(),
+            recorded_put_body(&mock).await,
             serde_json::json!({
                 "streaming_max_insert_wait_ms": 1000,
                 "kafka_read_committed": expected,

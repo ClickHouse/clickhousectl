@@ -1660,7 +1660,7 @@ async fn update_click_pipe_settings() {
         .await;
 
     let body = ClickPipeSettingsPutRequest {
-        kafka_read_committed: true,
+        kafka_read_committed: Some(true),
         ..Default::default()
     };
     let resp = c

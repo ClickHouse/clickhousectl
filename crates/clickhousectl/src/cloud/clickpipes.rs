@@ -1067,10 +1067,7 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 clickhouse_parallel_view_processing,
                 org_id,
             } => {
-                clickpipe_settings_update(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
+                let values = ClickPipeSettingsValues {
                     streaming_max_insert_wait_ms,
                     object_storage_concurrency,
                     object_storage_polling_interval_ms,
@@ -1080,6 +1077,12 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                     clickhouse_max_insert_threads,
                     object_storage_use_cluster_function,
                     clickhouse_parallel_view_processing,
+                };
+                clickpipe_settings_update(
+                    client,
+                    &service_id,
+                    &clickpipe_id,
+                    &values,
                     org_id.as_deref(),
                     json,
                 )
@@ -1711,11 +1714,15 @@ async fn clickpipe_settings_get(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn clickpipe_settings_update(
-    client: &CloudClient,
-    service_id: &str,
-    clickpipe_id: &str,
+/// The settings a `clickpipe settings update` invocation carries, decoupled from
+/// clap so the request builder can be unit-tested.
+///
+/// Every field is source-agnostic: each one is only sent when the user passed
+/// the matching flag, so the API validates applicability per source. Kafka-only
+/// settings are not here — they are resolved from the pipe itself (see
+/// [`build_clickpipe_settings_request`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ClickPipeSettingsValues {
     streaming_max_insert_wait_ms: Option<u32>,
     object_storage_concurrency: Option<u32>,
     object_storage_polling_interval_ms: Option<u32>,
@@ -1725,30 +1732,78 @@ async fn clickpipe_settings_update(
     clickhouse_max_insert_threads: Option<u32>,
     object_storage_use_cluster_function: Option<bool>,
     clickhouse_parallel_view_processing: Option<bool>,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
-    let kafka_read_committed = client
-        .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
-        .await?
-        .kafka_read_committed
-        .unwrap_or(false);
-    let request = clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
-        streaming_max_insert_wait_ms: streaming_max_insert_wait_ms.map(i64::from),
-        object_storage_concurrency: object_storage_concurrency.map(i64::from),
-        object_storage_polling_interval_ms: object_storage_polling_interval_ms.map(i64::from),
-        object_storage_max_insert_bytes: object_storage_max_insert_bytes.map(|value| value as i64),
-        object_storage_max_file_count: object_storage_max_file_count.map(i64::from),
-        clickhouse_max_threads: clickhouse_max_threads.map(i64::from),
-        clickhouse_max_insert_threads: clickhouse_max_insert_threads.map(i64::from),
-        object_storage_use_cluster_function,
-        clickhouse_parallel_view_processing,
+}
+
+/// True when the fetched pipe reads from a Kafka (or Kafka-compatible) source.
+///
+/// A pipe whose `source` is absent from the response is treated as non-Kafka:
+/// Kafka-only settings are then omitted, which is the safe direction because
+/// sending one to a non-Kafka pipe fails the whole request.
+fn clickpipe_source_is_kafka(clickpipe: &clickhouse_cloud_api::models::ClickPipe) -> bool {
+    clickpipe
+        .source
+        .as_ref()
+        .is_some_and(|source| source.kafka.is_some())
+}
+
+/// Build the settings PUT body from the flags the user passed.
+///
+/// `kafka_read_committed` is Kafka-only: the API rejects the key for every other
+/// source, so callers pass `None` for a non-Kafka pipe and the pipe's current
+/// value for a Kafka pipe (the PUT would otherwise reset it).
+fn build_clickpipe_settings_request(
+    values: &ClickPipeSettingsValues,
+    kafka_read_committed: Option<bool>,
+) -> clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+    clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+        streaming_max_insert_wait_ms: values.streaming_max_insert_wait_ms.map(i64::from),
+        object_storage_concurrency: values.object_storage_concurrency.map(i64::from),
+        object_storage_polling_interval_ms: values
+            .object_storage_polling_interval_ms
+            .map(i64::from),
+        object_storage_max_insert_bytes: values
+            .object_storage_max_insert_bytes
+            .map(|value| value as i64),
+        object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
+        clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
+        clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
+        object_storage_use_cluster_function: values.object_storage_use_cluster_function,
+        clickhouse_parallel_view_processing: values.clickhouse_parallel_view_processing,
         kafka_read_committed,
         clickhouse_max_download_threads: None,
         clickhouse_min_insert_block_size_bytes: None,
         clickhouse_parallel_distributed_insert_select: None,
+    }
+}
+
+async fn clickpipe_settings_update(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    values: &ClickPipeSettingsValues,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    // The source decides which settings may appear in the body at all: sending
+    // `kafka_read_committed` for a non-Kafka pipe fails the entire request, so
+    // the pipe is fetched to classify it, and its current value is only read
+    // back (a PUT that omits it would reset it) for a Kafka pipe.
+    let clickpipe = client
+        .get_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+    let kafka_read_committed = if clickpipe_source_is_kafka(&clickpipe) {
+        Some(
+            client
+                .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
+                .await?
+                .kafka_read_committed
+                .unwrap_or(false),
+        )
+    } else {
+        None
     };
+    let request = build_clickpipe_settings_request(values, kafka_read_committed);
     let settings = client
         .update_clickpipe_settings(&org_id, service_id, clickpipe_id, &request)
         .await?;
@@ -3016,6 +3071,135 @@ mod tests {
         assert_eq!(object_storage_use_cluster_function, None);
         assert_eq!(clickhouse_parallel_view_processing, None);
         assert_eq!(org_id, None);
+    }
+
+    // A non-Kafka pipe must not carry `kafka_read_committed`: the API rejects
+    // the key for every other source, which broke every non-Kafka settings
+    // update (#602).
+    #[test]
+    fn builds_settings_request_without_kafka_only_settings_for_non_kafka_pipes() {
+        let values = ClickPipeSettingsValues {
+            object_storage_max_file_count: Some(200),
+            ..Default::default()
+        };
+        let request = build_clickpipe_settings_request(&values, None);
+        assert_eq!(request.kafka_read_committed, None);
+        assert_eq!(request.object_storage_max_file_count, Some(200));
+        assert_eq!(request.streaming_max_insert_wait_ms, None);
+        assert_eq!(request.object_storage_concurrency, None);
+        assert_eq!(request.object_storage_polling_interval_ms, None);
+        assert_eq!(request.object_storage_max_insert_bytes, None);
+        assert_eq!(request.clickhouse_max_threads, None);
+        assert_eq!(request.clickhouse_max_insert_threads, None);
+        assert_eq!(request.object_storage_use_cluster_function, None);
+        assert_eq!(request.clickhouse_parallel_view_processing, None);
+        assert_eq!(request.clickhouse_max_download_threads, None);
+        assert_eq!(request.clickhouse_min_insert_block_size_bytes, None);
+        assert_eq!(request.clickhouse_parallel_distributed_insert_select, None);
+        // Nothing at all was passed: the body stays empty rather than
+        // resetting settings the user did not name.
+        let empty = build_clickpipe_settings_request(&ClickPipeSettingsValues::default(), None);
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            serde_json::json!({}),
+            "a non-Kafka update with no flags must send an empty body"
+        );
+    }
+
+    #[test]
+    fn builds_settings_request_with_every_flag_and_kafka_read_committed() {
+        let values = ClickPipeSettingsValues {
+            streaming_max_insert_wait_ms: Some(1000),
+            object_storage_concurrency: Some(2),
+            object_storage_polling_interval_ms: Some(3000),
+            object_storage_max_insert_bytes: Some(4000),
+            object_storage_max_file_count: Some(5),
+            clickhouse_max_threads: Some(6),
+            clickhouse_max_insert_threads: Some(7),
+            object_storage_use_cluster_function: Some(true),
+            clickhouse_parallel_view_processing: Some(false),
+        };
+        let request = build_clickpipe_settings_request(&values, Some(true));
+        assert_eq!(request.streaming_max_insert_wait_ms, Some(1000));
+        assert_eq!(request.object_storage_concurrency, Some(2));
+        assert_eq!(request.object_storage_polling_interval_ms, Some(3000));
+        assert_eq!(request.object_storage_max_insert_bytes, Some(4000));
+        assert_eq!(request.object_storage_max_file_count, Some(5));
+        assert_eq!(request.clickhouse_max_threads, Some(6));
+        assert_eq!(request.clickhouse_max_insert_threads, Some(7));
+        assert_eq!(request.object_storage_use_cluster_function, Some(true));
+        assert_eq!(request.clickhouse_parallel_view_processing, Some(false));
+        assert_eq!(request.kafka_read_committed, Some(true));
+        // A Kafka pipe with the setting disabled still sends it explicitly, so
+        // the PUT does not silently flip it.
+        let request = build_clickpipe_settings_request(&values, Some(false));
+        assert_eq!(request.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn readme_documents_source_aware_settings_update() {
+        let readme = include_str!("../../../../README.md");
+        let clickpipes = readme
+            .split_once("### ClickPipes")
+            .expect("ClickPipes section")
+            .1
+            .split_once("#### Creating ClickPipes")
+            .expect("next ClickPipes section")
+            .0;
+
+        for expected in [
+            "only sends the settings you name on the command line",
+            "first reads the pipe to find its source type",
+            "`kafka_read_committed`",
+            "omitted for every other source",
+        ] {
+            assert!(
+                clickpipes.contains(expected),
+                "missing `{expected}`:\n{clickpipes}"
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_clickpipe_source_as_kafka_only_for_kafka_pipes() {
+        use clickhouse_cloud_api::models::{
+            ClickPipe, ClickPipeKafkaSource, ClickPipeObjectStorageSource, ClickPipePostgresSource,
+            ClickPipeSource,
+        };
+
+        let kafka = ClickPipe {
+            source: Some(ClickPipeSource {
+                kafka: Some(ClickPipeKafkaSource::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(clickpipe_source_is_kafka(&kafka));
+
+        let object_storage = ClickPipe {
+            source: Some(ClickPipeSource {
+                object_storage: Some(ClickPipeObjectStorageSource::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!clickpipe_source_is_kafka(&object_storage));
+
+        let postgres = ClickPipe {
+            source: Some(ClickPipeSource {
+                postgres: Some(ClickPipePostgresSource::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!clickpipe_source_is_kafka(&postgres));
+
+        // An absent source (or an absent kafka arm) is treated as non-Kafka.
+        assert!(!clickpipe_source_is_kafka(&ClickPipe::default()));
+        assert!(!clickpipe_source_is_kafka(&ClickPipe {
+            source: Some(ClickPipeSource::default()),
+            ..Default::default()
+        }));
     }
 
     #[test]

@@ -106,6 +106,13 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // field is `omitempty` and the equivalent PATCH property is nullable.
     // Keeping this `T` would force every request to claim an auth mechanism.
     ("ClickPipePostKafkaSource", "authentication"),
+    // `kafka_read_committed` is Kafka-only: the settings PUT is rejected with
+    // "Setting 'kafka_read_committed' is only supported for Kafka ClickPipes"
+    // for every other source, and the schema carries no `required[]`, so
+    // requiredness resolves from the description heuristic. Absence is the only
+    // way a non-Kafka settings update can express "does not apply"; keeping this
+    // `T` would put the key on every request and break all non-Kafka pipes.
+    ("ClickPipeSettingsPutRequest", "kafka_read_committed"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),

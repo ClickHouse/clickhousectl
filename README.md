@@ -778,6 +778,14 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --streaming-max-insert-wait-ms 10000
 ```
 
+`settings update` only sends the settings you name on the command line, and it
+first reads the pipe to find its source type: settings that the API supports for
+one source only — currently the Kafka `kafka_read_committed` setting, which the
+CLI preserves rather than exposing as a flag — are sent for Kafka pipes and
+omitted for every other source. Object-storage-, streaming- and
+ClickHouse-specific settings are validated by the API, so passing (for example)
+`--object-storage-max-file-count` to a Kafka pipe is rejected server-side.
+
 #### Creating ClickPipes
 
 Each source type has its own subcommand under `clickpipe create`:

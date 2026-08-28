@@ -3392,8 +3392,15 @@ pub struct ClickPipeSettingsPutRequest {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
-    #[serde(rename = "kafka_read_committed")]
-    pub kafka_read_committed: bool,
+    /// Kafka-only: the API rejects this key outright for any other source
+    /// ("Setting 'kafka_read_committed' is only supported for Kafka
+    /// ClickPipes"), so absence — not `false` — is how a non-Kafka settings
+    /// update expresses "this setting does not apply".
+    #[serde(
+        rename = "kafka_read_committed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kafka_read_committed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

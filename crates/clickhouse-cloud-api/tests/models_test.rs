@@ -3679,6 +3679,36 @@ fn click_pipe_post_kafka_source_omits_absent_authentication() {
     assert_eq!(v["credentials"]["username"], "u");
 }
 
+// `kafka_read_committed` is only supported for Kafka pipes, so a settings PUT
+// for any other source must leave the key off the wire entirely — not send
+// `false` and not send `null`.
+#[test]
+fn click_pipe_settings_put_request_omits_absent_kafka_read_committed() {
+    let non_kafka = ClickPipeSettingsPutRequest {
+        object_storage_max_file_count: Some(200),
+        kafka_read_committed: None,
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&non_kafka).unwrap();
+    assert!(
+        v.get("kafka_read_committed").is_none(),
+        "absent kafka_read_committed must be omitted, got {v}"
+    );
+    assert_eq!(
+        v,
+        serde_json::json!({ "object_storage_max_file_count": 200 })
+    );
+
+    let kafka = ClickPipeSettingsPutRequest {
+        streaming_max_insert_wait_ms: Some(1000),
+        kafka_read_committed: Some(true),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&kafka).unwrap();
+    assert_eq!(v["kafka_read_committed"], true);
+    assert_eq!(v["streaming_max_insert_wait_ms"], 1000);
+}
+
 #[test]
 fn click_pipe_schema_discovery_request_supports_new_sources() {
     let object_storage = ClickPipeSchemaDiscoveryRequest {
@@ -3981,10 +4011,14 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
         serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
         ClickPipePostgresPipeTableMappingResponse::default()
     );
-    // The new non-nullable Kafka setting is required in requests while the
-    // response variant remains tolerant of a dropped key.
+    // The new non-nullable Kafka setting is required in the create-position
+    // settings object, while the settings PUT omits it for non-Kafka pipes and
+    // the response variant remains tolerant of a dropped key.
     assert!(serde_json::from_str::<ClickPipeSettings>("{}").is_err());
-    assert!(serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").is_err());
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").unwrap(),
+        ClickPipeSettingsPutRequest::default()
+    );
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
         ClickPipeSettingsResponse::default()
