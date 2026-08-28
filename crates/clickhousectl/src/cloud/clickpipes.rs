@@ -515,7 +515,8 @@ pub struct KafkaSourceFields {
     #[arg(long)]
     pub consumer_group: Option<String>,
 
-    /// Authentication method
+    /// Authentication method (inferred from the credential flags when omitted;
+    /// no authentication is sent when no credential flags are given)
     #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_AUTHS))]
     pub auth: Option<String>,
 
@@ -1235,20 +1236,47 @@ async fn clickpipe_create_object_storage(
     Ok(())
 }
 
+/// Infer the Kafka authentication mechanism from the credential flags that were
+/// passed when `--auth` is omitted. Returning `None` means "no authentication":
+/// the spec enum has no value for an unauthenticated broker, so the request
+/// omits `authentication` entirely (see `build_kafka_source`). Never default to
+/// a mechanism the user did not ask for — that used to reject no-auth brokers
+/// client-side with a bogus "PLAIN requires --username and --password".
+fn infer_kafka_authentication(
+    args: &KafkaSourceFields,
+) -> Option<clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication> {
+    use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+    if args.username.is_some() && args.password.is_some() {
+        Some(Auth::PLAIN)
+    } else if args.access_key_id.is_some() && args.secret_key.is_some() {
+        Some(Auth::IAM_USER)
+    } else if args.iam_role.is_some() {
+        Some(Auth::IAM_ROLE)
+    } else if args.client_certificate.is_some() && args.client_key.is_some() {
+        Some(Auth::MUTUAL_TLS)
+    } else {
+        None
+    }
+}
+
 /// Build the Kafka `credentials` JSON body, whose shape is a `oneOf` determined
 /// by the auth mode (see the `ClickPipePostKafkaSource.credentials` schema).
 /// IAM_ROLE sends a null body — the role ARN flows through the separate
-/// top-level `iamRole` field on the source, not through credentials.
+/// top-level `iamRole` field on the source, not through credentials. An absent
+/// mechanism (no authentication) likewise sends a null body.
 ///
 /// `mtls_contents` is the pre-read (certificate, privateKey) PEM bundle used
 /// only for MUTUAL_TLS; the caller reads these from disk so this function
 /// stays pure and testable.
 fn build_kafka_credentials(
-    authentication: &clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication,
+    authentication: Option<&clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication>,
     args: &KafkaSourceFields,
     mtls_contents: Option<(String, String)>,
 ) -> CloudResult<serde_json::Value> {
     use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+    let Some(authentication) = authentication else {
+        return Ok(serde_json::Value::Null);
+    };
     match authentication {
         Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512 => {
             match (args.username.as_deref(), args.password.as_deref()) {
@@ -1256,8 +1284,7 @@ fn build_kafka_credentials(
                     Ok(serde_json::json!({ "username": username, "password": password }))
                 }
                 _ => Err(CloudError::new(format!(
-                    "{} requires --username and --password",
-                    args.auth.as_deref().unwrap_or("PLAIN")
+                    "{authentication} requires --username and --password"
                 ))),
             }
         }
@@ -1304,9 +1331,13 @@ fn build_kafka_source(
         ClickPipePostKafkaSourceAuthentication,
     };
 
-    let authentication: ClickPipePostKafkaSourceAuthentication = match args.auth.as_deref() {
-        Some(authentication) => parse_enum(authentication)?,
-        None => ClickPipePostKafkaSourceAuthentication::default(),
+    // An explicit `--auth` wins; otherwise infer the mechanism from the
+    // credential flags, and send no authentication at all when none were given
+    // so brokers that require none are reachable.
+    let authentication: Option<ClickPipePostKafkaSourceAuthentication> = match args.auth.as_deref()
+    {
+        Some(authentication) => Some(parse_enum(authentication)?),
+        None => infer_kafka_authentication(args),
     };
 
     let mtls_cert_contents = match (
@@ -1314,15 +1345,17 @@ fn build_kafka_source(
         args.client_certificate.as_deref(),
         args.client_key.as_deref(),
     ) {
-        (ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS, Some(cert_path), Some(key_path)) => {
-            Some((
-                std::fs::read_to_string(cert_path)?,
-                std::fs::read_to_string(key_path)?,
-            ))
-        }
+        (
+            Some(ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS),
+            Some(cert_path),
+            Some(key_path),
+        ) => Some((
+            std::fs::read_to_string(cert_path)?,
+            std::fs::read_to_string(key_path)?,
+        )),
         _ => None,
     };
-    let credentials = build_kafka_credentials(&authentication, args, mtls_cert_contents)?;
+    let credentials = build_kafka_credentials(authentication.as_ref(), args, mtls_cert_contents)?;
 
     let schema_registry = args
         .schema_registry_url
@@ -3405,6 +3438,14 @@ mod tests {
         assert_eq!(args.kafka_type, "kafka");
         assert_eq!(args.offset, "from_beginning");
         assert_eq!(org_id.as_deref(), Some("org-kafka"));
+        // Auth flags are all optional for discovery too, and an unauthenticated
+        // broker builds a source with no authentication at all (issue #606).
+        assert_eq!(args.auth, None);
+        assert_eq!(args.username, None);
+        assert_eq!(args.password, None);
+        let discovery_source = build_kafka_source(&args).expect("no-auth discovery source builds");
+        assert_eq!(discovery_source.authentication, None);
+        assert!(discovery_source.credentials.is_null());
 
         let ClickPipeCommands::SchemaDiscover {
             service_id,
@@ -4848,6 +4889,147 @@ mod tests {
         }
     }
 
+    /// Wire value of the built source's authentication, or `None` when the
+    /// request omits authentication entirely (no-auth broker).
+    fn kafka_auth(
+        source: &clickhouse_cloud_api::models::ClickPipePostKafkaSource,
+    ) -> Option<String> {
+        source.authentication.as_ref().map(ToString::to_string)
+    }
+
+    #[test]
+    fn build_kafka_source_defaults_to_no_authentication() {
+        // No --auth and no credential flags: the request must omit
+        // authentication rather than inventing PLAIN, so brokers that require
+        // no authentication are reachable (issue #606).
+        let args = kafka_args().source;
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source), None);
+        assert!(
+            source.credentials.is_null(),
+            "no-auth source must not carry credentials: {}",
+            source.credentials
+        );
+        assert_eq!(source.iam_role, None);
+    }
+
+    #[test]
+    fn build_kafka_source_infers_plain_from_username_and_password() {
+        let mut args = kafka_args().source;
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(source.credentials["username"], "user");
+        assert_eq!(source.credentials["password"], "password");
+    }
+
+    #[test]
+    fn build_kafka_source_infers_iam_user_from_access_keys() {
+        let mut args = kafka_args().source;
+        args.access_key_id = Some("AKIA".into());
+        args.secret_key = Some("secret".into());
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_USER"));
+        assert_eq!(source.credentials["accessKeyId"], "AKIA");
+        assert_eq!(source.credentials["secretKey"], "secret");
+    }
+
+    #[test]
+    fn build_kafka_source_infers_iam_role_from_role_arn() {
+        let mut args = kafka_args().source;
+        args.iam_role = Some("arn:aws:iam::123:role/Foo".into());
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_ROLE"));
+        assert!(source.credentials.is_null());
+        assert_eq!(
+            source.iam_role.as_deref(),
+            Some("arn:aws:iam::123:role/Foo")
+        );
+    }
+
+    #[test]
+    fn build_kafka_source_infers_mutual_tls_from_client_certificate_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let client_certificate = directory.path().join("client.pem");
+        let client_key = directory.path().join("client.key");
+        std::fs::write(&client_certificate, "CLIENT_CERT").unwrap();
+        std::fs::write(&client_key, "CLIENT_KEY").unwrap();
+
+        let mut args = kafka_args().source;
+        args.client_certificate = Some(client_certificate.to_string_lossy().into_owned());
+        args.client_key = Some(client_key.to_string_lossy().into_owned());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
+        assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
+        assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
+    }
+
+    #[test]
+    fn build_kafka_source_errors_when_explicit_mechanism_lacks_credentials() {
+        // An explicitly selected mechanism still fails fast, and the message
+        // names the mechanism the user actually asked for.
+        for auth in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] {
+            let mut args = kafka_args().source;
+            args.auth = Some(auth.into());
+            let error = build_kafka_source(&args).unwrap_err();
+            assert_eq!(
+                error.message,
+                format!("{auth} requires --username and --password")
+            );
+        }
+
+        let mut args = kafka_args().source;
+        args.auth = Some("IAM_USER".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--access-key-id"));
+
+        let mut args = kafka_args().source;
+        args.auth = Some("MUTUAL_TLS".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--client-certificate"));
+    }
+
+    #[test]
+    fn kafka_credentials_absent_authentication_is_null() {
+        let args = kafka_args();
+        let credentials = build_kafka_credentials(None, &args.source, None).unwrap();
+        assert!(credentials.is_null());
+    }
+
+    #[test]
+    fn infer_kafka_authentication_prefers_sasl_over_certificates() {
+        // Both SASL and client-certificate flags present: SASL wins, matching
+        // the credential body that gets built.
+        let mut args = kafka_args().source;
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        args.client_certificate = Some("cert-path".into());
+        args.client_key = Some("key-path".into());
+        assert_eq!(
+            infer_kafka_authentication(&args).map(|auth| auth.to_string()),
+            Some("PLAIN".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_kafka_authentication_ignores_half_specified_credentials() {
+        // Half a credential pair is not enough to infer a mechanism; clap
+        // rejects these pairings, so absence keeps the fallback honest.
+        let mut args = kafka_args().source;
+        args.username = Some("user".into());
+        assert_eq!(infer_kafka_authentication(&args), None);
+
+        let mut args = kafka_args().source;
+        args.secret_key = Some("secret".into());
+        assert_eq!(infer_kafka_authentication(&args), None);
+
+        let mut args = kafka_args().source;
+        args.client_key = Some("key-path".into());
+        assert_eq!(infer_kafka_authentication(&args), None);
+    }
+
     #[test]
     fn build_kafka_source_supports_minimal_fields() {
         let mut args = kafka_args().source;
@@ -4860,7 +5042,7 @@ mod tests {
         assert_eq!(source.format.to_string(), "JSONEachRow");
         assert_eq!(source.brokers, "b:9092");
         assert_eq!(source.topics, "t");
-        assert_eq!(source.authentication.to_string(), "PLAIN");
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
         assert_eq!(source.credentials["username"], "user");
         assert_eq!(source.credentials["password"], "password");
         assert_eq!(source.consumer_group, None);
@@ -4915,7 +5097,7 @@ mod tests {
         assert_eq!(source.brokers, "broker-1:9092,broker-2:9092");
         assert_eq!(source.topics, "topic-1,topic-2");
         assert_eq!(source.consumer_group.as_deref(), Some("group"));
-        assert_eq!(source.authentication.to_string(), "MUTUAL_TLS");
+        assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
         assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
         assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
         assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
@@ -4999,7 +5181,7 @@ mod tests {
         args.source.auth = Some("PLAIN".into());
         args.source.username = Some("u".into());
         args.source.password = Some("p".into());
-        let credentials = build_kafka_credentials(&Auth::PLAIN, &args.source, None).unwrap();
+        let credentials = build_kafka_credentials(Some(&Auth::PLAIN), &args.source, None).unwrap();
         assert_eq!(credentials["username"], "u");
         assert_eq!(credentials["password"], "p");
     }
@@ -5011,7 +5193,8 @@ mod tests {
         args.source.auth = Some("IAM_USER".into());
         args.source.access_key_id = Some("AKIA".into());
         args.source.secret_key = Some("secret".into());
-        let credentials = build_kafka_credentials(&Auth::IAM_USER, &args.source, None).unwrap();
+        let credentials =
+            build_kafka_credentials(Some(&Auth::IAM_USER), &args.source, None).unwrap();
         // MskIamUser wire shape is {accessKeyId, secretKey} — NOT snake_case.
         assert_eq!(credentials["accessKeyId"], "AKIA");
         assert_eq!(credentials["secretKey"], "secret");
@@ -5026,7 +5209,8 @@ mod tests {
         args.source.iam_role = Some("arn:aws:iam::123:role/Foo".into());
         // IAM_ROLE sends credentials=null; the role ARN flows through the
         // top-level `iamRole` field on the Kafka source, not credentials.
-        let credentials = build_kafka_credentials(&Auth::IAM_ROLE, &args.source, None).unwrap();
+        let credentials =
+            build_kafka_credentials(Some(&Auth::IAM_ROLE), &args.source, None).unwrap();
         assert!(credentials.is_null());
     }
 
@@ -5036,7 +5220,7 @@ mod tests {
         let args = kafka_args();
         let contents = Some(("CERT_PEM".into(), "KEY_PEM".into()));
         let credentials =
-            build_kafka_credentials(&Auth::MUTUAL_TLS, &args.source, contents).unwrap();
+            build_kafka_credentials(Some(&Auth::MUTUAL_TLS), &args.source, contents).unwrap();
         assert_eq!(credentials["certificate"], "CERT_PEM");
         assert_eq!(credentials["privateKey"], "KEY_PEM");
     }
@@ -5045,7 +5229,7 @@ mod tests {
     fn kafka_credentials_iam_user_missing_args_errors() {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let args = kafka_args();
-        let error = build_kafka_credentials(&Auth::IAM_USER, &args.source, None).unwrap_err();
+        let error = build_kafka_credentials(Some(&Auth::IAM_USER), &args.source, None).unwrap_err();
         assert!(error.message.contains("--access-key-id"));
     }
 
@@ -5054,7 +5238,7 @@ mod tests {
         use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
         let mut args = kafka_args();
         args.source.auth = Some("IAM_ROLE".into());
-        let error = build_kafka_credentials(&Auth::IAM_ROLE, &args.source, None).unwrap_err();
+        let error = build_kafka_credentials(Some(&Auth::IAM_ROLE), &args.source, None).unwrap_err();
         assert!(error.message.contains("--iam-role"));
     }
 }

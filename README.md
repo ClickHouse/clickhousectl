@@ -828,6 +828,19 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
+# From a Kafka broker that requires no authentication: omit every auth flag.
+# `--auth` is optional; when it is omitted the mechanism is inferred from the
+# credential flags you passed (`--username`/`--password` → PLAIN,
+# `--access-key-id`/`--secret-key` → IAM_USER, `--iam-role` → IAM_ROLE,
+# `--client-certificate`/`--client-key` → MUTUAL_TLS), and no authentication is
+# sent when none were passed.
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-kafka-pipe \
+  --brokers 'broker:9092' --topics events \
+  --format JSONEachRow \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
 # From Amazon Kinesis
 clickhousectl cloud clickpipe create kinesis <service-id> \
   --name my-kinesis-pipe \
@@ -933,6 +946,11 @@ clickhousectl cloud clickpipe schema-discover <service-id> kafka \
   --format JSONEachRow \
   --auth SCRAM-SHA-256 \
   --username "$KAFKA_USERNAME" --password "$KAFKA_PASSWORD"
+
+# Discover schema from a Kafka broker that requires no authentication
+clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+  --brokers 'broker:9092' --topics events \
+  --format JSONEachRow
 
 # Discover schema from Kinesis
 clickhousectl cloud clickpipe schema-discover <service-id> kinesis \

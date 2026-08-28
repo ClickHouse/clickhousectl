@@ -99,6 +99,13 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipeMutateDestination", "table"),
     ("ClickPipeMutateDestination", "managedTable"),
     ("ClickPipeMutateDestination", "tableDefinition"),
+    // A Kafka broker that requires no authentication has no representation in
+    // the spec enum (PLAIN..MUTUAL_TLS only) and the schema carries no
+    // `required[]`, so requiredness resolves from the description heuristic.
+    // Absence is the wire representation of "no auth": the control plane's own
+    // field is `omitempty` and the equivalent PATCH property is nullable.
+    // Keeping this `T` would force every request to claim an auth mechanism.
+    ("ClickPipePostKafkaSource", "authentication"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),

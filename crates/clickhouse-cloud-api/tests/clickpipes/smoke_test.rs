@@ -200,7 +200,7 @@ async fn cloud_clickpipe_create_kafka_sasl_smoke() -> TestResult<()> {
                 brokers: "broker.invalid:9092".to_string(),
                 topics: "smoke-topic".to_string(),
                 consumer_group: Some(format!("smoke-cg-{}", ctx.run_id)),
-                authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
                 credentials: serde_json::json!({
                     "username": "smoke-user",
                     "password": "smoke-pass",
@@ -231,7 +231,7 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers: "msk.invalid:9098".to_string(),
                 topics: "smoke-topic".to_string(),
-                authentication: ClickPipePostKafkaSourceAuthentication::IAM_ROLE,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::IAM_ROLE),
                 credentials: serde_json::Value::Null,
                 iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
                 offset: Some(ClickPipeKafkaOffset {

@@ -2867,7 +2867,11 @@ pub struct ClickPipePatchSource {
 /// `ClickPipePostKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostKafkaSource {
-    pub authentication: ClickPipePostKafkaSourceAuthentication,
+    /// Omitted for a broker that requires no authentication: the spec enum has
+    /// no "none" value, and the control plane's own field is `omitempty`, so
+    /// absence — not a sentinel value — is how "no auth" is expressed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipePostKafkaSourceAuthentication>,
     pub brokers: String,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,

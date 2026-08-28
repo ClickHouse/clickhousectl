@@ -3650,6 +3650,35 @@ fn click_pipe_schema_discovery_request_kafka_source() {
     assert!(v["source"].get("pubsub").is_none());
 }
 
+// A Kafka broker with no authentication has no spec enum value; absence of the
+// `authentication` key is the wire representation, so `None` must be omitted
+// rather than serialized as a mechanism or as `null`.
+#[test]
+fn click_pipe_post_kafka_source_omits_absent_authentication() {
+    let no_auth = ClickPipePostKafkaSource {
+        brokers: "broker1:9092".to_string(),
+        topics: "events".to_string(),
+        authentication: None,
+        credentials: serde_json::Value::Null,
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&no_auth).unwrap();
+    assert!(
+        v.get("authentication").is_none(),
+        "absent authentication must be omitted, got {v}"
+    );
+    assert_eq!(v["brokers"], "broker1:9092");
+
+    let plain = ClickPipePostKafkaSource {
+        authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
+        credentials: serde_json::json!({"username": "u", "password": "p"}),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&plain).unwrap();
+    assert_eq!(v["authentication"], "PLAIN");
+    assert_eq!(v["credentials"]["username"], "u");
+}
+
 #[test]
 fn click_pipe_schema_discovery_request_supports_new_sources() {
     let object_storage = ClickPipeSchemaDiscoveryRequest {

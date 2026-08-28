@@ -2466,7 +2466,8 @@ async fn mongodb_tls_host_absent_when_not_passed() {
 // plus all 4 SASL credential shapes (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512,
 // MUTUAL_TLS, IAM_ROLE).
 
-fn kafka_args_minimal() -> Vec<&'static str> {
+/// Kafka create args carrying no authentication flag of any kind.
+fn kafka_args_without_auth() -> Vec<&'static str> {
     vec![
         "clickpipe",
         "create",
@@ -2488,15 +2489,15 @@ fn kafka_args_minimal() -> Vec<&'static str> {
         "id:Int64",
         "--kafka-type",
         "kafka",
-        "--auth",
-        "PLAIN",
-        "--username",
-        "u",
-        "--password",
-        "p",
         "--org-id",
         "org",
     ]
+}
+
+fn kafka_args_minimal() -> Vec<&'static str> {
+    let mut args = kafka_args_without_auth();
+    args.extend(["--auth", "PLAIN", "--username", "u", "--password", "p"]);
+    args
 }
 
 #[tokio::test]
@@ -2529,6 +2530,76 @@ async fn kafka_plain_credentials_shape() {
     let creds = &body["source"]["kafka"]["credentials"];
     assert_eq!(creds["username"], "u");
     assert_eq!(creds["password"], "p");
+}
+
+#[tokio::test]
+async fn kafka_without_auth_flags_sends_no_authentication() {
+    // A broker that requires no authentication: the CLI must not invent PLAIN
+    // (which used to fail client-side with "PLAIN requires --username and
+    // --password"), and `authentication` must be absent from the wire body
+    // because the spec enum has no value for "none".
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &kafka_args_without_auth()).await;
+
+    let kafka = &body["source"]["kafka"];
+    assert!(
+        kafka.get("authentication").is_none(),
+        "authentication must be omitted for a no-auth broker: {kafka}",
+    );
+    assert!(
+        kafka["credentials"].is_null(),
+        "credentials must not carry a mechanism body: {kafka}",
+    );
+    assert_eq!(kafka["brokers"], "broker:9092");
+    assert_eq!(kafka["topics"], "topic");
+}
+
+#[tokio::test]
+async fn schema_discover_kafka_without_auth_flags_sends_no_authentication() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "kafka",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+        ],
+    )
+    .await;
+
+    let kafka = &body["source"]["kafka"];
+    assert!(
+        kafka.get("authentication").is_none(),
+        "authentication must be omitted for a no-auth broker: {kafka}",
+    );
+    assert!(
+        kafka["credentials"].is_null(),
+        "credentials must not carry a mechanism body: {kafka}",
+    );
+}
+
+#[tokio::test]
+async fn kafka_infers_plain_from_username_and_password_without_auth_flag() {
+    // Credential flags without --auth still resolve to the matching mechanism,
+    // so omitting --auth is not a silent downgrade to no authentication.
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_without_auth();
+    args.extend(["--username", "u", "--password", "p"]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+
+    let kafka = &body["source"]["kafka"];
+    assert_eq!(kafka["authentication"], "PLAIN");
+    assert_eq!(kafka["credentials"]["username"], "u");
+    assert_eq!(kafka["credentials"]["password"], "p");
 }
 
 #[tokio::test]
