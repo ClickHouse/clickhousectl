@@ -34,10 +34,15 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
-            init::init()?;
-            let out = output::InitOutput {
-                path: ".clickhouse/".to_string(),
-            };
+            let result = init::init()?;
+            let mut paths = vec![".clickhouse/".to_string()];
+            if result.clickhouse_scaffold_created {
+                paths.push("clickhouse/".to_string());
+            }
+            if result.postgres_scaffold_created {
+                paths.push("postgres/".to_string());
+            }
+            let out = output::InitOutput { paths };
             output::print_output(&out, json);
             Ok(())
         }

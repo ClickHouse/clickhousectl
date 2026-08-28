@@ -634,12 +634,25 @@ impl fmt::Display for RemoveOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InitOutput {
-    pub path: String,
+    /// Every project-local path this invocation created or manages, e.g.
+    /// `.clickhouse/`, and (when newly created) `clickhouse/` and `postgres/`.
+    pub paths: Vec<String>,
 }
 
 impl fmt::Display for InitOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Initialized ClickHouse project in {}", self.path)
+        write!(
+            f,
+            "Initialized ClickHouse project in {}",
+            self.paths
+                .first()
+                .map(String::as_str)
+                .unwrap_or(".clickhouse/")
+        )?;
+        for path in self.paths.iter().skip(1) {
+            write!(f, "\nCreated project scaffold in {path}")?;
+        }
+        Ok(())
     }
 }
 
@@ -1394,14 +1407,32 @@ mod tests {
     }
 
     #[test]
-    fn init_json() {
+    fn init_json_first_run_reports_all_created_paths() {
         let output = InitOutput {
-            path: ".clickhouse/".to_string(),
+            paths: vec![
+                ".clickhouse/".to_string(),
+                "clickhouse/".to_string(),
+                "postgres/".to_string(),
+            ],
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
-        assert_eq!(json["path"], ".clickhouse/");
+        assert_eq!(
+            json["paths"],
+            serde_json::json!([".clickhouse/", "clickhouse/", "postgres/"])
+        );
+    }
+
+    #[test]
+    fn init_json_idempotent_run_only_reports_clickhouse_dir() {
+        let output = InitOutput {
+            paths: vec![".clickhouse/".to_string()],
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        assert_eq!(json["paths"], serde_json::json!([".clickhouse/"]));
     }
 
     #[test]
@@ -1725,13 +1756,30 @@ mod tests {
     }
 
     #[test]
-    fn init_display() {
+    fn init_display_idempotent() {
         let output = InitOutput {
-            path: ".clickhouse/".to_string(),
+            paths: vec![".clickhouse/".to_string()],
         };
         assert_eq!(
             output.to_string(),
             "Initialized ClickHouse project in .clickhouse/"
+        );
+    }
+
+    #[test]
+    fn init_display_first_run_lists_created_scaffolds() {
+        let output = InitOutput {
+            paths: vec![
+                ".clickhouse/".to_string(),
+                "clickhouse/".to_string(),
+                "postgres/".to_string(),
+            ],
+        };
+        assert_eq!(
+            output.to_string(),
+            "Initialized ClickHouse project in .clickhouse/\n\
+             Created project scaffold in clickhouse/\n\
+             Created project scaffold in postgres/"
         );
     }
 
