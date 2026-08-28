@@ -255,13 +255,26 @@ async fn run_query_formats_documented_sql_error_envelope() {
     let err = client
         .run_query_bearer("svc-1", "SELECT broken FROM", None, "CSV", false)
         .await
-        .expect_err("expected Api error");
+        .expect_err("expected Sql error");
+    // The documented envelope maps to the structural Error::Sql variant so
+    // callers match on it instead of sniffing the "SQL error " prefix; the
+    // Display text is the stable user-facing string.
+    assert_eq!(
+        err.to_string(),
+        "SQL error 62: Syntax error near FROM",
+        "Display must stay stable: {err:?}"
+    );
     match err {
-        Error::Api { status, message } => {
+        Error::Sql {
+            status,
+            code,
+            details,
+        } => {
             assert_eq!(status, 400);
-            assert_eq!(message, "SQL error 62: Syntax error near FROM");
+            assert_eq!(code, "62");
+            assert_eq!(details, "Syntax error near FROM");
         }
-        other => panic!("expected Error::Api, got: {other:?}"),
+        other => panic!("expected Error::Sql, got: {other:?}"),
     }
 }
 
