@@ -48,6 +48,13 @@ enum LocalErrorCode {
     NetworkError,
     DockerUnavailable,
     DockerError,
+    /// The container name is held by a container clickhousectl does not
+    /// manage. Distinct from [`Self::DockerError`], which covers daemon
+    /// failures whose text is not rendered.
+    ContainerNameConflict,
+    /// A Postgres validation or state error whose text (and recovery
+    /// guidance) clickhousectl composes itself, rendered verbatim.
+    PostgresError,
     IoError,
     LocalError,
 }
@@ -395,6 +402,11 @@ impl LocalErrorOutput {
             Error::DockerError(_) => {
                 Mapping::redacted(LocalErrorCode::DockerError, "Docker operation failed")
             }
+            // Self-composed name-conflict guidance, unlike the daemon text
+            // above.
+            Error::ContainerNameConflict(_) => {
+                Mapping::parity(LocalErrorCode::ContainerNameConflict)
+            }
 
             // ── filesystem and metadata ─────────────────────────────────────
             Error::Io(_)
@@ -409,11 +421,17 @@ impl LocalErrorOutput {
                 Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
             }
 
+            // ── postgres ────────────────────────────────────────────────────
+            // Self-composed validation and state guidance; the foreign-text
+            // sibling `Error::Postgres` stays in the fallback below.
+            Error::PostgresUsage(_) => Mapping::parity(LocalErrorCode::PostgresError),
+
             // ── bounded fallback ────────────────────────────────────────────
-            // Subprocess and Postgres text is foreign output. `Cloud`,
-            // `AuthRequired` and `Skills` belong to other command surfaces and
-            // are never printed through this envelope; `ChildExit` passes the
-            // child's status through without an error object at all.
+            // Subprocess text and `Postgres` (OS text from a failed psql
+            // exec) are foreign output. `Cloud`, `AuthRequired` and `Skills`
+            // belong to other command surfaces and are never printed through
+            // this envelope; `ChildExit` passes the child's status through
+            // without an error object at all.
             Error::Exec(_)
             | Error::Postgres(_)
             | Error::Cloud(_)
@@ -1443,6 +1461,14 @@ mod tests {
                 "docker_error",
             ),
             (
+                Error::ContainerNameConflict("chctl-pg-dev-17".into()),
+                "container_name_conflict",
+            ),
+            (
+                Error::PostgresUsage("--port 0 is not allowed".into()),
+                "postgres_error",
+            ),
+            (
                 Error::ServerRunningCannotRemove("dev".into()),
                 "server_running",
             ),
@@ -1648,6 +1674,11 @@ mod tests {
             },
             Error::PortUnavailable(PortKind::Http),
             Error::DockerNotAvailable("Docker socket was not found.\nStart Docker Desktop.".into()),
+            Error::ContainerNameConflict("chctl-pg-dev-17".into()),
+            Error::PostgresUsage(
+                "multiple postgres instances named 'dev' (17, 18); pass --version to select one"
+                    .into(),
+            ),
         ];
 
         for error in cases {

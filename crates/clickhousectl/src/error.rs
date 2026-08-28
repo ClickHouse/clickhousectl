@@ -481,8 +481,16 @@ pub enum Error {
         details: String,
     },
 
+    /// Postgres failure text clickhousectl does not control (currently the OS
+    /// error from a failed `psql` exec). Summarized in structured output.
     #[error("Postgres error: {0}")]
     Postgres(String),
+
+    /// A Postgres validation or state error whose text clickhousectl composes
+    /// itself, including its recovery guidance. Kept separate from
+    /// [`Error::Postgres`] so structured output can render it verbatim.
+    #[error("Postgres error: {0}")]
+    PostgresUsage(String),
 
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.
@@ -620,6 +628,15 @@ pub enum Error {
     #[error("Docker error: {0}")]
     #[allow(clippy::enum_variant_names)]
     DockerError(String),
+
+    /// A container name held by a container clickhousectl does not manage.
+    /// Kept separate from [`Error::DockerError`], whose payload is daemon text,
+    /// so structured output can render this self-composed guidance verbatim.
+    #[error(
+        "Docker error: container '{0}' already exists but is not managed by clickhousectl. \
+         Remove it manually or pick a different --name."
+    )]
+    ContainerNameConflict(String),
 
     #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
     PostgresStartupRollback {

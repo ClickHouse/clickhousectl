@@ -449,10 +449,7 @@ pub async fn ensure_name_free(
                 })
                 .unwrap_or(false);
             if !labels_match {
-                return Err(Error::DockerError(format!(
-                    "container '{cname}' already exists but is not managed by clickhousectl. \
-                     Remove it manually or pick a different --name."
-                )));
+                return Err(Error::ContainerNameConflict(cname));
             }
             let id = info.id.unwrap_or(cname.clone());
             let _ = stop_container(docker, &id).await;

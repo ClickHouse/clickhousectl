@@ -1106,6 +1106,8 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | `network_error` | An HTTP request failed |
 | `docker_unavailable` | Docker could not be reached (the message names the cause and the platform fix) |
 | `docker_error` | A Docker operation failed |
+| `container_name_conflict` | The container name is held by a container clickhousectl does not manage |
+| `postgres_error` | A Postgres validation or state error; the message carries its recovery guidance |
 | `io_error` | A local filesystem, metadata, or serialization operation failed |
 | `local_error` | A redacted fallback for failures whose text cannot be rendered safely |
 
