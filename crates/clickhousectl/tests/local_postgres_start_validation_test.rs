@@ -259,7 +259,10 @@ fn bound_explicit_port_fails_locally_without_docker_or_project_state() {
     assert_eq!(error["error"]["code"], "port_in_use");
     assert_eq!(
         error["error"]["message"],
-        format!("Postgres port {port} is already in use")
+        format!(
+            "Postgres port {port} is already in use; choose another --port or omit --port to \
+             auto-select a free port"
+        )
     );
     assert_eq!(
         error["error"]["command"],

@@ -26,13 +26,28 @@ enum LocalErrorCode {
     ServerSelectionRequired,
     ServerNotRunning,
     ServerRunning,
+    InvalidServerName,
+    UnsupportedArgument,
+    ConfigNotFound,
+    InvalidConfigName,
     InvalidVersion,
+    /// The version is not installed locally. Distinct from
+    /// [`Self::VersionUnavailable`], which means it could not be resolved or
+    /// downloaded: `local list --remote` is no help for a local miss.
+    VersionNotInstalled,
+    VersionSelectionRequired,
+    VersionAlreadyInstalled,
     VersionUnavailable,
     VersionIsDefault,
+    UnsupportedClientVersion,
+    UnsupportedPlatform,
     PortInUse,
     StartupExit,
     StartupTimeout,
     DownloadFailed,
+    NetworkError,
+    DockerUnavailable,
+    DockerError,
     IoError,
     LocalError,
 }
@@ -42,7 +57,55 @@ struct LocalErrorDetail {
     code: LocalErrorCode,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    command: Option<&'static str>,
+    command: Option<String>,
+}
+
+/// How one [`Error`] variant renders into a [`LocalErrorDetail`].
+///
+/// Built with either [`Mapping::parity`] — the JSON message is the error's own
+/// human text, verbatim — or [`Mapping::redacted`], which substitutes a curated
+/// summary for errors that interpolate foreign text.
+struct Mapping {
+    code: LocalErrorCode,
+    command: Option<String>,
+    /// Curated replacement for the human text; `None` renders `Display`.
+    redacted: Option<String>,
+}
+
+impl Mapping {
+    /// The JSON message is the error's `Display` text, so machine output
+    /// carries exactly the detail and remediation human output prints.
+    fn parity(code: LocalErrorCode) -> Self {
+        Self {
+            code,
+            command: None,
+            redacted: None,
+        }
+    }
+
+    /// The JSON message is `message`, not the error's `Display` text. For
+    /// errors whose text interpolates foreign output.
+    fn redacted(code: LocalErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            command: None,
+            redacted: Some(message.into()),
+        }
+    }
+
+    /// A safe, runnable recovery command for this failure.
+    fn command(mut self, command: impl Into<String>) -> Self {
+        self.command = Some(command.into());
+        self
+    }
+
+    fn into_detail(self, error: &Error) -> LocalErrorDetail {
+        LocalErrorDetail {
+            code: self.code,
+            message: self.redacted.unwrap_or_else(|| error.to_string()),
+            command: self.command,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -148,138 +211,159 @@ struct LocalErrorOutput {
 }
 
 impl LocalErrorOutput {
+    /// Classify one local runtime failure.
+    ///
+    /// Two rules govern the `message` field, and every arm below picks one
+    /// deliberately:
+    ///
+    /// * **Parity** ([`Mapping::parity`]) — the error's own human text is
+    ///   rendered verbatim, so a JSON consumer gets exactly the detail and
+    ///   remediation human mode prints. This is the default: these messages are
+    ///   composed by this crate from its own fields.
+    /// * **Redaction** ([`Mapping::redacted`]) — a curated summary replaces
+    ///   text that interpolates foreign output (subprocess stderr, Docker
+    ///   daemon or OS/serde source strings, download bodies), which can carry
+    ///   paths, SQL or credentials and tells a machine consumer nothing.
+    ///
+    /// The match is exhaustive on purpose: a new [`Error`] variant must be
+    /// classified here rather than silently collapsing to
+    /// `local_error`/"Local command failed".
     fn from_error(error: &Error) -> Self {
-        if let Error::ManagedClient(error) = error {
-            return Self {
-                error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(error)),
-            };
-        }
-        if let Error::ProjectServerNotFound(error) = error {
-            return Self {
-                error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(error)),
-            };
-        }
-        if let Error::ProjectServerStateMissing(error) = error {
-            return Self {
-                error: LocalErrorBody::ProjectServerStateMissing(
-                    ProjectServerStateMissingDetail::from_error(error),
-                ),
-            };
-        }
-        let detail = match error {
-            Error::ServerNotFound(name) => LocalErrorDetail {
-                code: LocalErrorCode::ServerNotFound,
-                message: format!("Server '{name}' not found"),
-                command: Some("clickhousectl local server list"),
-            },
-            Error::ServerStopSelectionRequired { available } => LocalErrorDetail {
-                code: LocalErrorCode::ServerSelectionRequired,
-                message: format!(
-                    "Multiple non-default ClickHouse servers exist (available: {available}); specify a name or use stop-all"
-                ),
-                command: Some("clickhousectl local server list"),
-            },
-            Error::ServerRemoveSelectionRequired { available } => LocalErrorDetail {
-                code: LocalErrorCode::ServerSelectionRequired,
-                message: format!(
-                    "The default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed"
-                ),
-                command: Some("clickhousectl local server list"),
-            },
-            Error::ServerNotRunning(name) => LocalErrorDetail {
-                code: LocalErrorCode::ServerNotRunning,
-                message: format!("Server '{name}' is not running"),
-                command: Some("clickhousectl local server list"),
-            },
-            Error::ServerAlreadyRunning(name) => LocalErrorDetail {
-                code: LocalErrorCode::ServerRunning,
-                message: format!("Server '{name}' is already running"),
-                command: Some("clickhousectl local server list"),
-            },
-            Error::ServerRunningCannotRemove(name) => LocalErrorDetail {
-                code: LocalErrorCode::ServerRunning,
-                message: format!("Server '{name}' is running"),
-                command: Some("clickhousectl local server list"),
-            },
+        let mapping = match error {
+            // ── structured bodies (their own DTOs, not code/message/command) ─
+            Error::ManagedClient(managed) => {
+                return Self {
+                    error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(
+                        managed,
+                    )),
+                };
+            }
+            Error::ProjectServerNotFound(not_found) => {
+                return Self {
+                    error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(
+                        not_found,
+                    )),
+                };
+            }
+            Error::ProjectServerStateMissing(missing) => {
+                return Self {
+                    error: LocalErrorBody::ProjectServerStateMissing(
+                        ProjectServerStateMissingDetail::from_error(missing),
+                    ),
+                };
+            }
+            // The rollback note is a cleanup detail on top of the failure that
+            // actually stopped the command; classify by that primary failure.
+            Error::PostgresStartupRollback { primary, .. } => {
+                return Self::from_error(primary);
+            }
+
+            // ── servers ─────────────────────────────────────────────────────
+            Error::ServerNotFound(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
+                .command("clickhousectl local server list"),
+            Error::ServerStopSelectionRequired { .. }
+            | Error::ServerRemoveSelectionRequired { .. } => {
+                Mapping::parity(LocalErrorCode::ServerSelectionRequired)
+                    .command("clickhousectl local server list")
+            }
+            // Deliberately the list, not a `start` command: this variant is
+            // also raised for Postgres servers and for global PID lookups,
+            // where the name is not a `server start` argument.
+            Error::ServerNotRunning(_) => Mapping::parity(LocalErrorCode::ServerNotRunning)
+                .command("clickhousectl local server list"),
+            Error::ServerAlreadyRunning(_) => Mapping::parity(LocalErrorCode::ServerRunning)
+                .command("clickhousectl local server list"),
+            // Stopping *this* server is the recovery; `server list` only
+            // restates what the error already says.
+            Error::ServerRunningCannotRemove(name) => {
+                Mapping::parity(LocalErrorCode::ServerRunning)
+                    .command(format!("clickhousectl local server stop {name}"))
+            }
+            Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
+                .command("clickhousectl local server list"),
+            Error::UnsupportedArgument(_) => Mapping::parity(LocalErrorCode::UnsupportedArgument)
+                .command("clickhousectl local server start --help"),
+
+            // ── server configs ──────────────────────────────────────────────
+            Error::ConfigNotFound(_) => Mapping::parity(LocalErrorCode::ConfigNotFound)
+                .command("clickhousectl local server configs"),
+            Error::InvalidConfigName(_) => Mapping::parity(LocalErrorCode::InvalidConfigName)
+                .command("clickhousectl local server configs"),
+
+            // ── versions ────────────────────────────────────────────────────
+            Error::InvalidVersion(_) => Mapping::parity(LocalErrorCode::InvalidVersion)
+                .command("clickhousectl local install --help"),
+            // Not installed locally: the installed list, not the remote one, is
+            // what resolves these.
+            Error::VersionNotFound(_) | Error::StaleDefaultVersion(_) => {
+                Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command("clickhousectl local list")
+            }
+            Error::NoVersionsInstalled | Error::NoClientVersionInstalled => {
+                Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command("clickhousectl local install latest")
+            }
+            Error::ClientVersionNotInstalled(version) => {
+                Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command(format!("clickhousectl local install {version}"))
+            }
+            Error::NoDefaultVersion | Error::AmbiguousClientVersion => {
+                Mapping::parity(LocalErrorCode::VersionSelectionRequired)
+                    .command("clickhousectl local list")
+            }
+            Error::VersionAlreadyInstalled(_) => {
+                Mapping::parity(LocalErrorCode::VersionAlreadyInstalled)
+                    .command("clickhousectl local list")
+            }
+            Error::RepeatedClientQueryUnsupported { .. } => {
+                Mapping::parity(LocalErrorCode::UnsupportedClientVersion)
+            }
             // The blocking servers are named — including their project root —
             // because they may live outside the current project, where neither
             // `server list` nor the caller's own state can find them.
-            Error::VersionInUse { version, servers } => LocalErrorDetail {
-                code: LocalErrorCode::ServerRunning,
-                message: format!(
-                    "Version {version} is in use by running server(s), in this project or another: {servers}"
-                ),
-                command: Some("clickhousectl local server list --global"),
-            },
-            Error::VersionIsDefault { .. } => LocalErrorDetail {
-                code: LocalErrorCode::VersionIsDefault,
-                message:
-                    "This version is the current default (~/.clickhouse/default) and is linked as \
-                     ~/.local/bin/clickhouse; removing it would clear both, and the exact build may \
-                     not be re-downloadable. Switch the default first, or pass --force to remove it \
-                     and clear the default marker and the global symlink."
-                        .to_string(),
-                command: Some("clickhousectl local use latest"),
-            },
-            Error::InvalidVersion(_) => LocalErrorDetail {
-                code: LocalErrorCode::InvalidVersion,
-                message: "Invalid version".to_string(),
-                command: Some("clickhousectl local install --help"),
-            },
-            Error::VersionNotFound(_)
-            | Error::NoVersionsInstalled
-            | Error::NoDefaultVersion
-            | Error::NoClientVersionInstalled
-            | Error::AmbiguousClientVersion
-            | Error::StaleDefaultVersion(_)
-            | Error::ClientVersionNotInstalled(_)
-            | Error::RepeatedClientQueryUnsupported { .. }
-            | Error::NoMatchingVersion(_)
+            Error::VersionInUse { .. } => Mapping::parity(LocalErrorCode::ServerRunning)
+                .command("clickhousectl local server list --global"),
+            Error::VersionIsDefault { .. } => Mapping::parity(LocalErrorCode::VersionIsDefault)
+                .command("clickhousectl local use latest"),
+            // Could not be resolved or downloaded, so the remote list is the
+            // next step.
+            Error::NoMatchingVersion(_)
             | Error::ExactVersionUnavailable { .. }
             | Error::UnknownVersionChannel(_)
-            | Error::VersionResolutionFallback { .. } => LocalErrorDetail {
-                code: LocalErrorCode::VersionUnavailable,
-                message: "Requested version is unavailable".to_string(),
-                command: Some("clickhousectl local list --remote"),
-            },
-            Error::PortInUse { kind, port } => LocalErrorDetail {
-                code: LocalErrorCode::PortInUse,
-                message: format!("{kind} port {port} is already in use"),
-                command: Some(match kind {
+            | Error::VersionResolutionFallback { .. } => {
+                Mapping::parity(LocalErrorCode::VersionUnavailable)
+                    .command("clickhousectl local list --remote")
+            }
+            Error::UnsupportedPlatform { .. } => {
+                Mapping::parity(LocalErrorCode::UnsupportedPlatform)
+            }
+
+            // ── ports and startup ───────────────────────────────────────────
+            Error::PortInUse { kind, .. } | Error::PortUnavailable(kind) => {
+                Mapping::parity(LocalErrorCode::PortInUse).command(match kind {
                     PortKind::Postgres => "clickhousectl local postgres start --help",
                     PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
-                }),
-            },
-            Error::PortUnavailable(kind) => LocalErrorDetail {
-                code: LocalErrorCode::PortInUse,
-                message: format!("No free {kind} port is available"),
-                command: Some(match kind {
-                    PortKind::Postgres => "clickhousectl local postgres start --help",
-                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
-                }),
-            },
-            Error::StartupExit { kind, name, .. } => LocalErrorDetail {
-                code: LocalErrorCode::StartupExit,
-                message: format!("{kind} server '{name}' exited before becoming ready"),
-                command: Some("clickhousectl local server list"),
-            },
+                })
+            }
+            // `details` is the managed server's own stderr or log tail: kept in
+            // human output, summarized here.
+            Error::StartupExit { kind, name, .. } => Mapping::redacted(
+                LocalErrorCode::StartupExit,
+                format!("{kind} server '{name}' exited before becoming ready"),
+            )
+            .command("clickhousectl local server list"),
             Error::StartupTimeout {
                 kind,
                 name,
                 seconds,
                 ..
-            } => LocalErrorDetail {
-                code: LocalErrorCode::StartupTimeout,
-                message: format!(
-                    "{kind} server '{name}' did not become ready within {seconds} seconds"
-                ),
-                command: Some("clickhousectl local server list"),
-            },
-            Error::Download(_) | Error::Extract(_) => LocalErrorDetail {
-                code: LocalErrorCode::DownloadFailed,
-                message: "Download failed".to_string(),
-                command: None,
-            },
+            } => Mapping::redacted(
+                LocalErrorCode::StartupTimeout,
+                format!("{kind} server '{name}' did not become ready within {seconds} seconds"),
+            )
+            .command("clickhousectl local server list"),
+
+            // ── network, downloads and extraction ───────────────────────────
             Error::Network(failure)
                 if matches!(
                     failure.stage,
@@ -288,39 +372,60 @@ impl LocalErrorOutput {
                         | NetworkStage::Download
                 ) =>
             {
-                LocalErrorDetail {
-                    code: LocalErrorCode::DownloadFailed,
-                    message: "Download failed".to_string(),
-                    command: None,
-                }
+                Mapping::parity(LocalErrorCode::DownloadFailed)
             }
-            Error::Network(_) => LocalErrorDetail {
-                code: LocalErrorCode::VersionUnavailable,
-                message: "Requested version is unavailable".to_string(),
-                command: Some("clickhousectl local list --remote"),
-            },
+            // Version resolution probes: the remote list is the next step.
+            Error::Network(_) => Mapping::parity(LocalErrorCode::VersionUnavailable)
+                .command("clickhousectl local list --remote"),
+            Error::Http(_) => {
+                Mapping::redacted(LocalErrorCode::NetworkError, "HTTP request failed")
+            }
+            Error::Download(_) => {
+                Mapping::redacted(LocalErrorCode::DownloadFailed, "Download failed")
+            }
+            Error::Extract(_) | Error::ExtractArchive { .. } => {
+                Mapping::redacted(LocalErrorCode::DownloadFailed, "Extraction failed")
+            }
+
+            // ── Docker ──────────────────────────────────────────────────────
+            // The unavailability text is built from a classified failure kind
+            // and platform guidance; the daemon's own message is used for
+            // classification only and never rendered (see `local::docker`).
+            Error::DockerNotAvailable(_) => Mapping::parity(LocalErrorCode::DockerUnavailable),
+            Error::DockerError(_) => {
+                Mapping::redacted(LocalErrorCode::DockerError, "Docker operation failed")
+            }
+
+            // ── filesystem and metadata ─────────────────────────────────────
             Error::Io(_)
             | Error::Json(_)
             | Error::CreateDir { .. }
+            | Error::ServerMetadataPermission { .. }
             | Error::ServerMetadataRead { .. }
             | Error::ServerMetadataUtf8 { .. }
             | Error::ServerMetadataParse { .. }
-            | Error::ServerMetadataWrite { .. } => LocalErrorDetail {
-                code: LocalErrorCode::IoError,
-                message: "Local I/O operation failed".to_string(),
-                command: None,
-            },
-            Error::PostgresStartupRollback { primary, .. } => {
-                return Self::from_error(primary);
+            | Error::ServerMetadataWrite { .. }
+            | Error::ServerLock { .. } => {
+                Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
             }
-            _ => LocalErrorDetail {
-                code: LocalErrorCode::LocalError,
-                message: "Local command failed".to_string(),
-                command: None,
-            },
+
+            // ── bounded fallback ────────────────────────────────────────────
+            // Subprocess and Postgres text is foreign output. `Cloud`,
+            // `AuthRequired` and `Skills` belong to other command surfaces and
+            // are never printed through this envelope; `ChildExit` passes the
+            // child's status through without an error object at all.
+            Error::Exec(_)
+            | Error::Postgres(_)
+            | Error::Cloud(_)
+            | Error::AuthRequired(_)
+            | Error::Skills(_)
+            | Error::ChildExit(_) => {
+                Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
+            }
+            Error::Cancelled => Mapping::parity(LocalErrorCode::LocalError),
         };
         Self {
-            error: LocalErrorBody::General(detail),
+            error: LocalErrorBody::General(mapping.into_detail(error)),
         }
     }
 }
@@ -1270,7 +1375,76 @@ mod tests {
             ),
             (
                 Error::VersionNotFound("25.12.9.61".into()),
+                "version_not_installed",
+            ),
+            (
+                Error::StaleDefaultVersion("25.12.9.61".into()),
+                "version_not_installed",
+            ),
+            (Error::NoVersionsInstalled, "version_not_installed"),
+            (
+                Error::ClientVersionNotInstalled("25.12.9.61".into()),
+                "version_not_installed",
+            ),
+            (Error::NoDefaultVersion, "version_selection_required"),
+            (Error::AmbiguousClientVersion, "version_selection_required"),
+            (
+                Error::VersionAlreadyInstalled("25.12.9.61".into()),
+                "version_already_installed",
+            ),
+            (
+                Error::RepeatedClientQueryUnsupported {
+                    version: "24.1.1.1".into(),
+                    minimum: "24.2",
+                },
+                "unsupported_client_version",
+            ),
+            (
+                Error::NoMatchingVersion("99.99".into()),
                 "version_unavailable",
+            ),
+            (
+                Error::ExactVersionUnavailable {
+                    version: "26.2.8.7".into(),
+                    series: "26.2".into(),
+                    available: "26.2.20.4".into(),
+                },
+                "version_unavailable",
+            ),
+            (
+                Error::UnsupportedPlatform {
+                    os: "plan9".into(),
+                    arch: "sparc".into(),
+                },
+                "unsupported_platform",
+            ),
+            (
+                Error::ConfigNotFound("config 'x' not found in /configs (available: none)".into()),
+                "config_not_found",
+            ),
+            (
+                Error::InvalidConfigName("../etc/passwd".into()),
+                "invalid_config_name",
+            ),
+            (
+                Error::InvalidServerName("../escape".into()),
+                "invalid_server_name",
+            ),
+            (
+                Error::UnsupportedArgument("--config cannot be passed through".into()),
+                "unsupported_argument",
+            ),
+            (
+                Error::DockerNotAvailable("Docker socket was not found.\nStart Docker.".into()),
+                "docker_unavailable",
+            ),
+            (
+                Error::DockerError("raw daemon details".into()),
+                "docker_error",
+            ),
+            (
+                Error::ServerRunningCannotRemove("dev".into()),
+                "server_running",
             ),
             (
                 Error::PortInUse {
@@ -1364,6 +1538,182 @@ mod tests {
             r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local server list"}}"#
         );
         assert!(!wrapped.contains("hunter2"));
+    }
+
+    #[test]
+    fn running_server_remove_json_error_points_at_stopping_that_server() {
+        assert_eq!(
+            serde_json::to_string(&LocalErrorOutput::from_error(
+                &Error::ServerRunningCannotRemove("dev".into())
+            ))
+            .unwrap(),
+            r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local server stop dev`","command":"clickhousectl local server stop dev"}}"#
+        );
+    }
+
+    #[test]
+    fn missing_config_json_error_keeps_the_full_human_detail() {
+        let error = Error::ConfigNotFound(
+            "config 'does-not-exist' not found in /home/dev/.clickhouse/configs \
+             (available: analytics.xml)"
+                .to_string(),
+        );
+
+        assert_eq!(
+            serde_json::to_value(LocalErrorOutput::from_error(&error)).unwrap(),
+            serde_json::json!({
+                "error": {
+                    "code": "config_not_found",
+                    "message": "config 'does-not-exist' not found in /home/dev/.clickhouse/configs (available: analytics.xml)",
+                    "command": "clickhousectl local server configs"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn a_version_that_is_not_installed_is_not_reported_as_unavailable_for_download() {
+        assert_eq!(
+            serde_json::to_value(LocalErrorOutput::from_error(&Error::VersionNotFound(
+                "25.12.9.61".into()
+            )))
+            .unwrap(),
+            serde_json::json!({
+                "error": {
+                    "code": "version_not_installed",
+                    "message": "Version 25.12.9.61 not found",
+                    "command": "clickhousectl local list"
+                }
+            })
+        );
+
+        // A version that cannot be resolved remotely keeps the remote hint.
+        let unresolvable = error_json(&Error::NoMatchingVersion("99.99".into()));
+        assert_eq!(unresolvable["error"]["code"], "version_unavailable");
+        assert_eq!(
+            unresolvable["error"]["command"],
+            "clickhousectl local list --remote"
+        );
+    }
+
+    /// Errors this crate composes itself render their human text verbatim, so
+    /// `--json` never carries less than the `Error: ...` line does.
+    #[test]
+    fn self_composed_errors_serialize_their_human_message_verbatim() {
+        let cases = [
+            Error::ServerNotFound("dev".into()),
+            Error::ServerNotRunning("dev".into()),
+            Error::ServerAlreadyRunning("dev".into()),
+            Error::ServerRunningCannotRemove("dev".into()),
+            Error::ServerStopSelectionRequired { available: 2 },
+            Error::ServerRemoveSelectionRequired { available: 1 },
+            Error::InvalidServerName("../escape".into()),
+            Error::UnsupportedArgument("--config cannot be passed through".into()),
+            Error::ConfigNotFound("config 'x' not found in /configs (available: y.xml)".into()),
+            Error::InvalidConfigName("../etc/passwd".into()),
+            Error::VersionNotFound("25.12.9.61".into()),
+            Error::NoVersionsInstalled,
+            Error::NoDefaultVersion,
+            Error::NoClientVersionInstalled,
+            Error::AmbiguousClientVersion,
+            Error::StaleDefaultVersion("25.12.9.61".into()),
+            Error::ClientVersionNotInstalled("25.12.9.61".into()),
+            Error::RepeatedClientQueryUnsupported {
+                version: "24.1.1.1".into(),
+                minimum: "24.2",
+            },
+            Error::VersionAlreadyInstalled("25.12.9.61".into()),
+            Error::VersionInUse {
+                version: "25.12.9.61".into(),
+                servers: "dev (/project, pid 42)".into(),
+            },
+            Error::VersionIsDefault {
+                version: "25.12.9.61".into(),
+            },
+            Error::NoMatchingVersion("99.99".into()),
+            Error::ExactVersionUnavailable {
+                version: "26.2.8.7".into(),
+                series: "26.2".into(),
+                available: "26.2.20.4".into(),
+            },
+            Error::UnknownVersionChannel("26.2.8.7".into()),
+            Error::InvalidVersion("Invalid version 'nope'".into()),
+            Error::UnsupportedPlatform {
+                os: "plan9".into(),
+                arch: "sparc".into(),
+            },
+            Error::PortInUse {
+                kind: PortKind::Postgres,
+                port: 5432,
+            },
+            Error::PortUnavailable(PortKind::Http),
+            Error::DockerNotAvailable("Docker socket was not found.\nStart Docker Desktop.".into()),
+        ];
+
+        for error in cases {
+            let json = error_json(&error);
+            assert_eq!(
+                json["error"]["message"],
+                serde_json::Value::String(error.to_string()),
+                "JSON message must match human output for {error:?}"
+            );
+        }
+    }
+
+    /// The complement of the parity rule: text that interpolates foreign output
+    /// (subprocess, Docker daemon, OS/serde sources) stays summarized.
+    #[test]
+    fn errors_carrying_foreign_output_stay_summarized() {
+        let secret = "password=hunter2; /Users/al/secret-project";
+        let cases = [
+            (Error::Exec(secret.into()), "Local command failed"),
+            (Error::DockerError(secret.into()), "Docker operation failed"),
+            (Error::Postgres(secret.into()), "Local command failed"),
+            (Error::Download(secret.into()), "Download failed"),
+            (Error::Extract(secret.into()), "Extraction failed"),
+            (
+                Error::Io(std::io::Error::other(secret)),
+                "Local I/O operation failed",
+            ),
+            (
+                Error::ServerMetadataWrite {
+                    path: secret.into(),
+                    source: std::io::Error::other(secret),
+                },
+                "Local I/O operation failed",
+            ),
+            (
+                Error::ServerLock {
+                    operation: "open the server metadata lock file",
+                    path: secret.into(),
+                    remediation: "Check access, then retry.",
+                    source: std::io::Error::other(secret),
+                },
+                "Local I/O operation failed",
+            ),
+            (
+                Error::StartupTimeout {
+                    kind: crate::error::StartupKind::ClickHouse,
+                    name: "default".into(),
+                    seconds: 30,
+                    details: secret.into(),
+                },
+                "ClickHouse server 'default' did not become ready within 30 seconds",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let serialized = serde_json::to_string(&LocalErrorOutput::from_error(&error)).unwrap();
+            assert_eq!(
+                error_json(&error)["error"]["message"],
+                expected,
+                "unexpected summary for {error:?}"
+            );
+            assert!(
+                !serialized.contains("hunter2") && !serialized.contains("secret-project"),
+                "leaked foreign output: {serialized}"
+            );
+        }
     }
 
     // ── JSON serialization tests ────────────────────────────────────────

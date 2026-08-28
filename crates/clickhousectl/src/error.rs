@@ -454,6 +454,12 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
+    /// A rejected argument, with self-composed guidance. Kept separate from
+    /// [`Error::Exec`], whose payload is subprocess or OS text and is therefore
+    /// summarized in structured output rather than rendered.
+    #[error("{0}")]
+    UnsupportedArgument(String),
+
     #[error("{kind} port {port} is already in use{}", kind.human_guidance())]
     PortInUse { kind: PortKind, port: u16 },
 
@@ -519,7 +525,7 @@ pub enum Error {
     ServerStopSelectionRequired { available: usize },
 
     #[error(
-        "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}). Inspect them with `clickhousectl local server list`; to remove one, pass its name with `clickhousectl local server remove <name>`."
+        "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed. Inspect them with `clickhousectl local server list`; to remove one, pass its name with `clickhousectl local server remove <name>`."
     )]
     ServerRemoveSelectionRequired { available: usize },
 

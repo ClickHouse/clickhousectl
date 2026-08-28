@@ -1067,13 +1067,15 @@ Local runtime failures also use structured output when `local --json` is set or 
 }
 ```
 
-`error.code` and `error.message` are always present. General errors can include an optional top-level `error.command` safe recovery command. Project-local `server stop` and `server remove` not-found errors instead include `project_scope`, `server`, and ordered `guidance`; their top-level `command` field is absent. Messages are built from allowlisted fields and never serialize raw I/O errors, credentials, SQL, container logs, Docker diagnostics, or arbitrary fallback details. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+`error.code` and `error.message` are always present. General errors can include an optional top-level `error.command` safe recovery command, which names the step that actually recovers the failure (for example `clickhousectl local server stop dev` when `server remove dev` is refused because that server is running). Project-local `server stop` and `server remove` not-found errors instead include `project_scope`, `server`, and ordered `guidance`; their top-level `command` field is absent.
+
+`error.message` carries the same detail as the human `Error: ...` line whenever clickhousectl composes that text itself — a missing `--config` name lists the configs directory and the available files in both modes. The exception is text that interpolates output clickhousectl does not control: subprocess stderr and log tails (`startup_exit`, `startup_timeout`), Docker daemon strings (`docker_error`), download bodies (`download_failed`), and OS or serialization sources (`io_error`, `local_error`) are summarized instead, so JSON never carries raw I/O errors, credentials, SQL, or container logs. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
 
 When `.clickhouse` is absent from the current directory, bare `server stop` includes the same `project_scope` and `guidance` in its successful no-op output, while bare `server remove` includes them in its `server_selection_required` error. This distinguishes a missing project root from an initialized project that has no matching ClickHouse server.
 
 Managed `local client` failures deliberately use dedicated `managed_client_*` codes rather than the general server codes. Their error object includes `project_scope.path` (the canonical directory inspected), `server.selection` and `server.name`, an optional `server.binary_version`, and ordered `guidance` entries with allowlisted messages and optional commands. No raw lock, metadata, or I/O error is included in JSON. The nested shape distinguishes this exact-project lookup contract from failures in other local commands without changing those commands' stable envelopes.
 
-The schema and meanings of existing codes are stable. New optional fields or codes may be added compatibly; unclassified local failures use the bounded `local_error` fallback.
+The schema and meanings of existing codes are stable. New optional fields or codes may be added compatibly; failures whose text cannot be rendered safely use the bounded `local_error` fallback.
 
 | Code | Meaning |
 | ---- | ------- |
@@ -1084,15 +1086,28 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | `managed_client_project_state_unavailable` | Managed client lookup could not read or lock current-project server state |
 | `server_selection_required` | A server name is required because omission is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
-| `server_running` | The operation requires a stopped server |
+| `server_running` | The operation requires a stopped server, or a running server is using the version |
+| `invalid_server_name` | The server name contains path separators or `..` |
+| `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle |
+| `config_not_found` | The named `server start --config` file does not exist, or the name is ambiguous |
+| `invalid_config_name` | The config name is a path rather than a file in the configs dir |
 | `invalid_version` | The version selector is invalid |
-| `version_unavailable` | The requested or configured version is unavailable |
+| `version_not_installed` | The requested or configured version is not installed locally |
+| `version_selection_required` | A version must be chosen because no default is set or the choice is ambiguous |
+| `version_already_installed` | The requested version is already installed |
+| `version_unavailable` | The requested version could not be resolved or downloaded |
+| `version_is_default` | The version is the current default and `--force` was not passed |
+| `unsupported_client_version` | The installed client does not support the requested operation |
+| `unsupported_platform` | No ClickHouse build exists for this OS and architecture |
 | `port_in_use` | A requested port is occupied or no managed port is available |
 | `startup_exit` | A managed server exited before it became ready |
 | `startup_timeout` | A managed server did not become ready before its deadline |
-| `download_failed` | An artifact or image download failed |
+| `download_failed` | An artifact or image download or extraction failed |
+| `network_error` | An HTTP request failed |
+| `docker_unavailable` | Docker could not be reached (the message names the cause and the platform fix) |
+| `docker_error` | A Docker operation failed |
 | `io_error` | A local filesystem, metadata, or serialization operation failed |
-| `local_error` | A redacted fallback for other local runtime failures |
+| `local_error` | A redacted fallback for failures whose text cannot be rendered safely |
 
 ### Exit codes
 

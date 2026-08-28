@@ -551,7 +551,7 @@ async fn start_server(
         .iter()
         .any(|a| a.starts_with("--config") || a.starts_with("-C"))
     {
-        return Err(Error::Exec(
+        return Err(Error::UnsupportedArgument(
             "--config / --config-file / -C cannot be passed through in trailing args. \
              Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
              (see `clickhousectl local server configs`). \

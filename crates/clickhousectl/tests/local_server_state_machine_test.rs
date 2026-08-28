@@ -698,7 +698,10 @@ fn fresh_project(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_selection_required",
-                "The default ClickHouse server does not exist (custom ClickHouse servers available: 0); no server was removed",
+                "No server name was provided and the default ClickHouse server does not exist \
+                 (custom ClickHouse servers available: 0); no server was removed. Inspect them with \
+                 `clickhousectl local server list`; to remove one, pass its name with \
+                 `clickhousectl local server remove <name>`.",
                 Some("clickhousectl local server list"),
             )),
         },
@@ -880,7 +883,10 @@ fn custom_name_lifecycle(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_selection_required",
-                "The default ClickHouse server does not exist (custom ClickHouse servers available: 1); no server was removed",
+                "No server name was provided and the default ClickHouse server does not exist \
+                 (custom ClickHouse servers available: 1); no server was removed. Inspect them with \
+                 `clickhousectl local server list`; to remove one, pass its name with \
+                 `clickhousectl local server remove <name>`.",
                 Some("clickhousectl local server list"),
             )),
         },
@@ -890,8 +896,8 @@ fn custom_name_lifecycle(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove", "dev"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_running",
-                "Server 'dev' is running",
-                Some("clickhousectl local server list"),
+                "Server 'dev' is running; stop it first with `clickhousectl local server stop dev`",
+                Some("clickhousectl local server stop dev"),
             )),
         },
         CommandCase {
@@ -988,7 +994,9 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
 
     let ambiguous_stop = error(
         "server_selection_required",
-        "Multiple non-default ClickHouse servers exist (available: 2); specify a name or use stop-all",
+        "No server name was provided and multiple non-default ClickHouse servers exist \
+         (available: 2). Pass a name with `clickhousectl local server stop <name>`, or stop every \
+         server with `clickhousectl local server stop-all`.",
         Some("clickhousectl local server list"),
     );
     fixture.run_cases(&[
@@ -1004,7 +1012,10 @@ fn omitted_and_explicit_selection(fixture: &Fixture) {
             args: strings(&["local", "--json", "server", "remove"]),
             expected: ExpectedOutput::JsonFailure(error(
                 "server_selection_required",
-                "The default ClickHouse server does not exist (custom ClickHouse servers available: 2); no server was removed",
+                "No server name was provided and the default ClickHouse server does not exist \
+                 (custom ClickHouse servers available: 2); no server was removed. Inspect them with \
+                 `clickhousectl local server list`; to remove one, pass its name with \
+                 `clickhousectl local server remove <name>`.",
                 Some("clickhousectl local server list"),
             )),
         },
