@@ -637,18 +637,24 @@ pub struct InitOutput {
     /// Every project-local path this invocation created or manages, e.g.
     /// `.clickhouse/`, and (when newly created) `clickhouse/` and `postgres/`.
     pub paths: Vec<String>,
+    /// Human-output detail only: the project dir already existed before this
+    /// run. JSON consumers can tell from `paths`, so it is not serialized.
+    #[serde(skip)]
+    pub already_initialized: bool,
 }
 
 impl fmt::Display for InitOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Initialized ClickHouse project in {}",
-            self.paths
-                .first()
-                .map(String::as_str)
-                .unwrap_or(".clickhouse/")
-        )?;
+        let dir = self
+            .paths
+            .first()
+            .map(String::as_str)
+            .unwrap_or(".clickhouse/");
+        if self.already_initialized {
+            write!(f, "Already initialized at {dir}")?;
+        } else {
+            write!(f, "Initialized ClickHouse project in {dir}")?;
+        }
         for path in self.paths.iter().skip(1) {
             write!(f, "\nCreated project scaffold in {path}")?;
         }
@@ -1414,6 +1420,7 @@ mod tests {
                 "clickhouse/".to_string(),
                 "postgres/".to_string(),
             ],
+            already_initialized: false,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -1422,12 +1429,15 @@ mod tests {
             json["paths"],
             serde_json::json!([".clickhouse/", "clickhouse/", "postgres/"])
         );
+        // Human-only detail must stay out of the JSON payload.
+        assert!(json.get("already_initialized").is_none());
     }
 
     #[test]
     fn init_json_idempotent_run_only_reports_clickhouse_dir() {
         let output = InitOutput {
             paths: vec![".clickhouse/".to_string()],
+            already_initialized: true,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -1759,11 +1769,9 @@ mod tests {
     fn init_display_idempotent() {
         let output = InitOutput {
             paths: vec![".clickhouse/".to_string()],
+            already_initialized: true,
         };
-        assert_eq!(
-            output.to_string(),
-            "Initialized ClickHouse project in .clickhouse/"
-        );
+        assert_eq!(output.to_string(), "Already initialized at .clickhouse/");
     }
 
     #[test]
@@ -1774,6 +1782,7 @@ mod tests {
                 "clickhouse/".to_string(),
                 "postgres/".to_string(),
             ],
+            already_initialized: false,
         };
         assert_eq!(
             output.to_string(),

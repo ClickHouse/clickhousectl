@@ -1,6 +1,6 @@
-//! Subprocess coverage for `local init --json`: the JSON payload must report
-//! the full set of paths the command created, matching what the
-//! human-readable output says (issue #609).
+//! Subprocess coverage for `local init`: the `--json` payload must report the
+//! full set of paths the command created, and the human output must report
+//! each created path exactly once (issue #609).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -57,4 +57,52 @@ fn init_json_on_second_run_reports_only_the_clickhouse_dir() {
     let json = stdout_json(&output);
 
     assert_eq!(json["paths"], serde_json::json!([".clickhouse/"]));
+}
+
+#[test]
+fn init_human_output_reports_each_created_path_exactly_once() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+
+    let output = run(project.path(), home.path(), &["local", "init"]);
+    assert!(output.status.success());
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for path in [".clickhouse/", "clickhouse/", "postgres/"] {
+        // `.clickhouse/` is a substring match of itself only; `clickhouse/`
+        // also matches inside `.clickhouse/`, so count line-anchored mentions.
+        let mentions = combined
+            .lines()
+            .filter(|line| line.ends_with(&format!(" {path}")))
+            .count();
+        assert_eq!(
+            mentions, 1,
+            "expected one line mentioning {path}: {combined}"
+        );
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Initialized ClickHouse project in .clickhouse/\n\
+         Created project scaffold in clickhouse/\n\
+         Created project scaffold in postgres/\n"
+    );
+}
+
+#[test]
+fn init_human_output_second_run_reports_already_initialized() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+
+    run(project.path(), home.path(), &["local", "init"]);
+    let output = run(project.path(), home.path(), &["local", "init"]);
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Already initialized at .clickhouse/\n"
+    );
 }

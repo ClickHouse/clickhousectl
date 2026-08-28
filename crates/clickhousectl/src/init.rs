@@ -29,9 +29,9 @@ pub fn is_initialized() -> bool {
     local_dir().exists()
 }
 
-/// Which project-local paths `init()` created during this invocation. Used to
-/// report the full set of created paths in `--json` output, mirroring what the
-/// human-readable messages already say.
+/// Which project-local paths `init()` created during this invocation. The
+/// caller renders this in both the human-readable and `--json` output, so
+/// `init()` itself prints nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InitResult {
     pub clickhouse_dir_created: bool,
@@ -43,12 +43,10 @@ pub fn init() -> Result<InitResult> {
     let dir = local_dir();
 
     let clickhouse_dir_created = if is_initialized() {
-        eprintln!("Already initialized at {}", dir.display());
         false
     } else {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join(".gitignore"), "*\n")?;
-        eprintln!("Initialized ClickHouse project in {}", dir.display());
         true
     };
 
@@ -77,14 +75,6 @@ fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<bool> {
             std::fs::write(path.join(".gitkeep"), "")?;
             created = true;
         }
-    }
-
-    if created {
-        eprintln!(
-            "Created project scaffold in {}/ ({})",
-            dir.display(),
-            subdirs.join(", ")
-        );
     }
 
     Ok(created)

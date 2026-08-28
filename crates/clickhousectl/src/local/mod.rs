@@ -42,7 +42,10 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
             if result.postgres_scaffold_created {
                 paths.push("postgres/".to_string());
             }
-            let out = output::InitOutput { paths };
+            let out = output::InitOutput {
+                paths,
+                already_initialized: !result.clickhouse_dir_created,
+            };
             output::print_output(&out, json);
             Ok(())
         }
