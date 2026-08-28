@@ -861,7 +861,7 @@ async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
 }
 
 #[tokio::test]
-async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
+async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!(
@@ -870,27 +870,6 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
         .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
             "status": 404,
             "error": "NOT_FOUND",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path(format!(
-            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
-        )))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "status": 404,
-            "error": "NOT_FOUND",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {},
-            "status": 200,
-            "requestId": "stub-org-get",
         })))
         .expect(1)
         .mount(&mock)
@@ -910,9 +889,16 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
     let dir = tempfile::tempdir().unwrap();
     write_service_query_key(dir.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
     let output = invoke_service_delete(&mock, dir.path(), true);
-    assert_success(&output);
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "null\n");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: NOT_FOUND: request scoped to organization org-1\n"
+    );
 
+    // The delete request never succeeded, so local query-key cleanup and the
+    // organization-scoped key deletion (which would follow a successful
+    // delete) must not have been attempted.
     let requests = mock.received_requests().await.unwrap();
     let request_shape = requests
         .iter()
@@ -934,12 +920,16 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
                 "DELETE".to_string(),
                 format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
             ),
-            ("GET".to_string(), "/v1/organizations/org-1".to_string()),
-            (
-                "DELETE".to_string(),
-                format!("/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}")
-            ),
         ]
+    );
+
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["api_key_id"],
+        DELETE_TEST_API_KEY_ID
     );
 }
 
@@ -1183,12 +1173,6 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
         .and(path(format!(
             "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
         )))
-        .respond_with(not_found.clone())
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1"))
         .respond_with(not_found)
         .expect(1)
         .mount(&mock)
@@ -1197,18 +1181,45 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
     let dir = tempfile::tempdir().unwrap();
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         "Error: NOT_FOUND: request scoped to organization org-1\n"
     );
 
     let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].url.path(),
         format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
     );
-    assert_eq!(requests[1].url.path(), "/v1/organizations/org-1");
+}
+
+#[tokio::test]
+async fn service_delete_preserves_a_detailed_not_found_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/missing-service"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "Service missing-service was not found",
+            "requestId": "stub-missing-service",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["service", "delete", "missing-service", "--org-id", "org-1"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Service missing-service was not found\n"
+    );
 }
 
 #[tokio::test]

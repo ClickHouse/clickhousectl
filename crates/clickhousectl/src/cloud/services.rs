@@ -1451,7 +1451,7 @@ async fn service_delete(
     }
 
     let response = client
-        .delete_service_if_exists(&org_id, service_id)
+        .delete_service(&org_id, service_id)
         .await
         .map_err(|error| service_delete_error(error, force, service_id))?;
     cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
@@ -1460,8 +1460,6 @@ async fn service_delete(
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
-    } else if response.is_none() {
-        println!("Service {} is already absent", service_id);
     } else {
         println!("Service {} deletion initiated", service_id);
     }
@@ -2297,22 +2295,20 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_service_if_exists(
+    pub async fn delete_service(
         &self,
         org_id: &str,
         service_id: &str,
-    ) -> crate::cloud::client::Result<Option<DeleteResponse>> {
-        match self.api().instance_delete(org_id, service_id).await {
-            Ok(response) => Ok(Some(DeleteResponse {
-                status: response.status,
-                request_id: response.request_id,
-            })),
-            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
-                self.get_organization(org_id).await?;
-                Ok(None)
-            }
-            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
-        }
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .instance_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn change_service_state(
