@@ -1,7 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
-use clap::Subcommand;
+use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgVersion,
     PostgresInstanceConfig, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
@@ -97,6 +97,9 @@ pub enum PostgresCommands {
     Config(ConfigCommands),
 
     /// Reset the Postgres service password
+    #[command(
+        group(ArgGroup::new("password_source").required(true).args(["password", "generate"]))
+    )]
     ResetPassword {
         postgres_id: String,
         /// New password (min 12, must include upper, lower, digit)
@@ -186,6 +189,9 @@ pub enum ConfigCommands {
         org_id: Option<String>,
     },
     /// Patch selected runtime configuration fields
+    #[command(
+        group(ArgGroup::new("patch_source").required(true).args(["sets", "file"]))
+    )]
     Patch {
         postgres_id: String,
         /// Set a pgConfig field (repeatable), e.g. --set max_connections=500
@@ -1096,9 +1102,10 @@ pub async fn postgres_config_patch(
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    if sets.is_empty() && file.is_none() {
-        return Err(CloudError::new("provide --set key=value... or --file PATH"));
-    }
+    debug_assert!(
+        !sets.is_empty() || file.is_some(),
+        "clap ArgGroup(\"patch_source\") requires --set or --file"
+    );
 
     let cfg = if let Some(path) = file {
         instance_config_from_json(&load_json_file::<serde_json::Value>(path)?)?
@@ -1147,7 +1154,7 @@ pub async fn postgres_reset_password(
         }
         (None, true) => generate_compliant_password(),
         (None, false) => {
-            return Err(CloudError::new("provide --password VALUE or --generate"));
+            unreachable!("clap ArgGroup(\"password_source\") requires --password or --generate")
         }
         (Some(_), true) => unreachable!("clap conflicts_with prevents this"),
     };
@@ -1661,6 +1668,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_postgres_config_patch_without_set_or_file() {
+        let err = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("--set <SETS>"), "{message}");
+        assert!(message.contains("--file <FILE>"), "{message}");
+    }
+
+    #[test]
     fn parses_postgres_reset_password_with_password_and_generate() {
         let cmd = parse_postgres(&[
             "clickhousectl",
@@ -1696,6 +1721,23 @@ mod tests {
         };
         assert!(password.is_none());
         assert!(generate);
+    }
+
+    #[test]
+    fn rejects_postgres_reset_password_without_password_or_generate() {
+        let err = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "reset-password",
+            "pg-1",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("--password <PASSWORD>"), "{message}");
+        assert!(message.contains("--generate"), "{message}");
     }
 
     #[test]
