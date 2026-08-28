@@ -28,6 +28,7 @@ enum LocalErrorCode {
     ServerRunning,
     InvalidVersion,
     VersionUnavailable,
+    VersionIsDefault,
     PortInUse,
     StartupExit,
     StartupTimeout,
@@ -204,6 +205,16 @@ impl LocalErrorOutput {
                 code: LocalErrorCode::ServerRunning,
                 message: "A running server is using this version".to_string(),
                 command: Some("clickhousectl local server list"),
+            },
+            Error::VersionIsDefault { .. } => LocalErrorDetail {
+                code: LocalErrorCode::VersionIsDefault,
+                message:
+                    "This version is the current default (~/.clickhouse/default) and is linked as \
+                     ~/.local/bin/clickhouse; removing it would clear both, and the exact build may \
+                     not be re-downloadable. Switch the default first, or pass --force to remove it \
+                     and clear the default marker and the global symlink."
+                        .to_string(),
+                command: Some("clickhousectl local use latest"),
             },
             Error::InvalidVersion(_) => LocalErrorDetail {
                 code: LocalErrorCode::InvalidVersion,
@@ -622,11 +633,26 @@ impl fmt::Display for UseOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct RemoveOutput {
     pub version: String,
+    /// `true` when the removed version was the one named by
+    /// `~/.clickhouse/default`: that marker was deleted, and the global
+    /// `~/.local/bin/clickhouse` symlink was removed if it still pointed into
+    /// this version. Only reachable with `--force`; see
+    /// [`crate::error::Error::VersionIsDefault`].
+    pub was_default: bool,
 }
 
 impl fmt::Display for RemoveOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Removed version {}", self.version)
+        write!(f, "Removed version {}", self.version)?;
+        if self.was_default {
+            write!(
+                f,
+                "\nCleared the default version marker (~/.clickhouse/default) and the global \
+                 `clickhouse` symlink (~/.local/bin/clickhouse).\n\
+                 Set a new default with: clickhousectl local use latest"
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1228,6 +1254,12 @@ mod tests {
                 "server_running",
             ),
             (
+                Error::VersionIsDefault {
+                    version: "25.12.9.61".into(),
+                },
+                "version_is_default",
+            ),
+            (
                 Error::InvalidVersion("unsafe input".into()),
                 "invalid_version",
             ),
@@ -1273,6 +1305,30 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(error_json(&error)["error"]["code"], expected);
         }
+    }
+
+    #[test]
+    fn version_is_default_json_error_explains_both_the_refusal_and_the_way_forward() {
+        let json = error_json(&Error::VersionIsDefault {
+            version: "25.12.9.61".into(),
+        });
+        let message = json["error"]["message"].as_str().expect("message");
+
+        for required in [
+            "current default",
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "--force",
+        ] {
+            assert!(
+                message.contains(required),
+                "missing {required:?}: {message}"
+            );
+        }
+        assert_eq!(
+            json["error"]["command"], "clickhousectl local use latest",
+            "the JSON error must name the recovery command"
+        );
     }
 
     #[test]
@@ -1405,11 +1461,56 @@ mod tests {
     fn remove_json() {
         let output = RemoveOutput {
             version: "25.12.5.44".to_string(),
+            was_default: false,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["version"], "25.12.5.44");
+        assert_eq!(json["was_default"], false);
+    }
+
+    #[test]
+    fn remove_json_reports_a_cleared_default() {
+        let output = RemoveOutput {
+            version: "25.12.5.44".to_string(),
+            was_default: true,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        assert_eq!(json["version"], "25.12.5.44");
+        assert_eq!(json["was_default"], true);
+    }
+
+    #[test]
+    fn remove_human_output_warns_when_the_default_was_cleared() {
+        let plain = RemoveOutput {
+            version: "25.12.5.44".to_string(),
+            was_default: false,
+        }
+        .to_string();
+        assert_eq!(plain, "Removed version 25.12.5.44");
+
+        let cleared = RemoveOutput {
+            version: "25.12.5.44".to_string(),
+            was_default: true,
+        }
+        .to_string();
+        assert!(
+            cleared.starts_with("Removed version 25.12.5.44\n"),
+            "{cleared}"
+        );
+        for required in [
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "clickhousectl local use latest",
+        ] {
+            assert!(
+                cleared.contains(required),
+                "missing {required:?}: {cleared}"
+            );
+        }
     }
 
     #[test]
@@ -1761,6 +1862,7 @@ mod tests {
     fn remove_display() {
         let output = RemoveOutput {
             version: "25.12.5.44".to_string(),
+            was_default: false,
         };
         assert_eq!(output.to_string(), "Removed version 25.12.5.44");
     }

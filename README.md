@@ -172,12 +172,14 @@ clickhousectl local list --remote           # Available for download
 
 # Remove a version
 clickhousectl local remove 26.8.1.1760
-clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this version first
+clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this version, and remove it even if it is the default
 ```
 
-`local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning. `local remove` of the active default version also clears the symlink.
+`local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning.
 
 `local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with the running server names. Stop the server first, or pass `--force` to stop the running server(s) and then remove the version.
+
+`local remove` also refuses to delete the **current default version** (exit `1`, JSON error code `version_is_default`): removing it clears the `~/.clickhouse/default` marker and the global `~/.local/bin/clickhouse` symlink, and the exact build is not always re-downloadable — `builds.clickhouse.com` does not serve every exact build, which can leave a master-channel build unrecoverable. Switch the default first with `clickhousectl local use <other-version>`, or pass `--force` to remove it anyway. A forced removal warns on stderr before deleting anything, then reports `was_default: true` in its output and clears both the default marker and the global symlink; set a new default with `clickhousectl local use latest`.
 
 #### ClickHouse binary storage
 

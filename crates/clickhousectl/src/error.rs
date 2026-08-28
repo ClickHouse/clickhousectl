@@ -395,6 +395,17 @@ pub enum Error {
     )]
     VersionInUse { version: String, servers: String },
 
+    /// `local remove` was asked to delete the version named by the
+    /// `~/.clickhouse/default` marker. Removing it clears that marker and the
+    /// global `~/.local/bin/clickhouse` symlink, and the deleted build is not
+    /// always re-downloadable (builds.clickhouse.com does not serve every exact
+    /// build), so the default is protected unless `--force` is passed.
+    #[error(
+        "Version {version} is the current default (~/.clickhouse/default) and is linked as ~/.local/bin/clickhouse; removing it would clear both, and the exact build may not be re-downloadable.\n\
+         Switch the default first with `clickhousectl local use <other-version>`, or pass --force to remove it and clear the default marker and the global symlink."
+    )]
+    VersionIsDefault { version: String },
+
     #[error("Unsupported platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
 
@@ -649,6 +660,34 @@ mod tests {
             .exit_code(),
             1
         );
+        assert_eq!(
+            Error::VersionIsDefault {
+                version: "25.12".into(),
+            }
+            .exit_code(),
+            1
+        );
+    }
+
+    #[test]
+    fn version_is_default_error_names_the_marker_the_symlink_and_both_ways_forward() {
+        let message = Error::VersionIsDefault {
+            version: "26.9.1.217".into(),
+        }
+        .to_string();
+
+        for required in [
+            "26.9.1.217 is the current default",
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "`clickhousectl local use <other-version>`",
+            "--force",
+        ] {
+            assert!(
+                message.contains(required),
+                "missing {required:?}: {message}"
+            );
+        }
     }
 
     #[test]

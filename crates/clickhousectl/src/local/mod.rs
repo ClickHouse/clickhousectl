@@ -202,6 +202,18 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         return Err(Error::VersionNotFound(version.to_string()));
     }
 
+    // Refuse to delete the default version before the (potentially slow)
+    // running-server discovery below: removing it clears the default marker and
+    // the global symlink, and the exact build is not always re-downloadable.
+    // The raw marker is read rather than `get_default_version` so a marker whose
+    // binary is already missing still guards.
+    let is_default = version_manager::default_version_marker().as_deref() == Some(version);
+    if is_default && !force {
+        return Err(Error::VersionIsDefault {
+            version: version.to_string(),
+        });
+    }
+
     // Recover orphaned servers so we detect a running process even when its
     // metadata file is missing, then refuse to pull the binary out from under
     // a server running on this version.
@@ -226,6 +238,13 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         }
     }
 
+    if is_default && !json {
+        eprintln!(
+            "Warning: {version} is the default version; --force is clearing ~/.clickhouse/default \
+             and removing the global `clickhouse` symlink at ~/.local/bin/clickhouse."
+        );
+    }
+
     let versions_dir = paths::versions_dir()?;
     let staging = version_manager::atomic::InstallStaging::create(&versions_dir)?;
     let commit_lock = version_manager::atomic::CommitLock::acquire_blocking(&versions_dir)?;
@@ -240,10 +259,11 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         version,
     )?;
 
-    // Check if this is the default version
-    if let Ok(default) = version_manager::get_default_version()
-        && default == version
-    {
+    // Re-read the marker under the commit lock: another process may have
+    // switched the default since the guard above, and clearing a marker that now
+    // names a different version would break that version instead.
+    let was_default = version_manager::default_version_marker().as_deref() == Some(version);
+    if was_default {
         let default_file = paths::default_file()?;
         let _ = std::fs::remove_file(default_file);
         // Only removes the symlink if it still points into this version's dir.
@@ -255,6 +275,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
 
     let out = output::RemoveOutput {
         version: version.to_string(),
+        was_default,
     };
     output::print_output(&out, json);
     Ok(())
