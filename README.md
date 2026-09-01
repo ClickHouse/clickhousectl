@@ -627,6 +627,11 @@ clickhousectl cloud service backup-config update <service-id> \
   --backup-retention-period-hours 720 \
   --backup-start-time 02:00
 
+# Remove the start time again, optionally changing the period in the same call
+clickhousectl cloud service backup-config update <service-id> \
+  --clear-backup-start-time \
+  --backup-period-hours 12
+
 # Service Prometheus configuration
 clickhousectl cloud service prometheus <service-id> --filtered-metrics true
 
@@ -638,6 +643,8 @@ clickhousectl cloud service delete <service-id> --force
 ```
 
 `--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
+
+`--clear-backup-start-time` removes a stored start time and lifts that restriction, so a service that has one can go back to any backup period. It sends an explicit `"backupStartTime": null`, which the API accepts even though the OpenAPI spec does not mark the field nullable, and it can be combined with `--backup-period-hours` to clear the start time and set an otherwise incompatible period in a single call. The two start-time flags conflict: pass one or the other.
 
 `--force` stops the service and then polls it until the stop completes, which takes minutes on a real service, printing each state change to stderr (stdout stays reserved for the result). Progress output is best-effort: if whatever was reading it goes away — a pager you quit, a supervising process that stopped reading — the lines are dropped and the deletion still runs to completion and exits 0.
 

@@ -441,6 +441,126 @@ async fn backup_config_start_time_with_an_explicit_period_skips_the_read() {
     assert_eq!(body["backupPeriodInHours"], 48.0);
 }
 
+// ── Clearing the backup start time (issue #564) ─────────────────────────────
+
+/// The Cloud API clears a stored start time only on an explicit JSON `null`
+/// (an empty string is rejected as an invalid time), and clearing is the only
+/// way back to a backup period other than 24 or 48 hours. The flag therefore
+/// has to put the key in the body with a null value, and must not be talked
+/// out of it by the stored-period read.
+async fn mount_cleared_backup_config_patch(mock: &MockServer) {
+    Mock::given(method("PATCH"))
+        .and(path(BACKUP_CONFIG_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "backupPeriodInHours": 12.0,
+                "backupRetentionPeriodInHours": 48.0,
+            },
+            "status": 200,
+            "requestId": "stub-backup-config-clear",
+        })))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn backup_config_clear_start_time_sends_an_explicit_null() {
+    let mock = MockServer::start().await;
+    mount_cleared_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--clear-backup-start-time",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "clearing needs no stored-period read");
+    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(
+        body,
+        serde_json::json!({ "backupStartTime": null }),
+        "the key must be present and null, not omitted: {body}"
+    );
+}
+
+#[tokio::test]
+async fn backup_config_clear_start_time_travels_with_an_incompatible_period() {
+    let mock = MockServer::start().await;
+    mount_cleared_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--clear-backup-start-time",
+            "--backup-period-hours",
+            "12",
+            "--json",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(
+        body,
+        serde_json::json!({ "backupPeriodInHours": 12.0, "backupStartTime": null })
+    );
+
+    let printed: Value = serde_json::from_slice(&output.stdout).expect("stdout wasn't JSON");
+    assert_eq!(printed["backupPeriodInHours"], 12.0);
+    assert!(
+        printed.get("backupStartTime").is_none(),
+        "the cleared start time must be absent from the response: {printed}"
+    );
+}
+
+#[tokio::test]
+async fn backup_config_rejects_setting_and_clearing_the_start_time_together() {
+    let mock = MockServer::start().await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--backup-start-time",
+            "02:00",
+            "--clear-backup-start-time",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── Concrete Cloud error routing (issue #233) ──────────────────────────────
 
 async fn invoke_service_list_api_error(status: u16, message: &str) -> std::process::Output {
