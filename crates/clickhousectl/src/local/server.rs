@@ -1151,6 +1151,21 @@ pub fn kill_server_by_pid(pid: u32) -> Result<()> {
     kill_process(pid)
 }
 
+/// Make sure the server discovered at `pid` is no longer running, for
+/// `local remove --force` stopping a blocker in another project.
+///
+/// Unlike [`kill_server_by_pid`], a process that has already exited is not an
+/// error: the discovery scan and this call are separated by other blockers
+/// being stopped, and a server that went away on its own is exactly the state
+/// the removal is after. `server stop --global` keeps the strict variant, where
+/// a PID that vanished since the listing is worth telling the user about.
+pub fn ensure_stopped_by_pid(pid: u32) -> Result<()> {
+    match kill_server_by_pid(pid) {
+        Err(Error::ServerNotRunning(_)) => Ok(()),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1502,6 +1517,32 @@ mod tests {
 
         let tcp_error = resolve_ports(None, Some(0)).unwrap_err();
         assert!(matches!(tcp_error, Error::Exec(msg) if msg.contains("--tcp-port 0")));
+    }
+
+    // ── ensure_stopped_by_pid (issue #600) ─────────────────────────────
+
+    /// A PID that certainly belonged to a process and certainly has exited:
+    /// the fake server `local remove` discovered but which quit before
+    /// `--force` reached it.
+    fn exited_pid() -> u32 {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn short-lived process");
+        child.wait().expect("reap short-lived process");
+        child.id()
+    }
+
+    #[test]
+    fn a_blocker_that_exited_since_discovery_counts_as_stopped() {
+        let pid = exited_pid();
+
+        assert!(
+            matches!(kill_server_by_pid(pid), Err(Error::ServerNotRunning(_))),
+            "`server stop --global` keeps reporting a vanished PID"
+        );
+        ensure_stopped_by_pid(pid).expect("an already-exited blocker must not abort the removal");
     }
 
     // ── select_version_users / describe_version_users (issue #600) ──────

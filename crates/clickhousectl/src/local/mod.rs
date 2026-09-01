@@ -229,11 +229,12 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         for user in &in_use {
             // Servers in this project are stopped through their metadata so it
             // stays consistent; servers elsewhere can only be stopped by PID,
-            // exactly like `server stop --global`.
+            // like `server stop --global`, except that a blocker which exited
+            // on its own since discovery is already what --force wants.
             if user.current_project {
                 server::kill_server(&user.name)?;
             } else {
-                server::kill_server_by_pid(user.pid)?;
+                server::ensure_stopped_by_pid(user.pid)?;
             }
             if !json {
                 println!("Stopped server '{}' in {}", user.name, user.project);
