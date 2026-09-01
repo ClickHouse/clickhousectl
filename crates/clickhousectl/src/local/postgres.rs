@@ -1044,8 +1044,10 @@ async fn client(
         // the handoff (the same probe the managed path already uses to choose
         // between host psql and `docker exec`) keeps a missing `psql` an
         // ordinary error event instead of a censored `exec_attempt` (#471).
+        // `PostgresUsage`, not `Postgres`: this text is composed here, so it
+        // renders verbatim in `--json` and the repair hint reaches agents.
         if !host_has_psql() {
-            return Err(Error::Postgres(
+            return Err(Error::PostgresUsage(
                 "could not execute psql: not found on PATH (install the PostgreSQL client tools)"
                     .to_string(),
             ));

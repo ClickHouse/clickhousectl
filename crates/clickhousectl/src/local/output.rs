@@ -326,12 +326,12 @@ impl LocalErrorOutput {
             }
             // Installed but unusable: the message is entirely self-composed
             // (path plus a closed-vocabulary problem), so it renders at parity
-            // and names the repair (#471). `--force` because install counts
-            // any existing path at the binary location as already installed.
-            Error::BinaryNotLaunchable { version, .. } => {
-                Mapping::parity(LocalErrorCode::BinaryNotLaunchable)
-                    .command(format!("clickhousectl local install --force {version}"))
-            }
+            // and names the repair (#471), which depends on the problem: see
+            // `BinaryLaunchProblem::repair_command`.
+            Error::BinaryNotLaunchable {
+                version, problem, ..
+            } => Mapping::parity(LocalErrorCode::BinaryNotLaunchable)
+                .command(problem.repair_command(version)),
             Error::NoDefaultVersion | Error::AmbiguousClientVersion => {
                 Mapping::parity(LocalErrorCode::VersionSelectionRequired)
                     .command("clickhousectl local list")
@@ -1573,6 +1573,25 @@ mod tests {
         );
     }
 
+    /// A directory at the binary path cannot be fixed by `install --force`
+    /// (renaming over a directory fails with EISDIR), so the recovery command
+    /// goes through `local remove` first.
+    #[test]
+    fn directory_at_binary_path_json_error_recommends_remove_then_install() {
+        let json = error_json(&Error::BinaryNotLaunchable {
+            version: "25.12.9.61".into(),
+            problem: BinaryLaunchProblem::NotAFile,
+            path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+        });
+        let message = json["error"]["message"].as_str().expect("message");
+        assert!(message.contains("not a regular file"), "{message}");
+        assert!(!message.contains("--force"), "{message}");
+        assert_eq!(
+            json["error"]["command"],
+            "clickhousectl local remove 25.12.9.61 && clickhousectl local install 25.12.9.61"
+        );
+    }
+
     #[test]
     fn version_is_default_json_error_explains_both_the_refusal_and_the_way_forward() {
         let json = error_json(&Error::VersionIsDefault {
@@ -1750,6 +1769,12 @@ mod tests {
             Error::ContainerNameConflict("chctl-pg-dev-17".into()),
             Error::PostgresUsage(
                 "multiple postgres instances named 'dev' (17, 18); pass --version to select one"
+                    .into(),
+            ),
+            // The missing-`psql` pre-flight (#471): its text is composed by
+            // this CLI, so the install hint must survive into JSON.
+            Error::PostgresUsage(
+                "could not execute psql: not found on PATH (install the PostgreSQL client tools)"
                     .into(),
             ),
         ];

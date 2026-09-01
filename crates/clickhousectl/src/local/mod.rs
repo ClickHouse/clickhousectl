@@ -1515,6 +1515,27 @@ mod tests {
         );
     }
 
+    /// `install --force` renames a fresh binary over the path, which fails
+    /// with EISDIR when a directory sits there; that reason has to recommend
+    /// `local remove` first.
+    #[test]
+    fn directory_at_binary_path_recommends_remove_then_install() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let directory = dir.path().join("versions/26.8.1.1760/clickhouse");
+        std::fs::create_dir_all(&directory).expect("create directory");
+        let message = ensure_launchable(&directory, "26.8.1.1760")
+            .expect_err("a directory cannot be launched")
+            .to_string();
+        assert!(message.contains("not a regular file"), "{message}");
+        assert!(
+            message.contains(
+                "clickhousectl local remove 26.8.1.1760 && clickhousectl local install 26.8.1.1760"
+            ),
+            "{message}"
+        );
+        assert!(!message.contains("--force"), "{message}");
+    }
+
     #[test]
     fn group_and_other_execute_bits_count_as_launchable() {
         // The check asks "can anyone execute this", not "can the owner": a

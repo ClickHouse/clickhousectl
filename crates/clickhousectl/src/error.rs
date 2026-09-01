@@ -180,6 +180,26 @@ pub enum BinaryLaunchProblem {
     Unreadable,
 }
 
+impl BinaryLaunchProblem {
+    /// The shell command that repairs the build, which depends on what is at
+    /// the path. `local install --force` renames a fresh binary over whatever
+    /// is there, which works for a missing or non-executable *file* but fails
+    /// with EISDIR when the path is a directory — that case has to go through
+    /// `local remove` first.
+    pub fn repair_command(&self, version: &str) -> String {
+        match self {
+            Self::NotAFile => {
+                format!(
+                    "clickhousectl local remove {version} && clickhousectl local install {version}"
+                )
+            }
+            Self::Missing | Self::NotExecutable | Self::Unreadable => {
+                format!("clickhousectl local install --force {version}")
+            }
+        }
+    }
+}
+
 impl fmt::Display for BinaryLaunchProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -495,11 +515,11 @@ pub enum Error {
     /// `exec()` handoff (#471). Also self-composed — see
     /// [`BinaryLaunchProblem`] — so it renders in full, unlike
     /// [`Error::Exec`], which reports what the OS said when a launch that
-    /// looked viable still failed. The repair needs `--force`: install
-    /// treats any existing path at the binary location as "already
-    /// installed" and no-ops without it.
+    /// looked viable still failed. The repair is reason-specific — see
+    /// [`BinaryLaunchProblem::repair_command`].
     #[error(
-        "ClickHouse build {version} cannot be launched: {problem} ({path})\nReinstall it with `clickhousectl local install --force {version}`"
+        "ClickHouse build {version} cannot be launched: {problem} ({path})\nReinstall it with `{}`",
+        problem.repair_command(version)
     )]
     BinaryNotLaunchable {
         version: String,
