@@ -637,6 +637,8 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+`--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
+
 `--force` stops the service and then polls it until the stop completes, which takes minutes on a real service, printing each state change to stderr (stdout stays reserved for the result). Progress output is best-effort: if whatever was reading it goes away — a pager you quit, a supervising process that stopped reading — the lines are dropped and the deletion still runs to completion and exits 0.
 
 Use `clickhousectl cloud service create --help` for the complete option list. If omitted, `--provider` defaults to `aws`, `--region` defaults to `us-east-1`, and the IP allowlist defaults to `0.0.0.0/0`; production workflows should normally set all three explicitly. When the create response includes an initial password, it is shown only once.

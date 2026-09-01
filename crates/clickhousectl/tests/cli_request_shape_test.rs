@@ -324,6 +324,123 @@ async fn backup_config_rejects_incompatible_period_before_any_request() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── Backup start time against the stored period (issue #642) ────────────────
+
+/// The API keeps the stored period when a start-time update omits one, and
+/// rejects the PATCH if that period is not 24 or 48. The CLI reads the
+/// configuration first so the user gets a message naming the flag to pass.
+const BACKUP_CONFIG_PATH: &str = "/v1/organizations/org-1/services/svc-1/backupConfiguration";
+
+async fn mount_stored_backup_config(mock: &MockServer, period_hours: f64) {
+    Mock::given(method("GET"))
+        .and(path(BACKUP_CONFIG_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "backupPeriodInHours": period_hours,
+                "backupRetentionPeriodInHours": 48.0,
+            },
+            "status": 200,
+            "requestId": "stub-backup-config-get",
+        })))
+        .mount(mock)
+        .await;
+}
+
+async fn mount_backup_config_patch(mock: &MockServer) {
+    Mock::given(method("PATCH"))
+        .and(path(BACKUP_CONFIG_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "backupPeriodInHours": 24.0,
+                "backupRetentionPeriodInHours": 48.0,
+                "backupStartTime": "02:00",
+            },
+            "status": 200,
+            "requestId": "stub-backup-config-patch",
+        })))
+        .mount(mock)
+        .await;
+}
+
+fn backup_config_update_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "service",
+        "backup-config",
+        "update",
+        "svc-1",
+        "--org-id",
+        "org-1",
+        "--backup-start-time",
+        "02:00",
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+#[tokio::test]
+async fn backup_config_start_time_refuses_an_incompatible_stored_period() {
+    let mock = MockServer::start().await;
+    mount_stored_backup_config(&mock, 12.0).await;
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &backup_config_update_args(&[]));
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
+         Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call.\n"
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "expected only the configuration read");
+    assert_eq!(requests[0].method, wiremock::http::Method::GET);
+}
+
+#[tokio::test]
+async fn backup_config_start_time_patches_when_the_stored_period_is_compatible() {
+    let mock = MockServer::start().await;
+    mount_stored_backup_config(&mock, 24.0).await;
+    mount_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &backup_config_update_args(&[]));
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, wiremock::http::Method::GET);
+    assert_eq!(requests[1].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[1].body).expect("PATCH body wasn't JSON");
+    assert_eq!(body["backupStartTime"], "02:00");
+    assert!(
+        body.get("backupPeriodInHours").is_none(),
+        "the period must stay absent so the API keeps the stored one: {body}"
+    );
+
+    let printed: Value = serde_json::from_slice(&output.stdout).expect("stdout wasn't JSON");
+    assert_eq!(printed["backupStartTime"], "02:00");
+}
+
+#[tokio::test]
+async fn backup_config_start_time_with_an_explicit_period_skips_the_read() {
+    let mock = MockServer::start().await;
+    mount_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &backup_config_update_args(&["--backup-period-hours", "48"]),
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "an explicit period needs no read");
+    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(body["backupStartTime"], "02:00");
+    assert_eq!(body["backupPeriodInHours"], 48.0);
+}
+
 // ── Concrete Cloud error routing (issue #233) ──────────────────────────────
 
 async fn invoke_service_list_api_error(status: u16, message: &str) -> std::process::Output {

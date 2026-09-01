@@ -78,8 +78,9 @@ pub enum BackupConfigCommands {
         #[arg(long)]
         backup_retention_period_hours: Option<u32>,
 
-        /// Backup start time in UTC, exactly on the hour (HH:00). If the period
-        /// is omitted, the API sets it to 24 hours.
+        /// Backup start time in UTC, exactly on the hour (HH:00). Requires the
+        /// backup period to be 24 or 48 hours: pass --backup-period-hours 24|48
+        /// in the same call, or the stored period must already be one of those.
         #[arg(long, value_parser = parse_backup_start_time)]
         backup_start_time: Option<String>,
 
@@ -184,6 +185,21 @@ fn build_backup_config_update_request(
     })
 }
 
+/// A start time sent without a period is validated by the API against the
+/// *stored* period, which it keeps rather than defaulting. If that period is
+/// not 24 or 48 the PATCH fails with an opaque `BAD_REQUEST`, so check it
+/// first and name the flag that fixes it. An absent stored period is not a
+/// guess we get to make: proceed and let the API decide.
+fn check_stored_period_allows_start_time(stored_period_hours: Option<f64>) -> CloudResult<()> {
+    match stored_period_hours {
+        Some(period) if period != 24.0 && period != 48.0 => Err(CloudError::new(format!(
+            "the stored backup period is {period} hours, but --backup-start-time requires 24 or \
+             48. Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
+        ))),
+        _ => Ok(()),
+    }
+}
+
 async fn backup_list(
     client: &CloudClient,
     service_id: &str,
@@ -268,6 +284,12 @@ async fn backup_config_update(
 ) -> CloudResult<()> {
     let request = build_backup_config_update_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+
+    if request.backup_start_time.is_some() && request.backup_period_in_hours.is_none() {
+        let stored = client.get_backup_config(&org_id, service_id).await?;
+        check_stored_period_allows_start_time(stored.backup_period_in_hours)?;
+    }
+
     let config = client
         .update_backup_config(&org_id, service_id, &request)
         .await?;
@@ -544,7 +566,12 @@ mod tests {
         let help = error.to_string();
         assert!(help.contains("exactly on the hour (HH:00)"));
         assert!(help.contains("must be 24 or 48 hours"));
-        assert!(help.contains("API sets it to 24 hours"));
+        assert!(help.contains("Requires the backup period to be 24 or 48 hours"));
+        assert!(help.contains("or the stored period must already be one of those"));
+        assert!(
+            !help.contains("API sets it to 24 hours"),
+            "help must not claim the API defaults an omitted period"
+        );
     }
 
     #[test]
@@ -656,6 +683,37 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--backup-period-hours must be 24 or 48 when --backup-start-time is set"
+        );
+    }
+
+    #[test]
+    fn stored_period_check_accepts_compatible_periods() {
+        for stored in [24.0, 48.0] {
+            check_stored_period_allows_start_time(Some(stored)).unwrap();
+        }
+    }
+
+    #[test]
+    fn stored_period_check_proceeds_when_the_stored_period_is_absent() {
+        check_stored_period_allows_start_time(None).unwrap();
+    }
+
+    #[test]
+    fn stored_period_check_rejects_incompatible_periods_and_names_the_flag() {
+        let error = check_stored_period_allows_start_time(Some(12.0)).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
+             Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
+        );
+
+        let fractional = check_stored_period_allows_start_time(Some(12.5)).unwrap_err();
+        assert!(
+            fractional
+                .to_string()
+                .starts_with("the stored backup period is 12.5 hours,"),
+            "{fractional}"
         );
     }
 }
