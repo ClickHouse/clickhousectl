@@ -8,7 +8,8 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 const DEFAULT_VERSION: &str = "26.9.1.217";
 const OTHER_VERSION: &str = "25.12.9.61";
@@ -66,17 +67,70 @@ impl Home {
         self.home.path().join(".local/bin/clickhouse")
     }
 
-    fn run(&self, args: &[&str]) -> Output {
-        Command::new(clickhousectl_binary())
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(clickhousectl_binary());
+        command
             // `env_clear` keeps coding-agent detection from switching the
             // subprocess to JSON, so human-output assertions stay meaningful.
             .env_clear()
             .env("DO_NOT_TRACK", "1")
             .env("HOME", self.home.path())
             .current_dir(self.project.path())
-            .args(args)
-            .output()
-            .expect("run clickhousectl")
+            .args(args);
+        command
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output().expect("run clickhousectl")
+    }
+
+    fn spawn(&self, args: &[&str]) -> Child {
+        self.command(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn clickhousectl")
+    }
+
+    /// Takes the same `flock` the binary uses to serialize install commits,
+    /// default-marker writes and removals, so a spawned command blocks at that
+    /// point until the returned handle is dropped.
+    fn hold_commit_lock(&self) -> std::fs::File {
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.versions_dir().join(".install-commit.lock"))
+            .expect("open commit lock");
+        lock.lock().expect("hold commit lock");
+        lock
+    }
+
+    fn versions_dir(&self) -> PathBuf {
+        self.home.path().join(".clickhouse/versions")
+    }
+
+    /// `local remove` creates its staging directory immediately before it
+    /// blocks on the commit lock, so its appearance proves the pre-lock guard
+    /// has already been passed.
+    fn wait_for_staging_dir(&self) {
+        let staging = self.versions_dir().join(".staging");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(entries) = std::fs::read_dir(&staging)
+                && entries
+                    .flatten()
+                    .any(|e| e.file_name().to_string_lossy().starts_with("install-"))
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "remove never reached the commit lock"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn assert_default_state_intact(&self) {
@@ -278,5 +332,76 @@ fn a_stale_default_marker_still_guards_and_is_cleared_by_force() {
     assert!(
         !home.default_marker().exists(),
         "--force must clear a stale default marker too"
+    );
+}
+
+#[test]
+fn a_version_made_default_while_remove_waits_for_the_lock_is_still_refused() {
+    let home = Home::with_default_version();
+    // The other version is not the default when `remove` takes its pre-lock
+    // snapshot, so the early guard passes. Hold the commit lock so the removal
+    // blocks, then switch the default to it — what a concurrent `local use`
+    // would do — before letting the removal continue.
+    let lock = home.hold_commit_lock();
+    let child = home.spawn(&["local", "--json", "remove", OTHER_VERSION]);
+    home.wait_for_staging_dir();
+    std::fs::write(home.default_marker(), OTHER_VERSION).expect("switch default");
+    drop(lock);
+
+    let output = child.wait_with_output().expect("wait for remove");
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    let error: serde_json::Value =
+        serde_json::from_str(&stderr).expect("one JSON error object on stderr");
+    assert_eq!(error["error"]["code"], "version_is_default");
+    assert!(
+        home.version_dir(OTHER_VERSION).exists(),
+        "the newly default version must survive the racing removal"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.default_marker()).expect("default marker"),
+        OTHER_VERSION,
+        "the marker written during the lock wait must be kept"
+    );
+    assert!(
+        std::fs::read_dir(home.versions_dir().join(".staging"))
+            .map(|entries| entries
+                .flatten()
+                .all(|e| !e.file_name().to_string_lossy().starts_with("install-")))
+            .unwrap_or(true),
+        "a refused removal must clean up its staging directory"
+    );
+}
+
+#[test]
+fn local_use_writes_the_default_marker_under_the_commit_lock() {
+    let home = Home::with_default_version();
+    let lock = home.hold_commit_lock();
+    let mut child = home.spawn(&["local", "--json", "use", OTHER_VERSION]);
+
+    // While the lock is held the marker cannot move, and `use` cannot finish.
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        std::fs::read_to_string(home.default_marker()).expect("default marker"),
+        DEFAULT_VERSION,
+        "`local use` must not write the marker while the commit lock is held"
+    );
+    assert!(
+        child.try_wait().expect("poll use").is_none(),
+        "`local use` must block on the commit lock rather than finish"
+    );
+
+    drop(lock);
+    let output = child.wait_with_output().expect("wait for use");
+    assert!(
+        output.status.success(),
+        "expected success once the lock is released, got {:?}\nstderr: {}",
+        output.status,
+        stderr_of(&output)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.default_marker()).expect("default marker"),
+        OTHER_VERSION
     );
 }

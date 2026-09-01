@@ -206,9 +206,9 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     // running-server discovery below: removing it clears the default marker and
     // the global symlink, and the exact build is not always re-downloadable.
     // The raw marker is read rather than `get_default_version` so a marker whose
-    // binary is already missing still guards.
-    let is_default = version_manager::default_version_marker().as_deref() == Some(version);
-    if is_default && !force {
+    // binary is already missing still guards. This is a cheap early exit over a
+    // snapshot; the authoritative check is repeated under the commit lock.
+    if version_manager::default_version_marker().as_deref() == Some(version) && !force {
         return Err(Error::VersionIsDefault {
             version: version.to_string(),
         });
@@ -238,18 +238,30 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         }
     }
 
-    if is_default && !json {
-        eprintln!(
-            "Warning: {version} is the default version; --force is clearing ~/.clickhouse/default \
-             and removing the global `clickhouse` symlink at ~/.local/bin/clickhouse."
-        );
-    }
-
     let versions_dir = paths::versions_dir()?;
     let staging = version_manager::atomic::InstallStaging::create(&versions_dir)?;
     let commit_lock = version_manager::atomic::CommitLock::acquire_blocking(&versions_dir)?;
     if !version_dir.exists() {
         return Err(Error::VersionNotFound(version.to_string()));
+    }
+
+    // Re-read the marker under the commit lock and decide everything default-
+    // related from this one read. `set_default_version` writes the marker under
+    // the same lock, so a `local use` that raced the snapshot above has either
+    // landed (and is seen here) or is blocked until this removal finishes:
+    // without --force the guard must refuse again, and with --force the marker
+    // is cleared only if it still names this version, never a different one.
+    let was_default = version_manager::default_version_marker().as_deref() == Some(version);
+    if was_default && !force {
+        return Err(Error::VersionIsDefault {
+            version: version.to_string(),
+        });
+    }
+    if was_default && !json {
+        eprintln!(
+            "Warning: {version} is the default version; --force is clearing ~/.clickhouse/default \
+             and removing the global `clickhouse` symlink at ~/.local/bin/clickhouse."
+        );
     }
 
     version_manager::master::invalidate_version(
@@ -259,10 +271,6 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         version,
     )?;
 
-    // Re-read the marker under the commit lock: another process may have
-    // switched the default since the guard above, and clearing a marker that now
-    // names a different version would break that version instead.
-    let was_default = version_manager::default_version_marker().as_deref() == Some(version);
     if was_default {
         let default_file = paths::default_file()?;
         let _ = std::fs::remove_file(default_file);

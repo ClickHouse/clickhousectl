@@ -1,5 +1,6 @@
 use crate::error::{Error, NetworkStage, Result};
 use crate::paths;
+use crate::version_manager::atomic::CommitLock;
 use crate::version_manager::network::{self, ProbeOutcome};
 use chrono::Datelike;
 use futures_util::{StreamExt, stream};
@@ -217,7 +218,13 @@ pub fn get_default_version() -> Result<String> {
     Ok(version)
 }
 
-/// Sets the default version
+/// Sets the default version.
+///
+/// The marker is written under the install commit lock so that `local remove`,
+/// which decides under that same lock whether the version it is deleting is the
+/// default, can never have the marker change underneath it. Callers must not
+/// already hold the commit lock (the install paths release it before
+/// returning), or this would block on itself.
 pub fn set_default_version(version: &str) -> Result<()> {
     // Verify the version is installed
     let binary = paths::binary_path(version)?;
@@ -225,6 +232,8 @@ pub fn set_default_version(version: &str) -> Result<()> {
         return Err(Error::VersionNotFound(version.to_string()));
     }
 
+    let versions_dir = paths::versions_dir()?;
+    let _commit_lock = CommitLock::acquire_blocking(&versions_dir)?;
     let default_file = paths::default_file()?;
     std::fs::write(&default_file, version)?;
     Ok(())
