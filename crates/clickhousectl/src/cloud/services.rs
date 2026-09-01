@@ -445,9 +445,14 @@ CONTEXT FOR AGENTS:
   puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
   to the service instead.
   SQL sources: --query and --queries-file are mutually exclusive. When neither
-  is supplied, SQL is read from stdin. Default format: PrettyCompact on a TTY,
-  TabSeparated when piped. --json selects JSONEachRow and cannot be combined
-  with --format; an explicit --format takes precedence over agent auto-JSON.
+  is supplied, SQL is read from stdin. --query never reads stdin, so data
+  redirected or piped alongside it is an error rather than a silent no-op:
+  send the statement and its data together instead, e.g.
+  printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud
+  service query --id <id>.
+  Default format: PrettyCompact on a TTY, TabSeparated when piped. --json
+  selects JSONEachRow and cannot be combined with --format; an explicit
+  --format takes precedence over agent auto-JSON.
   The Query API runs exactly one statement per request, so multi-statement SQL
   (a typical ';'-separated .sql script) is rejected by the server. Run
   statements one invocation at a time, or connect with `clickhouse client`
@@ -463,7 +468,8 @@ CONTEXT FOR AGENTS:
         id: Option<String>,
 
         /// Execute a SQL query (a single statement; the Query API does not
-        /// accept multi-statement SQL)
+        /// accept multi-statement SQL). Does not read stdin: pipe a statement
+        /// and its data together instead of redirecting a data file here
         #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
@@ -2413,12 +2419,106 @@ fn convert_query_error(
     }
 }
 
+/// What stdin holds when `--query` is validated (#641). Derived from the file
+/// descriptor only, never from anything the user typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StdinInput {
+    /// An interactive terminal: nothing was piped or redirected in, and stdin
+    /// must not be read at all — a read would block on the human.
+    Terminal,
+    /// Not a terminal, and no byte arrived within
+    /// [`STDIN_FIRST_BYTE_TIMEOUT_MS`]: `< /dev/null`, a closed pipe, or a CI
+    /// runner or coding agent that has no tty and piped nothing.
+    Empty,
+    /// Not a terminal and at least one byte is available to read.
+    Pending,
+}
+
+/// The message for `--query` plus data on stdin. The Query API takes a single
+/// request body, so a statement and a separate data stream can never both be
+/// sent; the message therefore leads with what does work.
+const INLINE_QUERY_WITH_STDIN_ERROR: &str = "--query cannot be combined with SQL or data on stdin. \
+     The Query API sends one request body, so redirected data is never read. Pipe the statement \
+     and its data together on stdin instead: \
+     printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud service query \
+     --id <id>. Or read a whole statement from stdin with --queries-file -.";
+
+/// Whether `--query` conflicts with what is on stdin. Pure, so the decision is
+/// unit-tested without a real file descriptor. Only bytes that are actually
+/// waiting count: a non-terminal but empty stdin is the normal shape for CI
+/// and for coding agents, so it must stay a valid way to run `--query`.
+fn inline_query_conflicts_with_stdin(inline: Option<&str>, stdin: StdinInput) -> bool {
+    inline.is_some() && matches!(stdin, StdinInput::Pending)
+}
+
+/// How long to wait for the first byte before deciding stdin carries nothing.
+///
+/// A zero timeout would reintroduce #641 as a race: in `cat data.csv |
+/// clickhousectl ... --query ...` the shell starts both processes at once, so
+/// the CLI can reach `poll` before `cat` has written anything and would go on
+/// to send the empty INSERT. A bounded wait closes that window. Nothing that
+/// already knows its answer pays it: a regular file, `/dev/null`, a closed
+/// pipe (`POLLHUP`) and a pipe that already holds data all make `poll` return
+/// at once. The only invocation that waits is `--query` whose stdin is an open
+/// pipe with nothing written yet — the harness case that must never hang — and
+/// it waits this long rather than forever.
+const STDIN_FIRST_BYTE_TIMEOUT_MS: libc::c_int = 250;
+
+/// Classify stdin without consuming it and without blocking indefinitely.
+///
+/// `poll` answers "would a read block?" without reading; only once it says a
+/// read is ready do we `fill_buf`, which performs one syscall and leaves the
+/// bytes in the shared stdin buffer, so the other SQL sources are unaffected.
+/// A hangup without readable data (`POLLHUP` alone) is an empty stdin, not
+/// input. The deliberate residual is now narrow: a producer that has not
+/// written its first byte within [`STDIN_FIRST_BYTE_TIMEOUT_MS`] still reads
+/// as no input, which is the price of never hanging on a pipe nobody is
+/// writing to.
+fn stdin_input() -> StdinInput {
+    use std::io::BufRead as _;
+
+    if std::io::stdin().is_terminal() {
+        return StdinInput::Terminal;
+    }
+
+    if !fd_becomes_readable(libc::STDIN_FILENO, STDIN_FIRST_BYTE_TIMEOUT_MS) {
+        return StdinInput::Empty;
+    }
+
+    match std::io::stdin().lock().fill_buf() {
+        Ok(buffered) if !buffered.is_empty() => StdinInput::Pending,
+        _ => StdinInput::Empty,
+    }
+}
+
+/// Whether a read on `fd` would find something within `timeout_ms`. A hangup
+/// with nothing readable (`POLLHUP` alone, a closed pipe) reports `false`, and
+/// so does a `poll` that is interrupted or errors: the CLI fails open to "no
+/// input" rather than refusing a run it cannot justify refusing. Split out
+/// from [`stdin_input`] so the timeout is testable against a real pipe without
+/// touching the process's own stdin.
+fn fd_becomes_readable(fd: libc::c_int, timeout_ms: libc::c_int) -> bool {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: a single initialized `pollfd` is passed with a matching length,
+    // and the bounded timeout keeps the call from borrowing anything beyond
+    // its own return.
+    let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+    ready > 0 && poll_fd.revents & libc::POLLIN != 0
+}
+
 fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResult<String> {
     use std::io::Read as _;
 
     if let Some(query) = inline {
         if query.trim().is_empty() {
             return Err(CloudError::new("--query was empty"));
+        }
+        if inline_query_conflicts_with_stdin(inline, stdin_input()) {
+            return Err(CloudError::new(INLINE_QUERY_WITH_STDIN_ERROR));
         }
         return Ok(query.to_string());
     }
@@ -5417,5 +5517,138 @@ mod tests {
 
         assert_eq!(start.command, Some(ServiceStatePatchRequestCommand::Start));
         assert_eq!(stop.command, Some(ServiceStatePatchRequestCommand::Stop));
+    }
+
+    #[test]
+    fn inline_query_only_conflicts_with_bytes_waiting_on_stdin() {
+        // The whole matrix of stdin states crossed with --query being present
+        // (#641). Only "not a terminal and data is already waiting" conflicts:
+        // a terminal must never be read, and a non-terminal empty stdin is the
+        // normal shape for CI and for coding agents.
+        assert!(!inline_query_conflicts_with_stdin(
+            Some("SELECT 1"),
+            StdinInput::Terminal
+        ));
+        assert!(!inline_query_conflicts_with_stdin(
+            Some("SELECT 1"),
+            StdinInput::Empty
+        ));
+        assert!(inline_query_conflicts_with_stdin(
+            Some("SELECT 1"),
+            StdinInput::Pending
+        ));
+
+        assert!(!inline_query_conflicts_with_stdin(
+            None,
+            StdinInput::Terminal
+        ));
+        assert!(!inline_query_conflicts_with_stdin(None, StdinInput::Empty));
+        // Without --query, piped bytes are the SQL itself, not a conflict.
+        assert!(!inline_query_conflicts_with_stdin(
+            None,
+            StdinInput::Pending
+        ));
+    }
+
+    /// A real unnamed pipe as `(read_fd, write_fd)`.
+    fn test_pipe() -> (libc::c_int, libc::c_int) {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` is a two-element array, which is what `pipe` writes.
+        let created = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(created, 0, "pipe() failed");
+        (fds[0], fds[1])
+    }
+
+    fn write_byte(fd: libc::c_int) {
+        // SAFETY: one byte is written from a live local buffer.
+        let written = unsafe { libc::write(fd, b"x".as_ptr().cast(), 1) };
+        assert_eq!(written, 1, "write() failed");
+    }
+
+    fn close_fd(fd: libc::c_int) {
+        // SAFETY: each fd is closed exactly once by its owning test.
+        unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn readiness_waits_for_a_producer_that_has_not_written_its_first_byte() {
+        // The #641 race: `cat data.csv | clickhousectl ... --query ...` starts
+        // both processes at once, so the CLI can look at stdin before the
+        // producer has written. A zero timeout calls that "no input" and sends
+        // the empty INSERT, which is the whole bug; the bounded wait sees the
+        // byte. This is asserted on a real pipe rather than through a
+        // subprocess so the interleaving is not left to process startup.
+        let (read_fd, write_fd) = test_pipe();
+        assert!(
+            !fd_becomes_readable(read_fd, 0),
+            "nothing has been written yet"
+        );
+
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write_byte(write_fd);
+            close_fd(write_fd);
+        });
+
+        let started = std::time::Instant::now();
+        assert!(fd_becomes_readable(read_fd, STDIN_FIRST_BYTE_TIMEOUT_MS));
+        assert!(
+            started.elapsed() < Duration::from_millis(STDIN_FIRST_BYTE_TIMEOUT_MS as u64 + 500),
+            "the wait must stay bounded"
+        );
+
+        producer.join().unwrap();
+        close_fd(read_fd);
+    }
+
+    #[test]
+    fn readiness_gives_up_on_a_pipe_nobody_writes_to() {
+        // A harness that wired up stdin and produced nothing must not hang the
+        // command: the wait expires and the run continues.
+        let (read_fd, write_fd) = test_pipe();
+
+        let started = std::time::Instant::now();
+        assert!(!fd_becomes_readable(read_fd, STDIN_FIRST_BYTE_TIMEOUT_MS));
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(STDIN_FIRST_BYTE_TIMEOUT_MS as u64 + 500),
+            "waited {waited:?}"
+        );
+
+        close_fd(write_fd);
+        close_fd(read_fd);
+    }
+
+    #[test]
+    fn readiness_is_immediate_for_data_that_is_already_waiting() {
+        let (read_fd, write_fd) = test_pipe();
+        write_byte(write_fd);
+
+        assert!(fd_becomes_readable(read_fd, 0));
+
+        close_fd(write_fd);
+        close_fd(read_fd);
+    }
+
+    #[test]
+    fn the_stdin_conflict_message_says_what_does_work() {
+        assert!(
+            INLINE_QUERY_WITH_STDIN_ERROR
+                .starts_with("--query cannot be combined with SQL or data on stdin.")
+        );
+        assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
+        assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
+    }
+
+    #[test]
+    fn service_query_help_documents_that_query_ignores_stdin() {
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        let help = error.to_string();
+
+        assert!(help.contains("--query never reads stdin"), "{help}");
+        assert!(help.contains("cat - data.csv"), "{help}");
+        assert!(help.contains("Does not read stdin"), "{help}");
     }
 }

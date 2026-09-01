@@ -561,6 +561,10 @@ clickhousectl cloud service query --name my-service --queries-file query.sql   #
 clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 
+# Load a CSV: the statement and its data travel together on stdin
+printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
+  clickhousectl cloud service query --id <service-id>
+
 # Replace a stale clickhousectl-owned Query API key for exactly one service
 clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
 
@@ -651,6 +655,15 @@ clickhousectl cloud service delete <service-id> --force
 Use `clickhousectl cloud service create --help` for the complete option list. If omitted, `--provider` defaults to `aws`, `--region` defaults to `us-east-1`, and the IP allowlist defaults to `0.0.0.0/0`; production workflows should normally set all three explicitly. When the create response includes an initial password, it is shown only once.
 
 `--query` and `--queries-file` are mutually exclusive. If neither is supplied, `cloud service query` reads SQL from stdin; `--queries-file -` also reads stdin explicitly.
+
+`--query` never reads stdin, so `--query "INSERT INTO trips FORMAT CSV" < data.csv` is refused (exit code `1`) before any request is sent rather than silently inserting nothing. The Query API takes a single request body, so a statement and a separate data stream cannot both be sent; pipe them together instead:
+
+```bash
+printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
+  clickhousectl cloud service query --id <service-id>
+```
+
+Only real input counts as a conflict. A redirected file, a closed pipe, `/dev/null` and a pipe that already holds data are all answered immediately, and a pipe that is open but silent is given 250 ms to produce its first byte before the CLI treats stdin as empty and runs the query. So an empty non-terminal stdin, which is what CI runners and coding agents normally have, leaves `--query` working as before, a pipe nobody writes to can never hang the command, and a producer that is merely slow to start still gets caught. The residual is narrow and deliberate: a producer that has written nothing within those 250 ms is indistinguishable from no input at all.
 
 Whatever the source, the SQL must be a single statement. The Query API runs exactly one statement per request, so a multi-statement `.sql` script is rejected by ClickHouse (error 62, `Multi-statements are not allowed`). Run statements one invocation at a time, or put a real client on PATH with `clickhousectl local use latest` and run the script through `clickhouse client` connected to the service.
 

@@ -3758,10 +3758,224 @@ async fn invoke_oauth_service_query_response(
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        // Pin stdin: `--query` now refuses to run when bytes are waiting on a
+        // non-terminal stdin (#641), so these tests must not inherit whatever
+        // the test runner happens to have there.
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
 
     (output, query_host)
+}
+
+// ── `--query` versus stdin (issue #641) ────────────────────────────────────
+//
+// `--query` sends one request body, so a redirected data file can never be
+// part of it. Rather than discard it silently, the CLI refuses before any
+// network call. An empty non-terminal stdin (`</dev/null`, CI, an agent
+// harness) is not data and must keep working, including when the writer is
+// held open and never writes.
+
+/// How a test drives the child's stdin.
+enum StdinPlan<'a> {
+    /// Closed immediately, the `< /dev/null` shape.
+    Null,
+    /// A regular file with content already in it, the `< data.csv` shape.
+    File(std::fs::File),
+    /// Written and closed as soon as the child is spawned.
+    Write(&'a [u8]),
+    /// A pipe whose writer waits before producing, the `producer |
+    /// clickhousectl` race: the shell starts both at once, so the data can
+    /// arrive after the CLI has already looked at stdin.
+    WriteAfter(&'a [u8], std::time::Duration),
+    /// A pipe that is held open and never written to: a harness that wired up
+    /// stdin and produced nothing. The CLI must not hang on it.
+    IdleOpen,
+}
+
+/// Run `cloud service query` over OAuth with a caller-chosen stdin. Returns
+/// the process output plus both mocks so a test can assert that nothing was
+/// requested at all.
+async fn invoke_oauth_service_query_with_stdin(
+    sql_args: &[&str],
+    stdin_plan: StdinPlan<'_>,
+) -> (std::process::Output, MockServer, MockServer) {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &control.uri());
+
+    let mut args = vec![
+        "cloud".to_string(),
+        "--url".to_string(),
+        control.uri(),
+        "service".to_string(),
+        "query".to_string(),
+        "--id".to_string(),
+        QUERY_TEST_SERVICE_ID.to_string(),
+        "--org-id".to_string(),
+        "org-1".to_string(),
+    ];
+    args.extend(sql_args.iter().map(|arg| (*arg).to_string()));
+
+    let stdin = match &stdin_plan {
+        StdinPlan::Null => Stdio::null(),
+        StdinPlan::File(file) => Stdio::from(file.try_clone().unwrap()),
+        StdinPlan::Write(_) | StdinPlan::WriteAfter(..) | StdinPlan::IdleOpen => Stdio::piped(),
+    };
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let mut child = command
+        .env("DO_NOT_TRACK", "1")
+        .args(args)
+        .current_dir(dir.path())
+        .env("HOME", &home_dir)
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+
+    // `wait_with_output` closes the child's stdin, so the writer has to be
+    // taken out of the `Child` for any plan that must outlive the wait.
+    let held_open = match stdin_plan {
+        StdinPlan::Write(bytes) => {
+            let mut pipe = child.stdin.take().expect("piped stdin");
+            pipe.write_all(bytes).unwrap();
+            None
+        }
+        StdinPlan::WriteAfter(bytes, delay) => {
+            let mut pipe = child.stdin.take().expect("piped stdin");
+            std::thread::sleep(delay);
+            pipe.write_all(bytes).unwrap();
+            None
+        }
+        StdinPlan::IdleOpen => Some(child.stdin.take().expect("piped stdin")),
+        StdinPlan::Null | StdinPlan::File(_) => None,
+    };
+    let output = child.wait_with_output().expect("failed to wait for output");
+    drop(held_open);
+
+    (output, control, query_host)
+}
+
+/// The `sql` field of a recorded Query API request body.
+fn query_sql_of(request: &wiremock::Request) -> String {
+    let body: Value = serde_json::from_slice(&request.body).expect("query body is JSON");
+    body["sql"].as_str().expect("sql field").to_string()
+}
+
+#[tokio::test]
+async fn service_query_refuses_data_on_stdin_before_any_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data.csv");
+    std::fs::write(&data, "1,alice\n2,bob\n").unwrap();
+    let file = std::fs::File::open(&data).unwrap();
+
+    let (output, control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--query", "INSERT INTO trips FORMAT CSV"],
+        StdinPlan::File(file),
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--query cannot be combined with SQL or data on stdin"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("cat - data.csv"), "{stderr}");
+    assert!(stderr.contains("--queries-file -"), "{stderr}");
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    // The refusal happens while reading the SQL, so neither the control plane
+    // nor the query host is contacted.
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_refuses_data_that_arrives_after_the_check_starts() {
+    // `cat data.csv | clickhousectl ... --query ...`: the shell starts both
+    // processes at once, so the first byte can land after the CLI has begun
+    // looking at stdin. A zero-timeout readiness check would call that "no
+    // input" and send the empty INSERT, which is #641 all over again. The
+    // interleaving here depends on process startup, so the readiness timeout
+    // itself is pinned deterministically by the pipe-level unit tests in
+    // `cloud::services`; this is the end-to-end guard.
+    let (output, control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--query", "INSERT INTO trips FORMAT CSV"],
+        StdinPlan::WriteAfter(b"1,alice\n2,bob\n", std::time::Duration::from_millis(150)),
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--query cannot be combined with SQL or data on stdin"),
+        "{stderr}"
+    );
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_does_not_hang_on_a_pipe_nobody_writes_to() {
+    // The writer stays open for the whole run and never produces a byte. The
+    // bounded first-byte wait must expire and the query must still be sent.
+    let (output, _control, query_host) =
+        invoke_oauth_service_query_with_stdin(&["--query", "SELECT 1"], StdinPlan::IdleOpen).await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1");
+}
+
+#[tokio::test]
+async fn service_query_with_query_and_empty_stdin_still_runs() {
+    let (output, _control, query_host) =
+        invoke_oauth_service_query_with_stdin(&["--query", "SELECT 1"], StdinPlan::Null).await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1");
+}
+
+#[tokio::test]
+async fn service_query_still_reads_sql_piped_on_bare_stdin() {
+    let (output, _control, query_host) =
+        invoke_oauth_service_query_with_stdin(&[], StdinPlan::Write(b"SELECT 1\n")).await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1\n");
+}
+
+#[tokio::test]
+async fn service_query_still_reads_sql_from_queries_file_dash() {
+    let (output, _control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--queries-file", "-"],
+        StdinPlan::Write(b"SELECT 1\n"),
+    )
+    .await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1\n");
 }
 
 #[tokio::test]
@@ -3912,6 +4126,7 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
             .env("HOME", &home_dir)
             .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
             .current_dir(dir.path())
+            .stdin(Stdio::null())
             .args(args);
         if authenticated {
             command
@@ -3976,6 +4191,9 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
             .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
             .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
             .current_dir(dir.path())
+            // Explicit so the inline and file cases below never inherit the
+            // test runner's stdin, which `--query` now refuses (#641).
+            .stdin(Stdio::null())
             .args([
                 "cloud",
                 "--url",
@@ -4113,6 +4331,7 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -4179,6 +4398,7 @@ async fn service_query_uses_an_already_authorized_api_key_without_provisioning()
         .env("CLICKHOUSE_CLOUD_API_KEY", "assigned-key-id")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "assigned-key-secret")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -4263,6 +4483,7 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -4864,6 +5085,7 @@ fn service_query_process_with_sql(
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
         .current_dir(project_dir)
+        .stdin(Stdio::null())
         .args([
             "cloud",
             "--url",
@@ -5623,6 +5845,7 @@ async fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::T
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -5947,6 +6170,7 @@ async fn service_query_keeps_the_key_when_the_endpoint_response_omits_the_id() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -6092,6 +6316,7 @@ async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -6199,6 +6424,7 @@ async fn invoke_oauth_service_query_error(body: &str) -> std::process::Output {
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl")
 }
@@ -6288,6 +6514,7 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -6353,6 +6580,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
 
