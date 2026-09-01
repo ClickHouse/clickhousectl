@@ -1084,11 +1084,11 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
 | `managed_client_project_state_unavailable` | Managed client lookup could not read or lock current-project server state |
-| `server_selection_required` | A server name is required because omission is ambiguous or unsafe |
+| `server_selection_required` | A server name (or, for `server stop --global`, a `--project`) is required because the selection is ambiguous or unsafe |
 | `server_not_running` | The selected local server exists but is stopped |
 | `server_running` | The operation requires a stopped server, or a running server is using the version |
 | `invalid_server_name` | The server name contains path separators or `..` |
-| `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle |
+| `unsupported_argument` | An argument was rejected because it would break the managed server lifecycle (a pass-through `--config`, or `--http-port`/`--tcp-port` `0`) |
 | `config_not_found` | The named `server start --config` file does not exist, or the name is ambiguous |
 | `invalid_config_name` | The config name is a path rather than a file in the configs dir |
 | `invalid_version` | The version selector is invalid |

@@ -428,6 +428,31 @@ fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
             Some("clickhousectl local server start --help"),
         ),
     );
+
+    // Port 0 would hand the choice to the OS, which managed metadata cannot
+    // track; the refusal is self-composed guidance, not a redacted fallback.
+    let zero_port = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--version",
+            VERSION,
+            "--http-port",
+            "0",
+        ],
+    );
+    assert_structured_failure(
+        &zero_port,
+        &expected_error(
+            "unsupported_argument",
+            "--http-port 0 is not allowed; pick a specific port or omit the flag",
+            Some("clickhousectl local server start --help"),
+        ),
+    );
 }
 
 #[test]

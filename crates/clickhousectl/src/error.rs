@@ -532,6 +532,15 @@ pub enum Error {
     )]
     ServerStopSelectionRequired { available: usize },
 
+    /// `server stop --global <name>` matched running servers in more than one
+    /// project, so `--project` is needed to pick one. Self-composed guidance
+    /// (the project roots come from process discovery, not foreign output), so
+    /// structured output renders it verbatim.
+    #[error(
+        "Server '{name}' exists in multiple projects: {projects}. Use --project to specify which one."
+    )]
+    ServerInMultipleProjects { name: String, projects: String },
+
     #[error(
         "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed. Inspect them with `clickhousectl local server list`; to remove one, pass its name with `clickhousectl local server remove <name>`."
     )]

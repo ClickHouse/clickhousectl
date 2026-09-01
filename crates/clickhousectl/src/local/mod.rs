@@ -1239,11 +1239,10 @@ fn stop_server_global(
 
     if matches.len() > 1 {
         let projects: Vec<_> = matches.iter().map(|e| e.project.as_str()).collect();
-        return Err(Error::Exec(format!(
-            "Server '{}' exists in multiple projects: {}. Use --project to specify which one.",
+        return Err(Error::ServerInMultipleProjects {
             name,
-            projects.join(", ")
-        )));
+            projects: projects.join(", "),
+        });
     }
 
     let entry = matches[0];

@@ -273,6 +273,12 @@ impl LocalErrorOutput {
                 Mapping::parity(LocalErrorCode::ServerSelectionRequired)
                     .command("clickhousectl local server list")
             }
+            // The same ambiguity across projects: the global list shows which
+            // project root to pass to `--project`.
+            Error::ServerInMultipleProjects { .. } => {
+                Mapping::parity(LocalErrorCode::ServerSelectionRequired)
+                    .command("clickhousectl local server list --global")
+            }
             // Deliberately the list, not a `start` command: this variant is
             // also raised for Postgres servers and for global PID lookups,
             // where the name is not a `server start` argument.
@@ -1367,6 +1373,13 @@ mod tests {
                 "server_selection_required",
             ),
             (
+                Error::ServerInMultipleProjects {
+                    name: "dev".into(),
+                    projects: "/a, /b".into(),
+                },
+                "server_selection_required",
+            ),
+            (
                 Error::ServerNotRunning("default".into()),
                 "server_not_running",
             ),
@@ -1450,6 +1463,12 @@ mod tests {
             ),
             (
                 Error::UnsupportedArgument("--config cannot be passed through".into()),
+                "unsupported_argument",
+            ),
+            (
+                Error::UnsupportedArgument(
+                    "--http-port 0 is not allowed; pick a specific port or omit the flag".into(),
+                ),
                 "unsupported_argument",
             ),
             (
@@ -1633,8 +1652,15 @@ mod tests {
             Error::ServerRunningCannotRemove("dev".into()),
             Error::ServerStopSelectionRequired { available: 2 },
             Error::ServerRemoveSelectionRequired { available: 1 },
+            Error::ServerInMultipleProjects {
+                name: "dev".into(),
+                projects: "/projects/a, /projects/b".into(),
+            },
             Error::InvalidServerName("../escape".into()),
             Error::UnsupportedArgument("--config cannot be passed through".into()),
+            Error::UnsupportedArgument(
+                "--tcp-port 0 is not allowed; pick a specific port or omit the flag".into(),
+            ),
             Error::ConfigNotFound("config 'x' not found in /configs (available: y.xml)".into()),
             Error::InvalidConfigName("../etc/passwd".into()),
             Error::VersionNotFound("25.12.9.61".into()),
