@@ -758,6 +758,300 @@ async fn postgres_list_applies_supported_filters_client_side() {
     assert_eq!(names("name=nope"), Vec::<String>::new());
 }
 
+// ── Postgres promote / switchover role changes (issue #604) ───────────────
+
+const ROLE_TEST_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+fn postgres_role_service(ha_type: &str, is_primary: Option<bool>) -> serde_json::Value {
+    let mut service = serde_json::json!({
+        "id": ROLE_TEST_POSTGRES_ID,
+        "name": "my-postgres",
+        "state": "running",
+        "haType": ha_type,
+    });
+    if let Some(is_primary) = is_primary {
+        service["isPrimary"] = serde_json::json!(is_primary);
+    }
+    service
+}
+
+/// Mounts the GET a role change may issue: only `--wait` reads the service,
+/// once before a switchover to learn the prior role and then once per poll.
+/// `expected_calls` pins that, so a command run without `--wait` is verified to
+/// issue no GET at all.
+async fn mount_postgres_get(mock: &MockServer, service: serde_json::Value, expected_calls: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service,
+            "status": 200,
+            "requestId": "stub-postgres-get",
+        })))
+        .expect(expected_calls)
+        .mount(mock)
+        .await;
+}
+
+async fn mount_postgres_state(mock: &MockServer, service: serde_json::Value, expected_calls: u64) {
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service,
+            "status": 200,
+            "requestId": "stub-postgres-state",
+        })))
+        .expect(expected_calls)
+        .mount(mock)
+        .await;
+}
+
+/// Without `--wait`, switchover is issued as-is: no read of the service before
+/// or after, just the state PATCH, and stdout is the state-change response.
+#[tokio::test]
+async fn postgres_switchover_without_wait_issues_only_the_state_change() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("sync", Some(true)), 0).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", Some(true)), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![(
+            "PATCH".to_string(),
+            format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state")
+        )],
+        "switchover without --wait must issue exactly one request"
+    );
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert_eq!(stdout["id"], ROLE_TEST_POSTGRES_ID);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--wait"),
+        "should say --wait is how the swap gets confirmed, got: {stderr}"
+    );
+}
+
+/// The #604 failure: the state endpoint answers 200 and the roles never swap.
+/// With `--wait` the CLI polls the service and exits non-zero when the role it
+/// captured before the command is still the role afterwards.
+#[tokio::test]
+async fn postgres_switchover_wait_fails_when_the_roles_never_swap() {
+    let mock = MockServer::start().await;
+    // One read before the command to learn the prior role, one poll after it.
+    mount_postgres_get(&mock, postgres_role_service("sync", Some(true)), 2).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", Some(true)), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--wait",
+            "--wait-timeout",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("switchover did not take effect within 0s")
+            && stderr.contains("isPrimary=true")
+            && stderr.contains("expected false"),
+        "should report non-convergence, got: {stderr}"
+    );
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("the last observed state should still be emitted as JSON");
+    assert_eq!(stdout["isPrimary"], serde_json::json!(true));
+}
+
+/// `--wait` succeeds once the target reports the new role, and still says the
+/// old primary's demotion is not something the CLI can confirm.
+#[tokio::test]
+async fn postgres_promote_wait_confirms_the_new_primary() {
+    let mock = MockServer::start().await;
+    // Promote always targets isPrimary=true, so nothing is read before the
+    // command; the single poll afterwards sees the new primary.
+    mount_postgres_get(&mock, postgres_role_service("async", Some(true)), 1).await;
+    // The promote response omits `isPrimary` entirely, exactly as the API does.
+    mount_postgres_state(&mock, postgres_role_service("async", None), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "promote",
+            ROLE_TEST_POSTGRES_ID,
+            "--wait",
+            "--wait-timeout",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the polled resource object as JSON");
+    assert_eq!(
+        stdout["isPrimary"],
+        serde_json::json!(true),
+        "the polled state must replace the promote response that omits isPrimary"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("previous primary is demoted asynchronously"),
+        "the dual-primary window must be reported, got: {stderr}"
+    );
+}
+
+/// Without `--wait`, promote keeps its old behaviour (exit 0 on acceptance, no
+/// read of the service) but says on stderr that the role change is not confirmed.
+#[tokio::test]
+async fn postgres_promote_without_wait_reports_eventual_consistency() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("async", Some(false)), 0).await;
+    mount_postgres_state(&mock, postgres_role_service("async", None), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "promote",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert!(
+        stdout.get("isPrimary").is_none(),
+        "an omitted isPrimary must stay omitted, got: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("previous primary is demoted asynchronously") && stderr.contains("--wait"),
+        "should point at --wait and the dual-primary window, got: {stderr}"
+    );
+}
+
+/// Every response field is optional, so the pre-command GET can omit
+/// `isPrimary`. A switchover swaps that role, so `--wait` then has nothing to
+/// confirm a swap against: the command must refuse before issuing a state
+/// change it could only report as an unverified success (#604).
+#[tokio::test]
+async fn postgres_switchover_wait_refuses_an_unknown_prior_role() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("sync", None), 1).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", None), 0).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--wait",
+            "--wait-timeout",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("omitted isPrimary") && stderr.contains("--wait"),
+        "should explain why --wait cannot confirm the swap, got: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a refused switchover must print no resource, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// Start a human-mode (no `--json`, no agent env) switchover without waiting
+/// for it, so the test can close its stdout first (see the #598 tests).
+fn spawn_postgres_switchover_human(mock: &MockServer, project_dir: &Path) -> std::process::Child {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project_dir.join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project_dir)
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl")
+}
+
+/// The human rendering of the role-change result lands after the command
+/// already took effect — with `--wait`, minutes after — so a closed stdout must
+/// not turn an accepted switchover into a panic and exit 101 (#598).
+#[tokio::test]
+async fn postgres_switchover_human_output_survives_a_closed_stdout() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("sync", Some(true)), 0).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", Some(true)), 1).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("home")).unwrap();
+    let mut child = spawn_postgres_switchover_human(&mock, dir.path());
+    drop(child.stdout.take().expect("stdout was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stdout must not turn an accepted switchover into a panic"
+    );
+    let shape = received_request_shape(&mock).await;
+    assert!(
+        shape.contains(&(
+            "PATCH".to_string(),
+            format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state")
+        )),
+        "the switchover must still reach the API: {shape:?}"
+    );
+}
+
 const DELETE_TEST_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
 const DELETE_TEST_API_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const DELETE_TEST_PENDING_API_KEY_ID: &str = "99999999-8888-7777-6666-555555555555";

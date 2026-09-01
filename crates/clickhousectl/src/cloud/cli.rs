@@ -167,6 +167,8 @@ CONTEXT FOR AGENTS:
   Manage ClickHouse Cloud managed Postgres services. Subcommands cover CRUD, lifecycle
   (restart/promote/switchover), CA certs, runtime config, password reset, read replicas,
   and point-in-time restore. Service IDs come from `postgres list`.
+  Role changes are eventually consistent: `promote` and `switchover` accept --wait to poll
+  until the target reports the new isPrimary and fail if it never does.
   Write commands require API key auth — OAuth is read-only.")]
     Postgres {
         #[command(subcommand)]

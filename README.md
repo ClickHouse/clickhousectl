@@ -727,13 +727,20 @@ clickhousectl cloud postgres restore <pg-id> \
 
 # Lifecycle
 clickhousectl cloud postgres restart <pg-id>
-clickhousectl cloud postgres promote <pg-id>
-clickhousectl cloud postgres switchover <pg-id>
+clickhousectl cloud postgres promote <replica-id>
+clickhousectl cloud postgres promote <replica-id> --wait                    # poll until isPrimary=true
+clickhousectl cloud postgres switchover <primary-id>
+clickhousectl cloud postgres switchover <primary-id> --wait --wait-timeout 600
 ```
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
 
 `postgres list --filter KEY=VALUE` is applied client-side to the listing and is repeatable; every filter must match. Supported keys are `state`, `region`, `name`, `provider` and `isPrimary` (the `Primary` column; `true`/`false`, or the `yes`/`no` the column shows). Keys are case-insensitive, `state` and `provider` match the wire value case-insensitively, and `region`/`name` match exactly. An unknown key, a missing `=` or an empty value is a usage error (exit 2) listing the valid keys — it never returns an unfiltered list. A field the API omitted matches no filter value, so filtering on it excludes that service. This is unrelated to `cloud service list --filter`, which sends server-side resource-tag filters (`tag:env=production`) to the API.
+
+`postgres promote` and `postgres switchover` change which service is primary. Both are issued as-is, and the API acknowledges them before (or without) applying them, so exit 0 on its own means accepted, not applied:
+
+- `--wait` (optionally `--wait-timeout SECONDS`, default 300) is how you confirm the roles actually changed. It polls the target every 5s until it reports the expected `isPrimary` — `true` for `promote`, the opposite of the value read just before the command for `switchover` — and exits 1 with the last observed role if it never does. stdout then carries the polled state rather than the state-change response, which for `promote` omits `isPrimary` entirely. Without `--wait` neither command reads the service. A `switchover --wait` whose pre-command read omits `isPrimary` is refused before the command is issued, because there is no prior role to compare a swap against.
+- The previous primary is demoted asynchronously and can keep reporting `isPrimary=true` for minutes afterwards. No client can see that pair from one service, so `promote` always reports the dual-primary window on stderr; verify with `clickhousectl cloud postgres list --filter isPrimary=true` that exactly one service is primary.
 
 ### Backups
 
