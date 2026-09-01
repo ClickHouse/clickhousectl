@@ -574,8 +574,18 @@ pub struct BackupConfigurationPatchRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub backup_retention_period_in_hours: Option<f64>,
+    /// Three states, because a PATCH that can only set a value cannot undo it:
+    /// `None` omits the key and leaves the stored start time alone,
+    /// `Some(None)` sends an explicit `null`, and `Some(Some(time))` sends the
+    /// time string. An explicit `null` is what clears a stored start time
+    /// (verified against api.clickhouse.cloud on 2026-09-01: the PATCH returns
+    /// 200 and the following GET no longer carries the field), which matters
+    /// because the API refuses any backup period other than 24 or 48 hours
+    /// while one is stored. The empty string is not an alternative: the API
+    /// answers it with `BAD_REQUEST: customBackupStartTime must be a valid
+    /// time (HH:00)`.
     #[serde(rename = "backupStartTime", skip_serializing_if = "Option::is_none")]
-    pub backup_start_time: Option<String>,
+    pub backup_start_time: Option<Option<String>>,
 }
 
 /// `GcpBackupBucket` from the ClickHouse Cloud API.

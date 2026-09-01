@@ -928,12 +928,40 @@ fn serialize_backup_configuration_patch_request() {
     let req = BackupConfigurationPatchRequest {
         backup_period_in_hours: Some(12.0),
         backup_retention_period_in_hours: Some(336.0),
-        backup_start_time: Some("03:00".to_string()),
+        backup_start_time: Some(Some("03:00".to_string())),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["backupPeriodInHours"], 12.0);
     assert_eq!(json["backupRetentionPeriodInHours"], 336.0);
     assert_eq!(json["backupStartTime"], "03:00");
+}
+
+/// The three states of `backupStartTime` are what let a caller both set and
+/// unset the start time: only an explicit `null` clears the stored value, and
+/// omitting the key must leave it untouched.
+#[test]
+fn serialize_backup_configuration_patch_request_omits_an_untouched_start_time() {
+    let req = BackupConfigurationPatchRequest {
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: None,
+        backup_start_time: None,
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json, serde_json::json!({ "backupPeriodInHours": 12.0 }));
+}
+
+#[test]
+fn serialize_backup_configuration_patch_request_clears_the_start_time_with_null() {
+    let req = BackupConfigurationPatchRequest {
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: None,
+        backup_start_time: Some(None),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "backupPeriodInHours": 12.0, "backupStartTime": null })
+    );
 }
 
 #[test]
