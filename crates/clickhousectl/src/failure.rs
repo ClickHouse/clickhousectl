@@ -254,6 +254,9 @@ pub fn classify_api_error(error: &clickhouse_cloud_api::Error) -> ApiFailure {
         // not a transport or SQL one.
         E::ServiceIdle => ApiFailure::new(FailureKind::Other),
         E::Json(_) | E::AuthMismatch(_) => ApiFailure::new(FailureKind::Other),
+        // The library error is `#[non_exhaustive]`: a variant this build does
+        // not know is unclassified, never inspected through its message.
+        _ => ApiFailure::new(FailureKind::Other),
     }
 }
 
@@ -504,7 +507,7 @@ mod tests {
             (
                 E::Api {
                     status: 408,
-                    message: "Query API endpoint did not become ready".into(),
+                    message: "Request Timeout".into(),
                 },
                 FailureKind::Timeout,
                 Some(408),

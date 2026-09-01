@@ -2003,17 +2003,31 @@ async fn run_basic_service_query(
     }
 }
 
-fn query_readiness_timeout_error(timeout: Duration) -> clickhouse_cloud_api::Error {
-    clickhouse_cloud_api::Error::Api {
-        status: 408,
-        message: format!("Query API endpoint did not become ready within {timeout:?}"),
-    }
+/// Why the readiness wait ended without the endpoint accepting a probe.
+///
+/// The deadline is the CLI's own: no HTTP response stands behind it, so it is
+/// a variant of its own rather than a synthesized `Error::Api { status: 408 }`
+/// — telemetry reports `http_status` as the exact status the server sent, and
+/// a made-up one would be a lie there (#450).
+#[derive(Debug)]
+enum QueryReadinessError {
+    /// The endpoint was still rejecting probes when the deadline elapsed.
+    TimedOut(Duration),
+    /// A probe failed for a reason other than "not ready yet".
+    Api(clickhouse_cloud_api::Error),
+}
+
+fn query_readiness_timeout_error(timeout: Duration) -> CloudError {
+    CloudError::new(format!(
+        "Query API endpoint did not become ready within {timeout:?}"
+    ))
+    .with_failure(ApiFailure::new(FailureKind::Timeout))
 }
 
 async fn wait_for_query_endpoint_readiness<T, F, Fut>(
     readiness: QueryEndpointReadiness,
     mut probe: F,
-) -> Result<bool, clickhouse_cloud_api::Error>
+) -> Result<bool, QueryReadinessError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
@@ -2025,20 +2039,20 @@ where
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(query_readiness_timeout_error(readiness.timeout));
+            return Err(QueryReadinessError::TimedOut(readiness.timeout));
         }
 
         match tokio::time::timeout(remaining, probe()).await {
             Ok(Ok(_)) => return Ok(false),
             Ok(Err(clickhouse_cloud_api::Error::ServiceIdle)) => return Ok(true),
             Ok(Err(error)) if query_endpoint_readiness_error(&error) => {}
-            Ok(Err(error)) => return Err(error),
-            Err(_) => return Err(query_readiness_timeout_error(readiness.timeout)),
+            Ok(Err(error)) => return Err(QueryReadinessError::Api(error)),
+            Err(_) => return Err(QueryReadinessError::TimedOut(readiness.timeout)),
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(query_readiness_timeout_error(readiness.timeout));
+            return Err(QueryReadinessError::TimedOut(readiness.timeout));
         }
         if !waiting {
             eprintln!("Waiting for the Query API endpoint to become ready...");
@@ -2062,8 +2076,9 @@ async fn run_just_provisioned_service_query(
     database: Option<&str>,
     format: &str,
     service_name: &str,
+    org_id: &str,
     readiness: QueryEndpointReadiness,
-) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+) -> CloudResult<reqwest::Response> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
             service_id,
@@ -2075,7 +2090,13 @@ async fn run_just_provisioned_service_query(
             false,
         )
     })
-    .await?;
+    .await
+    .map_err(|error| match error {
+        QueryReadinessError::TimedOut(timeout) => query_readiness_timeout_error(timeout),
+        QueryReadinessError::Api(error) => {
+            convert_query_error(client, error, service_name, service_id, org_id)
+        }
+    })?;
 
     run_basic_service_query(
         client,
@@ -2089,6 +2110,7 @@ async fn run_just_provisioned_service_query(
         confirmed_idle,
     )
     .await
+    .map_err(|error| convert_query_error(client, error, service_name, service_id, org_id))
 }
 
 /// Whether an error means "the Query API endpoint is not (yet) usable by this
@@ -2116,6 +2138,22 @@ fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Opt
         } => Some(*status),
         _ => None,
     }
+}
+
+/// The `--no-auto-enable` refusal: the Query API rejected the management key
+/// (401/403/404) and provisioning would have fixed that, but the caller forbade
+/// it. The message is the CLI's; the classification stays the API's actual
+/// rejection, carried across from the variant rather than reset to `other`
+/// (#450).
+fn refused_query_provisioning_error(
+    service_id: &str,
+    rejection: &clickhouse_cloud_api::Error,
+) -> CloudError {
+    CloudError::new(format!(
+        "the authenticated API key cannot use the Query API endpoint for service {service_id}, \
+         and --no-auto-enable prevents provisioning"
+    ))
+    .with_failure(failure::classify_api_error(rejection))
 }
 
 fn stale_stored_query_key_error(service_id: &str, org_id: &str, status: u16) -> CloudError {
@@ -2197,6 +2235,9 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 .at_stage(FailureStage::QueryRequest)
         })?
     } else {
+        let convert = |error: clickhouse_cloud_api::Error| {
+            convert_query_error(client, error, &service_name, &service_id, &org_id)
+        };
         let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)
             .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
         {
@@ -2219,9 +2260,9 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         return Err(stale_stored_query_key_error(&service_id, &org_id, status)
                             .at_stage(FailureStage::QueryRequest));
                     }
-                    None => Err(error),
+                    None => Err(convert(error)),
                 },
-                response => response,
+                Ok(response) => Ok(response),
             }
         } else {
             failure::set_provisioning_state(ProvisioningState::ManagementKey);
@@ -2245,10 +2286,8 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 Err(error) if query_endpoint_readiness_error(&error) => {
                     if options.no_auto_enable {
                         failure::set_provisioning_state(ProvisioningState::Refused);
-                        return Err(CloudError::new(format!(
-                            "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
-                        ))
-                        .at_stage(FailureStage::QueryRequest));
+                        return Err(refused_query_provisioning_error(&service_id, &error)
+                            .at_stage(FailureStage::QueryRequest));
                     }
                     eprintln!(
                         "Provisioning Query API endpoint + key for service '{}'...",
@@ -2273,17 +2312,15 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         options.database.as_deref(),
                         &format,
                         &service_name,
+                        &org_id,
                         QUERY_ENDPOINT_READINESS,
                     )
                     .await
                 }
-                other => other,
+                other => other.map_err(convert),
             }
         };
-        result.map_err(|error| {
-            convert_query_error(client, error, &service_name, &service_id, &org_id)
-                .at_stage(FailureStage::QueryRequest)
-        })?
+        result.map_err(|error| error.at_stage(FailureStage::QueryRequest))?
     };
 
     use futures_util::StreamExt;
@@ -4578,20 +4615,16 @@ mod tests {
     }
 
     fn assert_query_readiness_timeout<T>(
-        result: Result<T, clickhouse_cloud_api::Error>,
+        result: Result<T, QueryReadinessError>,
         timeout: Duration,
     ) {
-        let error = match result {
-            Err(error) => error,
+        let elapsed = match result {
+            Err(QueryReadinessError::TimedOut(elapsed)) => elapsed,
+            Err(QueryReadinessError::Api(error)) => panic!("expected the deadline, got {error}"),
             Ok(_) => panic!("readiness should time out"),
         };
-        let client = CloudClient::new(
-            Some("test-key"),
-            Some("test-secret"),
-            Some("https://api.example.com/v1"),
-        )
-        .unwrap();
-        let converted = client.convert_error(error);
+        assert_eq!(elapsed, timeout);
+        let converted = query_readiness_timeout_error(elapsed);
 
         assert_eq!(
             converted.kind,
@@ -4602,10 +4635,11 @@ mod tests {
             format!("Query API endpoint did not become ready within {timeout:?}")
         );
         // The readiness deadline is reported as a timeout (#450), not as a
-        // generic 4xx: the CLI, not the API, gave up.
+        // generic 4xx: the CLI, not the API, gave up — so there is no HTTP
+        // status to report either.
         assert_eq!(
             converted.failure,
-            Some(ApiFailure::with_status(FailureKind::Timeout, 408))
+            Some(ApiFailure::new(FailureKind::Timeout))
         );
     }
 
@@ -4656,6 +4690,25 @@ mod tests {
             stale.failure,
             Some(ApiFailure::with_status(FailureKind::Http4xx, 401))
         );
+
+        // `--no-auto-enable` rewrites the message but the failure is still
+        // the Query API's own rejection: its class and status survive.
+        for status in [401, 403, 404] {
+            let refused = refused_query_provisioning_error(
+                "svc-1",
+                &clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "rejected".into(),
+                },
+            );
+            assert!(refused.message.contains("--no-auto-enable"), "{refused}");
+            assert_eq!(refused.kind, crate::cloud::client::CloudErrorKind::Generic);
+            assert_eq!(
+                refused.failure,
+                Some(ApiFailure::with_status(FailureKind::Http4xx, status)),
+                "status {status}"
+            );
+        }
     }
 
     #[test]

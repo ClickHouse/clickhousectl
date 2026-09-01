@@ -446,6 +446,7 @@ pub async fn repair_service_query_key(
     let (new_key_id, new_key_secret) = match require_credential_pair(&key_response) {
         Ok(pair) => pair,
         Err(error) => {
+            let error = error.at_stage(FailureStage::KeyCreate);
             return fail_after_key_creation(client, org_id, &new_api_key_id, error).await;
         }
     };
@@ -469,6 +470,8 @@ pub async fn repair_service_query_key(
             .await;
         }
     };
+    // The upsert answered, but unusably: both the absent id and a foreign id
+    // below are failures of the `endpoint_upsert` boundary (#450).
     let repaired_endpoint_id = match require_field(repaired_endpoint.id, "query endpoint id") {
         Ok(endpoint_id) => endpoint_id,
         Err(error) => {
@@ -478,7 +481,7 @@ pub async fn repair_service_query_key(
                 service_id,
                 &new_api_key_id,
                 &endpoint_state,
-                error,
+                error.at_stage(FailureStage::EndpointUpsert),
             )
             .await;
         }
@@ -495,7 +498,8 @@ pub async fn repair_service_query_key(
             CloudError::new(format!(
                 "query endpoint repair returned endpoint {repaired_endpoint_id}, expected owned \
                  endpoint {endpoint_id}"
-            )),
+            ))
+            .at_stage(FailureStage::EndpointUpsert),
         )
         .await;
     }

@@ -1,7 +1,13 @@
 //! Error types for the ClickHouse Cloud API client.
 
 /// Errors that can occur when using the client.
+///
+/// `#[non_exhaustive]`: a new failure mode a caller must tell apart gets its
+/// own variant (see `Error::Sql`), and that must not be a breaking change for
+/// every downstream `match`. Callers keep a `_` arm and treat what they do not
+/// recognise as an unclassified error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// HTTP transport error.
     #[error("HTTP error: {0}")]
