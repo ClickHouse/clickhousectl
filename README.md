@@ -555,7 +555,7 @@ clickhousectl cloud service stop <service-id>
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
 clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
-clickhousectl cloud service query --name my-service --queries-file schema.sql   # "-" reads from stdin
+clickhousectl cloud service query --name my-service --queries-file query.sql   # single statement only; "-" reads from stdin
 clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 
@@ -640,6 +640,8 @@ clickhousectl cloud service delete <service-id> --force
 Use `clickhousectl cloud service create --help` for the complete option list. If omitted, `--provider` defaults to `aws`, `--region` defaults to `us-east-1`, and the IP allowlist defaults to `0.0.0.0/0`; production workflows should normally set all three explicitly. When the create response includes an initial password, it is shown only once.
 
 `--query` and `--queries-file` are mutually exclusive. If neither is supplied, `cloud service query` reads SQL from stdin; `--queries-file -` also reads stdin explicitly.
+
+Whatever the source, the SQL must be a single statement. The Query API runs exactly one statement per request, so a multi-statement `.sql` script is rejected by ClickHouse (error 62, `Multi-statements are not allowed`). Run statements one invocation at a time, or put a real client on PATH with `clickhousectl local use latest` and run the script through `clickhouse client` connected to the service.
 
 Private endpoint IDs supplied to `private-endpoint create --endpoint-id` and `service update --add-private-endpoint-id` are format-checked before the request is sent, because adding one registers it for the whole organization and a typo has to be unpicked from both the service and the organization. Each provider uses its own format — AWS a `vpce-` VPC endpoint ID, GCP the numeric Private Service Connect connection ID, Azure the private endpoint Resource ID or `resourceGuid` — and the provider is not known when the flag is parsed, so only provider-independent mistakes are rejected (exit code `2`): empty values, values containing whitespace, and any value carrying `vpce-` that is not exactly a well-formed AWS VPC endpoint ID (`vpce-` plus 8 or 17 lowercase hex characters) — which also catches a pasted VPC endpoint ARN or endpoint service name. Azure Resource IDs (values starting with `/`) are exempt from that check, since an Azure resource may itself be named `vpce-...`. Whether the endpoint actually exists and belongs to you is not validated by the CLI or, currently, by the Cloud API. Removal flags are never format-checked, so an already-registered bogus ID stays removable.
 

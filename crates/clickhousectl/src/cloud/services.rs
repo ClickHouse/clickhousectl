@@ -446,7 +446,11 @@ CONTEXT FOR AGENTS:
   SQL sources: --query and --queries-file are mutually exclusive. When neither
   is supplied, SQL is read from stdin. Default format: PrettyCompact on a TTY,
   TabSeparated when piped. --json selects JSONEachRow and cannot be combined
-  with --format; an explicit --format takes precedence over agent auto-JSON."
+  with --format; an explicit --format takes precedence over agent auto-JSON.
+  The Query API runs exactly one statement per request, so multi-statement SQL
+  (a typical ';'-separated .sql script) is rejected by the server. Run
+  statements one invocation at a time, or connect with `clickhouse client`
+  (see above) to run a script."
     )]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
@@ -457,11 +461,14 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "name")]
         id: Option<String>,
 
-        /// Execute a SQL query
+        /// Execute a SQL query (a single statement; the Query API does not
+        /// accept multi-statement SQL)
         #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
-        /// Execute queries from a SQL file (use "-" for stdin)
+        /// Execute a query from a SQL file (use "-" for stdin); the file must
+        /// contain a single statement — multi-statement files are not
+        /// supported
         #[arg(long, conflicts_with = "query")]
         queries_file: Option<String>,
 
