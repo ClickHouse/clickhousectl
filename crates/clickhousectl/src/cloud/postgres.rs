@@ -1,5 +1,5 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{ABSENT, or_absent};
+use crate::cloud::output::{ABSENT, or_absent, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -996,12 +996,7 @@ pub async fn postgres_delete(
     // resource before deleting it and render that instead: `--json` output must
     // stay consistent with every other `cloud postgres` subcommand, which emits
     // the resource object rather than `{"status":...,"requestId":...}` (#614).
-    let resp = client
-        .api()
-        .postgres_service_get(&org_id, postgres_id)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
     client
         .api()
@@ -1009,10 +1004,15 @@ pub async fn postgres_delete(
         .await
         .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
+    // The service is already gone by here, so a closed stdout must not turn a
+    // completed deletion into a panic — see `print_line` and #598.
     if json {
-        println!("{}", serde_json::to_string_pretty(&svc)?);
+        print_line(serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Postgres service {} deletion initiated", postgres_id);
+        print_line(format!(
+            "Postgres service {} deletion initiated",
+            postgres_id
+        ));
     }
     Ok(())
 }
@@ -1318,6 +1318,22 @@ pub async fn postgres_state_change(
 // ---------------------------------------------------------------------------
 // Tests (CLI parsing + helpers)
 // ---------------------------------------------------------------------------
+
+impl CloudClient {
+    /// Fetch a single Postgres service.
+    pub async fn get_postgres_service(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .api()
+            .postgres_service_get(org_id, postgres_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
 
 #[cfg(test)]
 mod tests {
